@@ -28,6 +28,7 @@ from sidemantic.interchange.ossie.documents import OssieLogicalDocument
 from sidemantic.interchange.ossie.expression_validation import scalar_sql_expression_error
 from sidemantic.interchange.ossie.identifier import normalize_identifier
 from sidemantic.interchange.ossie.profiles import (
+    CURRENT_OSSIE_SCHEMA_COMMIT,
     OssieConsumerProfile,
     OssieProfileError,
     OssieSerialization,
@@ -93,6 +94,23 @@ def _expression(text: str, dialect: str) -> dict[str, object]:
 
 def _scalar_expression_error(text: str, dialect: str) -> str | None:
     return scalar_sql_expression_error(text, sqlglot_dialect=_SQLGLOT_DIALECTS[dialect])
+
+
+def _field_expression(text: str, dialect: str) -> str:
+    """Remove native owner qualifiers from dataset-local SQL, not literals."""
+    try:
+        tokens = sqlglot.tokenize(text, read=_SQLGLOT_DIALECTS[dialect])
+    except sqlglot.errors.SqlglotError:
+        return text  # The expression validator reports malformed SQL below.
+    for index in reversed(range(len(tokens) - 3)):
+        first, last = tokens[index], tokens[index + 3]
+        if (
+            first.token_type is sqlglot.TokenType.L_BRACE
+            and last.token_type is sqlglot.TokenType.DOT
+            and text[first.start : tokens[index + 2].end + 1] == "{model}"
+        ):
+            text = text[: first.start] + text[last.end + 1 :]
+    return text
 
 
 def _metric_expression(metric: Metric) -> str | None:
@@ -255,7 +273,9 @@ def _unrepresented_state_diagnostics(graph: SemanticGraph) -> list[OssieDiagnost
         # Lowering adds these source-location annotations to every core model.
         # They describe the input document, not native state to synthesize.
         source_annotations = (
-            {"metadata"} if not set(model.metadata or {}) - {"ossie_source_kind", "ossie_pointer"} else set()
+            {"metadata"}
+            if not set(model.metadata or {}) - {"ossie_source_kind", "ossie_pointer", "ossie_source_name"}
+            else set()
         )
         check(
             model,
@@ -274,9 +294,13 @@ def _unrepresented_state_diagnostics(graph: SemanticGraph) -> list[OssieDiagnost
             f"Model {model.name!r}",
         )
         for dimension in model.dimensions:
+            # Imported identifiers are already bound to runtime names. Their
+            # original spelling is archival provenance, not executable state.
+            source_annotations = {"metadata"} if not set(dimension.metadata or {}) - {"ossie_source_name"} else set()
             check(
                 dimension,
-                {"name", "type", "sql", "logical_data_type", "declared_is_time", "description", "label", "public"},
+                {"name", "type", "sql", "logical_data_type", "declared_is_time", "description", "label", "public"}
+                | source_annotations,
                 f"Field {model.name}.{dimension.name}",
             )
         for relationship in model.relationships:
@@ -290,7 +314,8 @@ def _unrepresented_state_diagnostics(graph: SemanticGraph) -> list[OssieDiagnost
         # with model source annotations, these do not add native semantics.
         source_annotations = (
             {"metadata"}
-            if not set(metric.metadata or {}) - {"ossie_expression_dialect", "ossie_target_dialect"}
+            if not set(metric.metadata or {})
+            - {"ossie_expression_dialect", "ossie_target_dialect", "ossie_source_name"}
             else set()
         )
         check(
@@ -362,8 +387,10 @@ def _runtime_expression_diagnostics(graph: SemanticGraph, dialect: str) -> list[
     return diagnostics
 
 
-def _dataset(model: Model, dialect: str, index: int, diagnostics: list[OssieDiagnostic]) -> dict[str, object] | None:
-    pointer = f"/semantic_model/0/datasets/{index}"
+def _dataset(
+    model: Model, dialect: str, index: int, diagnostics: list[OssieDiagnostic], scope_pointer: str
+) -> dict[str, object] | None:
+    pointer = f"{scope_pointer}/datasets/{index}"
     if (
         model.extends
         or model.invariant_filters
@@ -437,7 +464,8 @@ def _dataset(model: Model, dialect: str, index: int, diagnostics: list[OssieDiag
                 )
             )
             continue
-        expression_error = _scalar_expression_error(dimension.sql_expr, dialect)
+        expression = _field_expression(dimension.sql_expr, dialect)
+        expression_error = _scalar_expression_error(expression, dialect)
         if expression_error is not None:
             diagnostics.append(
                 _error(
@@ -449,7 +477,7 @@ def _dataset(model: Model, dialect: str, index: int, diagnostics: list[OssieDiag
             continue
         field: dict[str, object] = {
             "name": dimension.name,
-            "expression": _expression(dimension.sql_expr, dialect),
+            "expression": _expression(expression, dialect),
         }
         if dimension.logical_data_type is not None:
             if dimension.logical_data_type not in _DATA_TYPES:
@@ -468,6 +496,9 @@ def _dataset(model: Model, dialect: str, index: int, diagnostics: list[OssieDiag
             # Preserve runtime time-role semantics when datatype omission would
             # otherwise make Ossie default this field to non-time.
             field["dimension"] = {"is_time": True}
+        elif dimension.type != "time" and dimension.logical_data_type in {"Date", "Time", "DateTime", "DateTimeTz"}:
+            # A native non-time role must override Ossie's temporal-type default.
+            field["dimension"] = {"is_time": False}
         if dimension.description is not None:
             field["description"] = dimension.description
         if dimension.label is not None:
@@ -478,13 +509,15 @@ def _dataset(model: Model, dialect: str, index: int, diagnostics: list[OssieDiag
     return dataset
 
 
-def _relationships(models: dict[str, Model], diagnostics: list[OssieDiagnostic]) -> list[dict[str, object]]:
+def _relationships(
+    models: dict[str, Model], diagnostics: list[OssieDiagnostic], scope_pointer: str
+) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     used_names: set[str] = set()
     relationship_index = 0
     for from_model in models.values():
         for relationship in from_model.relationships:
-            pointer = f"/semantic_model/0/relationships/{relationship_index}"
+            pointer = f"{scope_pointer}/relationships/{relationship_index}"
             relationship_index += 1
             if relationship.target_model is not None:
                 diagnostics.append(
@@ -667,6 +700,7 @@ def synthesize_ossie_document(
     scope_name: str,
     expression_dialect: str,
     schema_version: str = "0.2.0.dev0",
+    schema_revision: str | None = CURRENT_OSSIE_SCHEMA_COMMIT,
     serialization: OssieSerialization | str = OssieSerialization.YAML,
     consumer_profile: OssieConsumerProfile | str = OssieConsumerProfile.OSSIE_CORE,
     portable_only: bool = False,
@@ -686,20 +720,24 @@ def synthesize_ossie_document(
 
     diagnostics: list[OssieDiagnostic] = []
     try:
-        profile = resolve_ossie_profile(schema_version, consumer_profile)
+        profile = resolve_ossie_profile(
+            schema_version, consumer_profile, schema_revision if schema_version == "0.2.0.dev0" else None
+        )
     except OssieProfileError as exc:
         return OssieSynthesisResult(
             document=None,
             diagnostics=(_error("ossie.synthesis.profile_unsupported", str(exc), "/version"),),
         )
+    current_shape = profile.schema_revision == CURRENT_OSSIE_SCHEMA_COMMIT
+    scope_pointer = "" if current_shape else "/semantic_model/0"
     models = dict(graph.models)
     datasets = [
         dataset
         for index, model in enumerate(models.values())
-        if (dataset := _dataset(model, dialect, index, diagnostics)) is not None
+        if (dataset := _dataset(model, dialect, index, diagnostics, scope_pointer)) is not None
     ]
     semantic_model: dict[str, object] = {"name": scope_name, "datasets": datasets}
-    relationships = _relationships(models, diagnostics)
+    relationships = _relationships(models, diagnostics, scope_pointer)
     generated_fields: dict[str, dict[str, str]] = {}
     metrics = _metrics(graph, models, dialect, diagnostics, generated_fields)
     for dataset in datasets:
@@ -711,7 +749,11 @@ def synthesize_ossie_document(
         semantic_model["relationships"] = relationships
     if metrics:
         semantic_model["metrics"] = metrics
-    data = {"version": schema_version, "semantic_model": [semantic_model]}
+    data = (
+        {"version": schema_version, **semantic_model}
+        if current_shape
+        else {"version": schema_version, "semantic_model": [semantic_model]}
+    )
 
     diagnostics.extend(_unrepresented_state_diagnostics(graph))
     extension_codes = {
@@ -743,13 +785,20 @@ def synthesize_ossie_document(
                 }
             ],
         }
+        if current_shape:
+            # The extension fingerprints the exact containing core object.
+            semantic_model = {"version": schema_version, **semantic_model}
         try:
             extension = encode_runtime_extension(graph, semantic_model, expression_dialect=dialect)
         except (TypeError, ValueError) as exc:
             diagnostics.append(_error("ossie.synthesis.runtime_extension_invalid", str(exc)))
         else:
             semantic_model["custom_extensions"] = [extension]
-            data = {"version": schema_version, "vendors": ["SIDEMANTIC"], "semantic_model": [semantic_model]}
+            data = (
+                semantic_model
+                if current_shape
+                else {"version": schema_version, "vendors": ["SIDEMANTIC"], "semantic_model": [semantic_model]}
+            )
             diagnostics = [
                 _warning(
                     "ossie.synthesis.runtime_extension_required",
@@ -765,7 +814,9 @@ def synthesize_ossie_document(
     if any(diagnostic.severity is OssieDiagnosticSeverity.ERROR for diagnostic in diagnostics):
         return OssieSynthesisResult(document=None, diagnostics=tuple(diagnostics))
 
-    document = OssieLogicalDocument(canonical_data=data, serialization=serialization)
+    document = OssieLogicalDocument(
+        canonical_data=data, serialization=serialization, schema_revision=profile.schema_revision
+    )
     return OssieSynthesisResult(document=document, diagnostics=tuple(diagnostics))
 
 

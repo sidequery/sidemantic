@@ -8,6 +8,7 @@ logical scope safely. Callers decide whether diagnostics block lowering.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -22,10 +23,12 @@ from sidemantic.interchange.ossie.diagnostics import (
 from sidemantic.interchange.ossie.documents import (
     OssieLogicalDocument,
     OssieOntologyDocument,
+    is_logical_document_data,
 )
 from sidemantic.interchange.ossie.identifier import (
     OSSIE_IDENTIFIER_MAX_LENGTH,
     identifier_length,
+    identifier_syntax_valid,
     identifier_within_limit,
     normalize_identifier,
 )
@@ -39,6 +42,8 @@ from sidemantic.interchange.ossie.profiles import (
 SemanticDocumentKind = Literal["logical", "ontology", "unsupported"]
 SemanticFailureStage = Literal["semantic"]
 JSONObject: TypeAlias = Mapping[str, object]
+_BUILTIN_VALUE_CONCEPTS = frozenset({"Boolean", "Date", "DateTime", "Decimal", "Float", "Integer", "String"})
+_BUILTIN_CONCEPTS = _BUILTIN_VALUE_CONCEPTS | {"Any"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,7 +126,14 @@ def _profile_for(
     if not isinstance(version, str):
         return None
     try:
-        return resolve_ossie_profile(version, OssieConsumerProfile.OSSIE_CORE)
+        from sidemantic.interchange.ossie.validation import detect_schema_profile
+
+        schema = detect_schema_profile(document)
+        return resolve_ossie_profile(
+            version,
+            OssieConsumerProfile.OSSIE_CORE,
+            schema.source_commit if schema and schema.schema_revision else None,
+        )
     except OssieProfileError:
         return None
 
@@ -204,6 +216,14 @@ class _SemanticValidator:
         *,
         scope: str | None = None,
     ) -> bool:
+        if not identifier_syntax_valid(identifier):
+            self.emit(
+                "ossie.semantic.identifier.invalid",
+                "Expected an ANSI regular identifier or a non-empty double-quoted identifier with doubled interior quotes.",
+                json_pointer,
+                scope=scope,
+            )
+            return False
         length = identifier_length(identifier)
         if length <= OSSIE_IDENTIFIER_MAX_LENGTH:
             return True
@@ -657,12 +677,41 @@ class _SemanticValidator:
 
     def validate_ontology(self, document: JSONObject) -> None:
         ontology = _array(document.get("ontology"))
-        concept_names = {
-            concept
-            for value in ontology or ()
-            if (component := _mapping(value)) is not None
-            if (concept := _name(component.get("concept"))) is not None
-        }
+        self.ontology_concepts: dict[str, JSONObject] = {}
+        self.ontology_relationships: dict[tuple[str, str], JSONObject] = {}
+        concept_pointers: dict[str, str] = {}
+        for index, value in enumerate(ontology or ()):
+            component = _mapping(value)
+            if component is None or (concept := _name(component.get("concept"))) is None:
+                continue
+            pointer = _pointer("/ontology", index)
+            if concept in self.ontology_concepts or concept in _BUILTIN_CONCEPTS:
+                self.emit(
+                    "ossie.semantic.ontology.concept_duplicate",
+                    f"Duplicate concept {concept!r}.",
+                    _pointer(pointer, "concept"),
+                )
+                continue
+            self.ontology_concepts[concept] = component
+            concept_pointers[concept] = pointer
+            for relation_index, relation_value in enumerate(_array(component.get("relationships")) or ()):
+                relation = _mapping(relation_value)
+                if relation is None or (name := _name(relation.get("name"))) is None:
+                    continue
+                key = (concept, name)
+                if key in self.ontology_relationships:
+                    self.emit(
+                        "ossie.semantic.ontology.relationship_duplicate",
+                        f"Duplicate relationship {concept}.{name}.",
+                        _pointer(pointer, "relationships", relation_index, "name"),
+                    )
+                else:
+                    self.ontology_relationships[key] = relation
+        concept_names = set(self.ontology_concepts) | _BUILTIN_CONCEPTS
+        for prefix, iri in (_mapping(document.get("prefixes")) or {}).items():
+            self.validate_ontology_iri(iri, _pointer("/prefixes", prefix), {})
+        for concept, component in self.ontology_concepts.items():
+            self.validate_ontology_component(concept, component, concept_pointers[concept], concept_names, document)
         ontology_mappings = _array(document.get("ontology_mappings"))
         embedded_models: list[object] = []
         embedded_model_pointers: list[str] = []
@@ -688,23 +737,153 @@ class _SemanticValidator:
                     concept_names=concept_names,
                 )
                 object_mappings = _array(concept_mapping.get("object_mappings"))
+                link_mappings = _array(concept_mapping.get("link_mappings"))
+                if "object_mappings" not in concept_mapping and "link_mappings" not in concept_mapping:
+                    self.emit(
+                        "ossie.semantic.ontology.mapping_empty",
+                        "A concept mapping requires object_mappings or link_mappings.",
+                        concept_mapping_pointer,
+                    )
                 for object_index, object_value in enumerate(object_mappings or ()):
                     self.validate_object_mapping(
                         object_value,
                         pointer=_pointer(concept_mapping_pointer, "object_mappings", object_index),
                         concept_names=concept_names,
+                        owner=_name(concept_mapping.get("concept")),
                     )
-                link_mappings = _array(concept_mapping.get("link_mappings"))
                 for link_index, link_value in enumerate(link_mappings or ()):
                     self.validate_link_mapping(
                         link_value,
                         pointer=_pointer(concept_mapping_pointer, "link_mappings", link_index),
                         concept_names=concept_names,
+                        owner=_name(concept_mapping.get("concept")),
                     )
 
         # Ontology maps embed complete logical SemanticModel objects. Validate
         # each as an isolated scope while keeping ontology itself preservation-only.
         self.validate_embedded_semantic_models(embedded_models, embedded_model_pointers)
+
+    def ontology_supertypes(self, concept: str) -> set[str]:
+        """Find declared ancestors without interpreting population constraints."""
+        found: set[str] = set()
+        pending = [concept]
+        while pending:
+            name = pending.pop()
+            if name in found:
+                continue
+            found.add(name)
+            component = self.ontology_concepts.get(name)
+            if component:
+                pending.extend(parent for parent in _array(component.get("extends")) or () if isinstance(parent, str))
+        return found
+
+    def ontology_relationship(self, owner: str | None, name: object) -> JSONObject | None:
+        if not isinstance(name, str):
+            return None
+        if "." in name:
+            concept, relationship = name.rsplit(".", 1)
+            if owner and concept not in self.ontology_supertypes(owner):
+                return None
+            return self.ontology_relationships.get((concept, relationship))
+        candidates = [owner, *sorted(self.ontology_supertypes(owner) - {owner})] if owner else ()
+        for concept in candidates:
+            if relation := self.ontology_relationships.get((concept, name)):
+                return relation
+        return None
+
+    def validate_ontology_component(
+        self, concept: str, component: JSONObject, pointer: str, concept_names: set[str], document: JSONObject
+    ) -> None:
+        for index, parent in enumerate(_array(component.get("extends")) or ()):
+            reference_pointer = _pointer(pointer, "extends", index)
+            self.validate_concept_reference(parent, pointer=reference_pointer, concept_names=concept_names)
+            if isinstance(parent, str) and parent in concept_names:
+                parent_type = (
+                    "ValueType"
+                    if parent in _BUILTIN_VALUE_CONCEPTS
+                    else "EntityType"
+                    if parent == "Any"
+                    else self.ontology_concepts[parent].get("type")
+                )
+                if parent_type != component.get("type"):
+                    self.emit(
+                        "ossie.semantic.ontology.supertype_kind",
+                        "Entity and value concepts cannot extend each other.",
+                        reference_pointer,
+                    )
+        if component.get("type") == "ValueType" and not self.ontology_supertypes(concept) & _BUILTIN_VALUE_CONCEPTS:
+            self.emit(
+                "ossie.semantic.ontology.value_base_missing",
+                "A value concept must extend a built-in value type directly or indirectly.",
+                _pointer(pointer, "extends"),
+            )
+        self.validate_ontology_iri(component.get("iri"), _pointer(pointer, "iri"), document)
+        for index, value in enumerate(_array(component.get("relationships")) or ()):
+            relation = _mapping(value)
+            if relation is None:
+                continue
+            relation_pointer = _pointer(pointer, "relationships", index)
+            roles = _array(relation.get("roles")) or ()
+            role_names = {concept}
+            for role_index, role_value in enumerate(roles):
+                role = _mapping(role_value)
+                if role is None:
+                    continue
+                role_pointer = _pointer(relation_pointer, "roles", role_index)
+                self.validate_concept_reference(
+                    role.get("concept"), pointer=_pointer(role_pointer, "concept"), concept_names=concept_names
+                )
+                role_name = _name(role.get("name")) or _name(role.get("concept"))
+                if role_name and role_name in role_names:
+                    self.emit(
+                        "ossie.semantic.ontology.role_duplicate",
+                        f"Role {role_name!r} requires a distinguishing name.",
+                        role_pointer,
+                    )
+                if role_name:
+                    role_names.add(role_name)
+            if relation.get("multiplicity") == "OneToOne" and len(roles) != 1:
+                self.emit(
+                    "ossie.semantic.ontology.multiplicity_arity",
+                    "OneToOne multiplicity requires a binary relationship.",
+                    _pointer(relation_pointer, "multiplicity"),
+                )
+            self.validate_ontology_iri(relation.get("iri"), _pointer(relation_pointer, "iri"), document)
+        for index, name in enumerate(_array(component.get("identify_by")) or ()):
+            reference_pointer = _pointer(pointer, "identify_by", index)
+            relation = self.ontology_relationship(concept, name)
+            if relation is None:
+                self.emit(
+                    "ossie.semantic.ontology.relationship_unknown",
+                    f"Unknown identifying relationship {name!r}.",
+                    reference_pointer,
+                )
+            elif len(_array(relation.get("roles")) or ()) != 1:
+                self.emit(
+                    "ossie.semantic.ontology.identifier_arity",
+                    "An identifying relationship must be binary.",
+                    reference_pointer,
+                )
+
+    def validate_ontology_iri(self, value: object, pointer: str, document: JSONObject) -> None:
+        if value is None or not isinstance(value, str):
+            return
+        prefixes = _mapping(document.get("prefixes")) or {}
+        # An undeclared QName and an absolute opaque IRI share prefix:local
+        # syntax. Do not reject a valid custom IRI scheme merely because it is
+        # absent from the namespace map.
+        prefix, separator, local = value.partition(":")
+        invalid_characters = any(
+            character.isspace() or ord(character) < 32 or character in '<>"{}|\\^`' for character in value
+        )
+        if separator and local and not invalid_characters and not re.search(r"%(?![0-9A-Fa-f]{2})", value):
+            if prefix in prefixes or re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", prefix):
+                return
+        self.emit(
+            "ossie.semantic.ontology.iri_invalid",
+            "An IRI must be absolute or use a QName prefix declared in prefixes.",
+            pointer,
+        )
 
     def validate_concept_reference(
         self,
@@ -716,7 +895,7 @@ class _SemanticValidator:
         if isinstance(concept, str) and concept and concept not in concept_names:
             self.emit(
                 "ossie.semantic.ontology.concept_unknown",
-                f"Ontology mapping references unknown concept {concept!r}.",
+                f"Ontology references unknown concept {concept!r}.",
                 pointer,
             )
 
@@ -726,6 +905,7 @@ class _SemanticValidator:
         *,
         pointer: str,
         concept_names: set[str],
+        owner: str | None = None,
     ) -> None:
         object_mapping = _mapping(value)
         if object_mapping is None:
@@ -736,6 +916,41 @@ class _SemanticValidator:
                 pointer=_pointer(pointer, "concept"),
                 concept_names=concept_names,
             )
+        owner = _name(object_mapping.get("concept")) or owner
+        self.validate_referent_mappings(object_mapping, pointer, owner)
+
+    def validate_referent_mappings(self, value: JSONObject, pointer: str, owner: str | None) -> None:
+        referents = _array(value.get("referent_mappings")) or ()
+        if "expression" not in value and "referent_mappings" not in value:
+            self.emit(
+                "ossie.semantic.ontology.object_mapping_empty",
+                "An object or referent mapping requires an expression or referent_mappings.",
+                pointer,
+            )
+        for index, child in enumerate(referents):
+            referent = _mapping(child)
+            if referent is None:
+                continue
+            referent_pointer = _pointer(pointer, "referent_mappings", index)
+            relation = self.ontology_relationship(owner, referent.get("relationship"))
+            target = None
+            if relation is None:
+                self.emit(
+                    "ossie.semantic.ontology.relationship_unknown",
+                    f"Unknown referent relationship {referent.get('relationship')!r}.",
+                    _pointer(referent_pointer, "relationship"),
+                )
+            else:
+                roles = _array(relation.get("roles")) or ()
+                if len(roles) != 1:
+                    self.emit(
+                        "ossie.semantic.ontology.identifier_arity",
+                        "A referent relationship must be binary.",
+                        _pointer(referent_pointer, "relationship"),
+                    )
+                elif role := _mapping(roles[0]):
+                    target = _name(role.get("concept"))
+            self.validate_referent_mappings(referent, referent_pointer, target)
 
     def validate_link_mapping(
         self,
@@ -743,22 +958,58 @@ class _SemanticValidator:
         *,
         pointer: str,
         concept_names: set[str],
+        owner: str | None = None,
+        depth: int = 1,
     ) -> None:
         link_mapping = _mapping(value)
         if link_mapping is None:
             return
+        relation = self.ontology_relationship(owner, link_mapping.get("relationship"))
+        object_owner = owner if depth == 1 else None
+        if depth > 1:
+            # Intermediate nodes may omit relationship and concept. Descendant
+            # relationships still identify the concept in this tuple position.
+            role_concepts: set[str] = set()
+            pending = [link_mapping]
+            while pending:
+                node = pending.pop()
+                mapped = self.ontology_relationship(owner, node.get("relationship"))
+                roles = _array(mapped.get("roles")) if mapped else None
+                if roles and depth <= len(roles) + 1:
+                    role = _mapping(roles[depth - 2])
+                    if role and (role_concept := _name(role.get("concept"))):
+                        role_concepts.add(role_concept)
+                pending.extend(child for child in _array(node.get("children")) or () if isinstance(child, Mapping))
+            if len(role_concepts) == 1:
+                object_owner = next(iter(role_concepts))
         if "object_mapping" in link_mapping:
             self.validate_object_mapping(
                 link_mapping.get("object_mapping"),
                 pointer=_pointer(pointer, "object_mapping"),
                 concept_names=concept_names,
+                owner=object_owner,
             )
+        if "relationship" in link_mapping:
+            if relation is None:
+                self.emit(
+                    "ossie.semantic.ontology.relationship_unknown",
+                    f"Unknown mapped relationship {link_mapping['relationship']!r}.",
+                    _pointer(pointer, "relationship"),
+                )
+            elif len(_array(relation.get("roles")) or ()) + 1 != depth:
+                self.emit(
+                    "ossie.semantic.ontology.link_arity",
+                    "Link mapping depth must equal the mapped relationship's arity.",
+                    _pointer(pointer, "relationship"),
+                )
         children = _array(link_mapping.get("children"))
         for child_index, child in enumerate(children or ()):
             self.validate_link_mapping(
                 child,
                 pointer=_pointer(pointer, "children", child_index),
                 concept_names=concept_names,
+                owner=owner,
+                depth=depth + 1,
             )
 
     def validate_embedded_semantic_models(
@@ -828,7 +1079,7 @@ def validate_ossie_semantics(
             source = OssieSourceLocation(identifier=document.source.identifier)
     elif isinstance(document, Mapping):
         canonical_data = document
-        has_logical_root = "semantic_model" in canonical_data
+        has_logical_root = is_logical_document_data(canonical_data)
         has_ontology_root = "ontology" in canonical_data or "ontology_mappings" in canonical_data
         if has_logical_root and not has_ontology_root:
             document_kind = "logical"
@@ -839,12 +1090,26 @@ def validate_ossie_semantics(
     else:
         raise TypeError("Semantic validation requires a parsed mapping or a supported Ossie document")
 
+    if (
+        profile is None
+        and isinstance(document, (OssieLogicalDocument, OssieOntologyDocument))
+        and document.schema_revision
+    ):
+        profile = resolve_ossie_profile(document.version, OssieConsumerProfile.OSSIE_CORE, document.schema_revision)
     validator = _SemanticValidator(profile=_profile_for(canonical_data, profile), source=source)
     if document_kind == "logical":
-        validator.validate_semantic_models(
-            _array(canonical_data.get("semantic_model")),
-            parent_pointer="/semantic_model",
-        )
+        if "semantic_model" in canonical_data:
+            validator.validate_semantic_models(
+                _array(canonical_data.get("semantic_model")),
+                parent_pointer="/semantic_model",
+            )
+        else:
+            name = _name(canonical_data.get("name"))
+            if name:
+                validator.validate_identifier_length(name, "/name")
+            scope = name or "semantic_model"
+            validator.checked_scopes.append(scope)
+            validator.validate_scope(canonical_data, "", scope)
     elif document_kind == "ontology":
         validator.validate_ontology(canonical_data)
 

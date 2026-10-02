@@ -24,6 +24,7 @@ from sidemantic.interchange.ossie.diagnostics import (
     sort_diagnostics,
 )
 from sidemantic.interchange.ossie.profiles import (
+    CURRENT_OSSIE_SCHEMA_COMMIT,
     OssieConsumerProfile,
     OssieProfile,
     resolve_ossie_profile,
@@ -59,6 +60,7 @@ class SchemaProfile:
     source_url: str
     transformations: tuple[Mapping[str, str], ...]
     dependencies: tuple[str, ...]
+    schema_revision: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +143,7 @@ def _profile_from_record(name: str, record: Mapping[str, Any]) -> SchemaProfile:
         source_url=source["url"],
         transformations=tuple(record.get("transformations", ())),
         dependencies=tuple(record.get("dependencies", ())),
+        schema_revision=record.get("schema_revision"),
     )
 
 
@@ -214,6 +217,10 @@ def _verify_bundle_integrity(profile: SchemaProfile) -> Mapping[str, Any]:
     upstream_bytes, upstream = _read_verified_asset(profile, upstream=True)
 
     expected_name = f"{profile.document_kind}-{profile.version}"
+    expected_resource_uri = f"urn:sidemantic:ossie:schema:{profile.document_kind}:{profile.version}"
+    if profile.schema_revision:
+        expected_name += f"-{profile.schema_revision}"
+        expected_resource_uri += f":{profile.schema_revision}"
     repository_prefix = "https://github.com/"
     repository_slug = profile.source_repository.removeprefix(repository_prefix).rstrip("/")
     expected_source_url = (
@@ -228,7 +235,8 @@ def _verify_bundle_integrity(profile: SchemaProfile) -> Mapping[str, Any]:
         or profile.source_url != expected_source_url
         or runtime.get("$schema") != profile.schema_dialect
         or not isinstance(runtime.get("$id"), str)
-        or profile.resource_uri != f"urn:sidemantic:ossie:schema:{profile.document_kind}:{profile.version}"
+        or profile.resource_uri != expected_resource_uri
+        or (profile.schema_revision and profile.schema_revision != profile.source_commit[:7])
         or version_schema.get("const") != profile.version
         or len(profile.dependencies) != len(set(profile.dependencies))
         or any(dependency == profile.name for dependency in profile.dependencies)
@@ -282,13 +290,41 @@ def detect_schema_profile(document: Any) -> SchemaProfile | None:
     if version != "0.2.0.dev0":
         return None
 
-    has_logical_root = "semantic_model" in document
+    from sidemantic.interchange.ossie.documents import is_logical_document_data
+
+    has_logical_root = is_logical_document_data(document)
     has_ontology_root = "ontology" in document or "ontology_mappings" in document
     if has_logical_root == has_ontology_root:
         return None
     if has_logical_root:
-        return get_schema_profile("logical-0.2.0.dev0")
+        suffix = "" if "semantic_model" in document else f"-{CURRENT_OSSIE_SCHEMA_COMMIT[:7]}"
+        return get_schema_profile(f"logical-0.2.0.dev0{suffix}")
+    if _current_ontology_shape(document):
+        return get_schema_profile(f"ontology-0.2.0.dev0-{CURRENT_OSSIE_SCHEMA_COMMIT[:7]}")
     return get_schema_profile("ontology-0.2.0.dev0")
+
+
+def _current_ontology_shape(document: Mapping[str, object]) -> bool:
+    if "prefixes" in document:
+        return True
+    ontology = document.get("ontology")
+    for concept in ontology if isinstance(ontology, (list, tuple)) else ():
+        if not isinstance(concept, Mapping):
+            continue
+        if "iri" in concept:
+            return True
+        relationships = concept.get("relationships")
+        if isinstance(relationships, (list, tuple)) and any(
+            isinstance(relationship, Mapping) and "iri" in relationship for relationship in relationships
+        ):
+            return True
+    mappings = document.get("ontology_mappings")
+    return isinstance(mappings, (list, tuple)) and any(
+        isinstance(mapping, Mapping)
+        and isinstance(mapping.get("semantic_model"), Mapping)
+        and "version" in mapping["semantic_model"]
+        for mapping in mappings
+    )
 
 
 def _json_pointer(path: Sequence[JsonPathPart]) -> str:
@@ -335,7 +371,11 @@ def _diagnostic(
     schema: OssieSchemaProvenance | None = None
     if profile is not None:
         if ossie_profile is None:
-            ossie_profile = resolve_ossie_profile(profile.version, OssieConsumerProfile.OSSIE_CORE)
+            ossie_profile = resolve_ossie_profile(
+                profile.version,
+                OssieConsumerProfile.OSSIE_CORE,
+                profile.source_commit if profile.schema_revision else None,
+            )
         schema = OssieSchemaProvenance(
             schema_id=profile.resource_uri,
             version=profile.version,
@@ -452,9 +492,13 @@ def validate_ossie_schema(
             if contract_profile.is_compatibility_alias:
                 resolved_profile = get_schema_profile(f"logical-{contract_profile.validation_schema_version}")
             else:
-                resolved_profile = detect_schema_profile(document) or get_schema_profile(
-                    f"logical-{contract_profile.validation_schema_version}"
+                family = (
+                    "ontology"
+                    if isinstance(document, Mapping) and ("ontology" in document or "ontology_mappings" in document)
+                    else "logical"
                 )
+                suffix = f"-{contract_profile.schema_revision[:7]}" if contract_profile.schema_revision else ""
+                resolved_profile = get_schema_profile(f"{family}-{contract_profile.validation_schema_version}{suffix}")
         except KeyError:
             resolved_profile = None
     elif isinstance(profile, SchemaProfile):
@@ -494,7 +538,11 @@ def validate_ossie_schema(
             resolved_profile = get_schema_profile("logical-0.1.1")
         elif explicit_consumer is not None:
             try:
-                contract_profile = resolve_ossie_profile(document_version, explicit_consumer)
+                contract_profile = resolve_ossie_profile(
+                    document_version,
+                    explicit_consumer,
+                    resolved_profile.source_commit if resolved_profile and resolved_profile.schema_revision else None,
+                )
             except ValueError as exc:
                 diagnostic = _diagnostic(
                     code="ossie.schema.profile_context_mismatch",

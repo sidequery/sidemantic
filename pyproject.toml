@@ -199,7 +199,7 @@ force-exclude = true
 extend-exclude = [
     "sidemantic/adapters/malloy_grammar",  # ANTLR-generated files
     "sidemantic/adapters/holistics_grammar",  # ANTLR-generated files
-    "tests/ossie-fixtures/upstream/validation/validate.py",  # Exact pinned Apache validator fixture
+    "tests/ossie-fixtures/upstream/**/validation/validate.py",  # Exact pinned Apache validator fixtures
 ]
 
 [tool.ruff.lint]

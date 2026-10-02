@@ -24,7 +24,7 @@ from sidemantic.interchange.ossie.diagnostics import (
     OssieSourceLocation,
     sort_diagnostics,
 )
-from sidemantic.interchange.ossie.documents import OssieLogicalDocument, OssieOntologyDocument
+from sidemantic.interchange.ossie.documents import OssieLogicalDocument, OssieOntologyDocument, logical_model_entries
 from sidemantic.interchange.ossie.expression_validation import scalar_sql_expression_error
 from sidemantic.interchange.ossie.identifier import identifier_within_limit, normalize_identifier
 from sidemantic.interchange.ossie.parser import OssieParseResult
@@ -178,10 +178,15 @@ def _sql_expression_error(expression: str, target_dialect: str) -> str | None:
 def _classify_source(source: str, source_dialect: str | None) -> tuple[str, str] | None:
     dialect = _SQLGLOT_DIALECTS.get(_normalize_dialect(source_dialect)) if source_dialect else None
     try:
-        parsed = sqlglot.parse_one(source, read=dialect)
+        statements = sqlglot.parse(source, read=dialect)
+        if len(statements) != 1:
+            return None
+        parsed = statements[0]
     except sqlglot.errors.ParseError:
         parsed = None
     if isinstance(parsed, (exp.Query, exp.Subquery)):
+        if any(not select.expressions for select in parsed.find_all(exp.Select)):
+            return None
         return "query", source
 
     try:
@@ -256,6 +261,7 @@ def _lower_scope(
     *,
     scope_id: str,
     scope_index: int,
+    scope_pointer: str,
     document_id: str,
     target_dialect: str,
     diagnostics: list[OssieDiagnostic],
@@ -272,7 +278,7 @@ def _lower_scope(
     registration_token = set_current_layer(None)
     try:
         for dataset_index, dataset, dataset_name in _unique_named_items(dataset_values):
-            pointer = f"/semantic_model/{scope_index}/datasets/{dataset_index}"
+            pointer = f"{scope_pointer}/datasets/{dataset_index}"
             source = dataset.get("source")
             if not isinstance(source, str) or not source.strip():
                 diagnostics.append(
@@ -400,7 +406,7 @@ def _lower_scope(
 
         relationships = _array(semantic_model.get("relationships")) if runtime_override is None else ()
         for relationship_index, relationship, edge_id in _unique_named_items(relationships):
-            pointer = f"/semantic_model/{scope_index}/relationships/{relationship_index}"
+            pointer = f"{scope_pointer}/relationships/{relationship_index}"
             from_name = _name(relationship.get("from"))
             to_name = _name(relationship.get("to"))
             from_columns = _array(relationship.get("from_columns"))
@@ -463,7 +469,7 @@ def _lower_scope(
 
         metrics = _array(semantic_model.get("metrics")) if runtime_override is None else ()
         for metric_index, metric, metric_name in _unique_named_items(metrics):
-            pointer = f"/semantic_model/{scope_index}/metrics/{metric_index}"
+            pointer = f"{scope_pointer}/metrics/{metric_index}"
             selected = _expression_for_target(metric.get("expression"), target_dialect)
             if selected is None:
                 diagnostics.append(
@@ -618,19 +624,16 @@ def lower_ossie_document(
             lowering_diagnostics=tuple(diagnostics),
         )
 
-    parsed = document.to_parsed_data()
-    root = _mapping(parsed)
-    semantic_models = _array(root.get("semantic_model")) if root else None
     named_models = [
-        (index, model, model_name)
-        for index, value in enumerate(semantic_models or ())
+        (index, pointer, model, model_name)
+        for index, (pointer, value) in enumerate(logical_model_entries(document.to_parsed_data()))
         if (model := _mapping(value)) is not None
         if (model_name := _name(model.get("name"))) is not None
     ]
-    name_counts = Counter(normalize_identifier(name) for _, _, name in named_models if identifier_within_limit(name))
+    name_counts = Counter(normalize_identifier(name) for _, _, _, name in named_models if identifier_within_limit(name))
     document_id = _document_id(parse_result)
     scopes = []
-    for index, semantic_model, name in named_models:
+    for index, scope_pointer, semantic_model, name in named_models:
         if not identifier_within_limit(name):
             continue
         scope_id = name if name_counts[normalize_identifier(name)] == 1 else f"{name}@{index}"
@@ -644,7 +647,7 @@ def lower_ossie_document(
                     parse_result,
                     code="ossie.lowering.runtime_extension_invalid",
                     message=f"Sidemantic runtime extension cannot be restored safely: {exc}",
-                    pointer=f"/semantic_model/{index}/custom_extensions",
+                    pointer=f"{scope_pointer}/custom_extensions",
                     scope=scope_id,
                 )
             )
@@ -657,7 +660,7 @@ def lower_ossie_document(
                     severity=OssieDiagnosticSeverity.WARNING,
                     code="ossie.lowering.runtime_extension_restored",
                     message="Restored native Sidemantic runtime semantics; other consumers require Sidemantic extension support.",
-                    json_pointer=f"/semantic_model/{index}/custom_extensions",
+                    json_pointer=f"{scope_pointer}/custom_extensions",
                     scope=scope_id,
                     source=_source_location(parse_result),
                     profile=parse_result.profile,
@@ -669,6 +672,7 @@ def lower_ossie_document(
                 semantic_model,
                 scope_id=scope_id,
                 scope_index=index,
+                scope_pointer=scope_pointer,
                 document_id=document_id,
                 target_dialect=selected_target,
                 diagnostics=diagnostics,

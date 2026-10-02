@@ -668,7 +668,7 @@ def test_explicit_consumer_profile_carries_into_semantic_diagnostics() -> None:
     assert result.diagnostics[0].profile is DBT_1_12_0_1_0_ALIAS
 
 
-def test_ontology_validation_checks_explicit_mapping_references_only() -> None:
+def test_ontology_validation_checks_explicit_mapping_references() -> None:
     ontology = OssieOntologyDocument(
         canonical_data={
             "version": "0.2.0.dev0",
@@ -686,11 +686,11 @@ def test_ontology_validation_checks_explicit_mapping_references_only() -> None:
                     "concept_mappings": [
                         {
                             "concept": "MissingConcept",
-                            "object_mappings": [{"concept": "Order"}],
+                            "object_mappings": [{"concept": "Order", "expression": "1"}],
                             "link_mappings": [
                                 {
-                                    "object_mapping": {"concept": "AlsoMissing"},
-                                    "children": [{"object_mapping": {"concept": "Order"}}],
+                                    "object_mapping": {"concept": "AlsoMissing", "expression": "1"},
+                                    "children": [{"object_mapping": {"concept": "Order", "expression": "1"}}],
                                 }
                             ],
                         }
@@ -728,7 +728,7 @@ def test_ontology_embedded_models_are_isolated_logical_scopes() -> None:
         "ontology_mappings": [
             {
                 "semantic_model": _semantic_model(
-                    "orders-scope",
+                    "orders_scope",
                     datasets=[_dataset("orders")],
                     relationships=[
                         {
@@ -744,7 +744,7 @@ def test_ontology_embedded_models_are_isolated_logical_scopes() -> None:
             },
             {
                 "semantic_model": _semantic_model(
-                    "customers-scope",
+                    "customers_scope",
                     datasets=[_dataset("customers")],
                 ),
                 "concept_mappings": [],
@@ -754,12 +754,12 @@ def test_ontology_embedded_models_are_isolated_logical_scopes() -> None:
 
     result = validate_ossie_semantics(ontology)
 
-    assert result.checked_scopes == ("orders-scope", "customers-scope")
+    assert result.checked_scopes == ("orders_scope", "customers_scope")
     assert _contracts(result) == [
         (
             "ossie.semantic.relationship.to_dataset_unknown",
             "/ontology_mappings/0/semantic_model/relationships/0/to",
-            "orders-scope",
+            "orders_scope",
         )
     ]
 

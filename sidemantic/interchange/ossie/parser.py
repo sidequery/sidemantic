@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 
@@ -22,6 +22,7 @@ from sidemantic.interchange.ossie.documents import (
     OssieLogicalDocument,
     OssieOntologyDocument,
     UnsupportedOssieDocument,
+    is_logical_document_data,
 )
 from sidemantic.interchange.ossie.profiles import (
     OssieConsumerProfile,
@@ -32,10 +33,15 @@ from sidemantic.interchange.ossie.profiles import (
     OssieProfileError,
     OssieSerialization,
 )
-from sidemantic.interchange.ossie.validation import SchemaValidationResult, validate_ossie_schema
+from sidemantic.interchange.ossie.validation import (
+    SchemaValidationResult,
+    detect_schema_profile,
+    validate_ossie_schema,
+)
 
 _MAX_SOURCE_BYTES = 16 * 1024 * 1024
 _MAX_NESTING_DEPTH = 256
+_MAX_EXPANDED_NODES = 100_000
 
 try:  # pragma: no cover - depends on how PyYAML was built
     from yaml import CSafeLoader as _SafeLoader
@@ -54,6 +60,7 @@ class OssieParseOptions:
     target_dialect: str | None = None
     preservation_policy: OssiePreservationPolicy = OssiePreservationPolicy.CANONICAL_DATA
     validate_schema: bool = False
+    schema_revision: str | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -71,6 +78,8 @@ class OssieParseOptions:
                 raise OssieProfileError(f"{field_name} must be a non-empty string when provided")
         if not isinstance(self.validate_schema, bool):
             raise OssieProfileError("validate_schema must be a boolean")
+        if self.schema_revision is not None and not isinstance(self.schema_revision, str):
+            raise OssieProfileError("schema_revision must be a pinned commit string")
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,28 +130,52 @@ class _NonFiniteJSONNumberError(ValueError):
     pass
 
 
-class _UniqueKeySafeLoader(_SafeLoader):
-    """Safe YAML loader that rejects duplicate mapping keys at every depth."""
+class _ParserLimitError(ValueError):
+    pass
 
-    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[object, object]:
-        self.flatten_mapping(node)
-        mapping: dict[object, object] = {}
-        for key_node, value_node in node.value:
-            key = self.construct_object(key_node, deep=deep)
-            try:
-                duplicate = key in mapping
-            except TypeError as exc:
-                mark = key_node.start_mark
-                raise _DuplicateKeyError(
-                    "<unhashable key>",
-                    line=mark.line + 1,
-                    column=mark.column + 1,
-                ) from exc
-            if duplicate:
-                mark = key_node.start_mark
-                raise _DuplicateKeyError(key, line=mark.line + 1, column=mark.column + 1)
-            mapping[key] = self.construct_object(value_node, deep=deep)
-        return mapping
+
+class _UniqueKeySafeLoader(_SafeLoader):
+    """Reject duplicate authored keys while retaining YAML merge overrides."""
+
+    def construct_document(self, node: yaml.Node) -> object:
+        # Bound alias expansion before SafeConstructor flattens merge mappings.
+        stack = [(node, 0)]
+        count = 0
+        while stack:
+            child, depth = stack.pop()
+            count += 1
+            if count > _MAX_EXPANDED_NODES or depth > _MAX_NESTING_DEPTH:
+                raise _ParserLimitError("YAML exceeds the expanded-node or nesting parser limit")
+            if isinstance(child, yaml.MappingNode):
+                stack.extend((value, depth + 1) for pair in child.value for value in pair)
+            elif isinstance(child, yaml.SequenceNode):
+                stack.extend((value, depth + 1) for value in child.value)
+        self._check_unique_keys(node, set())
+        return super().construct_document(node)
+
+    def _check_unique_keys(self, node: yaml.Node, visited: set[int]) -> None:
+        if id(node) in visited:
+            return
+        visited.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            seen: set[object] = set()
+            merge_key = object()
+            for key_node, value_node in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    key = merge_key
+                elif isinstance(key_node, yaml.ScalarNode):
+                    key = self.construct_object(key_node, deep=True)
+                else:
+                    mark = key_node.start_mark
+                    raise _DuplicateKeyError("<unhashable key>", line=mark.line + 1, column=mark.column + 1)
+                if key in seen:
+                    mark = key_node.start_mark
+                    raise _DuplicateKeyError(key, line=mark.line + 1, column=mark.column + 1)
+                seen.add(key)
+                self._check_unique_keys(value_node, visited)
+        elif isinstance(node, yaml.SequenceNode):
+            for child in node.value:
+                self._check_unique_keys(child, visited)
 
 
 def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -210,7 +243,7 @@ def _infer_serialization(source_bytes: bytes, identifier: str) -> OssieSerializa
         return OssieSerialization.JSON
     try:
         json.loads(text)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (ValueError, RecursionError):
         return OssieSerialization.YAML
     return OssieSerialization.JSON
 
@@ -243,7 +276,7 @@ def _classify_document(
             "ossie.document.root_type",
         )
 
-    has_logical_root = "semantic_model" in parsed
+    has_logical_root = is_logical_document_data(parsed)
     has_ontology_root = "ontology" in parsed or "ontology_mappings" in parsed
     if has_logical_root and has_ontology_root:
         reason = "The document mixes logical semantic_model and ontology root families"
@@ -267,7 +300,7 @@ def _classify_document(
             None,
         )
 
-    reason = "The document contains none of semantic_model, ontology, or ontology_mappings"
+    reason = "The document contains neither a logical semantic model nor ontology data"
     return (
         UnsupportedOssieDocument(
             canonical_data=parsed,
@@ -305,6 +338,7 @@ def _resolve_options(
         return None, diagnostic
 
     try:
+        detected = detect_schema_profile(document.to_parsed_data())
         options = OssieOptions(
             schema_version=version,
             serialization=serialization,
@@ -313,6 +347,13 @@ def _resolve_options(
             source_dialect=parse_options.source_dialect,
             target_dialect=parse_options.target_dialect,
             preservation_policy=parse_options.preservation_policy,
+            schema_revision=(
+                parse_options.schema_revision
+                if parse_options.schema_revision is not None
+                else detected.source_commit
+                if detected and detected.schema_revision
+                else None
+            ),
         )
     except OssieProfileError as exc:
         return (
@@ -469,27 +510,44 @@ def parse_ossie_document(
             )
         )
         return OssieParseResult(document, parse_options, None, None, tuple(diagnostics))
-    except RecursionError:
+    except (RecursionError, _ParserLimitError):
         document = UnsupportedOssieDocument(
             canonical_data=None,
             serialization=serialization,
             source=source,
-            reason="The source exceeds the parser nesting budget",
+            reason="The source exceeds the parser expansion or nesting budget",
         )
         diagnostics.append(
             _diagnostic(
                 code="ossie.parse.limit",
-                message=f"Apache Ossie source exceeds the {_MAX_NESTING_DEPTH}-level nesting limit",
+                message=(
+                    f"Apache Ossie source exceeds the {_MAX_NESTING_DEPTH}-level nesting "
+                    f"or {_MAX_EXPANDED_NODES}-node expansion limit"
+                ),
                 identifier=source_identifier,
             )
         )
         return OssieParseResult(document, parse_options, None, None, tuple(diagnostics))
 
+    except ValueError as exc:
+        document = UnsupportedOssieDocument(
+            canonical_data=None,
+            serialization=serialization,
+            source=source,
+            reason="Parsed scalar exceeds the supported data model",
+        )
+        diagnostics.append(
+            _diagnostic(code="ossie.parse.non_json_value", message=str(exc), identifier=source_identifier)
+        )
+        return OssieParseResult(document, parse_options, None, None, tuple(diagnostics))
+
     stack = [(parsed, 0)]
     nesting_exceeded = False
+    expanded_nodes = 0
     while stack:
         value, depth = stack.pop()
-        if depth > _MAX_NESTING_DEPTH:
+        expanded_nodes += 1
+        if depth > _MAX_NESTING_DEPTH or expanded_nodes > _MAX_EXPANDED_NODES:
             nesting_exceeded = True
             break
         if isinstance(value, dict):
@@ -501,12 +559,15 @@ def parse_ossie_document(
             canonical_data=None,
             serialization=serialization,
             source=source,
-            reason="The source exceeds the parser nesting budget",
+            reason="The source exceeds the parser expansion or nesting budget",
         )
         diagnostics.append(
             _diagnostic(
                 code="ossie.parse.limit",
-                message=f"Apache Ossie source exceeds the {_MAX_NESTING_DEPTH}-level nesting limit",
+                message=(
+                    f"Apache Ossie source exceeds the {_MAX_NESTING_DEPTH}-level nesting "
+                    f"or {_MAX_EXPANDED_NODES}-node expansion limit"
+                ),
                 identifier=source_identifier,
             )
         )
@@ -551,6 +612,8 @@ def parse_ossie_document(
     )
     if profile_diagnostic is not None:
         diagnostics.append(profile_diagnostic)
+    if resolved_options is not None and resolved_options.profile.schema_revision:
+        document = replace(document, schema_revision=resolved_options.profile.schema_revision)
 
     schema_validation = None
     if parse_options.validate_schema:

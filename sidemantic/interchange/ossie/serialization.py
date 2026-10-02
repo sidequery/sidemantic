@@ -77,10 +77,11 @@ def _diagnostic(
 def _schema_profile_name(document: OssieDocument) -> str | None:
     if document.version is None:
         return None
+    suffix = f"-{document.schema_revision[:7]}" if document.schema_revision else ""
     if isinstance(document, OssieLogicalDocument):
-        return f"logical-{document.version}"
+        return f"logical-{document.version}{suffix}"
     if isinstance(document, OssieOntologyDocument):
-        return f"ontology-{document.version}"
+        return f"ontology-{document.version}{suffix}"
     return None
 
 
@@ -120,7 +121,9 @@ def _validate_canonical_data(
     from sidemantic.interchange.ossie.validation import validate_ossie_schema
 
     validation_profile = profile
-    if validation_profile is None and document.version != "0.1.0":
+    if validation_profile is None and (
+        document.schema_revision or document.version not in {"0.1.0", "0.1.1", "0.2.0.dev0"}
+    ):
         validation_profile = profile_name
     validation = validate_ossie_schema(
         canonical_data,
@@ -147,9 +150,14 @@ def _exact_source_matches(
         options=OssieParseOptions(
             serialization=document.serialization,
             consumer_profile=consumer_profile or OssieConsumerProfile.OSSIE_CORE,
+            schema_revision=document.schema_revision,
         ),
     )
-    return parsed.valid and parsed.document.to_parsed_data() == document.to_parsed_data()
+    # Python equality conflates JSON booleans and numbers (True == 1), including
+    # inside nested collections. Canonical JSON preserves their scalar types.
+    return parsed.valid and _canonical_json(parsed.document.to_parsed_data()) == _canonical_json(
+        document.to_parsed_data()
+    )
 
 
 def _canonical_json(canonical_data: object) -> bytes:
@@ -222,14 +230,14 @@ def serialize_ossie_document(
     )
 
     source = document.source
-    if (
-        exact_source
-        and output_serialization is document.serialization
-        and source is not None
-        and source.original_bytes is not None
-    ):
+    if exact_source:
         exact_source_consumer = profile.consumer_profile if profile is not None else consumer_profile
-        if _exact_source_matches(document, source.original_bytes, exact_source_consumer):
+        if (
+            output_serialization is document.serialization
+            and source is not None
+            and source.original_bytes is not None
+            and _exact_source_matches(document, source.original_bytes, exact_source_consumer)
+        ):
             return OssieSerializationResult(
                 data=source.original_bytes,
                 serialization=output_serialization,
@@ -240,7 +248,7 @@ def serialize_ossie_document(
             _diagnostic(
                 document,
                 code="ossie.serialization.exact_source_mismatch",
-                message="Retained source bytes no longer match canonical data; canonical serialization was used",
+                message="Exact source bytes are unavailable, use a different serialization, or no longer match canonical data; canonical serialization was used",
                 severity=OssieDiagnosticSeverity.WARNING,
             )
         )

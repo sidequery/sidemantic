@@ -14,7 +14,11 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.interchange.ossie import (
+    CURRENT_OSSIE_SCHEMA_COMMIT,
+    LEGACY_OSSIE_SCHEMA_COMMIT,
+    OssieParseOptions,
     OssieSerialization,
+    parse_ossie_document,
     require_synthesized_document,
     serialize_ossie_document,
     synthesize_ossie_document,
@@ -96,6 +100,7 @@ def test_canonical_sidemantic_export_passes_exact_pinned_apache_validator(
         scope_name="commerce",
         expression_dialect="ANSI_SQL",
         schema_version=schema_version,
+        schema_revision=LEGACY_OSSIE_SCHEMA_COMMIT if schema_version == "0.2.0.dev0" else None,
         serialization=serialization,
     )
     document = require_synthesized_document(synthesis)
@@ -129,3 +134,67 @@ def test_gate_uses_local_validator_and_schema_paths_only(tmp_path: Path) -> None
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert str(_VALIDATOR) not in completed.stdout
     assert yaml.safe_load(output.read_text())["version"] == "0.1.1"
+
+
+def _run_current_validator(output: Path, *, ontology: bool = False) -> subprocess.CompletedProcess[str]:
+    root = _UPSTREAM_ROOT / CURRENT_OSSIE_SCHEMA_COMMIT[:7]
+    schema = root / ("ontology/ontology.json" if ontology else "core-spec/ossie-schema.json")
+    return subprocess.run(
+        [sys.executable, str(root / "validation/validate.py"), str(output), "--schema", str(schema)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("serialization", [OssieSerialization.JSON, OssieSerialization.YAML])
+def test_current_flat_export_passes_current_pinned_apache_validator(tmp_path, serialization):
+    synthesis = synthesize_ossie_document(
+        _graph(include_datatypes=True), scope_name="commerce", expression_dialect="ANSI_SQL"
+    )
+    document = require_synthesized_document(synthesis)
+    assert "semantic_model" not in document.to_parsed_data()
+    output = tmp_path / f"current.{serialization.value}"
+    output.write_bytes(serialize_ossie_document(document, serialization).data)
+    completed = _run_current_validator(output)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_current_ontology_source_passes_current_offline_validator(tmp_path):
+    raw = json.dumps(
+        {
+            "version": "0.2.0.dev0",
+            "name": "business",
+            "prefixes": {"biz": "https://example.org/"},
+            "ontology": [{"concept": "Person", "type": "EntityType", "iri": "biz:Person"}],
+            "ontology_mappings": [
+                {
+                    "semantic_model": {
+                        "version": "0.2.0.dev0",
+                        "name": "sales",
+                        "datasets": [{"name": "orders", "source": "orders"}],
+                    },
+                    "concept_mappings": [],
+                }
+            ],
+        }
+    ).encode()
+    parsed = parse_ossie_document(raw, options=OssieParseOptions(validate_schema=True))
+    assert parsed.valid
+    output = tmp_path / "ontology.yaml"
+    output.write_bytes(serialize_ossie_document(parsed.document, "yaml").data)
+    completed = _run_current_validator(output, ontology=True)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_current_validator_rejects_legacy_wrapper_and_invalid_current_model(tmp_path):
+    output = tmp_path / "invalid.json"
+    for document in (
+        {"version": "0.2.0.dev0", "semantic_model": []},
+        {"version": "0.2.0.dev0", "name": "sales", "datasets": []},
+    ):
+        output.write_text(json.dumps(document))
+        completed = _run_current_validator(output)
+        assert completed.returncode != 0
+        assert "Validation FAILED" in completed.stdout

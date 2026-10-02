@@ -1540,6 +1540,11 @@ def convert(
         "--ossie-schema-version",
         help="Explicit pinned Ossie schema version for synthesized output",
     ),
+    ossie_schema_revision: str = typer.Option(
+        None,
+        "--ossie-schema-revision",
+        help="Pinned Ossie draft revision for synthesized output (commit SHA)",
+    ),
     ossie_consumer_profile: str = typer.Option(
         None,
         "--ossie-consumer-profile",
@@ -1603,7 +1608,7 @@ def convert(
             from sidemantic.fidelity import capture_import_report
 
             source_adapter_options = None
-            if source_format != "auto" and get_semantic_format(source_format, operation="import").name == "ossie":
+            if source_format == "auto" or get_semantic_format(source_format, operation="import").name == "ossie":
                 source_adapter_options = {}
                 if ossie_scope is not None:
                     source_adapter_options["scope_id"] = ossie_scope
@@ -1632,6 +1637,8 @@ def convert(
                     target_adapter_options = {"consumer_profile": ossie_consumer_profile}
                 if ossie_schema_version is not None:
                     target_export_options["schema_version"] = ossie_schema_version
+                if ossie_schema_revision is not None:
+                    target_export_options["schema_revision"] = ossie_schema_revision
 
             with progress(f"Converting semantic definitions to {target_format}"):
                 with capture_import_report() as fidelity_report:

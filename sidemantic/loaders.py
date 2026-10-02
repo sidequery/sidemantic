@@ -5,6 +5,7 @@ import logging
 import runpy
 import sys
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -173,6 +174,7 @@ def load_from_directory(
     strict: bool = True,
     only_file: "Path | None" = None,
     ossie_scope_id: str | None = None,
+    ossie_adapter_options: Mapping[str, object] | None = None,
 ) -> None:
     """Load all semantic layer definitions from a directory.
 
@@ -209,6 +211,27 @@ def load_from_directory(
     from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
     from sidemantic.adapters.tmdl import TMDLAdapter
     from sidemantic.adapters.yardstick import YardstickAdapter
+
+    ossie_options = dict(ossie_adapter_options or {})
+    unknown_options = ossie_options.keys() - {
+        "scope_id",
+        "target_dialect",
+        "source_dialect",
+        "consumer_profile",
+        "import_policy",
+        "preserve_source",
+        "schema_revision",
+    }
+    if unknown_options:
+        raise ValueError(f"adapter_options require an explicit source_format: {', '.join(sorted(unknown_options))}")
+    if ossie_scope_id is not None:
+        if "scope_id" in ossie_options and ossie_options["scope_id"] != ossie_scope_id:
+            raise ValueError("Conflicting Ossie scope selections")
+        ossie_options["scope_id"] = ossie_scope_id
+    ossie_options.setdefault("target_dialect", layer.dialect or "duckdb")
+
+    def ossie_adapter(consumer_profile: str = "ossie-core") -> OssieAdapter:
+        return OssieAdapter(**{"consumer_profile": consumer_profile, **ossie_options})
 
     directory = Path(directory)
     if not directory.exists():
@@ -413,18 +436,15 @@ def load_from_directory(
             else:
                 # Sidemantic SQL files (pure SQL or with YAML frontmatter)
                 adapter = SidemanticAdapter()
+        elif file_path.name.lower().endswith((".ossie.json", ".ossie.yaml", ".ossie.yml")):
+            # An explicit format suffix also routes malformed documents to the
+            # validated parser, so they cannot silently become an empty graph.
+            if _is_generated_artifact(file_path, directory):
+                continue
+            adapter = ossie_adapter()
         elif suffix == ".json":
             content = file_path.read_text()
-            if file_path.name.lower().endswith(".ossie.json"):
-                # An explicit format suffix opts into Ossie discovery anywhere
-                # in the source tree, including malformed files without markers.
-                if _is_generated_artifact(file_path, directory):
-                    continue
-                adapter = OssieAdapter(
-                    target_dialect=layer.dialect or "duckdb",
-                    scope_id=ossie_scope_id,
-                )
-            elif '"ldm"' in content and '"datasets"' in content:
+            if '"ldm"' in content and '"datasets"' in content:
                 adapter = GoodDataAdapter()
             elif '"projectModel"' in content:
                 adapter = GoodDataAdapter()
@@ -433,9 +453,9 @@ def load_from_directory(
             elif '"datasets"' in content and ('"dataSourceTableId"' in content or '"data_source_table_id"' in content):
                 adapter = GoodDataAdapter()
             elif (
-                '"semantic_model"' in content
-                and '"datasets"' in content
-                and _is_under_osi_tree(file_path, directory)
+                '"datasets"' in content
+                and ('"semantic_model"' in content or ('"version"' in content and '"name"' in content))
+                and (only_file is not None or _is_under_osi_tree(file_path, directory))
                 and not _is_generated_artifact(file_path, directory)
             ):
                 # Released-spec OSI profile (dbt OSI consumer) ships as JSON in an
@@ -455,11 +475,10 @@ def load_from_directory(
                     _handle_parse_error(file_path, e, strict=strict)
                     continue
                 if is_osi:
-                    adapter = OssieAdapter(
-                        target_dialect=layer.dialect or "duckdb",
-                        consumer_profile="dbt-1.12",
-                        scope_id=ossie_scope_id,
-                    )
+                    import json
+
+                    consumer_profile = "dbt-1.12" if json.loads(content).get("version") == "0.1.0" else "ossie-core"
+                    adapter = ossie_adapter(consumer_profile)
             else:
                 import json
                 import re
@@ -507,13 +526,9 @@ def load_from_directory(
                 pass
             elif _yaml_has_top_level_key(yaml_data, "semantic_models"):
                 adapter = MetricFlowAdapter()
-            elif _yaml_has_top_level_key(yaml_data, "semantic_model") and _contains_yaml_key(yaml_data, "datasets"):
+            elif _looks_like_ossie_mapping(yaml_data):
                 consumer_profile = "dbt-1.12" if yaml_data.get("version") == "0.1.0" else "ossie-core"
-                adapter = OssieAdapter(
-                    target_dialect=layer.dialect or "duckdb",
-                    consumer_profile=consumer_profile,
-                    scope_id=ossie_scope_id,
-                )
+                adapter = ossie_adapter(consumer_profile)
             elif _yaml_has_top_level_key(yaml_data, "cubes") or (
                 _yaml_has_top_level_key(yaml_data, "views") and _contains_yaml_key(yaml_data, "measures")
             ):
@@ -678,6 +693,7 @@ def load_from_file(
     *,
     strict: bool = True,
     ossie_scope_id: str | None = None,
+    ossie_adapter_options: Mapping[str, object] | None = None,
 ) -> None:
     """Load semantic definitions from a single file, ignoring sibling files.
 
@@ -696,7 +712,14 @@ def load_from_file(
     file = Path(file)
     if not file.is_file():
         raise ValueError(f"File {file} does not exist")
-    load_from_directory(layer, file.parent, strict=strict, only_file=file, ossie_scope_id=ossie_scope_id)
+    load_from_directory(
+        layer,
+        file.parent,
+        strict=strict,
+        only_file=file,
+        ossie_scope_id=ossie_scope_id,
+        ossie_adapter_options=ossie_adapter_options,
+    )
 
 
 def _load_graphene_project(
@@ -811,8 +834,19 @@ def _load_yaml_mapping(content: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _looks_like_ossie_mapping(data: object) -> bool:
+    """Identify both Ossie logical document shapes without matching other formats."""
+    if not isinstance(data, dict):
+        return False
+    return ("semantic_model" in data and _contains_yaml_key(data, "datasets")) or {
+        "version",
+        "name",
+        "datasets",
+    }.issubset(data)
+
+
 def _looks_like_osi_json(content: str) -> bool:
-    """Return True for a released-spec OSI JSON document (dbt OSI consumer).
+    """Return True for a released or current Ossie JSON document.
 
     Released OSI ships as JSON with a top-level ``semantic_model`` list whose
     entries contain ``datasets``. This mirrors the YAML OSI detection and avoids
@@ -828,14 +862,7 @@ def _looks_like_osi_json(content: str) -> bool:
         data = json.loads(content)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON: {e}") from e
-    if not isinstance(data, dict) or "semantic_model" not in data:
-        return False
-    models = data.get("semantic_model")
-    if isinstance(models, dict):
-        models = [models]
-    if not isinstance(models, list):
-        return False
-    return any(isinstance(model, dict) and "datasets" in model for model in models)
+    return _looks_like_ossie_mapping(data)
 
 
 # Directories that hold generated/compiled artifacts rather than source models.

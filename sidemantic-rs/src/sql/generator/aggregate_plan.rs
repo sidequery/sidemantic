@@ -261,10 +261,13 @@ impl<'a, 'g> Plan<'a, 'g> {
         let graph = self.generator.graph;
         if let Some((model_name, name)) = reference.split_once('.') {
             if let Some(metric) = graph.get_metric(reference) {
+                let context = self.graph_metric_context(reference, metric)?;
                 return Ok(Some(ResolvedMetric {
                     reference: reference.to_string(),
-                    context: self.graph_metric_context(reference, metric)?,
-                    metric: metric.clone(),
+                    metric: self
+                        .generator
+                        .graph_metric_source_inputs(metric, context.as_deref())?,
+                    context,
                 }));
             }
             return Ok(graph.get_model(model_name).and_then(|model| {
@@ -288,10 +291,13 @@ impl<'a, 'g> Plan<'a, 'g> {
             }
         }
         if let Some(metric) = graph.get_metric(reference) {
+            let context = self.graph_metric_context(reference, metric)?;
             return Ok(Some(ResolvedMetric {
                 reference: reference.to_string(),
-                context: self.graph_metric_context(reference, metric)?,
-                metric: metric.clone(),
+                metric: self
+                    .generator
+                    .graph_metric_source_inputs(metric, context.as_deref())?,
+                context,
             }));
         }
         let owners: Vec<_> = graph

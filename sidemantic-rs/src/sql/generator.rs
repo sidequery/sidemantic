@@ -457,6 +457,10 @@ impl<'a> SqlGenerator<'a> {
             let metric =
                 self.metric_for_model_with_source(&model_name, &metric_name, graph_metric)?;
             let raw_alias = self.metric_raw_alias(model, &metric_name, metric);
+            let bound_metric = graph_metric
+                .then(|| self.graph_metric_source_inputs(metric, Some(&model_name)))
+                .transpose()?;
+            let metric = bound_metric.as_ref().unwrap_or(metric);
             let mut raw_expr = self.normalize_cte_source_expression(
                 &self.metric_raw_expression(metric, model)?,
                 model,
@@ -1849,6 +1853,54 @@ impl<'a> SqlGenerator<'a> {
             }
         }
         ordered
+    }
+
+    /// Graph measures reference semantic fields; model-local measures reference
+    /// physical inputs. Resolve the former once before creating row projections,
+    /// including metric filters, without recursively expanding same-named fields.
+    fn graph_metric_source_inputs(&self, metric: &Metric, owner: Option<&str>) -> Result<Metric> {
+        let mut bound = metric.clone();
+        if metric.r#type != MetricType::Simple || metric.sql_is_complete {
+            return Ok(bound);
+        }
+        let Some(model) = owner.and_then(|owner| self.graph.get_model(owner)) else {
+            return Ok(bound);
+        };
+        let bind = |sql: &str| -> Result<String> {
+            let sql = crate::core::replace_model_placeholder(sql, Some(&model.name))?;
+            let mut replacements = HashMap::new();
+            for column in crate::core::outer_semantic_column_references(&sql)? {
+                if column
+                    .model
+                    .as_deref()
+                    .is_some_and(|source| source != model.name)
+                {
+                    continue;
+                }
+                if let Some(dimension) = model.get_dimension(&column.field) {
+                    let source =
+                        self.normalize_cte_source_expression(dimension.sql_expr(), model)?;
+                    replacements.insert((column.model, column.field), format!("({source})"));
+                }
+            }
+            self.emit_expression(&crate::core::replace_outer_semantic_columns(
+                parse_semantic_expression(&sql)?,
+                &replacements,
+            )?)
+        };
+        if let Some(sql) = metric
+            .sql
+            .as_deref()
+            .filter(|sql| !sql.is_empty() && *sql != "*")
+        {
+            bound.sql = Some(bind(sql)?);
+        }
+        bound.filters = metric
+            .filters
+            .iter()
+            .map(|filter| bind(filter))
+            .collect::<Result<_>>()?;
+        Ok(bound)
     }
 
     fn metric_raw_expression(

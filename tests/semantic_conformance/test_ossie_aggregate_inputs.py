@@ -198,6 +198,65 @@ def test_native_complete_sql_keeps_physical_input_semantics(joined):
     assert joined.query(metrics=["orders.physical", "weighted"]).fetchall() == [(60, 90000)]
 
 
+@pytest.mark.parametrize("plan", ["ordinary", "independent", "fanout"])
+@pytest.mark.parametrize("filtered", [False, True])
+@pytest.mark.parametrize("logical_name", ["amount", "gross"])
+def test_graph_measures_bind_logical_inputs_and_filters(plan, filtered, logical_name):
+    pytest.importorskip("sidemantic_rs")
+    layer = SemanticLayer(engine="rust", fallback=False, auto_register=False)
+    layer.add_model(
+        Model(
+            name="orders",
+            sql="SELECT * FROM (VALUES (1, 10, 1), (2, 5, 1), (3, NULL, 1)) AS t(id, amount, customer_id)",
+            primary_key="id",
+            dimensions=[Dimension(name=logical_name, type="numeric", sql="orders.amount * 2")],
+            metrics=[Metric(name="physical", agg="sum", sql="amount", filters=["amount > 7"] if filtered else None)],
+        )
+    )
+    layer.add_metric(
+        Metric(
+            name="value",
+            agg="sum",
+            sql=f"orders.{logical_name}",
+            filters=[f"orders.{logical_name} > 7"] if filtered else None,
+        )
+    )
+    metrics = ["value", "orders.physical"]
+    dimensions = []
+    expected = (30, 10 if filtered else 15)
+    if plan == "independent":
+        layer.add_model(
+            Model(
+                name="customers",
+                sql="SELECT 1 AS id, 100 AS budget",
+                primary_key="id",
+                metrics=[Metric(name="budget", agg="sum", sql="budget")],
+            )
+        )
+        layer.graph.models["orders"].relationships.append(
+            Relationship(name="customers", type="many_to_one", foreign_key="customer_id")
+        )
+        metrics.append("customers.budget")
+        expected += (100,)
+    elif plan == "fanout":
+        layer.add_model(
+            Model(
+                name="tags",
+                sql="SELECT * FROM (VALUES (1, 1), (2, 1), (3, 2), (4, 3)) AS t(id, order_id)",
+                primary_key="id",
+                dimensions=[Dimension(name="label", type="categorical", sql="'all'")],
+                relationships=[Relationship(name="orders", type="many_to_one", foreign_key="order_id")],
+            )
+        )
+        dimensions = ["tags.label"]
+        expected = ("all", *expected)
+    try:
+        assert layer.query(metrics=metrics, dimensions=dimensions).fetchall() == [expected]
+        assert layer.last_engine_selection["engine"] == "rust"
+    finally:
+        layer.adapter.close()
+
+
 def test_joined_aggregate_preserves_compound_computed_relationship_keys(joined):
     orders = joined.graph.models["orders"]
     customers = joined.graph.models["customers"]

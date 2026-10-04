@@ -59,12 +59,19 @@ fn deterministic_scalar(expression: &Expression) -> bool {
     }
 }
 
-fn source_column(alias: Option<&str>, key: &str) -> Result<Expression> {
-    fn identifier(name: &str) -> String {
+fn source_column(alias: Option<&str>, key: &str, dialect: DialectType) -> Result<Expression> {
+    fn identifier(name: &str, dialect: DialectType) -> String {
+        // CTE declarations preserve case for these targets, including DuckDB
+        // intermediate SQL that is later emitted as PostgreSQL or Redshift.
+        let preserve_case = matches!(
+            dialect,
+            DialectType::DuckDB | DialectType::PostgreSQL | DialectType::Redshift
+        ) && name.chars().any(|character| character.is_ascii_uppercase());
         let mut chars = name.chars();
-        if chars
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        if !preserve_case
+            && chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
             && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
         {
             name.to_string()
@@ -73,8 +80,14 @@ fn source_column(alias: Option<&str>, key: &str) -> Result<Expression> {
         }
     }
     parse_semantic_expression(&alias.map_or_else(
-        || identifier(key),
-        |alias| format!("{}.{}", identifier(alias), identifier(key)),
+        || identifier(key, dialect),
+        |alias| {
+            format!(
+                "{}.{}",
+                identifier(alias, dialect),
+                identifier(key, dialect)
+            )
+        },
     ))
 }
 
@@ -87,7 +100,7 @@ pub fn key_expression(
     dialect: DialectType,
 ) -> Result<Expression> {
     let Some(dimension) = model.get_dimension(key) else {
-        return source_column(alias, key);
+        return source_column(alias, key, dialect);
     };
     if dimension.window.is_some() {
         return Err(unsupported());
@@ -126,7 +139,7 @@ pub fn key_expression(
         {
             return Err(unsupported());
         }
-        let replacement = source_column(alias, &column.field)?;
+        let replacement = source_column(alias, &column.field, dialect)?;
         let replacement = polyglot_sql::generate(&replacement, dialect)
             .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
         replacements.insert((column.model, column.field), replacement);
@@ -166,6 +179,29 @@ pub fn has_computed_keys(graph: &SemanticGraph, model: &Model) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::core::Dimension;
+
+    #[test]
+    fn key_inputs_preserve_quoted_cte_case() {
+        for dialect in [
+            DialectType::DuckDB,
+            DialectType::PostgreSQL,
+            DialectType::Redshift,
+        ] {
+            for sql in [None, Some("id"), Some("tenant * 100 + id")] {
+                let mut model = Model::new("ACCOUNTS", "id");
+                if let Some(sql) = sql {
+                    model.dimensions.push(Dimension::new("id").with_sql(sql));
+                }
+                let expression =
+                    key_expression(&model, "id", Some("ACCOUNTS_cte"), dialect).unwrap();
+                let sql = polyglot_sql::generate(&expression, dialect).unwrap();
+                assert!(sql.contains("\"ACCOUNTS_cte\".id"), "{sql}");
+                if sql.contains("tenant") {
+                    assert!(sql.contains("\"ACCOUNTS_cte\".tenant"), "{sql}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn date_bucket_keys_keep_physical_input_scope() {

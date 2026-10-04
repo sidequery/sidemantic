@@ -7,7 +7,7 @@ A DuckDB extension that adds a SQL-first semantic layer. Define metrics and dime
 - **Pure SQL Definition**: Define models, metrics, and dimensions using SQL statements
 - **Automatic Query Rewriting**: Query qualified model fields directly and get proper aggregations automatically
 - **Cross-Model JOINs**: Automatically generates JOINs when querying across related models
-- **Fan-out Detection**: Warns when joins may cause metric inflation
+- **Fan-out Protection**: Uses model keys to protect supported aggregations against duplicated rows from joins
 - **Definition Files**: Load native YAML, Cube.js YAML, and native SQL definition files
 - **Transactional Definitions**: Commit and roll back model changes with DuckDB transactions
 - **Native PEG Grammar**: Composable grammar on the pinned Cyanoptera development build, with a DuckDB 1.5.6 compatibility frontend
@@ -443,7 +443,33 @@ SELECT orders.revenue, customers.country FROM orders;
 | `one_to_one` | One-to-one mapping | No |
 | `many_to_many` | Many-to-many (requires bridge table) | Yes |
 
-**Fan-out Warning**: When joining from "one" to "many" side, metrics from the "one" side may be inflated. The extension adds a SQL comment warning when this is detected.
+The Rust compiler uses model keys and protected aggregation plans to prevent
+supported metrics from being multiplied by relationship joins. Define correct
+primary keys and relationship cardinalities; the compiler relies on that metadata.
+The extension suite executes cross-model sums and counts over repeated customer
+rows, including equal-valued metrics on distinct customers.
+
+## Current support boundaries
+
+- The query frontend handles top-level `SELECT`, `PREPARE`, and `EXPLAIN`.
+  Semantic references inside `CREATE VIEW`, `CREATE TABLE AS`, and `INSERT ... SELECT`
+  are not automatically rewritten. Compile SQL explicitly before embedding it in
+  those statements.
+- Semantic definitions support creation, replacement, loading, and active-model
+  selection. There is no `DROP MODEL`, `ALTER MODEL`, or item-removal SQL interface.
+- Semantic queries support a subset of DuckDB SQL. Correlated semantic subqueries
+  and grouping modifiers such as `ROLLUP` are rejected; explicit `GROUP BY` must
+  repeat the selected semantic dimensions.
+- Derived, ratio, cumulative, time-comparison, conversion, retention, and cohort
+  metrics exist in the Rust engine. Their DuckDB-extension integration coverage is
+  narrower than the Rust test suite; this extension does not establish full parity
+  with every Python adapter or API.
+- DuckDB 1.5.6 uses the compatibility frontend. Native PEG support is tested against
+  the pinned 2.x commit, not an arbitrary future 2.x build. Rust still parses model
+  properties and compiles semantic queries.
+- Distribution currently targets unsigned Linux amd64 release packages. Signed
+  community installation and a published multi-platform binary matrix are not
+  provided by this repository.
 
 ## Utility Functions
 

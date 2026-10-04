@@ -1,0 +1,45 @@
+# name: test/sql/sidemantic_parser_coexistence.test
+# description: Explicit semantic queries coexist with a previously loaded parser override
+# group: [sidemantic]
+
+# DuckDB 1.5.6 autocomplete claims ordinary SELECT before later overrides run.
+# This is the same registration order used by packaged interactive shells.
+require autocomplete
+
+require sidemantic
+
+statement ok
+CREATE TABLE coexist_raw (id INTEGER, amount INTEGER);
+
+statement ok
+INSERT INTO coexist_raw VALUES (1, 10), (2, 30);
+
+statement ok
+MODEL coexist_orders FROM coexist_raw (
+  primary key (id)
+  sum(amount) AS revenue
+);
+
+query I
+SEMANTIC SELECT "o"."revenue" FROM "coexist_orders" AS "o";
+----
+40
+
+statement error
+SEMANTIC SELECT o.revenue, o.missing FROM coexist_orders o;
+----
+Sidemantic:
+
+statement ok
+PREPARE coexist_query AS SEMANTIC SELECT o.revenue FROM coexist_orders o;
+
+query I
+EXECUTE coexist_query;
+----
+40
+
+query I
+SELECT amount FROM coexist_raw ORDER BY id;
+----
+10
+30

@@ -1,0 +1,32 @@
+#pragma once
+
+#cmakedefine01 SIDEMANTIC_TOKEN_PARSE_FN
+#cmakedefine01 SIDEMANTIC_NEW_IDENTIFIER_API
+#cmakedefine01 SIDEMANTIC_NEW_EXPRESSION_API
+#cmakedefine01 SIDEMANTIC_QUALIFIED_TABLE_API
+#cmakedefine01 SIDEMANTIC_BUILTIN_PARSER_OPTIONS
+#cmakedefine01 SIDEMANTIC_LITERAL_API
+#cmakedefine01 SIDEMANTIC_GRAMMAR_EXTENSION
+
+#include "duckdb/parser/parser_options.hpp"
+#if SIDEMANTIC_NEW_IDENTIFIER_API
+#include "duckdb/common/identifier.hpp"
+#endif
+
+namespace duckdb {
+#if SIDEMANTIC_NEW_IDENTIFIER_API
+using SidemanticIdentifier = Identifier;
+inline const string &SidemanticName(const Identifier &name) { return name.GetIdentifierName(); }
+#else
+using SidemanticIdentifier = string;
+#endif
+inline const string &SidemanticName(const string &name) { return name; }
+
+inline ParserOptions SidemanticBuiltinParserOptions() {
+#if SIDEMANTIC_BUILTIN_PARSER_OPTIONS
+    return ParserOptions::Builtin();
+#else
+    return ParserOptions();
+#endif
+}
+} // namespace duckdb

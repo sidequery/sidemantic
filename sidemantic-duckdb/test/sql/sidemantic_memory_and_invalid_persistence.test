@@ -1,5 +1,5 @@
 # name: test/sql/sidemantic_memory_and_invalid_persistence.test
-# description: Test in-memory session-local definitions and invalid persisted definitions
+# description: In-memory lifecycle and errors reading malformed unmigrated legacy definitions
 # group: [sidemantic]
 
 require sidemantic
@@ -24,28 +24,15 @@ SELECT count(*) FROM sidemantic_models() WHERE model_name = 'temp_orders';
 load __TEST_DIR__/sidemantic_invalid_persistence.duckdb
 
 statement ok
-CREATE TABLE valid_events (event_id INT);
-
-statement ok
-INSERT INTO valid_events VALUES (1), (2);
-
-statement ok
-SEMANTIC CREATE MODEL valid_events (name valid_events, table valid_events, primary_key event_id);
-
-statement ok
-SEMANTIC CREATE METRIC event_count AS COUNT(*);
-
-query I
-SEMANTIC SELECT valid_events.event_count FROM valid_events;
-----
-2
-
-statement ok
 COPY (SELECT 'MODEL (' AS line) TO '__TEST_DIR__/sidemantic_invalid_persistence.sidemantic.sql' (HEADER false);
 
-restart no_extension_load
+restart
 
+require sidemantic
+
+# LOAD only registers the extension. Legacy validation happens when definitions
+# are first accessed, without creating or replacing native catalog entries.
 statement error
-LOAD '__BUILD_DIRECTORY__/extension/sidemantic/sidemantic.duckdb_extension';
+SELECT * FROM sidemantic_models();
 ----
-Failed to autoload sidemantic definitions
+Sidemantic

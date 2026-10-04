@@ -1,0 +1,122 @@
+# name: test/sql/sidemantic_native_peg.test
+# description: Native grammar parses custom syntax without the parser override
+# group: [sidemantic]
+
+require-env SIDEMANTIC_NATIVE_PEG 1
+
+require sidemantic
+
+statement ok
+SET active_grammar_extensions = ['sidemantic'];
+
+statement ok
+SET allow_parser_override_extension = 'default';
+
+statement ok
+CREATE TABLE peg_raw (id INTEGER, amount INTEGER);
+
+statement ok
+INSERT INTO peg_raw VALUES (1, 10), (2, 30);
+
+statement ok
+/* Native grammar declaration */ MODEL peg_orders FROM peg_raw (
+  primary key (id)
+  id
+  sum(amount) AS revenue
+);
+
+query I
+SEMANTIC SELECT "o"."revenue" FROM "peg_orders" o;
+----
+40
+
+statement ok
+PREPARE peg_query AS SEMANTIC SELECT o.revenue FROM peg_orders o;
+
+query I
+EXECUTE peg_query;
+----
+40
+
+statement ok
+PREPARE peg_parameter AS SEMANTIC SELECT o.revenue FROM peg_orders o WHERE o.id = $1;
+
+query I
+EXECUTE peg_parameter(1);
+----
+10
+
+query I
+EXECUTE peg_parameter(2);
+----
+30
+
+statement ok
+EXPLAIN (FORMAT JSON) SEMANTIC SELECT o.revenue FROM peg_orders o;
+
+statement ok
+MODEL peg_derived FROM (SELECT * FROM peg_raw WHERE amount > 10) (
+  primary key (id)
+  sum(amount) AS revenue
+);
+
+query I
+SEMANTIC SELECT peg_derived.revenue FROM peg_derived;
+----
+30
+
+statement ok
+CREATE OR REPLACE METRIC peg_orders.revenue AS COUNT(*);
+
+query I
+SEMANTIC SELECT peg_orders.revenue FROM peg_orders;
+----
+2
+
+statement ok
+PREPARE peg_definition AS CREATE MODEL prepared_peg (table peg_raw, primary_key id);
+
+query I
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'prepared_peg';
+----
+0
+
+statement ok
+EXECUTE peg_definition;
+
+statement ok
+MODEL prepared_peg;
+
+statement ok
+METRIC revenue AS SUM(amount);
+
+query I
+SEMANTIC SELECT prepared_peg.revenue FROM prepared_peg;
+----
+40
+
+statement ok
+EXPLAIN MODEL explained_peg FROM peg_raw (
+  primary key (id)
+  count(*) AS rows
+);
+
+query I
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'explained_peg';
+----
+0
+
+statement error
+MODEL broken FROM peg_raw (primary key (id) count(*) AS rows;
+----
+syntax error
+
+query I
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'broken';
+----
+0
+
+query I
+SELECT 42;
+----
+42

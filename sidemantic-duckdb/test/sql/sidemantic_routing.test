@@ -1,0 +1,175 @@
+# name: test/sql/sidemantic_routing.test
+# description: Semantic routing uses parsed names, scopes and fields
+# group: [sidemantic]
+
+require sidemantic
+
+statement ok
+CREATE TABLE routing_raw (id INTEGER, status VARCHAR, amount INTEGER);
+
+statement ok
+INSERT INTO routing_raw VALUES (1, 'paid', 10), (2, 'paid', 30), (3, 'pending', 5);
+
+statement ok
+/* Leading comments are accepted. */
+MODEL routing_orders FROM routing_raw (
+  primary key (id)
+  status
+  sum(amount) AS revenue
+);
+
+query TI
+SELECT o.status, o.revenue FROM routing_orders AS o ORDER BY o.status;
+----
+paid	40
+pending	5
+
+query TI
+SELECT "o"."status", "o" /* qualifier comment */ . "revenue"
+FROM "routing_orders" AS "o" ORDER BY "o"."status";
+----
+paid	40
+pending	5
+
+query I
+SELECT revenue FROM routing_orders;
+----
+45
+
+query I
+SELECT O.REVENUE FROM ROUTING_ORDERS O;
+----
+45
+
+query I
+SELECT "O"."REVENUE" FROM "ROUTING_ORDERS" "O";
+----
+45
+
+# Text inside a comment or string cannot cause semantic dispatch.
+query T
+SELECT 'routing_orders.revenue; MODEL bogus' /* routing_orders.revenue */;
+----
+routing_orders.revenue; MODEL bogus
+
+query I
+SELECT routing_orders.amount FROM routing_raw AS routing_orders ORDER BY id;
+----
+10
+30
+5
+
+# A CTE or derived table shadows a model name.
+query I
+WITH routing_orders AS (SELECT 7 AS revenue) SELECT routing_orders.revenue FROM routing_orders;
+----
+7
+
+query I
+SELECT routing_orders.revenue FROM (SELECT 8 AS revenue) routing_orders;
+----
+8
+
+statement ok
+CREATE SCHEMA physical;
+
+statement ok
+CREATE TABLE physical.routing_orders AS SELECT 9 AS revenue;
+
+query I
+SELECT routing_orders.revenue FROM physical.routing_orders;
+----
+9
+
+query IIII
+SELECT model, metric, dimension, semantic FROM (VALUES (1, 2, 3, 4)) t(model, metric, dimension, semantic);
+----
+1	2	3	4
+
+# Prepared queries bind semantic definitions at each execution.
+statement ok
+PREPARE routing_query AS SELECT o.revenue FROM routing_orders o;
+
+query I
+EXECUTE routing_query;
+----
+45
+
+statement ok
+PREPARE routing_parameter AS SELECT o.revenue FROM routing_orders o WHERE o.status = $1;
+
+query I
+EXECUTE routing_parameter('paid');
+----
+40
+
+query I
+EXECUTE routing_parameter('pending');
+----
+5
+
+statement ok
+EXPLAIN SELECT o.revenue FROM routing_orders o;
+
+# EXPLAIN/PREPARE of custom definitions do not mutate the catalog.
+statement ok
+EXPLAIN MODEL explain_only FROM routing_raw (
+  primary key (id)
+  count(*) AS rows
+);
+
+statement ok
+PREPARE define_model AS MODEL prepared_definition FROM routing_raw (
+  primary key (id)
+  count(*) AS rows
+);
+
+query I
+SELECT count(*) FROM sidemantic_models() WHERE model_name IN ('explain_only', 'prepared_definition');
+----
+0
+
+statement ok
+EXECUTE define_model;
+
+query I
+SELECT prepared_definition.rows FROM prepared_definition;
+----
+3
+
+statement ok
+PREPARE replace_metric AS CREATE OR REPLACE METRIC prepared_definition.rows AS SUM(amount);
+
+statement ok
+EXECUTE replace_metric;
+
+query I
+SELECT prepared_definition.rows FROM prepared_definition;
+----
+45
+
+statement ok
+EXECUTE replace_metric;
+
+# One parse of several statements still executes mutations in order.
+statement ok
+MODEL batch_model FROM routing_raw (
+  primary key (id)
+  count(*) AS rows
+); METRIC revenue AS SUM(amount);
+
+query I
+SELECT batch_model.revenue FROM batch_model;
+----
+45
+
+statement error
+SEMANTIC SELECT missing_model.revenue FROM missing_model;
+----
+Table with name missing_model does not exist
+
+# A detected semantic query must preserve the semantic compiler's diagnostic.
+statement error
+SELECT o.revenue, o.no_such_field FROM routing_orders o;
+----
+Sidemantic:

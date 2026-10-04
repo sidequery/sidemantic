@@ -563,6 +563,11 @@ impl SemanticGraph {
         self.metrics.values().chain(self.model_metrics.values())
     }
 
+    /// Graph declarations only, excluding indexes rebuilt from model metrics.
+    pub(crate) fn graph_metrics(&self) -> impl Iterator<Item = &Metric> {
+        self.metrics.values()
+    }
+
     /// Add a graph-level table calculation.
     pub fn add_table_calculation(&mut self, calc: TableCalculation) -> Result<()> {
         if self.table_calculations.contains_key(&calc.name) {

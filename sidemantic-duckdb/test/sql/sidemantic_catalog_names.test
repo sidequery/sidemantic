@@ -1,0 +1,44 @@
+# name: test/sql/sidemantic_catalog_names.test
+# description: Native catalog model names are structured rather than comma-delimited
+# group: [sidemantic]
+
+require sidemantic
+
+statement ok
+CREATE TABLE name_source (id INTEGER, amount INTEGER);
+
+statement ok
+INSERT INTO name_source VALUES (1, 10), (2, 30);
+
+statement ok
+SELECT * FROM sidemantic_load('
+models:
+  - name: "orders, archive"
+    table: name_source
+    primary_key: id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+');
+
+query T
+SELECT * FROM sidemantic_models();
+----
+orders, archive
+
+query I
+SELECT "o"."revenue" FROM "orders, archive" AS "o";
+----
+40
+
+statement ok
+MODEL "orders, archive";
+
+statement ok
+METRIC rows AS COUNT(*);
+
+query I
+SELECT "o"."rows" FROM "orders, archive" AS "o";
+----
+2

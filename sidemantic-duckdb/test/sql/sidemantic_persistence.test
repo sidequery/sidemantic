@@ -51,9 +51,56 @@ SEMANTIC SELECT events.total_amount FROM events;
 ----
 60
 
+# Definitions and table changes share the same DuckDB transaction.
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO events VALUES (4, 40);
+
+statement ok
+SEMANTIC CREATE OR REPLACE METRIC events.total_amount AS COUNT(*);
+
+query I
+SEMANTIC SELECT events.total_amount FROM events;
+----
+4
+
+statement ok
+ROLLBACK;
+
 restart
 
 require sidemantic
+
+query I
+SEMANTIC SELECT events.total_amount FROM events;
+----
+60
+
+query I
+SELECT count(*) FROM events;
+----
+3
+
+# Definitions remain readable when the database is opened read-only; attempts
+# to mutate definitions fail through DuckDB's ordinary catalog write checks.
+load __TEST_DIR__/sidemantic_persistence.duckdb readonly
+
+require sidemantic
+
+query I
+SEMANTIC SELECT events.total_amount FROM events;
+----
+60
+
+statement ok
+SEMANTIC MODEL events;
+
+statement error
+SEMANTIC CREATE METRIC events.forbidden AS COUNT(*);
+----
+read-only
 
 query I
 SEMANTIC SELECT events.total_amount FROM events;

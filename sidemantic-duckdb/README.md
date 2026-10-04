@@ -9,6 +9,8 @@ A DuckDB extension that adds a SQL-first semantic layer. Define metrics and dime
 - **Cross-Model JOINs**: Automatically generates JOINs when querying across related models
 - **Fan-out Detection**: Warns when joins may cause metric inflation
 - **Definition Files**: Load native YAML, Cube.js YAML, and native SQL definition files
+- **Transactional Definitions**: Commit and roll back model changes with DuckDB transactions
+- **Native PEG Grammar**: Composable grammar on the pinned Cyanoptera development build, with a DuckDB 1.5.6 compatibility frontend
 
 ## Installation
 
@@ -27,7 +29,7 @@ LOAD '/absolute/path/to/sidemantic.duckdb_extension';
 For local development:
 
 ```bash
-make deps DUCKDB_VERSION=v1.5.5
+make deps DUCKDB_VERSION=v1.5.6
 make
 make test
 ./build/release/duckdb -unsigned
@@ -38,6 +40,12 @@ LOAD 'build/release/extension/sidemantic/sidemantic.duckdb_extension';
 ```
 
 For embedded clients, set DuckDB's `allow_unsigned_extensions` database configuration before opening the connection. Community extension installation is planned, but this repository does not yet publish the signed multi-platform artifacts required for `INSTALL sidemantic FROM community`.
+
+In DuckDB 1.5.6 shells that preload `autocomplete` (including Homebrew), use
+`SEMANTIC SELECT` for semantic queries. That extension's PEG override consumes
+ordinary SQL before Sidemantic receives it, and 1.5.6 has no parser-priority setting.
+Clients without that competing override support automatic routing. Explicit
+`SEMANTIC SELECT` works in both configurations.
 
 ## Quick Start (Pure SQL)
 
@@ -67,7 +75,7 @@ METRIC avg_order_value AS AVG(amount);
 DIMENSION (name status, type categorical);
 
 -- 5. Query using semantic layer
-SELECT orders_model.status, orders_model.revenue FROM orders_model;
+SEMANTIC SELECT orders_model.status, orders_model.revenue FROM orders_model;
 -- Automatically rewrites to:
 -- SELECT status, SUM(amount) FROM orders GROUP BY 1
 
@@ -183,6 +191,65 @@ ORDER BY model.revenue DESC;
 ```
 
 The older `SEMANTIC SELECT ...` form is still supported as a compatibility fallback.
+
+Aliases and quoted identifiers work with automatic routing:
+
+```sql
+SELECT o.status, o.revenue FROM orders_model AS o;
+SELECT "o"."revenue" FROM "orders_model" AS "o";
+```
+
+Routing inspects DuckDB's parsed table and field references. Comments and strings
+do not trigger rewriting; physical tables, CTEs and subqueries can shadow model
+names. Once a semantic field is detected, compiler errors are reported directly.
+Use `SEMANTIC SELECT` to explicitly request semantic compilation. Unsupported
+semantic SQL still raises an error; the extension does not implement every DuckDB
+query construct in the Rust compiler.
+
+## Transactions and persistence
+
+Definitions and loaded files are stored in the selected DuckDB database as a
+versioned snapshot in the `main.__sidemantic_catalog()` macro. This reserved macro
+is extension-owned and should not be edited manually. DuckDB provides persistence,
+rollback, transaction isolation and conflicting-writer detection for the snapshot.
+In-memory databases keep their definitions in memory.
+
+```sql
+BEGIN;
+CREATE OR REPLACE METRIC orders_model.revenue AS SUM(amount);
+ROLLBACK;
+```
+
+Parsing, `EXPLAIN`, and `PREPARE` do not apply definitions or load files. Mutations
+happen during execution; prepared semantic queries rebind to current definitions.
+`MODEL model_name` selects a connection-local active model, and rollback restores
+the prior selection. Definitions are shared through the database catalog, while
+active model selections are independent between connections.
+
+Existing `.sidemantic.sql` sidecars remain readable when no native snapshot exists.
+The first successful definition update stores the imported definitions in DuckDB.
+The sidecar is left untouched and no new sidecars are written. After migration,
+edit definitions through SQL or load an updated file explicitly. Invalid legacy
+files raise errors when the semantic catalog is accessed.
+
+## Native PEG frontend
+
+DuckDB 1.5.6 uses the compatibility frontend. The pinned `v2.0-cyanoptera` build
+registers a `sidemantic` grammar extension for model/item declarations and
+`SEMANTIC SELECT`, including nested `PREPARE` and `EXPLAIN`. Definition properties
+still use the shared Rust configuration parser; semantic query compilation still
+uses the Rust SQL AST.
+
+Loading Sidemantic enables its parser override for automatic routing, subject to
+the 1.5.6 autocomplete limitation above. To explicitly compose the native
+grammar with other installed grammars, include it in `active_grammar_extensions`:
+
+```sql
+SET active_grammar_extensions = ['sidemantic'];
+```
+
+The native grammar test disables parser overrides and executes custom syntax,
+so it verifies native grammar integration independently of the compatibility path.
 
 ## Alternative: Definition Files
 
@@ -401,10 +468,10 @@ SELECT sidemantic_rewrite_sql('SELECT orders.revenue FROM orders');
 
 ## How It Works
 
-1. **Parser Override**: DuckDB 1.5+ lets the extension intercept qualified semantic `SELECT` queries before native parsing
-2. **Parser Extension Fallback**: The legacy `SEMANTIC` prefix still routes through the parser extension
-3. **Query Rewriting**: The Rust-based sidemantic library rewrites `model.metric` references to actual SQL aggregations
-4. **Execution**: The rewritten SQL is parsed by DuckDB and executed normally
+1. DuckDB parses queries; the native PEG or compatibility frontend captures definitions without applying them.
+2. At bind time, parsed field references are resolved against the caller's transactional catalog snapshot.
+3. The Rust compiler rewrites semantic SQL using a private graph. Stateful FFI calls release the registry lock before compilation; native parser workers reuse their large stacks across calls.
+4. DuckDB binds and executes generated SQL in the same client context. Definition statements update the catalog during execution.
 
 ## Building from Source
 
@@ -413,8 +480,8 @@ SELECT sidemantic_rewrite_sql('SELECT orders.revenue FROM orders');
 cd sidemantic-duckdb
 
 # Fetch the DuckDB source version used by CI.
-# extension-ci-tools is vendored in this directory and pinned to v1.5.5.
-make deps DUCKDB_VERSION=v1.5.5
+# Stable builds and release artifacts target v1.5.6.
+make deps DUCKDB_VERSION=v1.5.6
 
 # Build the extension. CMake builds the sibling sidemantic-rs static library automatically.
 make
@@ -426,13 +493,20 @@ make test
 ./build/release/duckdb -unsigned
 ```
 
+CI also builds `make deps DUCKDB_VERSION=v2.0-cyanoptera`, pinned in the Makefile to
+commit `80e17fc252edd6d9e9b090ae00a1100daef4876a`. Run its tests with
+`SIDEMANTIC_NATIVE_PEG=1 make test`. Use separate build directories/checkouts when
+switching DuckDB versions. CMake probes host APIs rather than assuming C++ ABI
+compatibility across releases. Release packaging targets unsigned Linux amd64
+builds for 1.5.6; development-version CI does not publish stable artifacts.
+
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    DuckDB Extension (C++)                    │
-│  - Parser override (intercepts qualified semantic SELECTs)  │
-│  - Parser extension (supports legacy SEMANTIC queries)      │
+│                    DuckDB Extension (C++)                   │
+│  - Native PEG / compatibility parser and AST routing        │
+│  - Transactional catalog definitions and legacy migration   │
 │  - Table functions (sidemantic_load, sidemantic_models)     │
 │  - Scalar function (sidemantic_rewrite_sql)                 │
 └─────────────────────────────────────────────────────────────┘
@@ -440,7 +514,7 @@ make test
                               │ C FFI
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                   sidemantic-rs (Rust)                       │
+│                   sidemantic-rs (Rust)                      │
 │  - YAML parsing (native + Cube.js formats)                  │
 │  - Semantic graph (models, relationships)                   │
 │  - SQL generation and query rewriting                       │

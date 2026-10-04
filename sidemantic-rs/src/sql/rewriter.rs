@@ -15,6 +15,8 @@ use crate::sql::SemanticQuery;
 type QueryPreparer<'a> = &'a dyn Fn(&SemanticGraph, &mut SemanticQuery) -> Result<()>;
 
 mod binding;
+#[cfg(not(target_arch = "wasm32"))]
+mod parser_worker;
 mod policy;
 mod yardstick;
 
@@ -151,14 +153,7 @@ fn run_parser(
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let handle = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(parse)
-            .map_err(|e| SidemanticError::SqlParse(e.to_string()))?;
-
-        handle
-            .join()
-            .map_err(|_| SidemanticError::SqlParse("Polyglot parser thread panicked".into()))?
+        parser_worker::run(parse)
     }
 }
 

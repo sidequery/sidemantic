@@ -1,23 +1,26 @@
-# Extension updating 
-When cloning this template, the target version of DuckDB should be the latest stable release of DuckDB. However, there 
-will inevitably come a time when a new DuckDB is released and the extension repository needs updating. This process goes
-as follows:
+# Updating DuckDB compatibility
 
-- Bump submodules
-  - `./duckdb` should be set to latest tagged release
-  - `./extension-ci-tools` should be set to updated branch corresponding to latest DuckDB release. So if you're building for DuckDB `v1.1.0` there will be a branch in `extension-ci-tools` named `v1.1.0` to which you should check out. 
-- Bump versions in `./github/workflows`
-  - `duckdb_version` input in `duckdb-stable-build` job in `MainDistributionPipeline.yml` should be set to latest tagged release
-  - `duckdb_version` input in `duckdb-stable-deploy` job in `MainDistributionPipeline.yml` should be set to latest tagged release
-  - the reusable workflow `duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml` for the `duckdb-stable-build` job should be set to latest tagged release
+The extension builds against DuckDB's internal C++ API. A loadable extension must
+match its host version and platform; source compatibility is not binary compatibility.
 
-# API changes
-DuckDB extensions built with this extension template are built against the internal C++ API of DuckDB. This API is not guaranteed to be stable.
-What this means for extension development is that when updating your extensions DuckDB target version using the above steps, you may run into the fact that your extension no longer builds properly.
+The Makefile selects stable DuckDB 1.5.6 or a pinned Cyanoptera development commit.
+CI builds both and runs the SQL and SemanticInput host suites. The development job
+sets `SIDEMANTIC_NATIVE_PEG=1` to require tests that disable parser overrides and use
+Sidemantic's registered native grammar. Release packaging intentionally accepts only
+the stable version and currently produces unsigned Linux amd64 artifacts.
 
-Currently, DuckDB does not (yet) provide a specific change log for these API changes, but it is generally not too hard to figure out what has changed.
+When updating:
 
-For figuring out how and why the C++ API changed, we recommend using the following resources:
-- DuckDB's [Release Notes](https://github.com/duckdb/duckdb/releases)
-- DuckDB's history of [Core extension patches](https://github.com/duckdb/duckdb/commits/main/.github/patches/extensions)
-- The git history of the relevant C++ Header file of the API that has changed
+1. Change the stable version or `DUCKDB_NEXT_COMMIT` in the Makefile and the CI matrix
+   as appropriate. Keep the release workflow's stable allowlist and input tests aligned.
+2. Use fresh build directories for each host. `src/include/sidemantic_compat.hpp.in`
+   is generated from the API probes in CMake; adapt those probes and frontend code
+   when upstream interfaces change.
+3. Build and run the extension SQL suites, including transactions, restart, legacy
+   migration, routing and native PEG tests. Run `test/test_semantic_input_host.py`
+   against the freshly built shell and extension.
+4. Update the README with the verified versions and distribution scope. Do not
+   infer additional platform support or signed/community availability from compilation.
+
+The vendored extension-ci-tools supplies the build harness. Update it only when
+changes to that harness are required by the selected DuckDB versions.

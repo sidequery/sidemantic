@@ -8,6 +8,7 @@
 #define SIDEMANTIC_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,6 +20,43 @@ typedef struct {
     char *error;        /* Error message (NULL if success) */
     bool was_rewritten; /* Whether the query was rewritten (false = passthrough) */
 } SidemanticRewriteResult;
+
+/* Stateless catalog operations. Snapshot and active_model may be NULL or empty.
+ * All other inputs must be NUL-terminated UTF-8 strings. Operations are model,
+ * item, use, yaml, file, and legacy_sql. No context registry or sidecar is changed.
+ * Publish a successful snapshot in the host transaction; active_model belongs to
+ * the calling session. Free every result with sidemantic_free_snapshot_result.
+ */
+typedef struct {
+    char *snapshot;
+    char *active_model;
+    char *error;
+} SidemanticSnapshotResult;
+
+SidemanticSnapshotResult sidemantic_snapshot_apply(const char *snapshot, const char *active_model,
+                                                  const char *operation, const char *content, bool replace);
+void sidemantic_free_snapshot_result(SidemanticSnapshotResult result);
+
+/* Direct rewrite after the host has identified semantic field references.
+ * Returns compiler errors instead of falling back to ordinary SQL.
+ */
+SidemanticRewriteResult sidemantic_snapshot_rewrite(const char *snapshot, const char *sql);
+
+typedef struct {
+    char *name;
+    char **fields;
+    size_t field_count;
+} SidemanticModelInfo;
+
+typedef struct {
+    SidemanticModelInfo *models;
+    size_t count;
+    char *error;
+} SidemanticModelList;
+
+/* Model names and semantic fields, sorted and owned by the returned result. */
+SidemanticModelList sidemantic_snapshot_list_models(const char *snapshot);
+void sidemantic_free_model_list(SidemanticModelList result);
 
 /*
  * Load semantic models from YAML string.

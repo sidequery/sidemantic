@@ -556,8 +556,9 @@ impl<'a> SqlGenerator<'a> {
                         format!("\n  WHERE {}", filter_sql.join(" AND "))
                     }
                 };
+                let cte_name = self.quote_identifier(&self.model_alias(model_name));
                 cte_defs.push(format!(
-                    "{model_name}_cte AS (\n  {cte_select}\n  FROM {cte_source}{cte_where}\n)"
+                    "{cte_name} AS (\n  {cte_select}\n  FROM {cte_source}{cte_where}\n)"
                 ));
             }
             sql.push_str("WITH ");
@@ -614,7 +615,7 @@ impl<'a> SqlGenerator<'a> {
                 } else if dimension.window.is_some() {
                     let column = format!(
                         "{}.{}",
-                        alias,
+                        self.quote_identifier(&alias),
                         self.quote_identifier(&Self::window_dimension_alias(dimension))
                     );
                     if let Some(granularity) = dim_ref
@@ -643,7 +644,11 @@ impl<'a> SqlGenerator<'a> {
                     self.dimension_select_expression(dimension, &alias)?
                 }
             } else if model.is_foreign_key_dimension(&dim_ref.name) {
-                format!("{}.{}", alias, self.quote_identifier(&dim_ref.name))
+                format!(
+                    "{}.{}",
+                    self.quote_identifier(&alias),
+                    self.quote_identifier(&dim_ref.name)
+                )
             } else {
                 let available: Vec<&str> =
                     model.dimensions.iter().map(|d| d.name.as_str()).collect();
@@ -676,7 +681,11 @@ impl<'a> SqlGenerator<'a> {
             let output_alias =
                 self.output_alias(&metric_ref.model, &metric_ref.alias, &alias_collisions);
             let raw_alias = self.metric_raw_alias(model, &metric_ref.name, metric);
-            let raw_col = format!("{alias}.{}", self.quote_identifier(&raw_alias));
+            let raw_col = format!(
+                "{}.{}",
+                self.quote_identifier(&alias),
+                self.quote_identifier(&raw_alias)
+            );
 
             let sql_expr = match metric.r#type {
                 MetricType::Simple if query.ungrouped => raw_col.clone(),
@@ -817,9 +826,8 @@ impl<'a> SqlGenerator<'a> {
         // FROM clause
         let mut source_start = sql.len();
         sql.push_str(&format!(
-            "FROM {}_cte AS {}\n",
-            base_model,
-            self.model_alias(&base_model)
+            "FROM {0} AS {0}\n",
+            self.quote_identifier(&self.model_alias(&base_model))
         ));
 
         // JOIN clauses
@@ -839,8 +847,8 @@ impl<'a> SqlGenerator<'a> {
 
                 if step.relationship_type == RelationshipType::Cross {
                     sql.push_str(&format!(
-                        "CROSS JOIN {}_cte AS {}\n",
-                        step.to_model, to_alias
+                        "CROSS JOIN {0} AS {0}\n",
+                        self.quote_identifier(&to_alias)
                     ));
                     continue;
                 }
@@ -850,8 +858,8 @@ impl<'a> SqlGenerator<'a> {
                     // Custom predicates bind physical source columns, independently
                     // of semantic key expressions used for entity deduplication.
                     custom
-                        .replace("{from}", &from_alias)
-                        .replace("{to}", &to_alias)
+                        .replace("{from}", &self.quote_identifier(&from_alias))
+                        .replace("{to}", &self.quote_identifier(&to_alias))
                 } else {
                     self.build_default_join_condition_sql(
                         &step.from_model,
@@ -884,8 +892,8 @@ impl<'a> SqlGenerator<'a> {
                         "LEFT JOIN"
                     };
                 sql.push_str(&format!(
-                    "{join_type} {}_cte AS {} ON {}\n",
-                    step.to_model, to_alias, join_condition
+                    "{join_type} {0} AS {0} ON {join_condition}\n",
+                    self.quote_identifier(&to_alias)
                 ));
             }
         }
@@ -2405,7 +2413,7 @@ impl<'a> SqlGenerator<'a> {
         Ok(format!("CONCAT({})", parts.join(", '|', ")))
     }
 
-    /// Generate alias for a model (first letter lowercase)
+    /// Raw CTE identifier; SQL emission must quote it for the target dialect.
     fn model_alias(&self, model_name: &str) -> String {
         format!("{model_name}_cte")
     }
@@ -5712,7 +5720,7 @@ impl<'a> SqlGenerator<'a> {
     }
 
     fn normalize_select_expression(&self, expr: &str, alias: &str) -> String {
-        expr.replace("{model}", alias)
+        expr.replace("{model}", &self.quote_identifier(alias))
     }
 
     fn dimension_select_expression(
@@ -5725,7 +5733,8 @@ impl<'a> SqlGenerator<'a> {
             // Parsing names such as "Order Date" as expressions loses that
             // distinction (and can interpret the second word as an alias).
             return Ok(format!(
-                "{alias}.{}",
+                "{}.{}",
+                self.quote_identifier(alias),
                 self.quote_identifier(&dimension.name)
             ));
         }
@@ -5744,7 +5753,11 @@ impl<'a> SqlGenerator<'a> {
             {
                 replacements.insert(
                     (column.model, column.field.clone()),
-                    format!("{alias}.{}", self.quote_identifier(&column.field)),
+                    format!(
+                        "{}.{}",
+                        self.quote_identifier(alias),
+                        self.quote_identifier(&column.field)
+                    ),
                 );
             }
         }
@@ -6562,6 +6575,42 @@ mod tests {
             let generator = SqlGenerator::new(&graph).with_dialect(dialect);
             assert_eq!(generator.quote_identifier("CaseSubject"), "\"CaseSubject\"");
             assert_eq!(generator.quote_identifier("subject"), "subject");
+        }
+    }
+
+    #[test]
+    fn quoted_model_names_keep_cte_definitions_and_references_aligned() {
+        for name in ["orders, archive", "Order Archive", "orders\"archive"] {
+            let mut graph = SemanticGraph::new();
+            graph
+                .add_model(
+                    Model::new(name, "id")
+                        .with_table("raw_orders")
+                        .with_metric(Metric::sum("revenue", "amount"))
+                        .with_metric(Metric::sum("net revenue", "amount"))
+                        .with_dimension(Dimension::categorical("Order Status"))
+                        .with_dimension(
+                            Dimension::categorical("category").with_sql("{model}.status"),
+                        ),
+                )
+                .unwrap();
+            let table = format!("\"{}\"", name.replace('"', "\"\""));
+            let cte = format!("\"{}_cte\"", name.replace('"', "\"\""));
+            for projection in [
+                "\"o\".\"revenue\"",
+                "\"o\".\"net revenue\", \"o\".\"Order Status\", \"o\".category",
+            ] {
+                let sql = crate::sql::QueryRewriter::new(&graph)
+                    .rewrite_with_dialect(
+                        &format!("SELECT {projection} FROM {table} AS \"o\""),
+                        DialectType::DuckDB,
+                    )
+                    .unwrap();
+                crate::semantic_input::dialects::parse(&sql, DialectType::DuckDB).unwrap();
+                assert!(sql.contains(&format!("WITH {cte} AS")), "{sql}");
+                assert!(sql.contains(&format!("FROM {cte} AS {cte}")), "{sql}");
+                assert!(sql.contains(&format!("SUM({cte}.")), "{sql}");
+            }
         }
     }
 

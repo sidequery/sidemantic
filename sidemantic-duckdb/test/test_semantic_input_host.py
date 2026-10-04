@@ -39,6 +39,8 @@ def execute(sql, error=False):
     )
     if error:
         assert result.returncode != 0, result.stdout
+        assert "INTERNAL Error" not in result.stderr, result.stderr
+        assert '"exception_type":"Internal"' not in result.stderr, result.stderr
         assert "SemanticInput" in result.stderr, result.stderr
         return result.stderr
     assert result.returncode == 0, result.stderr
@@ -55,6 +57,53 @@ def call(query=None, source=None, sql=None, context=None, error=False):
         arguments.extend([literal(sql), literal(json.dumps(CONTEXT if context is None else context))])
     result = execute(f"select {function}({', '.join(arguments)}) as sql;", error=error)
     return result if error else result[0]["sql"]
+
+
+def test_retention_table_keeps_inactive_cohort_members_in_denominator():
+    source = {
+        "version": 1,
+        "input_dialect": "duckdb",
+        "models": [
+            {
+                "name": "events",
+                "table": "retention_events",
+                "primary_key": "id",
+                "dimensions": [{"name": "event_date", "type": "time"}],
+                "metrics": [
+                    {
+                        "name": "retention",
+                        "type": "retention",
+                        "entity": "user_id",
+                        "cohort_event": "event_type = 'signup'",
+                        "activity_event": "event_type = 'active'",
+                        "periods": 7,
+                        "retention_granularity": "day",
+                    }
+                ],
+            }
+        ],
+    }
+    compiled = call(source=source, query={"metrics": ["events.retention"]})
+    rows = execute(
+        """
+        create table retention_events(id integer, user_id varchar, event_type varchar, event_date date);
+        insert into retention_events values
+            (1, 'u1', 'signup', '2024-01-01'), (2, 'u2', 'signup', '2024-01-01'),
+            (3, 'u3', 'signup', '2024-01-01'), (4, 'u1', 'active', '2024-01-02'),
+            (5, 'u2', 'active', '2024-01-03');
+        """
+        + compiled
+    )
+    assert rows == [
+        {
+            "cohort_date": "2024-01-01",
+            "days_since": day,
+            "active_users": 1,
+            "cohort_size": 3,
+            "retention_pct": 33.3,
+        }
+        for day in (1, 2)
+    ]
 
 
 @pytest.mark.parametrize("rewrite", [False, True])

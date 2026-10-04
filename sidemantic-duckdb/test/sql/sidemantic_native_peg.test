@@ -31,6 +31,22 @@ SEMANTIC SELECT "o"."revenue" FROM "peg_orders" o;
 40
 
 statement ok
+SEMANTIC CREATE VIEW peg_view AS SELECT peg_orders.revenue AS total FROM peg_orders;
+
+statement ok
+SEMANTIC CREATE TABLE peg_saved AS SELECT peg_orders.revenue AS total FROM peg_orders;
+
+query I
+SEMANTIC INSERT INTO peg_saved SELECT peg_orders.revenue FROM peg_orders RETURNING total;
+----
+40
+
+query I
+SELECT total FROM peg_view;
+----
+40
+
+statement ok
 PREPARE peg_query AS SEMANTIC SELECT o.revenue FROM peg_orders o;
 
 query I

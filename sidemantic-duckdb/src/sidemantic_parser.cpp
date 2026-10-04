@@ -4,12 +4,17 @@
 
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/parsed_data/create_table_info.hpp"
+#include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
 #include "duckdb/parser/query_node/cte_node.hpp"
 #include "duckdb/parser/statement/explain_statement.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
+#include "duckdb/parser/statement/insert_statement.hpp"
 #include "duckdb/parser/statement/prepare_statement.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
@@ -148,7 +153,7 @@ unique_ptr<SQLStatement> ParseCompatibilityStatement(const string &sql, const Pa
                 } else {
                     statement->Cast<PrepareStatement>().statement = std::move(child);
                 }
-                return statement;
+                return WrapSidemanticQuery(std::move(statement));
             }
         }
     }
@@ -379,6 +384,43 @@ public:
     unique_ptr<ParserExtensionParseData> data;
 };
 
+// Keep the native container intact: DuckDB owns destination names, column
+// mapping, RETURNING, write properties, transactions and view persistence.
+SelectStatement *QueryInStatement(SQLStatement &statement, bool include_insert_ctes = false) {
+    if (statement.type == StatementType::EXPLAIN_STATEMENT) {
+        return QueryInStatement(*statement.Cast<ExplainStatement>().stmt, include_insert_ctes);
+    }
+    if (statement.type == StatementType::SELECT_STATEMENT) {
+        return &statement.Cast<SelectStatement>();
+    }
+    if (statement.type == StatementType::CREATE_STATEMENT) {
+        auto &info = *statement.Cast<CreateStatement>().info;
+        if (info.type == CatalogType::VIEW_ENTRY) return info.Cast<CreateViewInfo>().query.get();
+        if (info.type == CatalogType::TABLE_ENTRY) return info.Cast<CreateTableInfo>().query.get();
+    }
+    if (statement.type == StatementType::INSERT_STATEMENT) {
+#if SIDEMANTIC_INSERT_QUERY_NODE
+        auto &insert = *statement.Cast<InsertStatement>().node;
+#else
+        auto &insert = statement.Cast<InsertStatement>();
+#endif
+        auto &query = insert.select_statement;
+        if (query && include_insert_ctes && !insert.cte_map.map.empty()) {
+            // WITH before INSERT is an outer scope. Preserve it around the
+            // source SELECT instead of merging it with that SELECT's own WITH.
+            auto wrapper = make_uniq<SelectNode>();
+            wrapper->select_list.push_back(make_uniq<StarExpression>());
+            wrapper->cte_map = std::move(insert.cte_map);
+            auto inner = make_uniq<SelectStatement>();
+            inner->node = std::move(query->node);
+            wrapper->from_table = make_uniq<SubqueryRef>(std::move(inner), "__sidemantic_insert_source");
+            query->node = std::move(wrapper);
+        }
+        return query.get();
+    }
+    return nullptr;
+}
+
 } // namespace
 
 unique_ptr<ParserExtensionParseData> SidemanticParseData::Copy() const {
@@ -492,24 +534,18 @@ unique_ptr<SQLStatement> WrapSidemanticQuery(unique_ptr<SQLStatement> statement,
                 }
             }
         }
-        if (explain.stmt->type == StatementType::SELECT_STATEMENT) {
-            // Operator-extension fallback occurs at the outer planner boundary.
-            // Keep EXPLAIN outside the rewritten SELECT when binding the result.
-            auto data = make_uniq<SidemanticParseData>();
-            data->statement = std::move(statement);
-            data->explicit_semantic = explicit_semantic;
-            return SidemanticStatement(std::move(data));
-        }
     } else if (statement->type == StatementType::PREPARE_STATEMENT) {
         auto &prepare = statement->Cast<PrepareStatement>();
         prepare.statement = WrapSidemanticQuery(std::move(prepare.statement), explicit_semantic);
-    } else if (statement->type == StatementType::SELECT_STATEMENT) {
+        return statement;
+    }
+    if (QueryInStatement(*statement)) {
         auto data = make_uniq<SidemanticParseData>();
         data->statement = std::move(statement);
         data->explicit_semantic = explicit_semantic;
         return SidemanticStatement(std::move(data));
     } else if (explicit_semantic && statement->type != StatementType::EXTENSION_STATEMENT) {
-        throw ParserException("SEMANTIC expects a SELECT or a semantic definition");
+        throw ParserException("SEMANTIC expects SELECT, CREATE VIEW, CREATE TABLE AS, INSERT SELECT or a semantic definition");
     }
     return statement;
 }
@@ -565,19 +601,14 @@ BoundStatement sidemantic_bind(ClientContext &context, Binder &binder, OperatorE
     auto snapshot = ReadSidemanticCatalog(context);
     ModelListOwner models(snapshot.payload);
     auto original = data.statement->Copy();
-    auto query = &original;
-    if (original->type == StatementType::EXPLAIN_STATEMENT) {
-        query = &original->Cast<ExplainStatement>().stmt;
-    }
-    if ((*query)->type != StatementType::SELECT_STATEMENT) {
-        throw InternalException("Sidemantic expected a SELECT statement");
-    }
+    auto query = QueryInStatement(*original, true);
+    if (!query) throw InternalException("Sidemantic expected a query-bearing statement");
     // DuckDB identifiers are case-insensitive even when quoted. Normalize only
     // semantic bindings to the declared spelling before passing them to Rust.
-    bool detected = SemanticReferences(models.list).Query(*(*query)->Cast<SelectStatement>().node);
+    bool detected = SemanticReferences(models.list).Query(*query->node);
     bool semantic = data.explicit_semantic || detected;
     if (semantic) {
-        auto sql = (*query)->ToString();
+        auto sql = query->ToString();
         auto result = sidemantic_snapshot_rewrite(snapshot.payload.c_str(), sql.c_str());
         if (result.error) {
             string error(result.error);
@@ -592,8 +623,13 @@ BoundStatement sidemantic_bind(ClientContext &context, Binder &binder, OperatorE
         sidemantic_free_result(result);
         Parser parser(SidemanticBuiltinParserOptions());
         parser.ParseQuery(rewritten);
-        if (parser.statements.size() != 1) throw BinderException("Sidemantic rewrite must produce one statement");
-        *query = std::move(parser.statements[0]);
+        if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
+            throw BinderException("Sidemantic rewrite must produce one SELECT statement");
+        }
+        query->node = std::move(parser.statements[0]->Cast<SelectStatement>().node);
+    } else {
+        // An ordinary SQL statement keeps its exact original scopes and AST.
+        original = data.statement->Copy();
     }
     auto child_binder = Binder::CreateBinder(context, &binder);
     return child_binder->Bind(*original);

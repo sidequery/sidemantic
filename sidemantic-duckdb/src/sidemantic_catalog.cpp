@@ -13,6 +13,7 @@
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/storage/storage_manager.hpp"
+#include <algorithm>
 
 namespace duckdb {
 
@@ -83,6 +84,63 @@ struct SnapshotResultOwner {
     }
 };
 
+static string ReadDefinitionFile(FileSystem &fs, const string &path) {
+    auto file = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+    auto size = file->GetFileSize();
+    if (size < 0 || file->GetType() != FileType::FILE_TYPE_REGULAR) {
+        throw InvalidInputException("Sidemantic definitions require a regular file: %s", path);
+    }
+    string content(size, '\0');
+    if (!content.empty()) file->Read(&content[0], content.size(), 0);
+    if (content.find('\0') != string::npos) {
+        throw InvalidInputException("Sidemantic definitions contain a NUL byte: %s", path);
+    }
+    return content;
+}
+
+static void CollectDefinitionFiles(FileSystem &fs, const string &directory, vector<string> &paths, idx_t depth = 0) {
+    // Bound recursive traversal, including directory symlink cycles.
+    static constexpr idx_t MAX_DIRECTORY_DEPTH = 64;
+    if (depth >= MAX_DIRECTORY_DEPTH) {
+        throw InvalidInputException("Sidemantic model directory exceeds maximum nesting depth: %s", directory);
+    }
+    if (!fs.ListFiles(directory, [&](const string &name, bool is_directory) {
+        auto path = fs.JoinPath(directory, name);
+        if (is_directory) {
+            CollectDefinitionFiles(fs, path, paths, depth + 1);
+        } else {
+            auto lower = StringUtil::Lower(name);
+            if (StringUtil::EndsWith(lower, ".yml") || StringUtil::EndsWith(lower, ".yaml") ||
+                StringUtil::EndsWith(lower, ".sql")) paths.push_back(std::move(path));
+        }
+    })) {
+        throw IOException("Could not list Sidemantic model directory: %s", directory);
+    }
+}
+
+static SidemanticSnapshotResult ImportDefinitionFiles(ClientContext &context, const string &snapshot,
+                                                     const string &path) {
+    // The context filesystem enforces enable_external_access, allowed paths
+    // and disabled filesystems for every listing and open. Rust receives only
+    // captured bytes and cannot bypass the host's file or environment boundary.
+    auto &fs = FileSystem::GetFileSystem(context);
+    bool directory = fs.DirectoryExists(path);
+    vector<string> paths;
+    if (directory) {
+        CollectDefinitionFiles(fs, path, paths);
+        std::sort(paths.begin(), paths.end());
+    } else {
+        paths.push_back(path);
+    }
+    vector<string> contents;
+    for (auto &source : paths) contents.push_back(ReadDefinitionFile(fs, source));
+    vector<SidemanticSource> sources;
+    for (idx_t i = 0; i < paths.size(); ++i) {
+        sources.push_back({paths[i].c_str(), contents[i].c_str()});
+    }
+    return sidemantic_snapshot_load_sources(snapshot.c_str(), sources.data(), sources.size(), directory);
+}
+
 static SidemanticCatalogSnapshot ReadLegacySnapshot(ClientContext &context, Catalog &catalog) {
     auto &database = catalog.GetAttached();
     if (catalog.InMemory() || !database.HasStorageManager()) {
@@ -108,14 +166,7 @@ static SidemanticCatalogSnapshot ReadLegacySnapshot(ClientContext &context, Cata
     if (!fs.FileExists(path)) {
         return {};
     }
-    auto file = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
-    string content(file->GetFileSize(), '\0');
-    if (!content.empty()) {
-        file->Read(&content[0], content.size(), 0);
-    }
-    if (content.find('\0') != string::npos) {
-        throw InvalidInputException("Sidemantic legacy definitions contain a NUL byte: %s", path);
-    }
+    auto content = ReadDefinitionFile(fs, path);
     SnapshotResultOwner imported(sidemantic_snapshot_apply(nullptr, nullptr, "legacy_sql", content.c_str(), false));
     return imported.Get();
 }
@@ -190,8 +241,10 @@ void ExecuteSidemanticMutation(ClientContext &context, const string &operation,
     }
     auto &catalog = SemanticCatalog(context);
     auto snapshot = ReadSidemanticCatalog(context);
-    SnapshotResultOwner applied(sidemantic_snapshot_apply(snapshot.payload.c_str(), snapshot.active_model.c_str(),
-                                                         operation.c_str(), content.c_str(), replace));
+    SnapshotResultOwner applied(operation == "file"
+        ? ImportDefinitionFiles(context, snapshot.payload, content)
+        : sidemantic_snapshot_apply(snapshot.payload.c_str(), snapshot.active_model.c_str(),
+                                    operation.c_str(), content.c_str(), replace));
     auto candidate = applied.Get();
     if (operation != "use") {
         CreateMacroInfo info(CatalogType::MACRO_ENTRY);

@@ -1,6 +1,7 @@
 #include "sidemantic_parser.hpp"
 
 #if SIDEMANTIC_GRAMMAR_EXTENSION
+#include "duckdb/main/database.hpp"
 #include "duckdb/parser/grammar_extension.hpp"
 #include "duckdb/parser/peg/compiled_grammar.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
@@ -56,7 +57,8 @@ static unique_ptr<TransformProcess> StartDefinition(PEGTransformer &transformer,
 
 static unique_ptr<TransformResultValue> TransformSemanticQuery(PEGTransformer &transformer, ParseResult &result) {
     auto &list = result.Cast<ListParseResult>();
-    auto statement = transformer.Transform<unique_ptr<SQLStatement>>(list.GetChild(1));
+    auto &choice = list.Child<ListParseResult>(1).Child<ChoiceParseResult>(0);
+    auto statement = transformer.Transform<unique_ptr<SQLStatement>>(choice.GetResult());
     return make_uniq<TypedTransformResult<unique_ptr<SQLStatement>>>(WrapSidemanticQuery(std::move(statement), true));
 }
 
@@ -121,7 +123,7 @@ public:
             GrammarChange::AddRule("SidemanticModel <- 'MODEL' (SidemanticBlock / ColIdOrString ('FROM' (SidemanticSource / SidemanticBlock) SidemanticBlock / SidemanticBlock)?)"),
             GrammarChange::AddRule("SidemanticItem <- ('METRIC' / 'DIMENSION' / 'SEGMENT') (SidemanticBlock / SidemanticSource ('AS' Expression / SidemanticBlock))"),
             GrammarChange::AddRule("SidemanticDefinition <- 'SEMANTIC'? ('CREATE' ('OR' 'REPLACE')?)? (SidemanticModel / SidemanticItem)", StartDefinition),
-            GrammarChange::AddRule("SidemanticQuery <- 'SEMANTIC' SelectStatement", StartSemanticQuery),
+            GrammarChange::AddRule("SidemanticQuery <- 'SEMANTIC' (SelectStatement / CreateStatement / InsertStatement)", StartSemanticQuery),
             GrammarChange::AddRule("SidemanticPreparable <- SidemanticDefinition / SidemanticQuery"),
             GrammarChange::AddRule("SidemanticPrepare <- 'PREPARE' ColIdOrString 'AS' SidemanticPreparable", StartPrepare),
             GrammarChange::AddRule("SidemanticExplain <- 'EXPLAIN' AnalyzeKeyword? ExplainOptionList? SidemanticPreparable", StartExplain),
@@ -134,6 +136,7 @@ public:
 };
 
 struct SidemanticGrammarInfo : public ParserExtensionInfo {
+    shared_ptr<CompiledGrammar> default_grammar;
     shared_ptr<CompiledGrammar> grammar;
 };
 
@@ -143,6 +146,7 @@ shared_ptr<ParserExtensionInfo> RegisterSidemanticGrammar(DatabaseInstance &db) 
     auto extension = make_shared_ptr<SidemanticGrammar>();
     GrammarExtension::Register(db, extension);
     auto info = make_shared_ptr<SidemanticGrammarInfo>();
+    info->default_grammar = db.GetParserCache().GetMatcher();
     info->grammar = CompiledGrammar::Create(vector<reference<GrammarExtension>> {*extension});
     return info;
 }
@@ -155,7 +159,9 @@ bool ParseSidemanticGrammar(ParserExtensionInfo *info, const string &sql, const 
     native.extensions = nullptr;
     // Respect explicitly composed grammars. Callers may opt in with
     // SET active_grammar_extensions = ['sidemantic', ...].
-    if (!native.compiled_grammar || native.compiled_grammar == CompiledGrammar::DefaultGrammar()) {
+    // Use the database's cached default: statically linked loadable extensions
+    // can have a different DefaultGrammar() singleton from the host DuckDB.
+    if (!native.compiled_grammar || native.compiled_grammar == grammar_info->default_grammar) {
         native.compiled_grammar = grammar_info->grammar;
     }
     Parser parser(native);

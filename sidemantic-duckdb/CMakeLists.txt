@@ -20,6 +20,7 @@ function(sidemantic_detect_apis)
     foreach(header parser/parser_extension.hpp function/table_function.hpp
             parser/expression/columnref_expression.hpp parser/tableref/basetableref.hpp
             parser/parser_options.hpp parser/expression/constant_expression.hpp
+            parser/statement/insert_statement.hpp
             parser/grammar_extension.hpp parser/peg/compiled_grammar.hpp)
         if(EXISTS "${CMAKE_SOURCE_DIR}/src/include/duckdb/${header}")
             file(SHA256 "${CMAKE_SOURCE_DIR}/src/include/duckdb/${header}" header_hash)
@@ -27,7 +28,7 @@ function(sidemantic_detect_apis)
         endif()
     endforeach()
     if(NOT SIDEMANTIC_HOST_API STREQUAL host_api)
-        foreach(api TOKEN_PARSE_FN NEW_IDENTIFIER_API NEW_EXPRESSION_API QUALIFIED_TABLE_API BUILTIN_PARSER_OPTIONS LITERAL_API GRAMMAR_EXTENSION)
+        foreach(api TOKEN_PARSE_FN NEW_IDENTIFIER_API NEW_EXPRESSION_API QUALIFIED_TABLE_API BUILTIN_PARSER_OPTIONS LITERAL_API GRAMMAR_EXTENSION INSERT_QUERY_NODE)
             unset(SIDEMANTIC_${api} CACHE)
         endforeach()
         set(SIDEMANTIC_HOST_API "${host_api}" CACHE INTERNAL "DuckDB headers used for compatibility probes" FORCE)
@@ -62,6 +63,10 @@ function(sidemantic_detect_apis)
         #include <duckdb/parser/expression/constant_expression.hpp>
         void probe() { duckdb::ConstantExpression::String(duckdb::string()); }
     " SIDEMANTIC_LITERAL_API)
+    check_cxx_source_compiles("
+        #include <duckdb/parser/statement/insert_statement.hpp>
+        void probe(duckdb::InsertStatement &stmt) { (void)stmt.node->select_statement; }
+    " SIDEMANTIC_INSERT_QUERY_NODE)
     check_cxx_source_compiles("
         #include <duckdb/parser/grammar_extension.hpp>
         #include <duckdb/parser/peg/compiled_grammar.hpp>

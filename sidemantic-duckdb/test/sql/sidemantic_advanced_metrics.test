@@ -1,0 +1,130 @@
+# name: test/sql/sidemantic_advanced_metrics.test
+# description: Advanced metrics execute over real rows through the native extension
+# group: [sidemantic]
+
+require sidemantic
+
+statement ok
+CREATE TABLE metric_sales (id INTEGER, day DATE, category VARCHAR, amount INTEGER);
+
+statement ok
+INSERT INTO metric_sales VALUES
+  (1, '2024-01-01', 'A', 10), (2, '2024-01-02', 'A', 30),
+  (3, '2024-02-01', 'A', 60), (4, '2024-04-01', 'A', 100),
+  (5, '2024-01-01', 'B', 20), (6, '2024-02-01', 'B', 10);
+
+statement ok
+SELECT * FROM sidemantic_load('
+models:
+  - name: sales_metrics
+    table: metric_sales
+    primary_key: id
+    dimensions:
+      - {name: day, type: time}
+      - {name: category, type: categorical}
+    metrics:
+      - {name: revenue, agg: sum, sql: amount}
+      - {name: orders, agg: count}
+      - {name: doubled, type: derived, sql: "revenue * 2"}
+      - {name: average_order, type: ratio, numerator: revenue, denominator: orders}
+      - {name: running, type: cumulative, base_metric: revenue}
+      - {name: month_change, type: time_comparison, base_metric: revenue, comparison_type: mom, calculation: difference}
+');
+
+query TIR
+SEMANTIC SELECT s.category, s.doubled, s.average_order FROM sales_metrics s ORDER BY s.category;
+----
+A	400	50.000
+B	60	15.000
+
+# Running totals partition by category. Calendar comparisons must not substitute
+# February for the missing March value when evaluating April.
+query TTII
+SEMANTIC SELECT s.category, s.day__month, s.running, s.month_change FROM sales_metrics s ORDER BY s.category, s.day__month;
+----
+A	2024-01-01 00:00:00	40	NULL
+A	2024-02-01 00:00:00	100	20
+A	2024-04-01 00:00:00	200	NULL
+B	2024-01-01 00:00:00	20	NULL
+B	2024-02-01 00:00:00	30	-10
+
+statement ok
+CREATE TABLE metric_events (id INTEGER, user_id VARCHAR, event_type VARCHAR, event_date DATE, region VARCHAR, platform VARCHAR);
+
+statement ok
+INSERT INTO metric_events VALUES
+  (1, 'u1', 'signup', '2024-01-01', 'US', 'web'),
+  (2, 'u1', 'purchase', '2024-01-02', 'US', 'app'),
+  (3, 'u1', 'active', '2024-01-02', 'US', 'app'),
+  (4, 'u2', 'signup', '2024-01-01', 'US', 'web'),
+  (5, 'u2', 'purchase', '2024-01-10', 'US', 'web'),
+  (6, 'u2', 'active', '2024-01-03', 'US', 'web'),
+  (7, 'u3', 'signup', '2024-01-01', 'CA', 'web');
+
+statement ok
+SELECT * FROM sidemantic_load('
+models:
+  - name: event_metrics
+    table: metric_events
+    primary_key: id
+    dimensions:
+      - {name: user_id, type: categorical}
+      - {name: event_type, type: categorical}
+      - {name: event_date, type: time}
+      - {name: region, type: categorical}
+      - {name: platform, type: categorical}
+    metrics:
+      - name: purchase_conversion
+        type: conversion
+        entity: user_id
+        base_event: signup
+        conversion_event: purchase
+        conversion_window: 7 days
+      - name: active_retention
+        type: retention
+        entity: user_id
+        cohort_event: "event_type = ''signup''"
+        activity_event: "event_type = ''active''"
+        periods: 7
+        retention_granularity: day
+      - name: multiple_platforms
+        type: cohort
+        agg: count
+        entity: user_id
+        inner_metrics:
+          - {name: platform_count, agg: count_distinct, sql: platform}
+        having: platform_count >= 2
+');
+
+query TR
+SEMANTIC SELECT e.region, e.purchase_conversion FROM event_metrics e ORDER BY e.region;
+----
+CA	0.000
+US	0.500
+
+# Retention returns a table and is covered by the structured host contract suite.
+statement error
+SEMANTIC SELECT event_metrics.active_retention FROM event_metrics;
+----
+returns a table
+
+query I
+SEMANTIC SELECT event_metrics.multiple_platforms FROM event_metrics;
+----
+1
+
+# Invalid user inputs are fallible SQL errors, never internal DuckDB errors.
+statement error
+SELECT sidemantic_compile_semantic_input('{}', '{}');
+----
+SemanticInput failed:
+
+query I
+SELECT try(sidemantic_compile_semantic_input('{}', '{}')) IS NULL;
+----
+true
+
+query I
+SELECT try(sidemantic_rewrite_semantic_input('{}', 'SELECT 1', '{}')) IS NULL;
+----
+true

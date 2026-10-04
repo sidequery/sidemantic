@@ -167,12 +167,17 @@ static void LoadInternal(ExtensionLoader &loader) {
 
     auto rewrite = ScalarFunction("sidemantic_rewrite_sql", {LogicalType::VARCHAR}, LogicalType::VARCHAR, RewriteFunction);
     rewrite.SetStability(FunctionStability::VOLATILE);
+    rewrite.SetFallible();
     loader.RegisterFunction(rewrite);
-    loader.RegisterFunction(ScalarFunction("sidemantic_compile_semantic_input",
-        {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR, SidemanticCompileSemanticInputFunction));
-    loader.RegisterFunction(ScalarFunction("sidemantic_rewrite_semantic_input",
+    auto compile_input = ScalarFunction("sidemantic_compile_semantic_input",
+        {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR, SidemanticCompileSemanticInputFunction);
+    compile_input.SetFallible();
+    loader.RegisterFunction(compile_input);
+    auto rewrite_input = ScalarFunction("sidemantic_rewrite_semantic_input",
         {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
-        SidemanticRewriteSemanticInputFunction));
+        SidemanticRewriteSemanticInputFunction);
+    rewrite_input.SetFallible();
+    loader.RegisterFunction(rewrite_input);
 }
 
 void SidemanticExtension::Load(ExtensionLoader &loader) { LoadInternal(loader); }

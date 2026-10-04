@@ -37,6 +37,18 @@ SidemanticSnapshotResult sidemantic_snapshot_apply(const char *snapshot, const c
                                                   const char *operation, const char *content, bool replace);
 void sidemantic_free_snapshot_result(SidemanticSnapshotResult result);
 
+/* Import host-authorized UTF-8 contents without accessing files or environment.
+ * Directory imports retain cross-file inheritance and relationship inference.
+ * Inputs are borrowed for the call; free the returned snapshot normally.
+ */
+typedef struct {
+    const char *path;
+    const char *content;
+} SidemanticSource;
+
+SidemanticSnapshotResult sidemantic_snapshot_load_sources(const char *snapshot, const SidemanticSource *sources,
+                                                         size_t count, bool directory);
+
 /* Direct rewrite after the host has identified semantic field references.
  * Returns compiler errors instead of falling back to ordinary SQL.
  */

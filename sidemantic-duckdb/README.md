@@ -10,6 +10,7 @@ A DuckDB extension that adds a SQL-first semantic layer. Define metrics and dime
 - **Fan-out Protection**: Uses model keys to protect supported aggregations against duplicated rows from joins
 - **Definition Files**: Load native YAML, Cube.js YAML, and native SQL definition files
 - **Transactional Definitions**: Commit and roll back model changes with DuckDB transactions
+- **SQL Containers**: Use semantic queries in views, `CREATE TABLE AS`, and `INSERT ... SELECT`
 - **Native PEG Grammar**: Composable grammar on the pinned Cyanoptera development build, with a DuckDB 1.5.6 compatibility frontend
 
 ## Installation
@@ -97,7 +98,7 @@ SQL and do not change models loaded through the session APIs.
 
 ```sql
 select sidemantic_compile_semantic_input(
-    '{"version":1,"models":[{"name":"sales","table":"orders","primary_key":"order_id",
+    '{"version":1,"input_dialect":"duckdb","models":[{"name":"sales","table":"orders","primary_key":"order_id",
       "metrics":[{"name":"revenue","agg":"sum","sql":"amount"}]}]}',
     '{"metrics":["sales.revenue"]}'
 );
@@ -345,6 +346,32 @@ SELECT * FROM sidemantic_load_file('/path/to/orders.sql');
 SELECT * FROM sidemantic_load_file('/path/to/models/');
 ```
 
+File imports use DuckDB's filesystem and obey `enable_external_access`,
+`allowed_paths`, `allowed_directories`, and `disabled_filesystems`. Directory
+imports resolve inheritance across files and apply atomically. SQL-host imports
+treat YAML values literally; they do not expand process environment variables.
+
+### Views, tables, and inserts
+
+Prefix the complete statement with `SEMANTIC` to work with either parser frontend:
+
+```sql
+SEMANTIC CREATE VIEW revenue_by_status AS
+SELECT orders_model.status, orders_model.revenue FROM orders_model;
+
+SEMANTIC CREATE TABLE revenue_snapshot AS
+SELECT orders_model.status, orders_model.revenue FROM orders_model;
+
+SEMANTIC INSERT INTO revenue_snapshot
+SELECT orders_model.status, orders_model.revenue FROM orders_model;
+```
+
+DuckDB retains control of destination columns, `RETURNING`, transactions, and
+read-only restrictions. Prepared inserts accept query parameters. `EXPLAIN`
+plans the statement without executing it. Views persist the compiled SQL at
+creation time, so replacing a metric does not silently change an existing view;
+recreate the view to use the new definition.
+
 ### YAML Format Reference
 
 ```yaml
@@ -451,19 +478,20 @@ rows, including equal-valued metrics on distinct customers.
 
 ## Current support boundaries
 
-- The query frontend handles top-level `SELECT`, `PREPARE`, and `EXPLAIN`.
-  Semantic references inside `CREATE VIEW`, `CREATE TABLE AS`, and `INSERT ... SELECT`
-  are not automatically rewritten. Compile SQL explicitly before embedding it in
-  those statements.
+- The query frontend handles `SELECT`, `CREATE VIEW`, `CREATE TABLE AS`, and
+  `INSERT ... SELECT`, including `PREPARE` and `EXPLAIN` wrappers. Use the
+  `SEMANTIC` prefix when another extension takes priority for ordinary SQL.
 - Semantic definitions support creation, replacement, loading, and active-model
   selection. There is no `DROP MODEL`, `ALTER MODEL`, or item-removal SQL interface.
 - Semantic queries support a subset of DuckDB SQL. Correlated semantic subqueries
   and grouping modifiers such as `ROLLUP` are rejected; explicit `GROUP BY` must
   repeat the selected semantic dimensions.
-- Derived, ratio, cumulative, time-comparison, conversion, retention, and cohort
-  metrics exist in the Rust engine. Their DuckDB-extension integration coverage is
-  narrower than the Rust test suite; this extension does not establish full parity
-  with every Python adapter or API.
+- Native execution tests cover derived, ratio, cumulative, time-comparison,
+  conversion, retention, and cohort metrics. Retention produces a table with
+  cohort date, elapsed periods, active users, cohort size, and retention percentage;
+  use `sidemantic_compile_semantic_input` and execute its returned SQL. A scalar projection such as
+  `SEMANTIC SELECT events.retention FROM events` is rejected. These contracts
+  do not establish full parity with every Python adapter or API.
 - DuckDB 1.5.6 uses the compatibility frontend. Native PEG support is tested against
   the pinned 2.x commit, not an arbitrary future 2.x build. Rust still parses model
   properties and compiles semantic queries.

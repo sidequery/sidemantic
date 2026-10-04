@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{
     load_from_directory_with_metadata, load_from_file_with_metadata,
-    load_from_sql_string_with_metadata, load_literal_yaml_with_metadata, parse_sql_model,
+    load_from_sql_string_with_metadata, load_literal_sources_with_metadata,
+    load_literal_yaml_with_metadata, parse_sql_model, LoadedGraphMetadata,
 };
 use crate::core::{Metric, Model, Parameter, SemanticGraph, TableCalculation};
 use crate::sql::QueryRewriter;
@@ -183,6 +184,94 @@ pub struct SidemanticSnapshotResult {
     pub error: *mut c_char,
 }
 
+fn merge_loaded(snapshot: &str, loaded: LoadedGraphMetadata) -> CatalogResult<(String, String)> {
+    let mut merged = Snapshot::parse(snapshot)?;
+    merged.merge(Snapshot::from_graph(&loaded.graph));
+    let graph = merged.into_graph()?;
+    let snapshot =
+        serde_json::to_string(&Snapshot::from_graph(&graph)).map_err(|e| e.to_string())?;
+    let active = active_model_for_loaded_models(&loaded.model_order).unwrap_or_default();
+    Ok((snapshot, active))
+}
+
+fn snapshot_result(
+    operation: impl FnOnce() -> CatalogResult<(String, String)>,
+) -> SidemanticSnapshotResult {
+    let result = guard(|| {
+        let (snapshot, active_model) = operation()?;
+        let snapshot =
+            CString::new(snapshot).map_err(|_| "snapshot contains a NUL byte".to_string())?;
+        let active_model =
+            CString::new(active_model).map_err(|_| "model name contains a NUL byte".to_string())?;
+        Ok((snapshot, active_model))
+    });
+    match result {
+        Ok((snapshot, active_model)) => SidemanticSnapshotResult {
+            snapshot: snapshot.into_raw(),
+            active_model: active_model.into_raw(),
+            error: ptr::null_mut(),
+        },
+        Err(error) => SidemanticSnapshotResult {
+            snapshot: ptr::null_mut(),
+            active_model: ptr::null_mut(),
+            error: semantic_error(error),
+        },
+    }
+}
+
+#[repr(C)]
+pub struct SidemanticSource {
+    pub path: *const c_char,
+    pub content: *const c_char,
+}
+
+/// Import bytes already read and authorized by the embedding host.
+#[no_mangle]
+pub extern "C" fn sidemantic_snapshot_load_sources(
+    snapshot: *const c_char,
+    sources: *const SidemanticSource,
+    count: usize,
+    directory: bool,
+) -> SidemanticSnapshotResult {
+    snapshot_result(|| {
+        if sources.is_null() && count != 0 {
+            return Err("null sources pointer".into());
+        }
+        let sources = if count == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(sources, count) }
+        };
+        let sources = sources
+            .iter()
+            .map(|source| {
+                Ok((
+                    required_arg(source.path, "source path")?,
+                    required_arg(source.content, "source content")?,
+                ))
+            })
+            .collect::<CatalogResult<Vec<_>>>()?;
+        let loaded = if directory {
+            load_literal_sources_with_metadata(sources)
+        } else {
+            let [(path, content)] = sources.as_slice() else {
+                return Err("a single-file import requires exactly one source".into());
+            };
+            if Path::new(path)
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("sql"))
+            {
+                load_from_sql_string_with_metadata(content)
+            } else {
+                load_literal_yaml_with_metadata(content)
+            }
+        }
+        .map_err(|error| error.to_string())?;
+        merge_loaded(&optional_arg(snapshot, "snapshot")?, loaded)
+    })
+}
+
 fn apply(
     snapshot: &str,
     active_model: &str,
@@ -228,10 +317,7 @@ fn apply(
                 _ => load_from_file_with_metadata(content),
             }
             .map_err(|e| e.to_string())?;
-            let mut merged = Snapshot::from_graph(&state.graph);
-            merged.merge(Snapshot::from_graph(&loaded.graph));
-            state.graph = merged.into_graph()?;
-            state.active_model = active_model_for_loaded_models(&loaded.model_order);
+            return merge_loaded(snapshot, loaded);
         }
         _ => return Err(format!("unknown catalog operation '{operation}'")),
     }
@@ -254,32 +340,15 @@ pub extern "C" fn sidemantic_snapshot_apply(
     content: *const c_char,
     replace: bool,
 ) -> SidemanticSnapshotResult {
-    let result = guard(|| {
-        let (snapshot, active_model) = apply(
+    snapshot_result(|| {
+        apply(
             &optional_arg(snapshot, "snapshot")?,
             &optional_arg(active_model, "active_model")?,
             &required_arg(operation, "operation")?,
             &required_arg(content, "content")?,
             replace,
-        )?;
-        let snapshot =
-            CString::new(snapshot).map_err(|_| "snapshot contains a NUL byte".to_string())?;
-        let active_model =
-            CString::new(active_model).map_err(|_| "model name contains a NUL byte".to_string())?;
-        Ok((snapshot, active_model))
-    });
-    match result {
-        Ok((snapshot, active_model)) => SidemanticSnapshotResult {
-            snapshot: snapshot.into_raw(),
-            active_model: active_model.into_raw(),
-            error: ptr::null_mut(),
-        },
-        Err(error) => SidemanticSnapshotResult {
-            snapshot: ptr::null_mut(),
-            active_model: ptr::null_mut(),
-            error: semantic_error(error),
-        },
-    }
+        )
+    })
 }
 
 #[no_mangle]
@@ -470,6 +539,104 @@ mod tests {
             false,
         )
         .unwrap()
+    }
+
+    fn load_sources(
+        snapshot: &str,
+        sources: &[(&str, &str)],
+        directory: bool,
+    ) -> CatalogResult<(String, String)> {
+        let snapshot = CString::new(snapshot).unwrap();
+        let strings: Vec<_> = sources
+            .iter()
+            .map(|(path, content)| {
+                (
+                    CString::new(*path).unwrap(),
+                    CString::new(*content).unwrap(),
+                )
+            })
+            .collect();
+        let inputs: Vec<_> = strings
+            .iter()
+            .map(|(path, content)| SidemanticSource {
+                path: path.as_ptr(),
+                content: content.as_ptr(),
+            })
+            .collect();
+        take_apply(sidemantic_snapshot_load_sources(
+            snapshot.as_ptr(),
+            inputs.as_ptr(),
+            inputs.len(),
+            directory,
+        ))
+    }
+
+    #[test]
+    fn host_sources_preserve_directory_semantics_without_files_or_environment() {
+        let sources = [
+            ("child.yml", "models:\n  - name: child\n    extends: parent\n    table: child_rows\n"),
+            ("parent.yaml", "models:\n  - name: parent\n    table: '${SIDEMANTIC_HOST_IMPORT_TEST:-not_expanded}'\n    primary_key: id\n    metrics:\n      - name: revenue\n        agg: sum\n        sql: amount\n"),
+            ("events.SQL", "MODEL (name events, table raw_events, primary_key id); METRIC rows AS COUNT(*);"),
+        ];
+        let (snapshot, active) = load_sources("", &sources, true).unwrap();
+        assert!(active.is_empty());
+        let graph = Snapshot::parse(&snapshot).unwrap().into_graph().unwrap();
+        assert_eq!(graph.models().count(), 3);
+        assert!(graph
+            .get_model("child")
+            .unwrap()
+            .get_metric("revenue")
+            .is_some());
+        assert_eq!(
+            graph.get_model("parent").unwrap().table_name(),
+            "${SIDEMANTIC_HOST_IMPORT_TEST:-not_expanded}"
+        );
+        assert!(rewrite(&snapshot, "SELECT events.rows FROM events")
+            .unwrap()
+            .contains("COUNT("));
+        let (single, active) = load_sources("", &sources[2..], false).unwrap();
+        assert_eq!(active, "events");
+        assert_eq!(Snapshot::parse(&single).unwrap().models.len(), 1);
+        assert!(load_sources(&snapshot, &[("broken.yml", "models: [")], true).is_err());
+        assert_eq!(Snapshot::parse(&snapshot).unwrap().models.len(), 3);
+    }
+
+    #[test]
+    fn host_source_boundary_rejects_missing_inputs() {
+        assert!(take_apply(sidemantic_snapshot_load_sources(
+            ptr::null(),
+            ptr::null(),
+            1,
+            true
+        ))
+        .is_err());
+        assert!(take_apply(sidemantic_snapshot_load_sources(
+            ptr::null(),
+            ptr::null(),
+            0,
+            false
+        ))
+        .is_err());
+        let (snapshot, active) = take_apply(sidemantic_snapshot_load_sources(
+            ptr::null(),
+            ptr::null(),
+            0,
+            true,
+        ))
+        .unwrap();
+        assert!(active.is_empty());
+        assert!(Snapshot::parse(&snapshot).unwrap().models.is_empty());
+        let invalid = SidemanticSource {
+            path: ptr::null(),
+            content: ptr::null(),
+        };
+        assert!(take_apply(sidemantic_snapshot_load_sources(
+            ptr::null(),
+            &invalid,
+            1,
+            true
+        ))
+        .is_err());
     }
 
     #[test]

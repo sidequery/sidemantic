@@ -24,15 +24,63 @@ SELECT count(*) FROM sidemantic_models() WHERE model_name = 'temp_orders';
 load __TEST_DIR__/sidemantic_invalid_persistence.duckdb
 
 statement ok
+CREATE TABLE ordinary_data (value INTEGER);
+
+statement ok
+INSERT INTO ordinary_data VALUES (7);
+
+statement ok
 COPY (SELECT 'MODEL (' AS line) TO '__TEST_DIR__/sidemantic_invalid_persistence.sidemantic.sql' (HEADER false);
 
 restart
 
-require sidemantic
+# Availability was checked above. An explicit LOAD makes a regression fail
+# instead of allowing the test runner to skip the remaining assertions.
+statement ok
+LOAD sidemantic;
 
-# LOAD only registers the extension. Legacy validation happens when definitions
-# are first accessed, without creating or replacing native catalog entries.
+query I
+SELECT 42;
+----
+42
+
+query I
+SELECT value FROM ordinary_data;
+----
+7
+
+statement ok
+DESCRIBE ordinary_data;
+
+# LOAD only registers the extension. Legacy validation errors are reported when
+# definitions are accessed, without creating or replacing native catalog entries.
 statement error
 SELECT * FROM sidemantic_models();
 ----
 Sidemantic
+
+statement error
+SHOW MODELS;
+----
+Sidemantic
+
+statement error
+SELECT broken_model.revenue FROM broken_model;
+----
+Sidemantic
+
+statement ok
+BEGIN;
+
+statement error
+SEMANTIC SELECT broken_model.revenue FROM broken_model;
+----
+Sidemantic
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT value FROM ordinary_data;
+----
+7

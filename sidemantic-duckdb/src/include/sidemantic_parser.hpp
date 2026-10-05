@@ -33,6 +33,7 @@ ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *, const string 
 ParserExtensionPlanResult sidemantic_plan(ParserExtensionInfo *, ClientContext &,
                                          unique_ptr<ParserExtensionParseData>);
 BoundStatement sidemantic_bind(ClientContext &, Binder &, OperatorExtensionInfo *, SQLStatement &);
+void RegisterSidemanticRouting(DatabaseInstance &db);
 
 struct SidemanticParserExtension : ParserExtension {
     SidemanticParserExtension() {

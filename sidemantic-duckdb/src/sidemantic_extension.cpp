@@ -160,6 +160,7 @@ static void LoadInternal(ExtensionLoader &loader) {
     parser.parser_info = RegisterSidemanticGrammar(db);
     ParserExtension::Register(config, parser);
     OperatorExtension::Register(config, make_shared_ptr<SidemanticOperatorExtension>());
+    RegisterSidemanticRouting(db);
 
     loader.RegisterFunction(TableFunction("sidemantic_load", {LogicalType::VARCHAR}, LoadFunction, LoadBind<false>, LoadInit));
     loader.RegisterFunction(TableFunction("sidemantic_load_file", {LogicalType::VARCHAR}, LoadFunction, LoadBind<true>, LoadInit));

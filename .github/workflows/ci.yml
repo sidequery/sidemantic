@@ -783,7 +783,9 @@ jobs:
         env:
           SIDEMANTIC_DUCKDB_BINARY: sidemantic-duckdb/build/release/duckdb
           SIDEMANTIC_DUCKDB_EXTENSION: sidemantic-duckdb/build/release/extension/sidemantic/sidemantic.duckdb_extension
-        run: uv run sidemantic-duckdb/test/test_semantic_input_host.py
+        run: |
+          uv run sidemantic-duckdb/test/test_semantic_input_host.py
+          uv run sidemantic-duckdb/test/test_catalog_host.py
 
       - name: Save completed build caches
         if: ${{ !cancelled() }}

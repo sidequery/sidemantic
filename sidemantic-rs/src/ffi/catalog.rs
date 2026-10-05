@@ -21,9 +21,11 @@ use crate::core::{Metric, Model, Parameter, SemanticGraph, TableCalculation};
 use crate::sql::QueryRewriter;
 
 use super::{
-    active_model_for_loaded_models, add_item_definition, semantic_error, semantic_result,
-    sidemantic_free, FfiState, SidemanticRewriteResult,
+    active_model_for_loaded_models, semantic_error, semantic_result, sidemantic_free, FfiState,
+    SidemanticRewriteResult,
 };
+
+mod api;
 
 type CatalogResult<T> = Result<T, String>;
 
@@ -272,6 +274,645 @@ pub extern "C" fn sidemantic_snapshot_load_sources(
     })
 }
 
+// DROP operates on declarations, then reconstructs all indexes before publishing.
+// The boolean slot in snapshot_apply means IF EXISTS for drop operations.
+fn drop_definition(
+    original: &str,
+    active: &str,
+    kind: &str,
+    content: &str,
+    if_exists: bool,
+) -> CatalogResult<(String, String)> {
+    let mut snapshot = Snapshot::parse(original)?;
+    let names: Vec<String> = serde_json::from_str(content).map_err(|e| e.to_string())?;
+    let (model_name, field) =
+        match (kind, names.as_slice()) {
+            ("model", [model]) => (model.as_str(), None),
+            ("metric" | "dimension" | "segment", [model, field]) => {
+                (model.as_str(), Some(field.as_str()))
+            }
+            ("metric" | "dimension" | "segment", [field]) if !active.is_empty() => {
+                (active, Some(field.as_str()))
+            }
+            _ => return Err(
+                "DROP requires a model name or a qualified model.field name (or an active model)"
+                    .into(),
+            ),
+        };
+    let missing = || {
+        if if_exists {
+            Ok((original.to_owned(), active.to_owned()))
+        } else {
+            Err(format!("{kind} '{}' not found", names.join(".")))
+        }
+    };
+    let Some(index) = snapshot
+        .models
+        .iter()
+        .position(|m| m.name.eq_ignore_ascii_case(model_name))
+    else {
+        return missing();
+    };
+    let model = &snapshot.models[index];
+    let canonical_field = match kind {
+        "metric" => model
+            .metrics
+            .iter()
+            .map(|f| &f.name)
+            .find(|n| n.eq_ignore_ascii_case(field.unwrap())),
+        "dimension" => model
+            .dimensions
+            .iter()
+            .map(|f| &f.name)
+            .find(|n| n.eq_ignore_ascii_case(field.unwrap())),
+        "segment" => model
+            .segments
+            .iter()
+            .map(|f| &f.name)
+            .find(|n| n.eq_ignore_ascii_case(field.unwrap())),
+        _ => None,
+    };
+    if field.is_some() && canonical_field.is_none() {
+        return missing();
+    }
+    let target_model = model.clone();
+    let target_field = canonical_field.cloned();
+    if let Some(field) = &target_field {
+        let model = &mut snapshot.models[index];
+        match kind {
+            "metric" => model.metrics.retain(|f| &f.name != field),
+            "dimension" => model.dimensions.retain(|f| &f.name != field),
+            "segment" => model.segments.retain(|f| &f.name != field),
+            _ => unreachable!(),
+        }
+    } else {
+        snapshot.models.remove(index);
+    }
+    restrict_drop(&snapshot, &target_model, target_field.as_deref())?;
+    let graph = snapshot.into_graph()?;
+    let json = serde_json::to_string(&Snapshot::from_graph(&graph)).map_err(|e| e.to_string())?;
+    let active = if target_field.is_none() && active.eq_ignore_ascii_case(&target_model.name) {
+        ""
+    } else {
+        active
+    };
+    Ok((json, active.to_owned()))
+}
+
+fn restrict_drop(
+    snapshot: &Snapshot,
+    removed_model: &Model,
+    target_field: Option<&str>,
+) -> CatalogResult<()> {
+    let target_model = removed_model.name.as_str();
+    let target = target_field.map_or_else(
+        || target_model.to_owned(),
+        |f| format!("{target_model}.{f}"),
+    );
+    let matches = |model: Option<&str>, field: &str, context: Option<&str>, bare: bool| {
+        let field_matches = target_field.is_none_or(|target| target.eq_ignore_ascii_case(field));
+        field_matches
+            && match model {
+                Some(model) => model.eq_ignore_ascii_case(target_model),
+                None => {
+                    bare && match context {
+                        Some(model) => model.eq_ignore_ascii_case(target_model),
+                        None => removed_model
+                            .metrics
+                            .iter()
+                            .map(|f| &f.name)
+                            .chain(removed_model.dimensions.iter().map(|f| &f.name))
+                            .chain(removed_model.segments.iter().map(|f| &f.name))
+                            .any(|name| name.eq_ignore_ascii_case(field)),
+                    }
+                }
+            }
+    };
+    let reject = |owner: &str| {
+        Err(format!(
+            "cannot drop '{target}': dependent definition '{owner}' (RESTRICT)"
+        ))
+    };
+    let reference = |value: &str, context: Option<&str>, owner: &str| -> CatalogResult<()> {
+        let (model, field) = value
+            .rsplit_once('.')
+            .map_or((None, value), |(m, f)| (Some(m), f));
+        if matches(model, field, context, true) {
+            reject(owner)
+        } else {
+            Ok(())
+        }
+    };
+    let expression =
+        |sql: &str, context: Option<&str>, bare: bool, owner: &str| -> CatalogResult<()> {
+            // These documented row-alias placeholders are physical references.
+            // Other templates remain unprovable and are rejected explicitly.
+            let sql = sql
+                .replace("{model}", "__physical_row")
+                .replace("${CUBE}", "__physical_row");
+            let refs = match crate::core::semantic_column_references(&sql) {
+                Ok(refs) => refs,
+                Err(_) => {
+                    if drop_sql_dependency(&sql, removed_model, target_field, context, bare, false)
+                        .map_err(|e| {
+                            format!(
+                            "cannot drop '{target}': cannot prove dependencies of '{owner}': {e}"
+                        )
+                        })?
+                    {
+                        return reject(owner);
+                    }
+                    return Ok(());
+                }
+            };
+            for column in refs {
+                // Aggregate arguments and unqualified row expressions are physical
+                // columns, even when a semantic field has the same spelling.
+                if (target_field.is_none() || !column.aggregate_input)
+                    && matches(column.model.as_deref(), &column.field, context, bare)
+                {
+                    return reject(owner);
+                }
+            }
+            Ok(())
+        };
+    let metric = |metric: &Metric, context: Option<&str>, owner: &str| -> CatalogResult<()> {
+        let semantic_expression =
+            metric.agg.is_none() || metric.agg == Some(crate::core::Aggregation::Expression);
+        for value in [
+            &metric.base_metric,
+            &metric.numerator,
+            &metric.denominator,
+            &metric.extends,
+            &metric.non_additive_dimension,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            reference(value, context, owner)?;
+        }
+        for value in [
+            &metric.entity_dimensions,
+            &metric.non_additive_window_groupings,
+            &metric.drill_fields,
+        ]
+        .into_iter()
+        .flatten()
+        .flatten()
+        {
+            reference(value, context, owner)?;
+        }
+        if let Some(sql) = metric
+            .sql
+            .as_ref()
+            .filter(|_| semantic_expression || target_field.is_none())
+        {
+            expression(sql, context, semantic_expression, owner)?;
+        }
+        for sql in metric
+            .filters
+            .iter()
+            .chain(metric.having.iter())
+            .chain(metric.window_expression.iter())
+            .chain(metric.window_order.iter())
+            .chain(metric.base_event.iter())
+            .chain(metric.conversion_event.iter())
+            .chain(metric.cohort_event.iter())
+            .chain(metric.activity_event.iter())
+            .chain(metric.steps.iter().flatten())
+        {
+            expression(sql, context, false, owner)?;
+        }
+        Ok(())
+    };
+    for model in &snapshot.models {
+        let context = Some(model.name.as_str());
+        if target_field.is_none()
+            && (model
+                .extends
+                .as_deref()
+                .is_some_and(|v| v.eq_ignore_ascii_case(target_model))
+                || model.relationships.iter().any(|r| {
+                    r.related_model().eq_ignore_ascii_case(target_model)
+                        || r.through
+                            .as_deref()
+                            .is_some_and(|v| v.eq_ignore_ascii_case(target_model))
+                }))
+        {
+            return reject(&model.name);
+        }
+        if let Some(sql) = &model.sql {
+            if drop_sql_dependency(sql, removed_model, target_field, None, false, true).map_err(
+                |e| {
+                    format!(
+                        "cannot drop '{target}': cannot prove dependencies of SQL model '{}': {e}",
+                        model.name
+                    )
+                },
+            )? {
+                return reject(&model.name);
+            }
+        }
+        if let Some(time) = &model.default_time_dimension {
+            reference(time, context, &model.name)?;
+        }
+        for dimension in &model.dimensions {
+            let owner = format!("{}.{}", model.name, dimension.name);
+            if let Some(parent) = &dimension.parent {
+                reference(parent, context, &owner)?;
+            }
+            for sql in dimension.sql.iter().chain(dimension.window.iter()) {
+                expression(sql, context, false, &owner)?;
+            }
+        }
+        for item in &model.metrics {
+            metric(item, context, &format!("{}.{}", model.name, item.name))?;
+        }
+        for segment in &model.segments {
+            expression(
+                &segment.sql,
+                context,
+                false,
+                &format!("{}.{}", model.name, segment.name),
+            )?;
+        }
+        for relationship in &model.relationships {
+            if let Some(sql) = &relationship.sql {
+                expression(
+                    sql,
+                    context,
+                    false,
+                    &format!("{}.{}", model.name, relationship.name),
+                )?;
+            }
+        }
+        for preagg in &model.pre_aggregations {
+            let owner = format!("{}.{}", model.name, preagg.name);
+            for value in preagg
+                .measures
+                .iter()
+                .flatten()
+                .chain(preagg.dimensions.iter().flatten())
+                .chain(preagg.time_dimension.iter())
+            {
+                reference(value, context, &owner)?;
+            }
+            if let Some(sql) = &preagg.sql {
+                if drop_sql_dependency(sql, removed_model, target_field, None, false, true)
+                    .map_err(|e| format!("cannot drop '{target}': cannot prove dependencies of SQL pre-aggregation '{owner}': {e}"))? {
+                    return reject(&owner);
+                }
+            }
+        }
+    }
+    for item in &snapshot.metrics {
+        metric(item, None, &item.name)?;
+    }
+    for calc in &snapshot.table_calculations {
+        for value in calc
+            .field
+            .iter()
+            .chain(calc.partition_by.iter().flatten())
+            .chain(calc.order_by.iter().flatten())
+        {
+            reference(value, None, &calc.name)?;
+        }
+        if let Some(sql) = &calc.expression {
+            expression(sql, None, true, &calc.name)?;
+        }
+    }
+    Ok(())
+}
+
+// Query dependencies need SQL scope: a physical table aliased to a model name
+// and a CTE with that name must not create semantic dependencies. The serialized
+// AST includes typed expression children omitted by polyglot's public walker.
+fn drop_sql_dependency(
+    sql: &str,
+    model: &Model,
+    field: Option<&str>,
+    context: Option<&str>,
+    bare: bool,
+    query: bool,
+) -> CatalogResult<bool> {
+    use serde_json::Value;
+    use std::collections::{HashMap, HashSet};
+
+    type Scope = HashMap<String, bool>;
+    struct References<'a> {
+        model: &'a Model,
+        field: Option<&'a str>,
+        context: Option<&'a str>,
+        bare: bool,
+    }
+    impl References<'_> {
+        fn source(&self, node: &Value, scope: &mut Scope, ctes: &HashSet<String>) -> bool {
+            if let Some(table) = node.get("table") {
+                let name = table["name"]["name"].as_str().unwrap_or("");
+                let target = table["schema"].is_null()
+                    && table["catalog"].is_null()
+                    && name.eq_ignore_ascii_case(&self.model.name)
+                    && !ctes.contains(&name.to_ascii_lowercase());
+                let alias = table["alias"]["name"].as_str().unwrap_or(name);
+                scope.insert(alias.to_ascii_lowercase(), target);
+                return target && self.field.is_none();
+            }
+            if let Some(subquery) = node.get("subquery") {
+                let found = self.visit(&subquery["this"], scope, ctes, false);
+                if let Some(alias) = subquery["alias"]["name"].as_str() {
+                    scope.insert(alias.to_ascii_lowercase(), false);
+                }
+                return found;
+            }
+            if let Some(alias) = node.get("alias") {
+                let mut child_scope = Scope::new();
+                let found = self.source(&alias["this"], &mut child_scope, ctes);
+                if let Some(name) = alias["alias"]["name"].as_str() {
+                    scope.insert(name.to_ascii_lowercase(), child_scope.values().any(|v| *v));
+                }
+                return found;
+            }
+            match node {
+                Value::Array(values) => {
+                    let mut found = false;
+                    for child in values {
+                        found |= self.source(child, scope, ctes);
+                    }
+                    found
+                }
+                Value::Object(values) => {
+                    let mut found = false;
+                    for child in values.values() {
+                        found |= self.source(child, scope, ctes);
+                    }
+                    found
+                }
+                _ => false,
+            }
+        }
+
+        fn visit(
+            &self,
+            node: &Value,
+            scope: &Scope,
+            ctes: &HashSet<String>,
+            aggregate: bool,
+        ) -> bool {
+            let Value::Object(fields) = node else {
+                return node.as_array().is_some_and(|children| {
+                    children
+                        .iter()
+                        .any(|child| self.visit(child, scope, ctes, aggregate))
+                });
+            };
+            let mut ctes = ctes.clone();
+            if let Some(with) = fields.get("with").filter(|value| !value.is_null()) {
+                for cte in with["ctes"].as_array().into_iter().flatten() {
+                    let name = cte["alias"]["name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    if with["recursive"].as_bool() == Some(true) {
+                        ctes.insert(name.clone());
+                    }
+                    if self.visit(&cte["this"], scope, &ctes, false) {
+                        return true;
+                    }
+                    ctes.insert(name);
+                }
+            }
+            if let Some(select) = fields.get("select") {
+                // Process WITH before collecting sources so CTEs shadow model names.
+                let mut select = select.clone();
+                if let Some(with) = select.get_mut("with") {
+                    if let Some(definitions) = with["ctes"].as_array() {
+                        for cte in definitions {
+                            let name = cte["alias"]["name"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_ascii_lowercase();
+                            if with["recursive"].as_bool() == Some(true) {
+                                ctes.insert(name.clone());
+                            }
+                            if self.visit(&cte["this"], scope, &ctes, false) {
+                                return true;
+                            }
+                            ctes.insert(name);
+                        }
+                    }
+                    *with = Value::Null;
+                }
+                let mut scope = scope.clone();
+                if self.source(&select["from"], &mut scope, &ctes) {
+                    return true;
+                }
+                for join in select["joins"].as_array().into_iter().flatten() {
+                    if self.source(&join["this"], &mut scope, &ctes) {
+                        return true;
+                    }
+                }
+                return self.visit(&select, &scope, &ctes, false);
+            }
+            let aggregate = aggregate
+                || crate::core::is_aggregate_ast_node(node)
+                || fields.contains_key("window")
+                || fields.contains_key("window_function");
+            if let Some(column) = fields.get("column") {
+                let name = column["name"]["name"].as_str().unwrap_or("");
+                if self
+                    .field
+                    .is_some_and(|field| !field.eq_ignore_ascii_case(name))
+                    || (aggregate && self.field.is_some())
+                {
+                    return false;
+                }
+                if let Some(table) = column["table"]["name"].as_str() {
+                    return scope
+                        .get(&table.to_ascii_lowercase())
+                        .copied()
+                        .unwrap_or_else(|| {
+                            table.eq_ignore_ascii_case(&self.model.name)
+                                && !ctes.contains(&table.to_ascii_lowercase())
+                        });
+                }
+                if !scope.is_empty() {
+                    return scope.values().any(|target| *target);
+                }
+                return self.bare
+                    && self.context.map_or_else(
+                        || {
+                            self.model
+                                .metrics
+                                .iter()
+                                .any(|f| f.name.eq_ignore_ascii_case(name))
+                                || self
+                                    .model
+                                    .dimensions
+                                    .iter()
+                                    .any(|f| f.name.eq_ignore_ascii_case(name))
+                                || self
+                                    .model
+                                    .segments
+                                    .iter()
+                                    .any(|f| f.name.eq_ignore_ascii_case(name))
+                        },
+                        |context| context.eq_ignore_ascii_case(&self.model.name),
+                    );
+            }
+            if fields.contains_key("star") && !aggregate {
+                return scope.values().any(|target| *target);
+            }
+            fields
+                .iter()
+                .filter(|(key, _)| key.as_str() != "with")
+                .any(|(_, child)| self.visit(child, scope, &ctes, aggregate))
+        }
+    }
+    let input = if query {
+        sql.to_owned()
+    } else {
+        format!("SELECT {sql}")
+    };
+    match crate::semantic_input::dialects::parse(&input, polyglot_sql::DialectType::DuckDB) {
+        Ok(ast) => {
+            let ast = serde_json::to_value(ast).map_err(|e| e.to_string())?;
+            Ok(References {
+                model,
+                field,
+                context,
+                bare,
+            }
+            .visit(&ast, &Scope::new(), &HashSet::new(), false))
+        }
+        Err(error) => {
+            // Unsupported syntax cannot establish a dependency, but must not
+            // freeze unrelated definitions. Tokenize only to decide whether the
+            // unresolved scope could mention this target; never accept it as a
+            // proven dependency or scan literals/comments as identifiers.
+            use polyglot_sql::tokens::TokenType;
+            let tokens = polyglot_sql::Dialect::get(polyglot_sql::DialectType::DuckDB)
+                .tokenize(sql)
+                .map_err(|e| e.to_string())?;
+            let identifier = |name: &str| {
+                tokens.iter().any(|token| {
+                    matches!(
+                        token.token_type,
+                        TokenType::Identifier | TokenType::QuotedIdentifier | TokenType::Var
+                    ) && token.text.eq_ignore_ascii_case(name)
+                })
+            };
+            let model_mentioned = identifier(&model.name);
+            let in_context =
+                context.is_none_or(|context| context.eq_ignore_ascii_case(&model.name));
+            let possible = field.map_or(model_mentioned, |field| {
+                (identifier(field) && (model_mentioned || bare && in_context))
+                    || model_mentioned
+                        && tokens
+                            .iter()
+                            .any(|token| token.token_type == TokenType::Star)
+            });
+            if possible {
+                Err(error.to_string())
+            } else {
+                Ok(false)
+            }
+        }
+    }
+}
+
+// Read a declaration identifier without splitting quoted names on dots/spaces.
+fn declaration_identifier(input: &str) -> Option<(String, &str)> {
+    let input = input.trim_start();
+    let first = input.chars().next()?;
+    if matches!(first, '\'' | '"' | '`') {
+        let mut value = String::new();
+        let mut chars = input.char_indices().skip(1).peekable();
+        while let Some((index, character)) = chars.next() {
+            if character == first {
+                if chars.peek().is_some_and(|(_, next)| *next == first) {
+                    chars.next();
+                    value.push(first);
+                } else {
+                    return Some((value, &input[index + character.len_utf8()..]));
+                }
+            } else {
+                value.push(character);
+            }
+        }
+        None
+    } else {
+        let end = input
+            .find(|c: char| c.is_whitespace() || matches!(c, '.' | '(' | ')' | ';'))
+            .unwrap_or(input.len());
+        (end > 0).then(|| (input[..end].to_owned(), &input[end..]))
+    }
+}
+
+fn apply_item(state: &mut FfiState, content: &str, replace: bool) -> CatalogResult<()> {
+    let (keyword, body) = declaration_identifier(content).ok_or("missing definition kind")?;
+    let mut model_name = state.active_model.clone();
+    let mut adjusted = content.to_owned();
+    let mut declared_name = None;
+    if let Some((first, remainder)) = declaration_identifier(body) {
+        let (field, rest) = if let Some(remainder) = remainder.trim_start().strip_prefix('.') {
+            let (field, rest) =
+                declaration_identifier(remainder).ok_or("missing qualified field name")?;
+            model_name = Some(first);
+            (field, rest)
+        } else {
+            (first, remainder)
+        };
+        declared_name = Some(field);
+        adjusted = if let Some(properties) = rest.trim_start().strip_prefix('(') {
+            format!("{keyword} (name __field, {properties}")
+        } else {
+            format!("{keyword} __field {rest}")
+        };
+    }
+    let model_name = model_name.ok_or("no active model; use a qualified model.field name")?;
+    let mut model = state
+        .graph
+        .models()
+        .find(|model| model.name.eq_ignore_ascii_case(&model_name))
+        .cloned()
+        .ok_or_else(|| format!("model '{model_name}' not found"))?;
+    let parsed = parse_sql_model(&format!(
+        "MODEL (name __definition, table dummy);\n{adjusted}"
+    ))
+    .map_err(|e| format!("parsing definition: {e}"))?;
+    // Preserve canonical spelling on replacement and reject case-only duplicates,
+    // matching DuckDB's identifier contract, including quoted identifiers.
+    macro_rules! merge_items {
+        ($items:ident, $kind:literal) => {
+            for mut item in parsed.$items {
+                if let Some(name) = &declared_name {
+                    item.name = name.clone();
+                }
+                if let Some(existing) = model
+                    .$items
+                    .iter()
+                    .position(|old| old.name.eq_ignore_ascii_case(&item.name))
+                {
+                    if !replace {
+                        return Err(format!("duplicate {} '{}'", $kind, item.name));
+                    }
+                    item.name = model.$items[existing].name.clone();
+                    model.$items[existing] = item;
+                } else {
+                    model.$items.push(item);
+                }
+            }
+        };
+    }
+    merge_items!(metrics, "metric");
+    merge_items!(dimensions, "dimension");
+    merge_items!(segments, "segment");
+    state
+        .graph
+        .replace_model(model)
+        .map_err(|e| format!("updating model: {e}"))
+}
+
 fn apply(
     snapshot: &str,
     active_model: &str,
@@ -279,6 +920,47 @@ fn apply(
     content: &str,
     replace: bool,
 ) -> CatalogResult<(String, String)> {
+    // DuckDB workers can have only 512 KiB of stack. Keep dependency parsing,
+    // AST walking/serialization, and graph reconstruction on the established
+    // semantic worker; nested compiler operations reuse that protected stack.
+    crate::semantic_input::with_semantic_stack(|| {
+        Ok(apply_on_semantic_worker(
+            snapshot,
+            active_model,
+            operation,
+            content,
+            replace,
+        ))
+    })
+    .map_err(|error| error.to_string())?
+}
+
+fn apply_on_semantic_worker(
+    snapshot: &str,
+    active_model: &str,
+    operation: &str,
+    content: &str,
+    replace: bool,
+) -> CatalogResult<(String, String)> {
+    if let Some(kind) = operation.strip_prefix("drop_") {
+        return drop_definition(snapshot, active_model, kind, content, replace);
+    }
+    if operation == "import" {
+        let incoming = Snapshot::parse(content)?;
+        let active = if incoming.models.len() == 1 {
+            incoming.models[0].name.clone()
+        } else {
+            String::new()
+        };
+        let incoming = Snapshot::from_graph(&incoming.into_graph()?);
+        let mut merged = Snapshot::parse(snapshot)?;
+        merged.merge(incoming);
+        let graph = merged.into_graph()?;
+        return Ok((
+            serde_json::to_string(&Snapshot::from_graph(&graph)).map_err(|e| e.to_string())?,
+            active,
+        ));
+    }
     let mut state = FfiState {
         graph: Snapshot::parse(snapshot)?.into_graph()?,
         active_model: if active_model.is_empty() {
@@ -289,7 +971,18 @@ fn apply(
     };
     match operation {
         "model" => {
-            let model = parse_sql_model(content).map_err(|e| format!("parsing definition: {e}"))?;
+            let mut model =
+                parse_sql_model(content).map_err(|e| format!("parsing definition: {e}"))?;
+            if let Some(existing) = state
+                .graph
+                .models()
+                .find(|old| old.name.eq_ignore_ascii_case(&model.name))
+            {
+                if !replace {
+                    return Err(format!("model '{}' already exists", model.name));
+                }
+                model.name = existing.name.clone();
+            }
             let name = model.name.clone();
             if replace {
                 state.graph.replace_model(model)
@@ -300,14 +993,16 @@ fn apply(
             state.active_model = Some(name);
         }
         "item" => {
-            add_item_definition(&mut state, content, replace)?;
+            apply_item(&mut state, content, replace)?;
         }
         "use" => {
             let name = content.trim();
-            if state.graph.get_model(name).is_none() {
-                return Err(format!("model '{name}' not found"));
-            }
-            state.active_model = Some(name.to_owned());
+            let model = state
+                .graph
+                .models()
+                .find(|model| model.name.eq_ignore_ascii_case(name))
+                .ok_or_else(|| format!("model '{name}' not found"))?;
+            state.active_model = Some(model.name.clone());
         }
         "yaml" | "file" | "legacy_sql" => {
             let loaded = match operation {
@@ -539,6 +1234,440 @@ mod tests {
             false,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn qualified_lifecycle_preserves_active_model_and_quoted_names() {
+        let (snapshot, _) = orders();
+        let (mut snapshot, active) = apply_ffi(
+            &snapshot,
+            "orders",
+            "model",
+            "MODEL (name other, table other_rows);",
+            false,
+        )
+        .unwrap();
+        for (kind, definition, field) in [
+            (
+                "metric",
+                "METRIC \"ORDERS\".\"Gross amount\" AS SUM(amount)",
+                "Gross amount",
+            ),
+            (
+                "dimension",
+                "DIMENSION ORDERS.\"sales.region\" AS region",
+                "sales.region",
+            ),
+            (
+                "segment",
+                "SEGMENT orders.\"Open orders\" AS status = 'open'",
+                "Open orders",
+            ),
+        ] {
+            for replace in [false, true] {
+                let result = apply_ffi(&snapshot, &active, "item", definition, replace).unwrap();
+                snapshot = result.0;
+                assert_eq!(result.1, "other");
+            }
+            let target = serde_json::to_string(&["ORDERS", field]).unwrap();
+            let result =
+                apply_ffi(&snapshot, &active, &format!("drop_{kind}"), &target, false).unwrap();
+            snapshot = result.0;
+            assert_eq!(result.1, "other");
+            assert!(
+                apply_ffi(&snapshot, &active, &format!("drop_{kind}"), &target, false)
+                    .unwrap_err()
+                    .contains("not found")
+            );
+            assert_eq!(
+                apply_ffi(&snapshot, &active, &format!("drop_{kind}"), &target, true)
+                    .unwrap()
+                    .0,
+                snapshot
+            );
+        }
+        let (snapshot, active) =
+            apply_ffi(&snapshot, &active, "drop_model", "[\"OTHER\"]", false).unwrap();
+        assert!(active.is_empty());
+        assert_eq!(Snapshot::parse(&snapshot).unwrap().models.len(), 1);
+    }
+
+    #[test]
+    fn qualified_replacement_compiles_inline_aggregates_as_grouped_calculations() {
+        let (snapshot, active) = orders();
+        let (snapshot, _) = apply_ffi(
+            &snapshot,
+            &active,
+            "item",
+            "METRIC orders.\"Gross amount\" AS SUM(amount)",
+            false,
+        )
+        .unwrap();
+        let (snapshot, _) = apply_ffi(
+            &snapshot,
+            &active,
+            "item",
+            "METRIC orders.\"Gross amount\" AS SUM(amount) * 2",
+            true,
+        )
+        .unwrap();
+        let query = "SELECT orders.\"Gross amount\" FROM orders";
+        let actual = rewrite(&snapshot, query).unwrap();
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("raw_orders")
+                    .with_metric(Metric::derived("Gross amount", "SUM(amount) * 2")),
+            )
+            .unwrap();
+        let expected = QueryRewriter::new(&graph)
+            .rewrite_with_dialect(query, polyglot_sql::DialectType::DuckDB)
+            .unwrap();
+        assert_eq!(actual, expected);
+        assert!(actual.contains("SUM("), "{actual}");
+        assert!(!actual.contains("SELECT id,"), "{actual}");
+    }
+
+    #[test]
+    fn lifecycle_dependency_parsing_runs_off_small_host_stacks() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let (snapshot, active) = orders();
+                let calculated = "METRIC orders.calculated AS
+                    SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) * 2";
+                let (snapshot, _) =
+                    apply_ffi(&snapshot, &active, "item", calculated, false).unwrap();
+                let (snapshot, _) = apply_ffi(
+                    &snapshot,
+                    &active,
+                    "item",
+                    "METRIC orders.doubled AS revenue * 2",
+                    false,
+                )
+                .unwrap();
+                // Scalar dependency analysis must reject safely on a DuckDB-sized
+                // stack, and the worker must remain usable after that error.
+                let revenue = r#"["orders","revenue"]"#;
+                let doubled = r#"["orders","doubled"]"#;
+                let calculated = r#"["orders","calculated"]"#;
+                let error =
+                    apply_ffi(&snapshot, &active, "drop_metric", revenue, false).unwrap_err();
+                assert!(error.contains("dependent definition"));
+                let (snapshot, _) =
+                    apply_ffi(&snapshot, &active, "drop_metric", doubled, false).unwrap();
+                // The SQL-source scope walker and unsupported-expression fallback
+                // use the same protected boundary, including their AST traversal.
+                let source = r#"
+models:
+  - name: source
+    sql: SELECT o.revenue FROM orders o
+    primary_key: id
+"#;
+                let (snapshot, _) = apply_ffi(&snapshot, &active, "yaml", source, false).unwrap();
+                let (snapshot, _) =
+                    apply_ffi(&snapshot, &active, "drop_metric", calculated, false).unwrap();
+                let error =
+                    apply_ffi(&snapshot, &active, "drop_metric", revenue, false).unwrap_err();
+                assert!(error.contains("source"));
+                let malformed = r#"
+models:
+  - name: unsupported
+    table: raw_other
+    primary_key: id
+    metrics:
+      - name: invalid_sql
+        type: derived
+        sql: 'unrelated_value + ('
+"#;
+                let (snapshot, _) =
+                    apply_ffi(&snapshot, &active, "yaml", malformed, false).unwrap();
+                assert!(
+                    apply_ffi(&snapshot, &active, "drop_model", r#"["source"]"#, false).is_ok()
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn drop_restrict_checks_dependencies_and_preserves_original_snapshot() {
+        let (original, active) = orders();
+        for definition in [
+            "METRIC doubled AS revenue * 2;",
+            "METRIC (name yoy, type time_comparison, base_metric revenue, comparison_type yoy);",
+            "SEGMENT valuable AS orders.revenue > 10;",
+        ] {
+            let (snapshot, _) = apply_ffi(&original, &active, "item", definition, false).unwrap();
+            let error = apply_ffi(
+                &snapshot,
+                &active,
+                "drop_metric",
+                "[\"orders\",\"revenue\"]",
+                false,
+            )
+            .unwrap_err();
+            assert!(error.contains("dependent definition"), "{error}");
+            assert!(rewrite(&snapshot, "SELECT orders.revenue FROM orders")
+                .unwrap()
+                .contains("SUM("));
+        }
+        let (snapshot, _) = apply_ffi(
+            &original,
+            &active,
+            "item",
+            "DIMENSION amount AS amount",
+            false,
+        )
+        .unwrap();
+        let (snapshot, _) = apply_ffi(
+            &snapshot,
+            &active,
+            "drop_dimension",
+            "[\"orders\",\"amount\"]",
+            false,
+        )
+        .unwrap();
+        assert!(rewrite(&snapshot, "SELECT orders.revenue FROM orders")
+            .unwrap()
+            .contains("SUM("));
+        let mut declared = Snapshot::parse(&original).unwrap();
+        declared
+            .metrics
+            .push(Metric::derived("global_total", "orders.revenue"));
+        let snapshot = serde_json::to_string(&declared).unwrap();
+        for (operation, target) in [
+            ("drop_metric", "[\"orders\",\"revenue\"]"),
+            ("drop_model", "[\"orders\"]"),
+        ] {
+            assert!(apply_ffi(&snapshot, &active, operation, target, false)
+                .unwrap_err()
+                .contains("global_total"));
+        }
+        declared.metrics.clear();
+        declared.models.push(
+            Model::new("customers", "id")
+                .with_table("raw_customers")
+                .with_relationship(crate::core::Relationship::many_to_one("orders")),
+        );
+        let snapshot = serde_json::to_string(&declared).unwrap();
+        assert!(
+            apply_ffi(&snapshot, &active, "drop_model", "[\"orders\"]", false)
+                .unwrap_err()
+                .contains("customers")
+        );
+    }
+
+    #[test]
+    fn snapshot_import_is_lossless_and_validates_before_merge() {
+        let (snapshot, _) = orders();
+        let (restored, active) = apply_ffi("", "", "import", &snapshot, false).unwrap();
+        assert_eq!(snapshot, restored);
+        assert_eq!(active, "orders");
+        assert!(apply_ffi(&snapshot, &active, "import", "{\"version\":2}", false).is_err());
+    }
+
+    #[test]
+    fn drop_checks_dimension_calculation_and_dynamic_sql_dependencies() {
+        let (snapshot, active) = orders();
+        let mut declaration = Snapshot::parse(&snapshot).unwrap();
+        declaration.models[0]
+            .dimensions
+            .push(Dimension::time("created_at"));
+        declaration.models[0].default_time_dimension = Some("created_at".into());
+        let with_time = serde_json::to_string(&declaration).unwrap();
+        assert!(apply_ffi(
+            &with_time,
+            &active,
+            "drop_dimension",
+            "[\"orders\",\"created_at\"]",
+            false
+        )
+        .unwrap_err()
+        .contains("dependent definition"));
+        declaration.models[0].default_time_dimension = None;
+        declaration.table_calculations.push(
+            TableCalculation::new("running_revenue", TableCalcType::RunningTotal)
+                .with_field("revenue"),
+        );
+        let with_calculation = serde_json::to_string(&declaration).unwrap();
+        assert!(apply_ffi(
+            &with_calculation,
+            &active,
+            "drop_metric",
+            "[\"orders\",\"revenue\"]",
+            false
+        )
+        .unwrap_err()
+        .contains("running_revenue"));
+        declaration.table_calculations.clear();
+        declaration
+            .models
+            .push(Model::new("dynamic_source", "id").with_sql("SELECT * FROM orders"));
+        let with_sql = serde_json::to_string(&declaration).unwrap();
+        assert!(
+            apply_ffi(&with_sql, &active, "drop_model", "[\"orders\"]", false)
+                .unwrap_err()
+                .contains("dependent definition")
+        );
+    }
+
+    #[test]
+    fn drop_sql_sources_respect_aliases_ctes_and_physical_inputs() {
+        let model = Model::new("orders", "id")
+            .with_metric(Metric::sum("revenue", "amount"))
+            .with_dimension(Dimension::categorical("amount"));
+        for (sql, model_dependency, revenue_dependency) in [
+            ("SELECT r.revenue FROM raw_orders r", false, false),
+            ("SELECT orders.revenue FROM raw_orders orders", false, false),
+            (
+                "WITH orders AS (SELECT revenue FROM raw_orders) SELECT orders.revenue FROM orders",
+                false,
+                false,
+            ),
+            ("SELECT o.revenue FROM orders o", true, true),
+            ("SELECT revenue FROM orders", true, true),
+            ("SELECT * FROM orders", true, true),
+            (
+                "WITH totals AS (SELECT o.revenue FROM orders o) SELECT * FROM totals",
+                true,
+                true,
+            ),
+            (
+                "SELECT * FROM (SELECT o.revenue FROM orders o) totals",
+                true,
+                true,
+            ),
+            (
+                "SELECT * FROM (SELECT revenue FROM raw_orders) orders",
+                false,
+                false,
+            ),
+            ("SELECT sum(o.amount) FROM orders o", true, false),
+            ("SELECT 'orders.revenue' FROM raw_orders", false, false),
+            ("SELECT o.revenue FROM main.orders o", false, false),
+        ] {
+            assert_eq!(
+                drop_sql_dependency(sql, &model, None, None, false, true).unwrap(),
+                model_dependency,
+                "{sql}"
+            );
+            assert_eq!(
+                drop_sql_dependency(sql, &model, Some("revenue"), None, false, true).unwrap(),
+                revenue_dependency,
+                "{sql}"
+            );
+        }
+        assert!(!drop_sql_dependency(
+            "SELECT sum(o.amount) FROM orders o",
+            &model,
+            Some("amount"),
+            None,
+            false,
+            true
+        )
+        .unwrap());
+        let quoted =
+            Model::new("Orders Archive", "id").with_metric(Metric::sum("Gross Amount", "amount"));
+        assert!(drop_sql_dependency(
+            "SELECT o.\"Gross Amount\" FROM \"Orders Archive\" o",
+            &quoted,
+            Some("Gross Amount"),
+            None,
+            false,
+            true
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn unrelated_sql_definitions_do_not_block_drop() {
+        let (original, active) = orders();
+        let mut declaration = Snapshot::parse(&original).unwrap();
+        declaration.models[0].metrics.push(Metric::count("unused"));
+        declaration
+            .models
+            .push(Model::new("sql_source", "id").with_sql("SELECT id, amount FROM raw_source"));
+        declaration
+            .models
+            .push(Model::new("unrelated", "id").with_table("raw_unrelated"));
+        declaration.models[2].pre_aggregations.push(serde_json::from_value(serde_json::json!({
+            "name": "physical_rollup", "type": "original_sql", "sql": "SELECT sum(amount) FROM raw_rollup"
+        })).unwrap());
+        let snapshot = serde_json::to_string(&declaration).unwrap();
+        assert!(apply_ffi(
+            &snapshot,
+            &active,
+            "drop_metric",
+            "[\"orders\",\"unused\"]",
+            false
+        )
+        .is_ok());
+        assert!(apply_ffi(&snapshot, &active, "drop_model", "[\"unrelated\"]", false).is_ok());
+        declaration.models[2].pre_aggregations[0].sql =
+            Some("SELECT o.unused FROM orders o".into());
+        let with_dependency = serde_json::to_string(&declaration).unwrap();
+        assert!(apply_ffi(
+            &with_dependency,
+            &active,
+            "drop_metric",
+            "[\"orders\",\"unused\"]",
+            false
+        )
+        .unwrap_err()
+        .contains("physical_rollup"));
+        declaration.models[2].pre_aggregations.clear();
+        declaration.models[1].sql = Some("SELECT o.revenue FROM orders o".into());
+        let snapshot = serde_json::to_string(&declaration).unwrap();
+        assert!(apply_ffi(
+            &snapshot,
+            &active,
+            "drop_metric",
+            "[\"orders\",\"unused\"]",
+            false
+        )
+        .is_ok());
+        assert!(apply_ffi(
+            &snapshot,
+            &active,
+            "drop_metric",
+            "[\"orders\",\"revenue\"]",
+            false
+        )
+        .unwrap_err()
+        .contains("sql_source"));
+        // An unrelated unsupported expression must not freeze catalog changes;
+        // an unsupported expression mentioning this metric still fails closed.
+        declaration.models[1].sql = None;
+        declaration.models[1].table = Some("raw_source".into());
+        declaration.models[1]
+            .metrics
+            .push(Metric::derived("unsupported", "unrelated_value + ("));
+        let snapshot = serde_json::to_string(&declaration).unwrap();
+        assert!(apply_ffi(
+            &snapshot,
+            &active,
+            "drop_metric",
+            "[\"orders\",\"unused\"]",
+            false
+        )
+        .is_ok());
+        declaration.models[1].metrics[0].sql = Some("orders.unused + (".into());
+        let snapshot = serde_json::to_string(&declaration).unwrap();
+        let error = apply_ffi(
+            &snapshot,
+            &active,
+            "drop_metric",
+            "[\"orders\",\"unused\"]",
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("cannot prove dependencies") || error.contains("dependent definition"),
+            "{error}"
+        );
     }
 
     fn load_sources(

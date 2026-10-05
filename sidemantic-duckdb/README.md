@@ -10,6 +10,7 @@ A DuckDB extension that adds a SQL-first semantic layer. Define metrics and dime
 - **Fan-out Protection**: Uses model keys to protect supported aggregations against duplicated rows from joins
 - **Definition Files**: Load native YAML, Cube.js YAML, and native SQL definition files
 - **Transactional Definitions**: Commit and roll back model changes with DuckDB transactions
+- **Catalog Discovery**: Inspect definitions, metadata, relationships and compatible dimensions with SQL
 - **SQL Containers**: Use semantic queries in views, `CREATE TABLE AS`, and `INSERT ... SELECT`
 - **Native PEG Grammar**: Composable grammar on the pinned Cyanoptera development build, with a DuckDB 1.5.6 compatibility frontend
 
@@ -42,11 +43,8 @@ LOAD 'build/release/extension/sidemantic/sidemantic.duckdb_extension';
 
 For embedded clients, set DuckDB's `allow_unsigned_extensions` database configuration before opening the connection. Community extension installation is planned, but this repository does not yet publish the signed multi-platform artifacts required for `INSTALL sidemantic FROM community`.
 
-In DuckDB 1.5.6 shells that preload `autocomplete` (including Homebrew), use
-`SEMANTIC SELECT` for semantic queries. That extension's PEG override consumes
-ordinary SQL before Sidemantic receives it, and 1.5.6 has no parser-priority setting.
-Clients without that competing override support automatic routing. Explicit
-`SEMANTIC SELECT` works in both configurations.
+Semantic queries use ordinary `SELECT`, including in shells that preload
+`autocomplete`. The older `SEMANTIC SELECT` spelling remains supported.
 
 ## Quick Start (Pure SQL)
 
@@ -76,7 +74,7 @@ METRIC avg_order_value AS AVG(amount);
 DIMENSION (name status, type categorical);
 
 -- 5. Query using semantic layer
-SEMANTIC SELECT orders_model.status, orders_model.revenue FROM orders_model;
+SELECT orders_model.status, orders_model.revenue FROM orders_model;
 -- Automatically rewrites to:
 -- SELECT status, SUM(amount) FROM orders GROUP BY 1
 
@@ -88,6 +86,60 @@ SEMANTIC SELECT orders_model.status, orders_model.revenue FROM orders_model;
 -- │ completed │             250.00 │
 -- └───────────┴────────────────────┘
 ```
+
+## Discover and manage definitions
+
+```sql
+SHOW MODELS;
+SHOW METRICS FROM orders_model;
+SHOW DIMENSIONS FROM orders_model;
+SHOW RELATIONSHIPS FROM orders_model;
+SHOW SEGMENTS FROM orders_model;
+DESCRIBE MODEL orders_model;
+
+-- Dimensions that can be combined with this metric
+SHOW DIMENSIONS FOR orders_model.revenue;
+
+-- Validate the complete selection, predicates and physical database bindings
+EXPLAIN SELECT orders_model.status, orders_model.revenue
+FROM orders_model WHERE orders_model.status = 'completed';
+```
+
+Discovery returns the definition kind, model and qualified name, label,
+description, semantic and declared data types, SQL, aggregation, relationship
+target and cardinality, granularity, visibility, and full JSON definition.
+Absent metadata is SQL `NULL`. `DESCRIBE MODEL` includes the model and all its
+fields. `SHOW DIMENSIONS FOR` checks each dimension with the query compiler;
+use `EXPLAIN SELECT` to validate a complete combination of metrics and dimensions.
+`SHOW SEMANTIC METRICS`, and the corresponding forms for other kinds, are also
+accepted.
+
+Qualified definitions work independently of the connection's active model:
+
+```sql
+CREATE OR REPLACE METRIC orders_model.revenue AS SUM(amount);
+CREATE OR REPLACE DIMENSION orders_model.status AS status;
+CREATE SEGMENT orders_model.completed AS status = 'completed';
+DROP SEGMENT orders_model.completed;
+DROP METRIC IF EXISTS orders_model.old_metric;
+DROP MODEL IF EXISTS retired_model;
+```
+
+Removal uses dependency restrictions: a referenced model or field cannot be
+dropped until the dependent definitions are removed or changed. There is no
+implicit cascade. Definitions, removal and import participate in transactions;
+`PREPARE` and `EXPLAIN` do not apply a mutation.
+
+```sql
+EXPORT SEMANTIC CATALOG;
+-- Returns one versioned JSON snapshot in the definition column.
+IMPORT SEMANTIC CATALOG '<snapshot returned by EXPORT>';
+```
+
+Export includes models, global metrics, parameters, table calculations and
+metadata. Import validates the complete candidate and merges it atomically into
+the selected database. A definition with the same name is replaced. Export and
+discovery work on read-only databases and observe the current transaction.
 
 ## Versioned SemanticInput
 
@@ -236,13 +288,13 @@ files raise errors when the semantic catalog is accessed.
 ## Native PEG frontend
 
 DuckDB 1.5.6 uses the compatibility frontend. The pinned `v2.0-cyanoptera` build
-registers a `sidemantic` grammar extension for model/item declarations and
-`SEMANTIC SELECT`, including nested `PREPARE` and `EXPLAIN`. Definition properties
+registers a `sidemantic` grammar extension for definitions, discovery, removal,
+import/export and explicit semantic queries, including nested `PREPARE` and `EXPLAIN`. Definition properties
 still use the shared Rust configuration parser; semantic query compilation still
 uses the Rust SQL AST.
 
-Loading Sidemantic enables its parser override for automatic routing, subject to
-the 1.5.6 autocomplete limitation above. To explicitly compose the native
+Loading Sidemantic enables automatic routing, including a planning hook for
+hosts with another parser override. To explicitly compose the native
 grammar with other installed grammars, include it in `active_grammar_extensions`:
 
 ```sql
@@ -479,10 +531,10 @@ rows, including equal-valued metrics on distinct customers.
 ## Current support boundaries
 
 - The query frontend handles `SELECT`, `CREATE VIEW`, `CREATE TABLE AS`, and
-  `INSERT ... SELECT`, including `PREPARE` and `EXPLAIN` wrappers. Use the
-  `SEMANTIC` prefix when another extension takes priority for ordinary SQL.
-- Semantic definitions support creation, replacement, loading, and active-model
-  selection. There is no `DROP MODEL`, `ALTER MODEL`, or item-removal SQL interface.
+  `INSERT ... SELECT`, including `PREPARE` and `EXPLAIN` wrappers.
+- Semantic definitions support creation, replacement, loading, discovery,
+  export/import, active-model selection and dependency-restricted removal.
+  Use `CREATE OR REPLACE` to update definitions; there is no `ALTER MODEL` syntax.
 - Semantic queries support a subset of DuckDB SQL. Correlated semantic subqueries
   and grouping modifiers such as `ROLLUP` are rejected; explicit `GROUP BY` must
   repeat the selected semantic dimensions.

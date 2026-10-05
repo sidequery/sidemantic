@@ -1,0 +1,197 @@
+# name: test/sql/sidemantic_prefixless.test
+# description: Prefixless semantic SQL retains native statement behavior with autocomplete loaded first
+# group: [sidemantic]
+
+require autocomplete
+
+require sidemantic
+
+# Native SQL in an empty semantic catalog needs no semantic retry.
+query I
+SELECT 42;
+----
+42
+
+statement ok
+CREATE TABLE models (dummy INTEGER);
+
+# SHOW has reserved semantic catalog meaning even if a physical table matches.
+query TTTTTTTTTTTTTIT
+SHOW MODELS;
+----
+
+statement ok
+DESCRIBE models;
+
+statement ok
+CREATE TABLE prefixless_orders (id INTEGER, status VARCHAR, amount INTEGER, revenue INTEGER);
+
+statement ok
+INSERT INTO prefixless_orders VALUES (1, 'paid', 10, 999), (2, 'paid', 30, 999), (3, 'pending', 5, 999);
+
+statement ok
+MODEL prefixless_orders FROM prefixless_orders (
+  primary key (id)
+  status
+  sum(amount) AS revenue
+  sum(amount) AS semantic_total
+);
+
+statement ok
+SELECT 1; SHOW MODELS;
+
+# The native binder can resolve both columns. Semantic dimensions still group,
+# and a same-name physical metric column must not change the query's meaning.
+query TI
+SELECT status, revenue FROM prefixless_orders ORDER BY status;
+----
+paid	40
+pending	5
+
+query T
+SELECT status FROM prefixless_orders ORDER BY status;
+----
+paid
+pending
+
+# Binding the missing physical metric fails after binding WHERE. Retry from the
+# pristine statement must preserve the filter instead of aggregating all rows.
+query TI
+SELECT status, semantic_total FROM prefixless_orders WHERE status = 'paid';
+----
+paid	40
+
+query I
+SELECT o.semantic_total FROM prefixless_orders o WHERE o.status = 'pending';
+----
+5
+
+statement ok
+PREPARE prefixless_parameter AS SELECT semantic_total FROM prefixless_orders WHERE status = $1;
+
+query I
+EXECUTE prefixless_parameter('paid');
+----
+40
+
+query I
+EXECUTE prefixless_parameter('pending');
+----
+5
+
+statement ok
+PREPARE prefixless_native_success AS SELECT revenue FROM prefixless_orders WHERE status = $1;
+
+query I
+EXECUTE prefixless_native_success('paid');
+----
+40
+
+statement ok
+BEGIN;
+
+statement ok
+CREATE OR REPLACE METRIC prefixless_orders.revenue AS COUNT(*);
+
+query I
+EXECUTE prefixless_native_success('paid');
+----
+2
+
+statement ok
+ROLLBACK;
+
+query I
+EXECUTE prefixless_native_success('paid');
+----
+40
+
+statement ok
+CREATE TABLE prefixless_totals AS SELECT status, revenue FROM prefixless_orders;
+
+query TI
+SELECT * FROM prefixless_totals ORDER BY status;
+----
+paid	40
+pending	5
+
+statement ok
+CREATE VIEW prefixless_view AS SELECT status, semantic_total FROM prefixless_orders;
+
+query TI
+SELECT * FROM prefixless_view ORDER BY status;
+----
+paid	40
+pending	5
+
+statement ok
+CREATE TABLE prefixless_inserted (status VARCHAR, revenue BIGINT);
+
+statement ok
+INSERT INTO prefixless_inserted SELECT status, revenue FROM prefixless_orders WHERE status = 'paid';
+
+query TI
+SELECT * FROM prefixless_inserted;
+----
+paid	40
+
+statement ok
+EXPLAIN SELECT status, revenue FROM prefixless_orders;
+
+# Explicit physical qualification and local scopes keep native meanings.
+query I
+SELECT revenue FROM main.prefixless_orders ORDER BY id;
+----
+999
+999
+999
+
+query I
+WITH prefixless_orders AS (SELECT 7 AS revenue) SELECT revenue FROM prefixless_orders;
+----
+7
+
+query I
+SELECT prefixless_orders.revenue FROM (SELECT 8 AS revenue) prefixless_orders;
+----
+8
+
+statement error
+SELECT missing FROM prefixless_orders;
+----
+missing
+
+statement error
+SELECT revenue, missing FROM prefixless_orders;
+----
+Sidemantic:
+
+# A failed query must not leak a private routing signal into the next query.
+query I
+SELECT 43;
+----
+43
+
+query I
+SEMANTIC SELECT revenue FROM prefixless_orders;
+----
+45
+
+statement ok
+BEGIN;
+
+statement ok
+CREATE TABLE prefixless_abort (i INTEGER CHECK (i > 0));
+
+statement error
+INSERT INTO prefixless_abort VALUES (-1);
+----
+CHECK
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT revenue FROM prefixless_orders;
+----
+45

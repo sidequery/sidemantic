@@ -145,7 +145,7 @@ add_custom_target(sidemantic_rust_staticlib DEPENDS "${SIDEMANTIC_LIB}")
 # Include Rust library headers
 include_directories(${SIDEMANTIC_INCLUDE})
 
-set(EXTENSION_SOURCES src/sidemantic_extension.cpp src/sidemantic_parser.cpp src/sidemantic_grammar.cpp src/sidemantic_catalog.cpp)
+set(EXTENSION_SOURCES src/sidemantic_extension.cpp src/sidemantic_parser.cpp src/sidemantic_grammar.cpp src/sidemantic_catalog.cpp src/sidemantic_api.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})

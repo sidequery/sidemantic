@@ -90,6 +90,8 @@ typedef struct {
     char *granularity;
     bool is_public;
     char *definition;
+    /* One-based SELECT * position for model dimensions/metrics; zero otherwise. */
+    size_t column_index;
 } SidemanticCatalogEntry;
 
 typedef struct {

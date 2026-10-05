@@ -46,7 +46,7 @@ def postgres(tmp_path):
     address = f"127.0.0.1:{port}"
     binary = Path(os.environ["SIDEMANTIC_DUCKDB_BINARY"]).resolve()
     assert binary.is_file(), binary
-    setup = ""
+    setup = "set threads = 2;\n"
     for name in required:
         path = Path(os.environ[name]).resolve()
         assert path.is_file(), path
@@ -68,7 +68,7 @@ def postgres(tmp_path):
         try:
             host.stdin.write(setup)
             host.stdin.flush()
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + float(os.environ.get("DUCKFLIGHT_TEST_STARTUP_TIMEOUT", "30"))
             while time.monotonic() < deadline:
                 if host.poll() is not None:
                     log.seek(0)
@@ -126,7 +126,8 @@ def test_semantic_queries_and_postgres_metadata(orders):
         assert [column.name for column in result.description] == ["status", "revenue"]
         assert result.fetchall() == [("complete", Decimal("150.00")), ("pending", Decimal("75.00"))]
     assert postgres.execute(
-        "select column_name from information_schema.columns where table_name = 'orders' order by ordinal_position"
+        "select column_name from information_schema.columns "
+        "where table_schema = 'public' and table_name = 'orders' order by ordinal_position"
     ).fetchall() == [("order_id",), ("status",), ("amount",)]
 
 
@@ -186,6 +187,135 @@ def test_native_model_prepare_and_describe_do_not_mutate(orders):
         result.error_message.decode()
     )
     assert orders.execute("select revenue from prepared_orders").fetchall() == [(Decimal("225.00"),)]
+
+
+def semantic_attributes(connection, model="orders", *, prepared=False):
+    return connection.execute(
+        """
+        select n.oid, c.oid, c.relkind, c.relnatts,
+               a.attname, a.attnum, a.atttypid, a.atttypmod, t.typname
+        from pg_catalog.pg_namespace n
+        join pg_catalog.pg_class c on c.relnamespace = n.oid
+        join pg_catalog.pg_attribute a on a.attrelid = c.oid
+        left join pg_catalog.pg_type t on t.oid = a.atttypid
+        where n.nspname = 'semantic' and c.relname = %s
+          and a.attnum > 0 and not a.attisdropped
+        order by a.attnum
+        """,
+        (model,),
+        prepare=prepared,
+    ).fetchall()
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_standard_semantic_catalogs_and_qualified_query(orders, prepared):
+    assert orders.execute(
+        """
+        select table_schema, table_name, table_type, is_insertable_into
+        from information_schema.tables
+        where table_name = 'orders' and table_schema in ('public', 'semantic')
+        order by table_schema
+        """,
+        prepare=prepared,
+    ).fetchall() == [("public", "orders", "BASE TABLE", "YES"), ("semantic", "orders", "VIEW", "NO")]
+    assert orders.execute(
+        """
+        select column_name, ordinal_position, data_type, udt_name, numeric_precision, numeric_scale
+        from information_schema.columns
+        where table_schema = 'semantic' and table_name = 'orders'
+        order by ordinal_position
+        """,
+        prepare=prepared,
+    ).fetchall() == [("status", 1, "text", "text", None, None), ("revenue", 2, "numeric", "numeric", 38, 2)]
+    attributes = semantic_attributes(orders, prepared=prepared)
+    assert len(attributes) == 2
+    schema_oid, relation_oid = attributes[0][:2]
+    assert 0 < schema_oid < 2**31
+    assert 0 < relation_oid < 2**31
+    assert schema_oid != relation_oid
+    assert attributes == [
+        (schema_oid, relation_oid, "v", 2, "status", 1, 25, -1, "text"),
+        (schema_oid, relation_oid, "v", 2, "revenue", 2, 1700, (38 << 16) + 2 + 4, "numeric"),
+    ]
+    assert orders.execute("select 'semantic.orders'::regclass::bigint", prepare=prepared).fetchone() == (relation_oid,)
+    result = orders.execute(
+        "select status, revenue from semantic.orders where status = %s",
+        ("pending",),
+        prepare=prepared,
+    )
+    assert [column.name for column in result.description] == ["status", "revenue"]
+    assert [column.type_code for column in result.description] == [25, 1700]
+    assert result.fetchall() == [("pending", Decimal("75.00"))]
+    star = orders.execute("select * from semantic.orders order by status", prepare=prepared)
+    assert [column.name for column in star.description] == [row[4] for row in attributes]
+    assert star.fetchall() == [("complete", Decimal("150.00")), ("pending", Decimal("75.00"))]
+    # Introspection must preserve the physical table's original schema and types.
+    assert orders.execute(
+        """
+        select column_name, ordinal_position, data_type, numeric_precision, numeric_scale
+        from information_schema.columns
+        where table_schema = 'public' and table_name = 'orders'
+        order by ordinal_position
+        """
+    ).fetchall() == [
+        ("order_id", 1, "integer", 32, 0),
+        ("status", 2, "text", None, None),
+        ("amount", 3, "numeric", 10, 2),
+    ]
+
+
+def test_semantic_catalog_visibility_across_connections_and_rollback(orders):
+    original = semantic_attributes(orders, prepared=True)
+    assert len(original) == 2
+    with psycopg.connect(orders.info.dsn, password=orders.info.password, autocommit=True) as observer:
+        assert semantic_attributes(observer, prepared=True) == original
+        orders.execute("begin")
+        try:
+            orders.execute("drop model orders")
+            assert semantic_attributes(orders, prepared=True) == []
+            assert semantic_attributes(observer, prepared=True) == original
+        finally:
+            orders.execute("rollback")
+        assert semantic_attributes(orders, prepared=True) == original
+        assert semantic_attributes(observer, prepared=True) == original
+        orders.execute("begin read only")
+        try:
+            assert semantic_attributes(orders, prepared=True) == original
+            assert orders.execute("select revenue from semantic.orders").fetchall() == [(Decimal("225.00"),)]
+        finally:
+            orders.execute("rollback")
+        orders.execute("drop model orders")
+        assert semantic_attributes(observer, prepared=True) == []
+
+
+def test_unavailable_semantic_source_has_unknown_catalog_type(postgres):
+    postgres.execute("MODEL offline_model FROM missing_source (sum(amount) AS revenue)")
+    assert postgres.execute(
+        """
+        select column_name, data_type, udt_name
+        from information_schema.columns
+        where table_schema = 'semantic' and table_name = 'offline_model'
+        """
+    ).fetchall() == [("revenue", None, None)]
+    attributes = semantic_attributes(postgres, "offline_model")
+    assert len(attributes) == 1
+    assert attributes[0][2:] == ("v", 1, "revenue", 1, None, -1, None)
+
+
+def test_physical_relation_in_semantic_schema_shadows_virtual_model(orders):
+    orders.execute("create schema semantic")
+    orders.execute("create table semantic.orders(physical_value integer)")
+    orders.execute("insert into semantic.orders values (42)")
+    assert orders.execute(
+        """
+        select column_name, data_type from information_schema.columns
+        where table_schema = 'semantic' and table_name = 'orders'
+        """
+    ).fetchall() == [("physical_value", "integer")]
+    attributes = semantic_attributes(orders)
+    assert len(attributes) == 1
+    assert attributes[0][2:] == ("r", 1, "physical_value", 1, 23, -1, "int4")
+    assert orders.execute("select * from semantic.orders").fetchall() == [(42,)]
 
 
 if __name__ == "__main__":

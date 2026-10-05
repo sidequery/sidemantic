@@ -18,6 +18,12 @@ A DuckDB extension that adds a SQL-first semantic layer. Define metrics and dime
 
 Current builds are loaded from a local build or GitHub release artifact:
 
+The release workflow builds DuckDB 1.5.6 packages for Linux and macOS on AMD64 and
+ARM64, with a `SHA256SUMS` manifest. Linux builds use a glibc 2.28 baseline. Choose
+the matching version and platform, verify the checksum, and rename the downloaded
+file to `sidemantic.duckdb_extension` before loading it. Published assets are
+immutable; corrections receive a new release tag.
+
 Start DuckDB with unsigned-extension loading enabled because these artifacts are not signed yet:
 
 ```bash
@@ -113,6 +119,18 @@ fields. `SHOW DIMENSIONS FOR` checks each dimension with the query compiler;
 use `EXPLAIN SELECT` to validate a complete combination of metrics and dimensions.
 `SHOW SEMANTIC METRICS`, and the corresponding forms for other kinds, are also
 accepted.
+
+Standard SQL clients can also discover loaded models as virtual views in the
+current database's `semantic` schema through `information_schema.tables`,
+`information_schema.columns`, and the corresponding `pg_catalog` relations.
+Query them with ordinary SQL, for example
+`select status, revenue from semantic.orders_model`. Dimension and metric column
+types come from binding their compiled expressions against the current database.
+If a source cannot bind, its fields remain visible with `NULL` data types and
+`duckdb_views().is_bound = false`. An existing physical `semantic.orders_model`
+table or view takes precedence. Discovery observes transactions and creates no
+persistent schema or views; `SET schema = 'semantic'` requires an actual schema
+created by the user.
 
 Qualified definitions work independently of the connection's active model:
 
@@ -547,9 +565,8 @@ rows, including equal-valued metrics on distinct customers.
 - DuckDB 1.5.6 uses the compatibility frontend. Native PEG support is tested against
   the pinned 2.x commit, not an arbitrary future 2.x build. Rust still parses model
   properties and compiles semantic queries.
-- Distribution currently targets unsigned Linux amd64 release packages. Signed
-  community installation and a published multi-platform binary matrix are not
-  provided by this repository.
+- The release workflow packages unsigned Linux and macOS builds on AMD64 and ARM64.
+  Signed community installation is not yet provided by this repository.
 
 ## Utility Functions
 
@@ -603,7 +620,7 @@ CI also builds `make deps DUCKDB_VERSION=v2.0-cyanoptera`, pinned in the Makefil
 commit `80e17fc252edd6d9e9b090ae00a1100daef4876a`. Run its tests with
 `SIDEMANTIC_NATIVE_PEG=1 make test`. Use separate build directories/checkouts when
 switching DuckDB versions. CMake probes host APIs rather than assuming C++ ABI
-compatibility across releases. Release packaging targets unsigned Linux amd64
+compatibility across releases. Release packaging targets unsigned Linux and macOS
 builds for 1.5.6; development-version CI does not publish stable artifacts.
 
 ## Architecture

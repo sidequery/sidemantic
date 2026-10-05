@@ -6,6 +6,7 @@
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/connection_manager.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/main/valid_checker.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
@@ -233,14 +234,21 @@ struct ModelListOwner {
 
 // A null binding shadows a semantic model name (e.g. a CTE or a physical table
 // aliased to that name). Each query has its own scope, including nested SELECTs.
-using ModelScope = case_insensitive_map_t<const SidemanticModelInfo *>;
+struct ModelBinding {
+    ModelBinding(const SidemanticModelInfo *model_p = nullptr, bool semantic_schema_p = false)
+        : model(model_p), semantic_schema(semantic_schema_p) {
+    }
+    const SidemanticModelInfo *model;
+    bool semantic_schema;
+};
+using ModelScope = case_insensitive_map_t<ModelBinding>;
 using CteNames = case_insensitive_set_t;
 
 class SemanticReferences {
 public:
-    explicit SemanticReferences(const SidemanticModelList &list) {
+    SemanticReferences(ClientContext &context, const SidemanticModelList &list) : context(context) {
         for (idx_t i = 0; i < list.count; ++i) {
-            models[list.models[i].name] = &list.models[i];
+            models[list.models[i].name] = {&list.models[i], false};
         }
     }
 
@@ -272,7 +280,7 @@ public:
         if (node.type != QueryNodeType::SELECT_NODE) return found;
         auto &select = node.Cast<SelectNode>();
         auto scope = std::move(inherited);
-        for (auto &name : ctes) scope[name] = nullptr;
+        for (auto &name : ctes) scope[name] = {};
         if (select.from_table) CollectTables(*select.from_table, scope, ctes, found);
         auto inspect = [&](unique_ptr<ParsedExpression> &expression) {
             found |= Expression(*expression, scope, ctes);
@@ -288,6 +296,7 @@ public:
     }
 
 private:
+    ClientContext &context;
     ModelScope models;
 
     bool CanonicalField(const SidemanticModelInfo *model, string &name) {
@@ -329,29 +338,38 @@ private:
             found |= Query(*ref.Cast<SubqueryRef>().subquery->node, scope, ctes);
         }
         const SidemanticModelInfo *model = nullptr;
+        bool virtual_relation = false;
         string name;
         if (ref.type == TableReferenceType::BASE_TABLE) {
             auto &table = ref.Cast<BaseTableRef>();
 #if SIDEMANTIC_QUALIFIED_TABLE_API
             name = SidemanticName(table.Table());
-            bool qualified = !table.GetQualifiedName().Schema().empty() || !table.GetQualifiedName().Catalog().empty();
+            auto schema = SidemanticName(table.GetQualifiedName().Schema());
+            auto catalog = SidemanticName(table.GetQualifiedName().Catalog());
 #else
             name = table.table_name;
-            bool qualified = !table.schema_name.empty() || !table.catalog_name.empty();
+            auto schema = table.schema_name;
+            auto catalog = table.catalog_name;
 #endif
+            bool qualified = !schema.empty() || !catalog.empty();
+            bool semantic_schema = StringUtil::CIEquals(schema, "semantic") &&
+                (catalog.empty() || StringUtil::CIEquals(catalog, SidemanticName(DatabaseManager::GetDefaultDatabase(context)))) &&
+                !SidemanticPhysicalRelationExists(context, name);
             auto entry = models.find(name);
-            if (!qualified && !ctes.count(name) && entry != models.end()) model = entry->second;
+            if (((!qualified && !ctes.count(name)) || semantic_schema) && entry != models.end()) model = entry->second.model;
             if (model) {
+                virtual_relation = semantic_schema;
                 name = model->name;
 #if SIDEMANTIC_QUALIFIED_TABLE_API
                 table.SetTable(Identifier(name));
 #else
                 table.table_name = name;
 #endif
+                found |= semantic_schema;
             }
         }
         auto alias = ref.alias.empty() ? name : SidemanticName(ref.alias);
-        if (!alias.empty()) scope[alias] = model;
+        if (!alias.empty()) scope[alias] = {model, virtual_relation};
     }
 
     bool TableExpressions(TableRef &ref, const ModelScope &scope, const CteNames &ctes) {
@@ -369,17 +387,39 @@ private:
 #else
             auto &names = column.column_names;
 #endif
+            if (names.size() >= 3) {
+                auto qualifier = SidemanticName(names[names.size() - 2]);
+                auto local = scope.find(qualifier);
+                // Explicit physical qualifiers retain native resolution even
+                // when the unqualified FROM name also names a semantic model.
+                if (!StringUtil::CIEquals(SidemanticName(names[names.size() - 3]), "semantic")) {
+                    if (local != scope.end() && local->second.semantic_schema) {
+                        throw BinderException("Column qualifier does not match the semantic relation");
+                    }
+                    return false;
+                }
+                bool semantic_model = local != scope.end() ? local->second.model != nullptr : models.count(qualifier) != 0;
+                if (semantic_model) {
+                    bool current_catalog = names.size() == 3 ||
+                        (names.size() == 4 && StringUtil::CIEquals(SidemanticName(names[0]),
+                            SidemanticName(DatabaseManager::GetDefaultDatabase(context))));
+                    if (!current_catalog) {
+                        throw BinderException("Semantic column qualifier must name the current database's semantic schema");
+                    }
+                    names.erase(names.begin(), names.end() - 2);
+                }
+            }
             if (names.size() == 2) {
                 auto qualifier = SidemanticName(names[0]);
                 auto local = scope.find(qualifier);
                 const SidemanticModelInfo *model = nullptr;
                 if (local != scope.end()) {
-                    model = local->second;
+                    model = local->second.model;
                     qualifier = local->first;
                 } else {
                     auto entry = models.find(qualifier);
                     if (entry != models.end()) {
-                        model = entry->second;
+                        model = entry->second.model;
                         qualifier = entry->first;
                     }
                 }
@@ -393,7 +433,7 @@ private:
             if (names.size() == 1) {
                 for (auto &binding : scope) {
                     auto field = SidemanticName(names[0]);
-                    if (CanonicalField(binding.second, field)) {
+                    if (CanonicalField(binding.second.model, field)) {
                         names[0] = SidemanticIdentifier(field);
                         return true;
                     }
@@ -461,14 +501,14 @@ SelectStatement *QueryInStatement(SQLStatement &statement, bool include_insert_c
     return nullptr;
 }
 
-unique_ptr<SQLStatement> CompileSemanticStatement(SQLStatement &statement,
+unique_ptr<SQLStatement> CompileSemanticStatement(ClientContext &context, SQLStatement &statement,
                                                  const SidemanticCatalogSnapshot &snapshot,
                                                  bool explicit_semantic = false) {
     auto rewritten = statement.Copy();
     auto query = QueryInStatement(*rewritten, true);
     if (!query) return nullptr;
     ModelListOwner models(snapshot.payload);
-    if (!SemanticReferences(models.list).Query(*query->node) && !explicit_semantic) return nullptr;
+    if (!SemanticReferences(context, models.list).Query(*query->node) && !explicit_semantic) return nullptr;
     auto sql = query->ToString();
     auto result = sidemantic_snapshot_rewrite(snapshot.payload.c_str(), sql.c_str());
     if (result.error) {
@@ -658,7 +698,7 @@ private:
         // that semantic definitions were absent or returning a partial rewrite.
         if (native_failed && catalog_error.HasError() && QueryInStatement(statement)) catalog_error.Throw();
         if (!has_models) return nullptr;
-        return CompileSemanticStatement(statement, snapshot);
+        return CompileSemanticStatement(context, statement, snapshot);
     }
 
     ClientContext &context;
@@ -955,7 +995,7 @@ BoundStatement sidemantic_bind(ClientContext &context, Binder &binder, OperatorE
     if (routing) routing->probing = false;
     RegisterSidemanticCatalogRead(context, binder.GetStatementProperties());
     auto snapshot = ReadSidemanticCatalog(context);
-    auto original = CompileSemanticStatement(*data.statement, snapshot, data.explicit_semantic);
+    auto original = CompileSemanticStatement(context, *data.statement, snapshot, data.explicit_semantic);
     if (!original) original = data.statement->Copy();
     auto child_binder = Binder::CreateBinder(context, &binder);
     return child_binder->Bind(*original);

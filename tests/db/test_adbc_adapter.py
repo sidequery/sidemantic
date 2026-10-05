@@ -225,7 +225,7 @@ def test_adbc_adapter_from_url():
 
 @pytest.mark.parametrize("url", ["sqlite:///:memory:", "adbc://sqlite/:memory:"])
 def test_adbc_url_resolves_packaged_driver_without_system_install(monkeypatch, url):
-    import adbc_driver_manager.dbapi as adbc
+    adbc = pytest.importorskip("adbc_driver_manager.dbapi")
 
     sqlite_package = pytest.importorskip("adbc_driver_sqlite")
     from sidemantic.db.adbc import ADBCAdapter

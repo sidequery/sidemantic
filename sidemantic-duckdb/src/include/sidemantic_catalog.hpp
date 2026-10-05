@@ -14,6 +14,10 @@ struct SidemanticCatalogSnapshot {
 // sidecars are read only when no native snapshot exists and are never modified.
 SidemanticCatalogSnapshot ReadSidemanticCatalog(ClientContext &context);
 
+// Virtual semantic relations are exposed through the host's standard catalogs.
+bool SidemanticPhysicalRelationExists(ClientContext &context, const string &model);
+void RegisterSidemanticDiscovery(DatabaseInstance &db);
+
 void RegisterSidemanticCatalogRead(ClientContext &context, StatementProperties &properties);
 void RegisterSidemanticCatalogWrite(ClientContext &context, StatementProperties &properties);
 

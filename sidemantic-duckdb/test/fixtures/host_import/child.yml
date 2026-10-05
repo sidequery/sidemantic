@@ -1,0 +1,4 @@
+models:
+  - name: import_child
+    extends: import_parent
+    table: import_rows

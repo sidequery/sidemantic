@@ -1,0 +1,209 @@
+# name: test/sql/sidemantic_transactions.test
+# description: Semantic definitions execute transactionally and active models belong to connections
+# group: [sidemantic]
+
+require sidemantic
+
+statement ok
+CREATE TABLE lifecycle_orders (id INTEGER, amount INTEGER);
+
+statement ok
+INSERT INTO lifecycle_orders VALUES (1, 10), (2, 30);
+
+statement ok
+BEGIN;
+
+statement ok
+MODEL lifecycle_orders FROM lifecycle_orders (
+  primary key (id)
+  sum(amount) AS revenue
+);
+
+query I
+SEMANTIC SELECT lifecycle_orders.revenue FROM lifecycle_orders;
+----
+40
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM sidemantic_models();
+----
+0
+
+statement ok
+BEGIN;
+
+statement ok
+MODEL lifecycle_orders FROM lifecycle_orders (
+  primary key (id)
+  sum(amount) AS revenue
+);
+
+statement ok
+COMMIT;
+
+# Planning and preparing a load must not execute it.
+statement ok
+EXPLAIN SELECT * FROM sidemantic_load('models: [{name: planned_only, table: lifecycle_orders, primary_key: id}]');
+
+statement ok
+PREPARE load_models AS SELECT * FROM sidemantic_load('models: [{name: prepared_only, table: lifecycle_orders, primary_key: id}]');
+
+query I
+SELECT count(*) FROM sidemantic_models() WHERE model_name IN ('planned_only', 'prepared_only');
+----
+0
+
+statement ok
+BEGIN;
+
+statement ok
+EXECUTE load_models;
+
+query I
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'prepared_only';
+----
+1
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'prepared_only';
+----
+0
+
+# Execution state must reset when a prepared load is executed again.
+statement ok
+EXECUTE load_models;
+
+query I
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'prepared_only';
+----
+1
+
+statement ok
+PREPARE semantic_total AS SELECT lifecycle_orders.revenue FROM lifecycle_orders;
+
+statement ok
+BEGIN;
+
+statement ok
+CREATE OR REPLACE METRIC lifecycle_orders.revenue AS COUNT(*);
+
+query I
+EXECUTE semantic_total;
+----
+2
+
+statement ok
+ROLLBACK;
+
+query I
+EXECUTE semantic_total;
+----
+40
+
+# Each connection chooses its own active model, and rollback restores it.
+statement ok con1
+MODEL lifecycle_orders;
+
+statement ok con2
+MODEL prepared_only;
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+MODEL prepared_only;
+
+statement ok con1
+ROLLBACK;
+
+statement ok con1
+METRIC connection_one AS COUNT(*);
+
+statement ok con2
+METRIC connection_two AS COUNT(*);
+
+query I
+SEMANTIC SELECT lifecycle_orders.connection_one FROM lifecycle_orders;
+----
+2
+
+query I
+SEMANTIC SELECT prepared_only.connection_two FROM prepared_only;
+----
+2
+
+# Another transaction cannot observe an uncommitted definition, and its snapshot
+# stays unchanged after the writer commits until the reader ends its transaction.
+statement ok con2
+BEGIN;
+
+query I con2
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'isolated_model';
+----
+0
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+MODEL isolated_model FROM lifecycle_orders (
+  primary key (id)
+  count(*) AS rows
+);
+
+query I con1
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'isolated_model';
+----
+1
+
+query I con2
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'isolated_model';
+----
+0
+
+statement ok con1
+COMMIT;
+
+query I con2
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'isolated_model';
+----
+0
+
+statement ok con2
+COMMIT;
+
+query I con2
+SELECT count(*) FROM sidemantic_models() WHERE model_name = 'isolated_model';
+----
+1
+
+# A concurrent catalog writer conflicts instead of silently losing an update.
+statement ok con1
+BEGIN;
+
+statement ok con1
+METRIC isolated_model.first_writer AS COUNT(*);
+
+statement error con2
+METRIC isolated_model.second_writer AS COUNT(*);
+----
+Catalog write-write conflict
+
+statement ok con1
+COMMIT;
+
+query I con2
+SEMANTIC SELECT isolated_model.first_writer FROM isolated_model;
+----
+2
+
+statement error con2
+SEMANTIC SELECT isolated_model.second_writer FROM isolated_model;
+----
+second_writer

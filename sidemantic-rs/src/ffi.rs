@@ -28,6 +28,8 @@ use crate::config::{
 use crate::core::SemanticGraph;
 use crate::sql::QueryRewriter;
 
+mod catalog;
+
 const DEFAULT_CONTEXT_KEY: &str = "__sidemantic_default_context__";
 const DEFINITIONS_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFINITIONS_STALE_LOCK_AFTER: Duration = Duration::from_secs(300);
@@ -1075,8 +1077,6 @@ pub extern "C" fn sidemantic_add_definition_for_context(
     db_path: *const c_char,
     is_replace: bool,
 ) -> *mut c_char {
-    use crate::config::parse_sql_model;
-
     let key = match context_key(context) {
         Ok(key) => key,
         Err(error) => return error,
@@ -1086,12 +1086,70 @@ pub extern "C" fn sidemantic_add_definition_for_context(
         Err(error) => return error,
     };
 
-    // Parse to determine what type it is and extract properties
-    let sql_trimmed = sql_str.trim();
-    let sql_upper = sql_trimmed.to_uppercase();
-
     let mut states = FFI_STATES.lock().unwrap();
     let state = states.entry(key).or_default();
+    let mut candidate_state = state.clone();
+    let change = match add_item_definition(&mut candidate_state, &sql_str, is_replace) {
+        Ok(change) => change,
+        Err(error) => return to_c_string(&format!("Error: {error}")),
+    };
+
+    // Persist the definition with the owning model so autoload sees the same graph.
+    if let Some(definitions_path) = get_definitions_path(db_path) {
+        let _definitions_lock = match lock_definitions_file(&definitions_path) {
+            Ok(lock) => lock,
+            Err(e) => return to_c_string(&format!("Error locking definitions file: {e}")),
+        };
+        let content = match read_definitions_file(&definitions_path) {
+            Ok(content) => content,
+            Err(e) => return to_c_string(&format!("Error reading definitions file: {e}")),
+        };
+        if !content_has_model_block(&content, &change.model_name) {
+            return to_c_string(&format!(
+                "Error: model '{}' is not present in the persisted definitions file",
+                change.model_name
+            ));
+        }
+        let candidate_content = if let Some(kind) = change.kind {
+            persist_model_item_definition_to_content(
+                &content,
+                &change.model_name,
+                kind,
+                &change.item_names,
+                &sql_str,
+                is_replace,
+            )
+        } else {
+            append_definition_to_content(&content, &sql_str)
+        };
+
+        if let Err(e) = validate_definitions_content(&candidate_content) {
+            return to_c_string(&format!("Error validating definitions file: {e}"));
+        }
+        if let Err(e) = write_definitions_file_atomic(&definitions_path, &candidate_content) {
+            return to_c_string(&format!("Error writing to definitions file: {e}"));
+        }
+    }
+
+    *state = candidate_state;
+    ptr::null_mut()
+}
+
+struct ItemDefinitionChange {
+    model_name: String,
+    kind: Option<DefinitionKind>,
+    item_names: Vec<String>,
+}
+
+// Shared by the legacy sidecar API and the stateless DuckDB catalog API. Neither
+// caller publishes its candidate state until all validation/persistence succeeds.
+fn add_item_definition(
+    state: &mut FfiState,
+    sql: &str,
+    is_replace: bool,
+) -> Result<ItemDefinitionChange, String> {
+    let sql_trimmed = sql.trim();
+    let sql_upper = sql_trimmed.to_uppercase();
 
     // Check for model.name syntax: "METRIC model.name (...)" or "DIMENSION model.name (...)"
     // Extract model name if present, otherwise use ACTIVE_MODEL
@@ -1100,7 +1158,7 @@ pub extern "C" fn sidemantic_add_definition_for_context(
     let model_name = if let Some(explicit_model) = target_model_name {
         // Verify the model exists
         if state.graph.get_model(&explicit_model).is_none() {
-            return to_c_string(&format!("Error: model '{explicit_model}' not found"));
+            return Err(format!("model '{explicit_model}' not found"));
         }
         explicit_model
     } else {
@@ -1108,25 +1166,27 @@ pub extern "C" fn sidemantic_add_definition_for_context(
         if let Some(ref name) = state.active_model {
             name.clone()
         } else {
-            return to_c_string("Error: no active model. Create a model first with CREATE MODEL, select one with MODEL <model>, or use METRIC/DIMENSION/SEGMENT model.name syntax.");
+            return Err("no active model. Create a model first with CREATE MODEL, select one with MODEL <model>, or use METRIC/DIMENSION/SEGMENT model.name syntax.".into());
         }
     };
 
     // Get the model to modify
     let model = match state.graph.get_model(&model_name) {
         Some(m) => m.clone(),
-        None => return to_c_string(&format!("Error: could not find model '{model_name}'")),
+        None => return Err(format!("could not find model '{model_name}'")),
     };
 
     // Parse the definition using a dummy model wrapper
-    let dummy_sql = format!("MODEL (name {model_name}, table dummy);\n{adjusted_sql}");
+    // The wrapper is only a parser container. Do not interpolate a model name
+    // loaded from YAML (it may contain punctuation or spaces) into SQL syntax.
+    let dummy_sql = format!("MODEL (name __definition, table dummy);\n{adjusted_sql}");
     let parsed = match parse_sql_model(&dummy_sql) {
         Ok(m) => m,
-        Err(e) => return to_c_string(&format!("Error parsing definition: {e}")),
+        Err(e) => return Err(format!("parsing definition: {e}")),
     };
 
     // Extract what was added and update the model
-    let mut updated_model = model.clone();
+    let mut updated_model = model;
 
     let mut persisted_kind = None;
     let mut persisted_item_names = Vec::new();
@@ -1163,50 +1223,15 @@ pub extern "C" fn sidemantic_add_definition_for_context(
         }
     }
 
-    let mut candidate_state = state.clone();
-    if let Err(e) = candidate_state.graph.replace_model(updated_model) {
-        return to_c_string(&format!("Error updating model: {e}"));
-    }
-
-    // Persist the definition with the owning model so autoload sees the same graph.
-    if let Some(definitions_path) = get_definitions_path(db_path) {
-        let _definitions_lock = match lock_definitions_file(&definitions_path) {
-            Ok(lock) => lock,
-            Err(e) => return to_c_string(&format!("Error locking definitions file: {e}")),
-        };
-        let content = match read_definitions_file(&definitions_path) {
-            Ok(content) => content,
-            Err(e) => return to_c_string(&format!("Error reading definitions file: {e}")),
-        };
-        if !content_has_model_block(&content, &model_name) {
-            return to_c_string(&format!(
-                "Error: model '{model_name}' is not present in the persisted definitions file"
-            ));
-        }
-        let candidate_content = if let Some(kind) = persisted_kind {
-            persist_model_item_definition_to_content(
-                &content,
-                &model_name,
-                kind,
-                &persisted_item_names,
-                &sql_str,
-                is_replace,
-            )
-        } else {
-            append_definition_to_content(&content, &sql_str)
-        };
-
-        if let Err(e) = validate_definitions_content(&candidate_content) {
-            return to_c_string(&format!("Error validating definitions file: {e}"));
-        }
-        if let Err(e) = write_definitions_file_atomic(&definitions_path, &candidate_content) {
-            return to_c_string(&format!("Error writing to definitions file: {e}"));
-        }
-    }
-
-    *state = candidate_state;
-
-    ptr::null_mut() // Success
+    state
+        .graph
+        .replace_model(updated_model)
+        .map_err(|e| format!("updating model: {e}"))?;
+    Ok(ItemDefinitionChange {
+        model_name,
+        kind: persisted_kind,
+        item_names: persisted_item_names,
+    })
 }
 
 /// Extract model prefix from "METRIC model.name (...)" or "METRIC model.name AS expr" syntax
@@ -1397,8 +1422,9 @@ pub extern "C" fn sidemantic_rewrite_for_context(
         }
     };
 
-    let states = FFI_STATES.lock().unwrap();
-    let Some(state) = states.get(&key) else {
+    // A rewrite owns its graph snapshot: concurrent loads/clears cannot invalidate
+    // it, and parsing does not hold the process-wide context registry lock.
+    let Some(graph) = graph_snapshot(&key) else {
         return SidemanticRewriteResult {
             sql: to_c_string(&sql_str),
             error: ptr::null_mut(),
@@ -1407,7 +1433,7 @@ pub extern "C" fn sidemantic_rewrite_for_context(
     };
 
     // Check if query references any semantic models
-    if !query_references_models(&sql_str, &state.graph) {
+    if !query_references_models(&sql_str, &graph) {
         // Passthrough - not a semantic query
         return SidemanticRewriteResult {
             sql: to_c_string(&sql_str),
@@ -1417,7 +1443,7 @@ pub extern "C" fn sidemantic_rewrite_for_context(
     }
 
     // Rewrite the query
-    let rewriter = QueryRewriter::new(&state.graph);
+    let rewriter = QueryRewriter::new(&graph);
     match rewriter.rewrite(&sql_str) {
         Ok(rewritten) => SidemanticRewriteResult {
             sql: to_c_string(&rewritten),
@@ -1430,6 +1456,14 @@ pub extern "C" fn sidemantic_rewrite_for_context(
             was_rewritten: false,
         },
     }
+}
+
+fn graph_snapshot(key: &str) -> Option<SemanticGraph> {
+    FFI_STATES
+        .lock()
+        .unwrap()
+        .get(key)
+        .map(|state| state.graph.clone())
 }
 
 fn semantic_result(result: std::result::Result<String, *mut c_char>) -> SidemanticRewriteResult {
@@ -2297,6 +2331,51 @@ models:
         assert!(error.contains("no active model"), "{error}");
 
         remove_definitions_file(&db_path);
+    }
+
+    #[test]
+    fn rewrite_snapshot_survives_context_clear_and_replacement() {
+        let _guard = test_lock();
+        let context = CString::new("duckdb:snapshot").unwrap();
+        let yaml = CString::new(
+            "models:\n  - name: orders\n    table: original_orders\n    primary_key: id\n    metrics:\n      - name: revenue\n        agg: sum\n        sql: amount\n",
+        )
+        .unwrap();
+        assert_success(sidemantic_load_yaml_for_context(
+            context.as_ptr(),
+            yaml.as_ptr(),
+        ));
+        let graph = graph_snapshot("duckdb:snapshot").unwrap();
+        // This context mutation would deadlock if a snapshot retained the lock.
+        std::thread::spawn(|| {
+            let context = CString::new("duckdb:snapshot").unwrap();
+            sidemantic_clear_for_context(context.as_ptr());
+            let yaml = CString::new(
+                "models:\n  - name: orders\n    table: replacement_orders\n    primary_key: id\n",
+            )
+            .unwrap();
+            assert_success(sidemantic_load_yaml_for_context(
+                context.as_ptr(),
+                yaml.as_ptr(),
+            ));
+        })
+        .join()
+        .unwrap();
+        let rewritten = QueryRewriter::new(&graph)
+            .rewrite("SELECT orders.revenue FROM orders")
+            .unwrap();
+        assert!(rewritten.contains("original_orders"), "{rewritten}");
+        assert!(!rewritten.contains("replacement_orders"), "{rewritten}");
+        assert_eq!(
+            graph_snapshot("duckdb:snapshot")
+                .unwrap()
+                .get_model("orders")
+                .unwrap()
+                .table
+                .as_deref(),
+            Some("replacement_orders")
+        );
+        sidemantic_clear_for_context(context.as_ptr());
     }
 
     #[test]

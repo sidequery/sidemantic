@@ -1,0 +1,152 @@
+# name: test/sql/sidemantic_containers.test
+# description: Semantic source queries preserve native SQL container behavior
+# group: [sidemantic]
+
+load __TEST_DIR__/sidemantic_containers.duckdb
+
+require sidemantic
+
+statement ok
+CREATE TABLE container_rows (id INTEGER, amount INTEGER);
+
+statement ok
+INSERT INTO container_rows VALUES (1, 10), (2, 30);
+
+statement ok
+MODEL (name container_orders, table container_rows, primary_key id);
+
+statement ok
+DIMENSION (name id, type numeric);
+
+statement ok
+METRIC revenue AS SUM(amount);
+
+statement ok
+SEMANTIC CREATE VIEW container_view (total) AS SELECT container_orders.revenue FROM container_orders;
+
+query I
+SELECT * FROM container_view;
+----
+40
+
+statement ok
+SEMANTIC CREATE TABLE container_saved AS SELECT container_orders.revenue AS total FROM container_orders;
+
+query I
+SELECT * FROM container_saved;
+----
+40
+
+statement ok
+EXPLAIN SEMANTIC CREATE TABLE container_explained AS SELECT container_orders.revenue FROM container_orders;
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE table_name = 'container_explained';
+----
+0
+
+statement ok
+EXPLAIN SEMANTIC INSERT INTO container_saved SELECT container_orders.revenue FROM container_orders;
+
+query I
+SELECT count(*) FROM container_saved;
+----
+1
+
+statement ok
+BEGIN;
+
+query I
+SEMANTIC INSERT INTO container_saved (total) SELECT container_orders.revenue FROM container_orders RETURNING total;
+----
+40
+
+statement ok
+SEMANTIC CREATE TABLE container_rollback AS SELECT container_orders.revenue FROM container_orders;
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM container_saved;
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE table_name = 'container_rollback';
+----
+0
+
+statement ok
+PREPARE container_insert AS SEMANTIC INSERT INTO container_saved SELECT o.revenue FROM container_orders o WHERE o.id = $1 RETURNING total;
+
+query I
+EXECUTE container_insert(1);
+----
+10
+
+query I
+EXECUTE container_insert(2);
+----
+30
+
+# Leading WITH belongs to the INSERT and remains outside the source's own scope.
+query I
+SEMANTIC WITH totals AS (SELECT o.revenue AS total FROM container_orders o) INSERT INTO container_saved SELECT total FROM totals RETURNING total;
+----
+40
+
+query I
+SEMANTIC WITH container_orders AS (SELECT 17 AS revenue) INSERT INTO container_saved SELECT container_orders.revenue FROM container_orders RETURNING total;
+----
+17
+
+query I
+SEMANTIC WITH totals AS (SELECT 17 AS total) INSERT INTO container_saved WITH totals AS (SELECT o.revenue AS total FROM container_orders o) SELECT total FROM totals RETURNING total;
+----
+40
+
+statement ok
+CREATE TABLE container_named (label VARCHAR, total BIGINT);
+
+query TI
+SEMANTIC INSERT INTO container_named BY NAME SELECT o.revenue AS total, 'sales' AS label FROM container_orders o RETURNING label, total;
+----
+sales	40
+
+statement error
+SEMANTIC INSERT INTO container_saved SELECT o.missing_metric FROM container_orders o;
+----
+missing_metric
+
+# Views store compiled SQL; later model changes do not change their meaning.
+statement ok
+CREATE OR REPLACE METRIC container_orders.revenue AS COUNT(*);
+
+query I
+SELECT * FROM container_view;
+----
+40
+
+restart
+
+require sidemantic
+
+query I
+SELECT * FROM container_view;
+----
+40
+
+query I
+SELECT sum(total) FROM container_saved;
+----
+177
+
+load __TEST_DIR__/sidemantic_containers.duckdb readonly
+
+require sidemantic
+
+statement error
+SEMANTIC INSERT INTO container_saved SELECT o.revenue FROM container_orders o;
+----
+read-only

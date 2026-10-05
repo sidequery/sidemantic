@@ -183,6 +183,16 @@ impl Bindings {
         };
         let alias = format!("__sd_field_{}", self.references.len());
         if metric {
+            let definition = self.graph.get_metric(&reference).or_else(|| {
+                let (owner, field) = reference.split_once('.')?;
+                self.graph.get_model(owner)?.get_metric(field)
+            });
+            if definition.is_some_and(|metric| metric.r#type == crate::core::MetricType::Retention)
+            {
+                return Err(SidemanticError::Validation(format!(
+                    "Retention metric '{reference}' returns a table; use structured query compilation instead of a scalar SQL projection"
+                )));
+            }
             self.query.metrics.push(reference.clone());
         } else {
             self.query.dimensions.push(reference.clone());

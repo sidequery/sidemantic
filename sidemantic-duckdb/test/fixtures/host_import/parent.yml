@@ -1,0 +1,8 @@
+models:
+  - name: import_parent
+    table: import_rows
+    primary_key: id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount

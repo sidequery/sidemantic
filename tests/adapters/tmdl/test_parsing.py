@@ -3037,8 +3037,8 @@ def test_tmdl_keyless_many_to_many_joins_without_keying_off_endpoints():
     layer = SemanticLayer()
     layer.graph = graph
     sql = layer.compile(dimensions=["Authors.region", "Books.genre"])
-    assert "Authors_cte.author_id" in sql
-    assert "Books_cte.book_author_id" in sql
+    assert "Authors_cte.author_id" in sql.replace('"', "")
+    assert "Books_cte.book_author_id" in sql.replace('"', "")
     layer.conn.execute("CREATE TABLE Authors (author_id VARCHAR, region VARCHAR)")
     layer.conn.execute("CREATE TABLE Books (book_author_id VARCHAR, genre VARCHAR)")
     layer.conn.execute("INSERT INTO Authors VALUES ('a', 'US'), ('a', 'EU')")
@@ -3152,8 +3152,8 @@ def test_tmdl_many_to_many_on_non_primary_key_column():
     sql = layer.compile(metrics=["A.a_count"], dimensions=["B.b_label"])
     # The join pairs each side's alternate column (not the declared id key), and each CTE projects
     # its alternate column, so neither side joins on a column missing from its CTE.
-    assert re.search(r"ON\s+B_cte\.b_alt\s*=\s*A_cte\.a_alt", sql) or re.search(
-        r"ON\s+A_cte\.a_alt\s*=\s*B_cte\.b_alt", sql
+    assert re.search(r'ON\s+"?B_cte"?\.b_alt\s*=\s*"?A_cte"?\.a_alt', sql) or re.search(
+        r'ON\s+"?A_cte"?\.a_alt\s*=\s*"?B_cte"?\.b_alt', sql
     ), sql
     layer.adapter.execute("create table A(id varchar, a_alt varchar)")
     layer.adapter.execute("create table B(id varchar, b_alt varchar, b_label varchar)")
@@ -3210,7 +3210,7 @@ def test_tmdl_one_to_one_recovers_keyless_source_key():
     layer = SemanticLayer()
     layer.graph = graph
     sql = layer.compile(metrics=["A.a_count"], dimensions=["B.b_label"])
-    assert "A_cte.a_key" in sql
+    assert "A_cte.a_key" in sql.replace('"', "")
     layer.adapter.execute("create table A(a_key varchar)")
     layer.adapter.execute("create table B(b_key varchar, b_label varchar)")
     layer.adapter.execute("insert into A values ('joined')")
@@ -3279,7 +3279,7 @@ def test_tmdl_one_to_one_alternate_key_does_not_shadow_real_key():
     layer = SemanticLayer()
     layer.graph = graph
     sql = layer.compile(metrics=["Orders.cnt"], dimensions=["OrderMeta.channel"])
-    assert "Orders_cte.alt_key" in sql
+    assert "Orders_cte.alt_key" in sql.replace('"', "")
     layer.adapter.execute("create table Orders(order_id integer, alt_key varchar)")
     layer.adapter.execute("create table OrderMeta(meta_key varchar, channel varchar)")
     layer.adapter.execute("insert into Orders values (1, 'alternate')")

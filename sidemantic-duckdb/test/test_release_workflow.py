@@ -12,7 +12,7 @@ WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/duckdb-exten
 
 @pytest.mark.parametrize(
     "version",
-    ["v1.5.4", 'v1.5.5"; touch injected; #', "$(touch injected)", "v1.5.5\nextra=value"],
+    ["v1.5.4", 'v1.5.6"; touch injected; #', "$(touch injected)", "v1.5.6\nextra=value"],
 )
 def test_release_rejects_unsupported_input_without_shell_execution(tmp_path, version):
     workflow = yaml.safe_load(WORKFLOW.read_text())
@@ -44,9 +44,9 @@ def test_release_accepts_supported_version(tmp_path, event):
     result = subprocess.run(
         ["bash", "-e", "-c", step["run"]],
         cwd=tmp_path,
-        env={**os.environ, "EVENT_NAME": event, "REQUESTED_VERSION": "v1.5.5", "GITHUB_OUTPUT": str(output)},
+        env={**os.environ, "EVENT_NAME": event, "REQUESTED_VERSION": "v1.5.6", "GITHUB_OUTPUT": str(output)},
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert output.read_text() == "version=v1.5.5\n"
+    assert output.read_text() == "version=v1.5.6\n"

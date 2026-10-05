@@ -447,14 +447,50 @@ pub fn load_from_directory(dir: impl AsRef<Path>) -> Result<SemanticGraph> {
 /// Load all YAML files from a directory into a semantic graph with metadata.
 pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<LoadedGraphMetadata> {
     let dir = dir.as_ref();
-
     if !dir.is_dir() {
         return Err(SidemanticError::Validation(format!(
             "Path is not a directory: {}",
             dir.display()
         )));
     }
+    let mut sources = Vec::new();
+    for path in walkdir(dir)? {
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if !["yml", "yaml", "sql"]
+            .iter()
+            .any(|supported| extension.eq_ignore_ascii_case(supported))
+        {
+            continue;
+        }
+        let content = fs::read_to_string(&path).map_err(|error| {
+            SidemanticError::Validation(format!("Failed to read {}: {error}", path.display()))
+        })?;
+        let name = path
+            .strip_prefix(dir)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        sources.push((name, content));
+    }
+    load_sources_with_metadata(sources, true)
+}
 
+/// Load host-supplied file contents without reading files or process environment.
+/// The host owns access checks and ordering; directory-level inheritance and
+/// relationship inference retain the same semantics as the filesystem loader.
+pub fn load_literal_sources_with_metadata(
+    sources: impl IntoIterator<Item = (String, String)>,
+) -> Result<LoadedGraphMetadata> {
+    load_sources_with_metadata(sources, false)
+}
+
+fn load_sources_with_metadata(
+    sources: impl IntoIterator<Item = (String, String)>,
+    expand_environment: bool,
+) -> Result<LoadedGraphMetadata> {
     let mut all_models: HashMap<String, Model> = HashMap::new();
     let mut all_extends_map: HashMap<String, String> = HashMap::new();
     let mut all_top_level_metrics: Vec<Metric> = Vec::new();
@@ -467,27 +503,22 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
     let mut explicit_rel_models: HashSet<String> = HashSet::new();
     let mut merged_graph_metadata: Option<serde_json::Value> = None;
 
-    // Recursively find and parse model files.
-    for entry in walkdir(dir)? {
-        let path = entry;
-        let ext = path
+    for (path, content) in sources {
+        let ext = Path::new(&path)
             .extension()
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase);
 
         match ext.as_deref() {
             Some("yml") | Some("yaml") => {
-                let content = fs::read_to_string(&path).map_err(|e| {
-                    SidemanticError::Validation(format!("Failed to read {}: {}", path.display(), e))
-                })?;
-
                 let format = detect_format(&content);
-                let parsed = parse_content(&content, format)?;
+                let parsed = if expand_environment {
+                    parse_content(&content, format)?
+                } else {
+                    parse_literal_content_with_extends(&content, format)?
+                };
                 let source_format = format.source_label();
-                let source_file = path
-                    .strip_prefix(dir)
-                    .ok()
-                    .map(|value| value.to_string_lossy().to_string());
+                let source_file = Some(path.clone());
                 let ParsedConfig {
                     models,
                     extends_map,
@@ -525,14 +556,8 @@ pub fn load_from_directory_with_metadata(dir: impl AsRef<Path>) -> Result<Loaded
                 merge_graph_metadata(&mut merged_graph_metadata, graph_metadata);
             }
             Some("sql") => {
-                let content = fs::read_to_string(&path).map_err(|e| {
-                    SidemanticError::Validation(format!("Failed to read {}: {}", path.display(), e))
-                })?;
                 let parsed = parse_sql_content(&content)?;
-                let source_file = path
-                    .strip_prefix(dir)
-                    .ok()
-                    .map(|value| value.to_string_lossy().to_string());
+                let source_file = Some(path.clone());
                 let ParsedConfig {
                     models,
                     extends_map,

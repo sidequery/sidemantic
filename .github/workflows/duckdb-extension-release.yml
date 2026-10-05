@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       duckdb_version:
-        description: "DuckDB tag used for extension build and tests; currently v1.5.5 only"
+        description: "Stable DuckDB release to package (v1.5.6); Cyanoptera is tested separately in CI"
         required: true
-        default: "v1.5.5"
+        default: "v1.5.6"
         type: string
       create_github_release:
         description: "Create or update a GitHub release with extension artifacts"
@@ -55,11 +55,11 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             VERSION="$REQUESTED_VERSION"
           else
-            VERSION="v1.5.5"
+            VERSION="v1.5.6"
           fi
 
-          # Keep in sync with SUPPORTED_DUCKDB_VERSION in the extension Makefile.
-          if [ "$VERSION" != "v1.5.5" ]; then
+          # Publish stable artifacts only. CI separately tests the pinned PEG development build.
+          if [ "$VERSION" != "v1.5.6" ]; then
             echo "Unsupported DuckDB version" >&2
             exit 1
           fi

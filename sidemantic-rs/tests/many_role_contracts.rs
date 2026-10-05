@@ -53,11 +53,11 @@ fn junction_policies_filter_links_without_changing_source_preservation() {
     let sql = compile_with_semantic_input(&source.to_string(), &query.to_string()).unwrap();
     for role in ["primary_tags", "secondary_tags"] {
         assert!(
-            sql.contains(&format!("LEFT JOIN {role}$through_cte")),
+            sql.contains(&format!("LEFT JOIN \"{role}$through_cte\"")),
             "{sql}"
         );
         assert!(
-            !sql.contains(&format!("INNER JOIN {role}$through_cte")),
+            !sql.contains(&format!("INNER JOIN \"{role}$through_cte\"")),
             "{sql}"
         );
     }

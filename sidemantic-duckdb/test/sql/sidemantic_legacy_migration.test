@@ -1,0 +1,82 @@
+# name: test/sql/sidemantic_legacy_migration.test
+# description: Legacy sidecars seed native transactionally persisted catalog snapshots without being rewritten
+# group: [sidemantic]
+
+load __TEST_DIR__/sidemantic_legacy_migration.duckdb
+
+require sidemantic
+
+statement ok
+CREATE TABLE legacy_events (id INTEGER, amount INTEGER);
+
+statement ok
+INSERT INTO legacy_events VALUES (1, 10), (2, 20);
+
+statement ok
+COPY (SELECT 'MODEL (name legacy_events, table legacy_events, primary_key id); METRIC total AS SUM(amount);' AS line) TO '__TEST_DIR__/sidemantic_legacy_migration.sidemantic.sql' (HEADER false, QUOTE '');
+
+query I
+SEMANTIC SELECT legacy_events.total FROM legacy_events;
+----
+30
+
+# Reading the legacy seed does not write the database.
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = '__sidemantic_catalog';
+----
+0
+
+statement ok
+BEGIN;
+
+statement ok
+CREATE OR REPLACE METRIC legacy_events.total AS COUNT(*);
+
+query I
+SEMANTIC SELECT legacy_events.total FROM legacy_events;
+----
+2
+
+statement ok
+ROLLBACK;
+
+query I
+SEMANTIC SELECT legacy_events.total FROM legacy_events;
+----
+30
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = '__sidemantic_catalog';
+----
+0
+
+statement ok
+CREATE OR REPLACE METRIC legacy_events.total AS COUNT(*);
+
+# The old SQL file remains intact for recovery or manual export comparison.
+query I
+SELECT contains(content, 'SUM(amount)') AND NOT contains(content, 'COUNT(*)') FROM read_text('__TEST_DIR__/sidemantic_legacy_migration.sidemantic.sql');
+----
+true
+
+restart
+
+require sidemantic
+
+query I
+SEMANTIC SELECT legacy_events.total FROM legacy_events;
+----
+2
+
+# Once migrated, even a malformed legacy file cannot supersede native state.
+statement ok
+COPY (SELECT 'MODEL (' AS line) TO '__TEST_DIR__/sidemantic_legacy_migration.sidemantic.sql' (HEADER false);
+
+restart
+
+require sidemantic
+
+query I
+SEMANTIC SELECT legacy_events.total FROM legacy_events;
+----
+2

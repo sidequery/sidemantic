@@ -7,13 +7,13 @@ load __TEST_DIR__/sidemantic_native_contract.duckdb
 require sidemantic
 
 statement ok
-CREATE TABLE native_customers (customer_id INT, country VARCHAR);
+CREATE TABLE native_customers (customer_id INT, country VARCHAR, credit_limit INT);
 
 statement ok
 CREATE TABLE native_orders (order_id INT, customer_id INT, status VARCHAR, amount INT);
 
 statement ok
-INSERT INTO native_customers VALUES (1, 'CA'), (2, 'US');
+INSERT INTO native_customers VALUES (1, 'CA', 100), (2, 'US', 100);
 
 statement ok
 INSERT INTO native_orders VALUES (101, 1, 'paid', 120), (102, 2, 'paid', 200), (103, 2, 'pending', 50);
@@ -45,6 +45,12 @@ models:
     dimensions:
       - name: country
         type: categorical
+    metrics:
+      - name: total_credit
+        agg: sum
+        sql: credit_limit
+      - name: customer_count
+        agg: count
 ');
 
 query IR rowsort
@@ -63,6 +69,20 @@ query I
 SELECT sidemantic_rewrite_sql('SELECT native_orders.revenue, native_customers.country FROM native_orders') LIKE '%JOIN%';
 ----
 true
+
+# Customer 2 repeats across two orders. Each customer's credit must contribute
+# once, even though both customers have the same credit value (SUM DISTINCT
+# would incorrectly collapse them). Order revenue retains all three rows.
+query III
+SEMANTIC SELECT native_orders.revenue, native_customers.total_credit, native_customers.customer_count FROM native_orders;
+----
+370	200	2
+
+query TII rowsort
+SEMANTIC SELECT native_orders.status, native_customers.total_credit, native_customers.customer_count FROM native_orders;
+----
+paid	200	2
+pending	100	1
 
 statement ok
 COPY (SELECT 'MODEL (name native_events, table native_events, primary_key event_id); METRIC (name event_count, agg count);' AS line) TO '__TEST_DIR__/native_definitions.sidemantic.sql' (HEADER false, QUOTE '');

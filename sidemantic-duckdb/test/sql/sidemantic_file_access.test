@@ -1,0 +1,67 @@
+# name: test/sql/sidemantic_file_access.test
+# description: Definition imports obey DuckDB file permissions and remain atomic
+# group: [sidemantic]
+
+require sidemantic
+
+statement ok
+CREATE TABLE import_rows (id INTEGER, amount INTEGER);
+
+statement ok
+INSERT INTO import_rows VALUES (1, 10), (2, 30);
+
+statement ok
+COPY (SELECT 'MODEL (name imported, table import_rows, primary_key id); METRIC revenue AS SUM(amount);' AS line) TO '__TEST_DIR__/allowed_import.sql' (HEADER false, QUOTE '');
+
+statement ok
+COPY (SELECT 'MODEL (name forbidden, table import_rows, primary_key id);' AS line) TO '__TEST_DIR__/denied_import.sql' (HEADER false, QUOTE '');
+
+statement ok
+SET allowed_paths = ['__TEST_DIR__/allowed_import.sql'];
+
+statement ok
+SET allowed_directories = ['test/fixtures/host_import'];
+
+statement ok
+SET enable_external_access = false;
+
+statement error
+SELECT * FROM sidemantic_load_file('__TEST_DIR__/denied_import.sql');
+----
+disabled by configuration
+
+query I
+SELECT count(*) FROM sidemantic_models();
+----
+0
+
+statement ok
+SELECT * FROM sidemantic_load_file('__TEST_DIR__/allowed_import.sql');
+
+query I
+SEMANTIC SELECT imported.revenue FROM imported;
+----
+40
+
+# A directory is captured through DuckDB's filesystem before Rust resolves
+# inheritance across files. The child sorts before its parent deliberately.
+statement ok
+SELECT * FROM sidemantic_load_file('test/fixtures/host_import');
+
+query I
+SEMANTIC SELECT import_child.revenue FROM import_child;
+----
+40
+
+query I
+SELECT count(*) FROM sidemantic_models();
+----
+3
+
+statement ok
+SET disabled_filesystems = 'LocalFileSystem';
+
+statement error
+SELECT * FROM sidemantic_load_file('__TEST_DIR__/allowed_import.sql');
+----
+disabled

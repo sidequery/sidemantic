@@ -15,6 +15,8 @@ use crate::sql::SemanticQuery;
 type QueryPreparer<'a> = &'a dyn Fn(&SemanticGraph, &mut SemanticQuery) -> Result<()>;
 
 mod binding;
+#[cfg(not(target_arch = "wasm32"))]
+mod parser_worker;
 mod policy;
 mod yardstick;
 
@@ -151,14 +153,7 @@ fn run_parser(
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let handle = std::thread::Builder::new()
-            .stack_size(16 * 1024 * 1024)
-            .spawn(parse)
-            .map_err(|e| SidemanticError::SqlParse(e.to_string()))?;
-
-        handle
-            .join()
-            .map_err(|_| SidemanticError::SqlParse("Polyglot parser thread panicked".into()))?
+        parser_worker::run(parse)
     }
 }
 
@@ -235,6 +230,38 @@ mod tests {
         graph.add_model(customers).unwrap();
 
         graph
+    }
+
+    #[test]
+    fn retention_table_cannot_be_bound_as_a_scalar_metric() {
+        let retention: Metric = serde_json::from_value(serde_json::json!({
+            "name": "retention", "type": "retention", "entity": "user_id",
+            "cohort_event": "event_type = 'signup'", "activity_event": "event_type = 'active'",
+            "periods": 7, "retention_granularity": "day"
+        }))
+        .unwrap();
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("events", "id")
+                    .with_table("raw_events")
+                    .with_dimension(Dimension::time("event_date"))
+                    .with_metric(retention),
+            )
+            .unwrap();
+        for sql in [
+            "SELECT events.retention FROM events",
+            "SELECT e.retention AS retained FROM events e",
+            "SELECT * FROM events",
+        ] {
+            let error = QueryRewriter::new(&graph).rewrite(sql).unwrap_err();
+            assert!(error.to_string().contains("returns a table"), "{error}");
+        }
+        let query = SemanticQuery::new().with_metrics(vec!["events.retention".into()]);
+        let sql = crate::sql::SqlGenerator::new(&graph)
+            .generate(&query)
+            .unwrap();
+        assert!(sql.contains("retention_pct"));
     }
 
     #[test]

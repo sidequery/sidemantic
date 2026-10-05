@@ -16,7 +16,7 @@ Python remains the default engine; installing the Rust bindings does not promote
 Workflow files live in `.github/workflows/`. Rust crate and wheel versions must
 match; package metadata tests enforce this. Root Python and WASM versions are
 separate. The DuckDB extension is tied to the DuckDB build version, currently
-`v1.5.5`. Do not use a release intended for a different DuckDB ABI.
+`v1.5.6`. Do not use a release intended for a different DuckDB ABI.
 
 ## Install from a checkout or downloaded artifact
 

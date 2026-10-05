@@ -1,7 +1,13 @@
 #include "sidemantic_parser.hpp"
 #include "sidemantic_catalog.hpp"
+#include "sidemantic_api.hpp"
 #include "sidemantic.h"
 
+#include "duckdb/common/error_data.hpp"
+#include "duckdb/main/config.hpp"
+#include "duckdb/main/connection_manager.hpp"
+#include "duckdb/main/prepared_statement_data.hpp"
+#include "duckdb/main/valid_checker.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
@@ -20,6 +26,10 @@
 #include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/tableref/joinref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/tableref/showref.hpp"
+#include "duckdb/planner/extension_callback.hpp"
+#include "duckdb/planner/bound_parameter_map.hpp"
+#include "duckdb/planner/planner_extension.hpp"
 #include "duckdb/planner/operator/logical_extension_operator.hpp"
 
 namespace duckdb {
@@ -76,6 +86,36 @@ string IdentifierText(const string &text) {
 
 string Literal(const string &text) {
     return "'" + StringUtil::Replace(text, "'", "''") + "'";
+}
+
+string QualifiedNameJson(const vector<SourceToken> &tokens, idx_t pos, idx_t max_names) {
+    string result = "[";
+    idx_t count = 0;
+    while (pos < tokens.size()) {
+        auto token = tokens[pos++].text;
+        if (token.empty() || token == "." || token == "(" || token == ")" || token == ",") {
+            throw ParserException("Expected a semantic identifier");
+        }
+        if (count++) result += ",";
+        result += '"';
+        for (auto character : IdentifierText(token)) {
+            auto byte = static_cast<unsigned char>(character);
+            if (character == '"' || character == '\\') result += '\\';
+            if (byte < 0x20) {
+                static const char hex[] = "0123456789abcdef";
+                result += "\\u00";
+                result += hex[byte >> 4];
+                result += hex[byte & 15];
+            } else result += character;
+        }
+        result += '"';
+        if (pos == tokens.size()) break;
+        if (tokens[pos++].text != "." || pos == tokens.size()) {
+            throw ParserException("Expected one qualified semantic name");
+        }
+    }
+    if (count == 0 || count > max_names) throw ParserException("Expected a model name or model.field");
+    return result + "]";
 }
 
 class SidemanticSQLStatement : public ExtensionStatement {
@@ -421,7 +461,250 @@ SelectStatement *QueryInStatement(SQLStatement &statement, bool include_insert_c
     return nullptr;
 }
 
+unique_ptr<SQLStatement> CompileSemanticStatement(SQLStatement &statement,
+                                                 const SidemanticCatalogSnapshot &snapshot,
+                                                 bool explicit_semantic = false) {
+    auto rewritten = statement.Copy();
+    auto query = QueryInStatement(*rewritten, true);
+    if (!query) return nullptr;
+    ModelListOwner models(snapshot.payload);
+    if (!SemanticReferences(models.list).Query(*query->node) && !explicit_semantic) return nullptr;
+    auto sql = query->ToString();
+    auto result = sidemantic_snapshot_rewrite(snapshot.payload.c_str(), sql.c_str());
+    if (result.error) {
+        string error(result.error);
+        sidemantic_free_result(result);
+        throw BinderException("Sidemantic: %s", error);
+    }
+    if (!result.sql) {
+        sidemantic_free_result(result);
+        throw InternalException("Sidemantic returned no rewritten SQL");
+    }
+    string compiled(result.sql);
+    sidemantic_free_result(result);
+    Parser parser(SidemanticBuiltinParserOptions());
+    parser.ParseQuery(compiled);
+    if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
+        throw BinderException("Sidemantic rewrite must produce one SELECT statement");
+    }
+    query->node = std::move(parser.statements[0]->Cast<SelectStatement>().node);
+    return rewritten;
+}
+
+// Autocomplete can parse SHOW MODELS as a native SHOW/DESCRIBE reference before
+// our parser sees it. Recognize that AST, without reparsing the current query.
+unique_ptr<SQLStatement> SemanticShowStatement(SQLStatement &statement) {
+    if (statement.type != StatementType::SELECT_STATEMENT) return nullptr;
+    auto &node = *statement.Cast<SelectStatement>().node;
+    if (node.type != QueryNodeType::SELECT_NODE) return nullptr;
+    auto &select = node.Cast<SelectNode>();
+    if (!select.from_table || select.from_table->type != TableReferenceType::SHOW_REF) return nullptr;
+    auto &show = select.from_table->Cast<ShowRef>();
+#if SIDEMANTIC_NEW_IDENTIFIER_API
+    if (show.show_type != ShowType::SHOW || !show.GetCatalogName().empty() || !show.GetSchemaName().empty()) {
+        return nullptr;
+    }
+    auto name = SidemanticName(show.GetTableName());
+#else
+    // The stable AST represents SHOW name and DESCRIBE name identically.
+    // Consult only this statement's preserved source to distinguish them.
+    auto source = statement.query;
+    if (statement.stmt_location < source.size()) {
+        source = source.substr(statement.stmt_location, statement.stmt_length ? statement.stmt_length : string::npos);
+    }
+    auto tokens = Tokens(source);
+    if (!Keyword(tokens, 0, "SHOW")) return nullptr;
+    string name = show.table_name;
+    if (show.query && show.query->type == QueryNodeType::SELECT_NODE) {
+        auto &inner = show.query->Cast<SelectNode>();
+        if (!inner.from_table || inner.from_table->type != TableReferenceType::BASE_TABLE) return nullptr;
+        auto &table = inner.from_table->Cast<BaseTableRef>();
+        if (!table.catalog_name.empty() || !table.schema_name.empty()) return nullptr;
+        name = table.table_name;
+    } else if (!show.catalog_name.empty() || !show.schema_name.empty()) return nullptr;
+#endif
+    for (auto plural : {"models", "metrics", "dimensions", "segments", "relationships"}) {
+        if (!StringUtil::CIEquals(name, plural)) continue;
+        auto data = make_uniq<SidemanticParseData>();
+        data->operation = "show_" + string(plural);
+        data->operation.pop_back();
+        return SidemanticStatement(std::move(data));
+    }
+    return nullptr;
+}
+
+constexpr const char *ROUTING_STATE = "sidemantic_native_routing";
+constexpr const char *ROUTING_PROBE = "sidemantic_pristine_statement";
+
+// DuckDB's native binder consumes expressions as it visits them. The client
+// rebind API protects a pristine statement copy, unlike OperatorExtension's
+// failure callback. A private post-bind signal also reaches that API when a
+// same-name physical table made the first native bind succeed.
+class SidemanticRoutingState : public ClientContextState {
+public:
+    explicit SidemanticRoutingState(ClientContext &context) : context(context) {}
+
+    bool CanRequestRebind() override {
+        candidate.reset();
+        probe_error = false;
+        probing = false;
+        has_models = false;
+        catalog_error = ErrorData();
+        snapshot = {};
+        // ROLLBACK must remain bindable after a transaction error. Do not read
+        // the semantic catalog while DuckDB's transaction is invalidated.
+        if (!context.transaction.HasActiveTransaction() || ValidChecker::IsInvalidated(context.ActiveTransaction())) {
+            return false;
+        }
+        probing = true;
+        try {
+            snapshot = ReadSidemanticCatalog(context);
+            if (!snapshot.payload.empty()) {
+                ModelListOwner models(snapshot.payload);
+                has_models = models.list.count != 0;
+            }
+        } catch (const std::exception &exception) {
+            ErrorData error(exception);
+            switch (error.Type()) {
+            case ExceptionType::INVALID_INPUT:
+            case ExceptionType::PARSER:
+            case ExceptionType::IO:
+            case ExceptionType::PERMISSION:
+                // Catalog discovery and explicit semantic statements perform
+                // their own read. Ordinary SQL and extension introspection
+                // must remain usable even if legacy definitions are invalid.
+                catalog_error = std::move(error);
+                snapshot = {};
+                break;
+            default:
+                throw;
+            }
+        }
+        // With no models, normal SQL binds once. Keeping a pristine copy still
+        // lets a native SHOW failure reach our catalog discovery statements.
+        return true;
+    }
+
+    RebindQueryInfo OnPlanningError(ClientContext &, SQLStatement &statement, ErrorData &error) override {
+        if (!probing) return RebindQueryInfo::DO_NOT_REBIND;
+        bool own_probe = probe_error && error.ExtraInfo().count(ROUTING_PROBE);
+        probing = false;
+        probe_error = false;
+        if (!own_probe && error.Type() != ExceptionType::BINDER && error.Type() != ExceptionType::CATALOG) {
+            return RebindQueryInfo::DO_NOT_REBIND;
+        }
+        candidate = Candidate(statement, !own_probe);
+        return candidate || own_probe ? RebindQueryInfo::ATTEMPT_TO_REBIND : RebindQueryInfo::DO_NOT_REBIND;
+    }
+
+    RebindQueryInfo OnRebindPreparedStatement(ClientContext &, BindPreparedStatementCallbackInfo &info,
+                                              RebindQueryInfo) override {
+        // SQL EXECUTE uses a nested Planner instead of the client preparation
+        // API. Its callback supplies the original prepared AST before binding.
+        if (!info.prepared_statement.unbound_statement) return RebindQueryInfo::DO_NOT_REBIND;
+        auto prepared = Candidate(*info.prepared_statement.unbound_statement);
+        if (!prepared) return RebindQueryInfo::DO_NOT_REBIND;
+        probing = false;
+        probe_error = false;
+        candidate = std::move(prepared);
+        return RebindQueryInfo::ATTEMPT_TO_REBIND;
+    }
+
+    RebindQueryInfo OnFinalizePrepare(ClientContext &, PreparedStatementData &, PreparedStatementMode) override {
+        // C/API Prepare does not necessarily end a query. Disarm successful
+        // probes here too, so a later direct ExtractPlan never sees our signal.
+        probing = false;
+        probe_error = false;
+        return RebindQueryInfo::DO_NOT_REBIND;
+    }
+
+    void QueryEnd() override {
+        candidate.reset();
+        probing = false;
+        probe_error = false;
+    }
+
+    BoundStatement BindCandidate(Binder &binder) {
+        // Consume before binding: PREPARE and EXECUTE have nested planners,
+        // while our rewritten query may itself contain subqueries and views.
+        auto statement = std::move(candidate);
+        probing = false;
+        // The discarded native plan may have inferred parameter types from
+        // same-name physical columns. Infer them again from the semantic plan,
+        // retaining only the values/types explicitly supplied by the caller.
+        if (auto parameters = binder.GetParameters()) {
+            parameters->GetParametersPtr()->clear();
+            parameters->rebind = false;
+        }
+        binder.GetStatementProperties() = StatementProperties();
+        RegisterSidemanticCatalogRead(context, binder.GetStatementProperties());
+        auto child = Binder::CreateBinder(context, &binder);
+        return child->Bind(*statement);
+    }
+
+    bool probing = false;
+    bool probe_error = false;
+    bool has_models = false;
+    unique_ptr<SQLStatement> candidate;
+
+private:
+    unique_ptr<SQLStatement> Candidate(SQLStatement &statement, bool native_failed = false) {
+        if (statement.type == StatementType::PREPARE_STATEMENT) {
+            return Candidate(*statement.Cast<PrepareStatement>().statement, native_failed);
+        }
+        if (auto show = SemanticShowStatement(statement)) return show;
+        // A native query that already succeeded needs no recovery. If native
+        // binding failed, expose the real catalog error instead of pretending
+        // that semantic definitions were absent or returning a partial rewrite.
+        if (native_failed && catalog_error.HasError() && QueryInStatement(statement)) catalog_error.Throw();
+        if (!has_models) return nullptr;
+        return CompileSemanticStatement(statement, snapshot);
+    }
+
+    ClientContext &context;
+    SidemanticCatalogSnapshot snapshot;
+    ErrorData catalog_error;
+};
+
+void SidemanticPostBind(PlannerExtensionInput &input, BoundStatement &bound) {
+    auto state = input.context.registered_state->Get<SidemanticRoutingState>(ROUTING_STATE);
+    if (!state) return;
+    if (state->candidate) {
+        bound = state->BindCandidate(input.binder);
+        return;
+    }
+    if (!state->probing || state->probe_error) return;
+    // SHOW of an existing physical table also binds successfully. Probe its
+    // small fixed description shape even in a database with no semantic models.
+    bool description = bound.names.size() >= 2 && bound.names[0] == "column_name" && bound.names[1] == "column_type";
+    if (!state->has_models && !description) return;
+    state->probe_error = true;
+    // INVALID bypasses operator-extension error recovery in both supported
+    // planners. Only the client rebind callback should consume this signal.
+    throw Exception(unordered_map<string, string> {{ROUTING_PROBE, "true"}}, ExceptionType::INVALID,
+                    "Sidemantic requires the pristine statement for semantic binding");
+}
+
+class SidemanticConnectionCallback : public ExtensionCallback {
+public:
+    void OnConnectionOpened(ClientContext &context) override {
+        context.registered_state->GetOrCreate<SidemanticRoutingState>(ROUTING_STATE, context);
+    }
+};
+
 } // namespace
+
+void RegisterSidemanticRouting(DatabaseInstance &db) {
+    auto &config = DBConfig::GetConfig(db);
+    auto callback = make_shared_ptr<SidemanticConnectionCallback>();
+    ExtensionCallback::Register(config, callback);
+    // Register future connections before visiting existing ones. GetOrCreate
+    // makes connections opened concurrently with LOAD harmless duplicates.
+    for (auto &context : ConnectionManager::Get(db).GetConnectionList()) callback->OnConnectionOpened(*context);
+    PlannerExtension planner;
+    planner.post_bind_function = SidemanticPostBind;
+    PlannerExtension::Register(config, planner);
+}
 
 unique_ptr<ParserExtensionParseData> SidemanticParseData::Copy() const {
     auto copy = make_uniq<SidemanticParseData>();
@@ -458,6 +741,64 @@ unique_ptr<SidemanticParseData> ParseSidemanticDefinition(const string &sql) {
     auto tokens = Tokens(sql, &clean);
     while (!tokens.empty() && tokens.back().text == ";") tokens.pop_back();
     idx_t pos = Keyword(tokens, 0, "SEMANTIC") ? 1 : 0;
+    if (Keyword(tokens, pos, "SHOW")) {
+        ++pos;
+        if (Keyword(tokens, pos, "SEMANTIC")) ++pos;
+        string kind;
+        for (auto name : {"MODELS", "METRICS", "DIMENSIONS", "SEGMENTS", "RELATIONSHIPS"}) {
+            if (Keyword(tokens, pos, name)) kind = StringUtil::Lower(name);
+        }
+        if (kind.empty()) return nullptr;
+        kind.pop_back();
+        ++pos;
+        auto result = make_uniq<SidemanticParseData>();
+        result->operation = "show_" + kind;
+        if (Keyword(tokens, pos, "FOR") && kind == "dimension") {
+            result->operation = "show_compatible_dimensions";
+            result->content = QualifiedNameJson(tokens, pos + 1, 2);
+        } else if (pos < tokens.size()) {
+            if (!Keyword(tokens, pos, "FROM") || pos + 2 != tokens.size()) {
+                throw ParserException("SHOW semantic definitions expects FROM model or DIMENSIONS FOR model.metric");
+            }
+            result->content = IdentifierText(tokens[pos + 1].text);
+        }
+        return result;
+    }
+    if ((Keyword(tokens, pos, "DESCRIBE") || Keyword(tokens, pos, "DESC")) && Keyword(tokens, pos + 1, "MODEL")) {
+        if (pos + 3 != tokens.size()) throw ParserException("DESCRIBE MODEL expects one model name");
+        auto result = make_uniq<SidemanticParseData>();
+        result->operation = "show_";
+        result->content = IdentifierText(tokens[pos + 2].text);
+        return result;
+    }
+    if ((Keyword(tokens, pos, "EXPORT") || Keyword(tokens, pos, "IMPORT")) &&
+        Keyword(tokens, pos + 1, "SEMANTIC") && Keyword(tokens, pos + 2, "CATALOG")) {
+        bool importing = Keyword(tokens, pos, "IMPORT");
+        auto result = make_uniq<SidemanticParseData>();
+        result->operation = importing ? "import" : "export";
+        if (importing) {
+            if (pos + 4 != tokens.size() || tokens[pos + 3].text.front() != '\'') {
+                throw ParserException("IMPORT SEMANTIC CATALOG expects a quoted catalog snapshot");
+            }
+            result->content = IdentifierText(tokens[pos + 3].text);
+        } else if (pos + 3 != tokens.size()) {
+            throw ParserException("EXPORT SEMANTIC CATALOG takes no arguments");
+        }
+        return result;
+    }
+    if (Keyword(tokens, pos, "DROP")) {
+        ++pos;
+        if (!(Keyword(tokens, pos, "MODEL") || Keyword(tokens, pos, "METRIC") ||
+              Keyword(tokens, pos, "DIMENSION") || Keyword(tokens, pos, "SEGMENT"))) return nullptr;
+        auto result = make_uniq<SidemanticParseData>();
+        result->operation = "drop_" + StringUtil::Lower(tokens[pos++].text);
+        if (Keyword(tokens, pos, "IF") && Keyword(tokens, pos + 1, "EXISTS")) {
+            result->replace = true;
+            pos += 2;
+        }
+        result->content = QualifiedNameJson(tokens, pos, result->operation == "drop_model" ? 1 : 2);
+        return result;
+    }
     bool create = Keyword(tokens, pos, "CREATE");
     bool replace = false;
     if (create) {
@@ -539,6 +880,9 @@ unique_ptr<SQLStatement> WrapSidemanticQuery(unique_ptr<SQLStatement> statement,
         prepare.statement = WrapSidemanticQuery(std::move(prepare.statement), explicit_semantic);
         return statement;
     }
+    // Ordinary queries retain their native statement type. Routing happens
+    // after parsing, including when another parser extension accepted them.
+    if (!explicit_semantic) return statement;
     if (QueryInStatement(*statement)) {
         auto data = make_uniq<SidemanticParseData>();
         data->statement = std::move(statement);
@@ -577,6 +921,11 @@ ParserExtensionParseResult sidemantic_parse(ParserExtensionInfo *, const string 
 ParserExtensionPlanResult sidemantic_plan(ParserExtensionInfo *, ClientContext &context,
                                          unique_ptr<ParserExtensionParseData> parsed) {
     auto &data = static_cast<SidemanticParseData &>(*parsed);
+    if (data.operation == "export") return PlanSidemanticCatalog("export", "", "");
+    if (data.operation == "show_compatible_dimensions") return PlanSidemanticCatalog("dimension", "", data.content);
+    if (StringUtil::StartsWith(data.operation, "show_")) {
+        return PlanSidemanticCatalog(data.operation.substr(5), data.content, "");
+    }
     if (!data.operation.empty()) {
         return PlanSidemanticMutation(context, data.operation, data.content, data.replace, "Semantic definitions updated");
     }
@@ -588,49 +937,26 @@ ParserExtensionPlanResult sidemantic_plan(ParserExtensionInfo *, ClientContext &
 }
 
 BoundStatement sidemantic_bind(ClientContext &context, Binder &binder, OperatorExtensionInfo *, SQLStatement &statement) {
+    auto routing = context.registered_state->Get<SidemanticRoutingState>(ROUTING_STATE);
+    if (routing && routing->probe_error) return {};
+    if (routing && routing->candidate) return routing->BindCandidate(binder);
     if (statement.type != StatementType::EXTENSION_STATEMENT) return {};
     auto &extension = statement.Cast<ExtensionStatement>();
     if (extension.extension.plan_function != sidemantic_plan) return {};
     auto state = context.registered_state->Get<SidemanticBindState>("sidemantic_bind");
-    if (!state || !state->data) throw InternalException("Sidemantic query bind state is missing");
+    // Definition and discovery statements bind directly through their plan
+    // function. Only query wrappers leave deferred bind data; preserve any
+    // genuine planning error from the other statement forms.
+    if (!state || !state->data) return {};
     // Take ownership before a nested bind can replace the registered state.
     auto parsed = std::move(state->data);
     auto &data = static_cast<SidemanticParseData &>(*parsed);
     if (!data.statement) throw InternalException("Sidemantic query statement is missing");
+    if (routing) routing->probing = false;
     RegisterSidemanticCatalogRead(context, binder.GetStatementProperties());
     auto snapshot = ReadSidemanticCatalog(context);
-    ModelListOwner models(snapshot.payload);
-    auto original = data.statement->Copy();
-    auto query = QueryInStatement(*original, true);
-    if (!query) throw InternalException("Sidemantic expected a query-bearing statement");
-    // DuckDB identifiers are case-insensitive even when quoted. Normalize only
-    // semantic bindings to the declared spelling before passing them to Rust.
-    bool detected = SemanticReferences(models.list).Query(*query->node);
-    bool semantic = data.explicit_semantic || detected;
-    if (semantic) {
-        auto sql = query->ToString();
-        auto result = sidemantic_snapshot_rewrite(snapshot.payload.c_str(), sql.c_str());
-        if (result.error) {
-            string error(result.error);
-            sidemantic_free_result(result);
-            throw BinderException("Sidemantic: %s", error);
-        }
-        if (!result.sql) {
-            sidemantic_free_result(result);
-            throw InternalException("Sidemantic returned no rewritten SQL");
-        }
-        string rewritten(result.sql);
-        sidemantic_free_result(result);
-        Parser parser(SidemanticBuiltinParserOptions());
-        parser.ParseQuery(rewritten);
-        if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
-            throw BinderException("Sidemantic rewrite must produce one SELECT statement");
-        }
-        query->node = std::move(parser.statements[0]->Cast<SelectStatement>().node);
-    } else {
-        // An ordinary SQL statement keeps its exact original scopes and AST.
-        original = data.statement->Copy();
-    }
+    auto original = CompileSemanticStatement(*data.statement, snapshot, data.explicit_semantic);
+    if (!original) original = data.statement->Copy();
     auto child_binder = Binder::CreateBinder(context, &binder);
     return child_binder->Bind(*original);
 }

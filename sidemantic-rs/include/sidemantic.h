@@ -70,6 +70,47 @@ typedef struct {
 SidemanticModelList sidemantic_snapshot_list_models(const char *snapshot);
 void sidemantic_free_model_list(SidemanticModelList result);
 
+/* Rich catalog metadata. Optional strings are NULL when not declared. The
+ * semantic_type describes a metric/dimension; data_type is an authored logical
+ * type, not a guess about the physical result. definition is complete JSON.
+ */
+typedef struct {
+    char *kind;
+    char *model_name;
+    char *name;
+    char *qualified_name;
+    char *label;
+    char *description;
+    char *semantic_type;
+    char *data_type;
+    char *sql;
+    char *aggregation;
+    char *target_model;
+    char *relationship_type;
+    char *granularity;
+    bool is_public;
+    char *definition;
+} SidemanticCatalogEntry;
+
+typedef struct {
+    SidemanticCatalogEntry *entries;
+    size_t count;
+    char *error;
+} SidemanticCatalogEntries;
+
+/* Empty kind/model selects all. Non-NULL metric is a JSON array of model and
+ * metric identifiers and selects compatible dimensions. Results own all memory.
+ */
+SidemanticCatalogEntries sidemantic_snapshot_catalog(const char *snapshot, const char *kind,
+                                                     const char *model, const char *metric);
+void sidemantic_free_catalog_entries(SidemanticCatalogEntries result);
+
+/* Export returns a lossless versioned snapshot for the 'import' operation. Free
+ * the text result
+ * with sidemantic_free_result(); the text is in the result's sql member.
+ */
+SidemanticRewriteResult sidemantic_snapshot_export(const char *snapshot);
+
 /*
  * Load semantic models from YAML string.
  *

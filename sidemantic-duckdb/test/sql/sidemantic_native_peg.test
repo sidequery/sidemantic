@@ -136,3 +136,27 @@ query I
 SELECT 42;
 ----
 42
+
+statement ok
+SHOW MODELS;
+
+statement ok
+SHOW METRICS FROM peg_orders;
+
+statement ok
+SHOW DIMENSIONS FOR peg_orders.revenue;
+
+statement ok
+DESCRIBE MODEL peg_orders;
+
+statement ok
+EXPORT SEMANTIC CATALOG;
+
+statement ok
+PREPARE inspect_peg AS SHOW METRICS FROM peg_orders;
+
+statement ok
+EXECUTE inspect_peg;
+
+statement ok
+DROP MODEL prepared_peg;

@@ -1978,6 +1978,41 @@ fn build_metric(props: &HashMap<String, String>) -> Option<Metric> {
         metric.agg = None;
     }
 
+    // An expression containing authored aggregates is a calculation over
+    // grouped results, not a physical row input for the simple metric path.
+    // Keep non-aggregate expressions (e.g. `METRIC value AS amount`) as row
+    // expressions; the parser cannot infer semantic names from bare columns.
+    if metric.r#type == MetricType::Simple && metric.agg == Some(Aggregation::Expression) {
+        fn has_aggregate(value: &serde_json::Value) -> bool {
+            if value.get("window").is_some() || value.get("window_function").is_some() {
+                return false;
+            }
+            crate::core::is_aggregate_ast_node(value)
+                || match value {
+                    serde_json::Value::Object(fields) => fields.values().any(has_aggregate),
+                    serde_json::Value::Array(values) => values.iter().any(has_aggregate),
+                    _ => false,
+                }
+        }
+        let aggregate = metric
+            .sql
+            .as_ref()
+            .and_then(|sql| {
+                crate::semantic_input::with_semantic_stack(|| {
+                    let ast = crate::core::parse_semantic_expression(sql)?;
+                    let ast = serde_json::to_value(ast)
+                        .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+                    Ok(has_aggregate(&ast))
+                })
+                .ok()
+            })
+            .unwrap_or(false);
+        if aggregate {
+            metric.r#type = MetricType::Derived;
+            metric.agg = None;
+        }
+    }
+
     Some(metric)
 }
 
@@ -2405,11 +2440,53 @@ mod tests {
         assert_eq!(amount_variance_pop.sql, Some("amount".to_string()));
 
         let approximate_customers = model.get_metric("approximate_customers").unwrap();
-        assert_eq!(approximate_customers.agg, Some(Aggregation::Expression));
+        assert_eq!(approximate_customers.r#type, MetricType::Derived);
+        assert_eq!(approximate_customers.agg, None);
         assert_eq!(
             approximate_customers.sql,
             Some("APPROX_COUNT_DISTINCT(customer_id)".to_string())
         );
+    }
+
+    #[test]
+    fn inline_aggregate_calculations_preserve_raw_row_expressions() {
+        let model = parse_sql_model(
+            "MODEL (name orders, table raw_orders);
+             METRIC doubled AS SUM(amount) * 2;
+             METRIC rows_plus_one AS COUNT(*) + 1;
+             METRIC raw_amount AS amount;
+             METRIC raw_doubled AS amount * 2;
+             METRIC raw_window AS SUM(amount) OVER ();",
+        )
+        .unwrap();
+        for name in ["doubled", "rows_plus_one"] {
+            let metric = model.get_metric(name).unwrap();
+            assert_eq!(metric.r#type, MetricType::Derived);
+            assert_eq!(metric.agg, None);
+        }
+        for name in ["raw_amount", "raw_doubled", "raw_window"] {
+            let metric = model.get_metric(name).unwrap();
+            assert_eq!(metric.r#type, MetricType::Simple);
+            assert_eq!(metric.agg, Some(Aggregation::Expression));
+        }
+    }
+
+    #[test]
+    fn inline_aggregate_classification_runs_off_small_host_stacks() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                let sql = "MODEL (name orders, table raw_orders);
+                    METRIC doubled AS SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) * 2;";
+                let model = parse_sql_model(sql).unwrap();
+                assert_eq!(
+                    model.get_metric("doubled").unwrap().r#type,
+                    MetricType::Derived
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

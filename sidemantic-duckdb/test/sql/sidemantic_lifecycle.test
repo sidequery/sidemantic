@@ -1,0 +1,159 @@
+# name: test/sql/sidemantic_lifecycle.test
+# description: Qualified definition lifecycle is transactional and dependency restricted
+# group: [sidemantic]
+
+require sidemantic
+
+load __TEST_DIR__/sidemantic_lifecycle.duckdb
+
+require sidemantic
+
+statement ok
+CREATE TABLE lifecycle_source (id INTEGER, amount INTEGER, region VARCHAR);
+
+statement ok
+INSERT INTO lifecycle_source VALUES (1, 10, 'west'), (2, 30, 'east');
+
+statement ok
+CREATE MODEL orders (table lifecycle_source, primary_key id);
+
+statement ok
+CREATE MODEL other (table lifecycle_source, primary_key id);
+
+# Explicit targets must not depend on the active model, including quoted names.
+statement ok
+CREATE METRIC ORDERS."Gross amount" AS SUM(amount);
+
+statement ok
+SEMANTIC CREATE OR REPLACE METRIC "orders"."Gross amount" AS SUM(amount) * 2;
+
+query I
+SELECT orders."Gross amount" FROM orders;
+----
+80
+
+statement ok
+CREATE DIMENSION orders."sales.region" AS region;
+
+statement ok
+CREATE OR REPLACE DIMENSION ORDERS."sales.region" AS upper(region);
+
+statement ok
+CREATE SEGMENT orders."Open orders" AS amount > 10;
+
+statement ok
+CREATE OR REPLACE SEGMENT ORDERS."Open orders" AS amount >= 10;
+
+statement ok
+EXPLAIN DROP METRIC orders."Gross amount";
+
+statement ok
+PREPARE remove_metric AS SEMANTIC DROP METRIC orders."Gross amount";
+
+query I
+SELECT orders."Gross amount" FROM orders;
+----
+80
+
+statement ok
+BEGIN;
+
+statement ok
+EXECUTE remove_metric;
+
+statement error
+SEMANTIC SELECT orders."Gross amount" FROM orders;
+----
+not found
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT orders."Gross amount" FROM orders;
+----
+80
+
+statement ok
+SEMANTIC DROP DIMENSION orders."sales.region";
+
+statement ok
+DROP SEGMENT ORDERS."Open orders";
+
+statement error
+DROP SEGMENT orders."Open orders";
+----
+not found
+
+statement ok
+DROP SEGMENT IF EXISTS orders."Open orders";
+
+statement ok
+DROP MODEL IF EXISTS absent;
+
+statement ok
+CREATE METRIC orders.revenue AS SUM(amount);
+
+statement ok
+CREATE METRIC orders.doubled AS revenue * 2;
+
+statement error
+DROP METRIC orders.revenue;
+----
+dependent definition
+
+query I
+SELECT orders.revenue FROM orders;
+----
+40
+
+statement ok
+DROP METRIC orders.doubled;
+
+# A physical input with the same name is not a semantic dependency.
+statement ok
+CREATE DIMENSION orders.amount AS amount;
+
+statement ok
+DROP DIMENSION orders.amount;
+
+query I
+SELECT orders.revenue FROM orders;
+----
+40
+
+statement ok
+MODEL orders;
+
+statement ok
+BEGIN;
+
+statement ok
+DROP MODEL orders;
+
+statement error
+CREATE METRIC orphan AS COUNT(*);
+----
+no active model
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT orders.revenue FROM orders;
+----
+40
+
+load __TEST_DIR__/sidemantic_lifecycle.duckdb readonly
+
+require sidemantic
+
+statement error
+DROP METRIC orders.revenue;
+----
+read-only
+
+query I
+SELECT orders.revenue FROM orders;
+----
+40

@@ -135,3 +135,76 @@ def test_publication_checks_provenance_and_all_payloads_before_creating_release(
         assert "--verify-tag" in arguments
         assert "--clobber" not in arguments
         assert sum(arg.endswith(".duckdb_extension") for arg in arguments) == len(PLATFORMS)
+
+
+@pytest.mark.parametrize("matching_commit", [True, False])
+def test_publication_verifies_remote_annotated_tag_without_replacing_checkout_ref(tmp_path, matching_commit):
+    def git(directory, *arguments):
+        return subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Release test",
+                "-c",
+                "user.email=release@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "tag.gpgSign=false",
+                *arguments,
+            ],
+            cwd=directory,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    source = tmp_path / "source"
+    source.mkdir()
+    git(source, "init", "-q")
+    (source / "LICENSE").write_text("Initial license\n")
+    git(source, "add", "LICENSE")
+    git(source, "commit", "-qm", "Initial source")
+    earlier_commit = git(source, "rev-parse", "HEAD")
+    (source / "LICENSE").write_text("Release license\n")
+    git(source, "commit", "-qam", "Release source")
+    tagged_commit = git(source, "rev-parse", "HEAD")
+    tag = "sidemantic-duckdb-v0.1.0"
+    git(source, "tag", "-a", tag, "-m", "Release")
+    checkout = tmp_path / "checkout"
+    git(tmp_path, "clone", "-q", "--no-tags", str(source), str(checkout))
+    built_commit = tagged_commit if matching_commit else earlier_commit
+    git(checkout, "checkout", "-q", "--detach", built_commit)
+    # actions/checkout can synthesize a lightweight ref at the built commit.
+    git(checkout, "tag", tag, built_commit)
+    dist = checkout / "dist"
+    dist.mkdir()
+    for platform in PLATFORMS:
+        asset = dist / f"sidemantic-duckdb-1.5.6-{platform}.duckdb_extension"
+        asset.write_bytes(platform.encode())
+        asset.with_suffix(".duckdb_extension.sha256").write_text(
+            f"{hashlib.sha256(asset.read_bytes()).hexdigest()}  {asset.name}\n"
+        )
+    commands = tmp_path / "bin"
+    commands.mkdir()
+    gh = commands / "gh"
+    gh.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$GH_ARGS"\n')
+    gh.chmod(0o755)
+    args = tmp_path / "gh-args"
+    step = workflow_step("github-release", "Verify and publish immutable artifacts")
+    result = subprocess.run(
+        ["bash", "-e", "-c", step["run"]],
+        cwd=checkout,
+        env={
+            **os.environ,
+            "PATH": f"{commands}{os.pathsep}{os.environ['PATH']}",
+            "TAG": tag,
+            "RELEASE_COMMIT": built_commit,
+            "GH_ARGS": str(args),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) == matching_commit, result.stderr
+    assert args.exists() == matching_commit
+    assert git(checkout, "rev-parse", f"refs/tags/{tag}") == built_commit

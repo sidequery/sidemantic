@@ -183,8 +183,10 @@ jobs:
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
-          if [ "$(git rev-parse "$TAG^{commit}")" != "$RELEASE_COMMIT" ]; then
+          # Checkout can create a lightweight local ref for an annotated tag.
+          # Read the remote tag through FETCH_HEAD without replacing that ref.
+          git fetch --no-tags origin "refs/tags/$TAG"
+          if [ "$(git rev-parse 'FETCH_HEAD^{commit}')" != "$RELEASE_COMMIT" ]; then
             echo "Release tag does not identify the built commit" >&2
             exit 1
           fi

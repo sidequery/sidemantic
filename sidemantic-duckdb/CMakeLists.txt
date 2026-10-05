@@ -118,7 +118,7 @@ if(NOT CARGO_EXECUTABLE)
     message(FATAL_ERROR "cargo is required to build the sidemantic DuckDB extension")
 endif()
 
-set(SIDEMANTIC_CARGO_BUILD_ARGS build --manifest-path "${SIDEMANTIC_RS_DIR}/Cargo.toml" --lib)
+set(SIDEMANTIC_CARGO_BUILD_ARGS build --locked --manifest-path "${SIDEMANTIC_RS_DIR}/Cargo.toml" --lib)
 if(SIDEMANTIC_CARGO_TARGET)
     list(APPEND SIDEMANTIC_CARGO_BUILD_ARGS --target "${SIDEMANTIC_CARGO_TARGET}")
 endif()
@@ -145,7 +145,7 @@ add_custom_target(sidemantic_rust_staticlib DEPENDS "${SIDEMANTIC_LIB}")
 # Include Rust library headers
 include_directories(${SIDEMANTIC_INCLUDE})
 
-set(EXTENSION_SOURCES src/sidemantic_extension.cpp src/sidemantic_parser.cpp src/sidemantic_grammar.cpp src/sidemantic_catalog.cpp src/sidemantic_api.cpp)
+set(EXTENSION_SOURCES src/sidemantic_extension.cpp src/sidemantic_parser.cpp src/sidemantic_grammar.cpp src/sidemantic_catalog.cpp src/sidemantic_api.cpp src/sidemantic_discovery.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})

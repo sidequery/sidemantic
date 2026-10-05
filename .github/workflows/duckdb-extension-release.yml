@@ -9,7 +9,7 @@ on:
         default: "v1.5.6"
         type: string
       create_github_release:
-        description: "Create or update a GitHub release with extension artifacts"
+        description: "Publish a new release; the matching extension version tag must already point to this commit"
         required: false
         default: false
         type: boolean
@@ -27,14 +27,40 @@ permissions:
 
 env:
   GEN: ninja
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+  CARGO_BUILD_JOBS: 2
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
   build:
-    name: Build source extension package
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.platform }} extension package
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux_amd64
+            runner: ubuntu-24.04
+            container: quay.io/pypa/manylinux_2_28_x86_64:latest
+          - platform: linux_arm64
+            runner: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64:latest
+          - platform: osx_amd64
+            runner: macos-15-intel
+          - platform: osx_arm64
+            runner: macos-15
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: dnf install -y cmake ninja-build gcc gcc-c++ git make
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: command -v ninja >/dev/null || brew install ninja
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -72,11 +98,10 @@ jobs:
           DUCKDB_VERSION: ${{ steps.duckdb.outputs.version }}
         run: make deps DUCKDB_VERSION="$DUCKDB_VERSION"
 
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build
-
       - name: Build extension
         working-directory: sidemantic-duckdb
+        env:
+          DUCKDB_PLATFORM: ${{ matrix.platform }}
         run: make
 
       - name: Run extension tests
@@ -87,16 +112,24 @@ jobs:
         working-directory: sidemantic-duckdb
         env:
           DUCKDB_VERSION: ${{ steps.duckdb.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           mkdir -p dist
           DUCKDB_VERSION="${DUCKDB_VERSION#v}"
-          cp build/release/extension/sidemantic/sidemantic.duckdb_extension "dist/sidemantic-duckdb-${DUCKDB_VERSION}-linux-amd64.duckdb_extension"
+          ASSET="sidemantic-duckdb-${DUCKDB_VERSION}-${PLATFORM}.duckdb_extension"
+          cp build/release/extension/sidemantic/sidemantic.duckdb_extension "dist/$ASSET"
+          cd dist
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$ASSET" > "$ASSET.sha256"
+          else
+            shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          fi
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sidemantic-duckdb-extension-linux-amd64
-          path: sidemantic-duckdb/dist/*.duckdb_extension
+          name: sidemantic-duckdb-extension-${{ matrix.platform }}
+          path: sidemantic-duckdb/dist/*
           if-no-files-found: error
 
       - name: Save completed build caches
@@ -119,6 +152,7 @@ jobs:
       - name: Download extension artifact
         uses: actions/download-artifact@v4
         with:
+          pattern: sidemantic-duckdb-extension-*
           path: dist
           merge-multiple: true
 
@@ -135,15 +169,33 @@ jobs:
             TAG="sidemantic-duckdb-v${VERSION}"
           fi
 
+          if [[ ! "$TAG" =~ ^sidemantic-duckdb-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid extension release tag" >&2
+            exit 1
+          fi
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Create or update GitHub release
+      - name: Verify and publish immutable artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
-          else
-            gh release create "$TAG" dist/* --title "$TAG" --generate-notes
+          set -euo pipefail
+          git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+          if [ "$(git rev-parse "$TAG^{commit}")" != "$RELEASE_COMMIT" ]; then
+            echo "Release tag does not identify the built commit" >&2
+            exit 1
           fi
+          cd dist
+          for PLATFORM in linux_amd64 linux_arm64 osx_amd64 osx_arm64; do
+            ASSET="sidemantic-duckdb-1.5.6-${PLATFORM}.duckdb_extension"
+            test -s "$ASSET"
+            sha256sum --check "$ASSET.sha256"
+          done
+          cat *.sha256 > SHA256SUMS
+          cp ../LICENSE .
+          # Creation fails if the tag already has a release; never overwrite published bytes.
+          gh release create "$TAG" *.duckdb_extension SHA256SUMS LICENSE \
+            --verify-tag --target "$RELEASE_COMMIT" --title "$TAG" --generate-notes

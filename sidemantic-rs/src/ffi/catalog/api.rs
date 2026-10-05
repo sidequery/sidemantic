@@ -30,6 +30,7 @@ struct CatalogEntry {
     name: String,
     qualified_name: String,
     definition: Value,
+    column_index: usize,
 }
 
 impl CatalogEntry {
@@ -46,6 +47,7 @@ impl CatalogEntry {
             qualified_name: model
                 .map_or_else(|| name.to_owned(), |model| format!("{model}.{name}")),
             definition: serde_json::to_value(definition).map_err(|error| error.to_string())?,
+            column_index: 0,
         })
     }
 }
@@ -84,21 +86,16 @@ fn entries(snapshot: &Snapshot, kind: &str, model: &str) -> CatalogResult<Vec<Ca
             continue;
         }
         entries.push(CatalogEntry::new("model", None, &model.name, model)?);
-        for dimension in &model.dimensions {
-            entries.push(CatalogEntry::new(
-                "dimension",
-                Some(&model.name),
-                &dimension.name,
-                dimension,
-            )?);
+        for (index, dimension) in model.dimensions.iter().enumerate() {
+            let mut entry =
+                CatalogEntry::new("dimension", Some(&model.name), &dimension.name, dimension)?;
+            entry.column_index = index + 1;
+            entries.push(entry);
         }
-        for metric in &model.metrics {
-            entries.push(CatalogEntry::new(
-                "metric",
-                Some(&model.name),
-                &metric.name,
-                metric,
-            )?);
+        for (index, metric) in model.metrics.iter().enumerate() {
+            let mut entry = CatalogEntry::new("metric", Some(&model.name), &metric.name, metric)?;
+            entry.column_index = model.dimensions.len() + index + 1;
+            entries.push(entry);
         }
         for segment in &model.segments {
             entries.push(CatalogEntry::new(
@@ -162,6 +159,8 @@ pub struct SidemanticCatalogEntry {
     pub granularity: *mut c_char,
     pub is_public: bool,
     pub definition: *mut c_char,
+    /// One-based SELECT * position for model dimensions/metrics, zero otherwise.
+    pub column_index: usize,
 }
 
 impl SidemanticCatalogEntry {
@@ -214,6 +213,7 @@ impl SidemanticCatalogEntry {
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
             definition: raw(definition),
+            column_index: entry.column_index,
         })
     }
 }
@@ -429,5 +429,28 @@ metadata:
         assert_eq!(entries(&snapshot, "metric", "").unwrap().len(), 3);
         assert!(entries(&snapshot, "metric", "missing").is_err());
         assert!(entries(&snapshot, "unknown", "").is_err());
+    }
+
+    #[test]
+    fn column_ordinals_follow_star_projection_instead_of_sorted_discovery_rows() {
+        let mut snapshot = snapshot();
+        let model = snapshot
+            .models
+            .iter_mut()
+            .find(|model| model.name == "orders")
+            .unwrap();
+        model
+            .dimensions
+            .push(crate::core::Dimension::categorical("account"));
+        let rows = entries(&snapshot, "", "orders").unwrap();
+        let columns: Vec<_> = rows
+            .iter()
+            .filter(|row| row.column_index > 0)
+            .map(|row| (row.name.as_str(), row.column_index))
+            .collect();
+        assert_eq!(
+            columns,
+            [("account", 2), ("status", 1), ("revenue", 3), ("total", 4)]
+        );
     }
 }

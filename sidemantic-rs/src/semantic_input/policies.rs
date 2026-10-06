@@ -271,27 +271,38 @@ impl<'a> Population<'a> {
         reference: &str,
         context: Option<&str>,
     ) -> Result<Option<(Option<String>, Metric)>> {
+        // Bare dependencies inside a model prefer that model's local metric.
+        // Exact dotted graph identities still precede model-qualified parsing.
+        if !reference.contains('.') {
+            if let Some(model) = context {
+                if let Some(metric) = self
+                    .graph
+                    .get_model(model)
+                    .and_then(|definition| definition.get_metric(reference))
+                {
+                    return Ok(Some((Some(model.to_owned()), metric.clone())));
+                }
+            }
+        }
+        // Public graph identities may contain dots and take precedence over
+        // model-qualified names, matching SQL metric reference resolution.
+        if let Some(metric) = self.graph.get_metric(reference) {
+            let owner = if matches!(
+                metric.r#type,
+                MetricType::Cohort | MetricType::Conversion | MetricType::Retention
+            ) {
+                Some(self.graph.population_metric_owner(reference, metric)?)
+            } else {
+                self.graph.metric_owner(reference).map(str::to_owned)
+            };
+            return Ok(Some((owner, metric.clone())));
+        }
         if let Some((model, name)) = reference.split_once('.') {
             return Ok(self.graph.get_model(model).and_then(|definition| {
                 definition
                     .get_metric(name)
                     .map(|metric| (Some(model.to_owned()), metric.clone()))
             }));
-        }
-        if let Some(model) = context {
-            if let Some(metric) = self
-                .graph
-                .get_model(model)
-                .and_then(|definition| definition.get_metric(reference))
-            {
-                return Ok(Some((Some(model.to_owned()), metric.clone())));
-            }
-        }
-        if let Some(metric) = self.graph.get_metric(reference) {
-            return Ok(Some((
-                self.graph.metric_owner(reference).map(str::to_owned),
-                metric.clone(),
-            )));
         }
         let owners: Vec<_> = self
             .graph

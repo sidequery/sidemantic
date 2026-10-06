@@ -1,0 +1,114 @@
+{
+  "family": "cumulative",
+  "features": [
+    "cumulative",
+    "numeric:integer",
+    "aggregation:min",
+    "null_values",
+    "grain:month",
+    "selected:facts.running",
+    "null_time"
+  ],
+  "index": 27,
+  "metrics": [],
+  "models": [
+    {
+      "default_time_dimension": "day",
+      "dimensions": [
+        {
+          "name": "status",
+          "type": "categorical"
+        },
+        {
+          "granularity": "day",
+          "name": "day",
+          "type": "time"
+        }
+      ],
+      "invariant_filters": [],
+      "metrics": [
+        {
+          "agg": "sum",
+          "name": "total",
+          "sql": "amount"
+        },
+        {
+          "name": "running",
+          "sql": "total",
+          "type": "cumulative"
+        }
+      ],
+      "name": "facts",
+      "primary_key": "id",
+      "relationships": [],
+      "segments": [],
+      "table": "generated_facts"
+    }
+  ],
+  "query": {
+    "dimensions": [
+      "facts.day__month",
+      "facts.status"
+    ],
+    "metrics": [
+      "facts.running"
+    ]
+  },
+  "seed": 20261005,
+  "tables": [
+    {
+      "columns": [
+        [
+          "id",
+          "integer"
+        ],
+        [
+          "category",
+          "varchar"
+        ],
+        [
+          "status",
+          "varchar"
+        ],
+        [
+          "amount",
+          "integer"
+        ],
+        [
+          "quantity",
+          "integer"
+        ],
+        [
+          "account_id",
+          "integer"
+        ],
+        [
+          "day",
+          "date"
+        ]
+      ],
+      "name": "generated_facts",
+      "rows": [
+        [
+          10,
+          null,
+          "paid",
+          0,
+          null,
+          null,
+          "2000-01-01"
+        ],
+        [
+          11,
+          null,
+          "paid",
+          null,
+          null,
+          null,
+          null
+        ]
+      ]
+    }
+  ],
+  "version": 1
+}

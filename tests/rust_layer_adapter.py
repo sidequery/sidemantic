@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +22,6 @@ from sidemantic.validation import MetricValidationError, ModelValidationError, Q
 
 ROOT = Path(__file__).resolve().parents[1]
 RUST_MANIFEST = ROOT / "sidemantic-rs" / "Cargo.toml"
-RUST_TARGET_DIR = Path("/tmp/sidemantic-rs-parity-target")
-RUST_ADAPTER_BIN = RUST_TARGET_DIR / "debug" / "examples" / f"parity_adapter{'.exe' if os.name == 'nt' else ''}"
 
 
 class RustRuntimeSemanticLayer(ProductionSemanticLayer):
@@ -909,9 +908,9 @@ def _graph_yaml_from_graph(graph) -> str:
 
 
 def _rust_request(payload: dict[str, Any]) -> dict[str, Any]:
-    _ensure_rust_adapter_binary()
+    binary = _ensure_rust_adapter_binary()
     result = subprocess.run(
-        [str(RUST_ADAPTER_BIN)],
+        [str(binary)],
         input=json.dumps(payload),
         text=True,
         capture_output=True,
@@ -953,35 +952,34 @@ def _normalize_graph_error(error: str) -> str:
     return message.replace("'", "")
 
 
-def _ensure_rust_adapter_binary() -> None:
-    if RUST_ADAPTER_BIN.exists() and not _rust_sources_newer_than_binary():
-        return
+@lru_cache(maxsize=1)
+def _ensure_rust_adapter_binary() -> Path:
+    # Cargo validates source, lockfile, toolchain and feature fingerprints. A
+    # shared /tmp executable plus source mtimes can reuse another checkout's
+    # binary, and bypassing rustc-wrapper defeats the configured build cache.
     result = subprocess.run(
         [
-            "cargo",
+            shutil.which("mbx") or "cargo",
             "build",
-            "--quiet",
             "--manifest-path",
             str(RUST_MANIFEST),
             "--example",
             "parity_adapter",
+            "--message-format=json",
         ],
         text=True,
         capture_output=True,
         cwd=ROOT,
-        env={
-            **os.environ,
-            "CARGO_BUILD_RUSTC_WRAPPER": "",
-            "CARGO_TARGET_DIR": str(RUST_TARGET_DIR),
-        },
         check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr or result.stdout)
-
-
-def _rust_sources_newer_than_binary() -> bool:
-    binary_mtime = RUST_ADAPTER_BIN.stat().st_mtime
-    rust_root = ROOT / "sidemantic-rs"
-    candidates = [RUST_MANIFEST, *(rust_root / "src").rglob("*.rs"), *(rust_root / "examples").rglob("*.rs")]
-    return any(path.stat().st_mtime > binary_mtime for path in candidates)
+    for line in result.stdout.splitlines():
+        try:
+            artifact = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if artifact.get("reason") == "compiler-artifact" and artifact.get("target", {}).get("name") == "parity_adapter":
+            if executable := artifact.get("executable"):
+                return Path(executable)
+    raise RuntimeError("Cargo did not report the parity_adapter executable")

@@ -1991,6 +1991,18 @@ class SQLGenerator:
             owning_model = self.graph.metric_owners.get(metric_ref)
             if owning_model:
                 add_model(owning_model)
+            elif metric.type in {"cohort", "conversion", "retention"}:
+                # Population generators infer their source from the entity
+                # dimension. Resolve it before the security pass so inferred
+                # graph metrics receive the same policies as explicitly owned ones.
+                candidates = [model.name for model in self.graph.models.values() if model.get_dimension(metric.entity)]
+                if len(candidates) > 1:
+                    raise ValueError(
+                        f"Ambiguous model for {metric.type} metric '{metric_ref}': "
+                        f"entity dimension '{metric.entity}' found in multiple models: {', '.join(sorted(candidates))}"
+                    )
+                if candidates:
+                    add_model(candidates[0])
             if metric.type == "ratio":
                 if metric.numerator:
                     collect_models_from_metric(metric.numerator)
@@ -3381,6 +3393,10 @@ class SQLGenerator:
                 limit=None,
                 offset=None,
                 aliases=child_aliases,
+                # The parent already resolved the public dimension grain.
+                # Defaults here would create hidden groups for graph metrics
+                # or reintroduce defaults the caller explicitly skipped.
+                skip_default_time_dimensions=True,
                 use_preaggregations=use_preaggregations,
                 user_attributes=user_attributes,
             )
@@ -3535,17 +3551,22 @@ class SQLGenerator:
         if order_by:
             order_clauses = []
             for field in order_by:
-                parts = field.rsplit(" ", 1)
-                direction = ""
-                field_ref = field
-                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
-                    field_ref = parts[0]
-                    direction = f" {parts[1].upper()}"
-
+                field_ref, suffix = split_order_field(field, [*output_names, *output_names.values()])
+                # Match the ordinary SQLGlot query builder's public ordering
+                # contract, rather than inheriting a database-specific default.
+                if "NULLS" not in suffix:
+                    nulls = "LAST" if suffix == "DESC" else "FIRST"
+                    suffix = f"{suffix} NULLS {nulls}".strip()
                 field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
                 output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
-                order_clauses.append(f"{self._quote_alias(output_name)}{direction}")
-            final_query += f"\nORDER BY {', '.join(order_clauses)}"
+                order_clauses.append(
+                    exp.Ordered(
+                        this=exp.column(output_name, quoted=True),
+                        desc=suffix.startswith("DESC"),
+                        nulls_first=suffix.endswith("NULLS FIRST"),
+                    )
+                )
+            final_query += "\n" + exp.Order(expressions=order_clauses).sql(dialect=self.dialect)
 
         # Add LIMIT and OFFSET
         if limit is not None:
@@ -5388,8 +5409,8 @@ class SQLGenerator:
         """
         import re as _re
 
-        # Resolve the metric
-        if "." in metric_name:
+        # Exact graph identities may contain dots and precede qualified names.
+        if "." in metric_name and metric_name not in self.graph.metrics:
             model_name, local_name = metric_name.split(".", 1)
         else:
             local_name = metric_name
@@ -5705,7 +5726,7 @@ FROM (
         metric = None
         model = None
 
-        if "." in metric_name:
+        if "." in metric_name and metric_name not in self.graph.metrics:
             model_name, measure_name = metric_name.split(".", 1)
             model = self.graph.get_model(model_name)
             if model:
@@ -5718,6 +5739,11 @@ FROM (
 
         if not metric or not metric.entity or not metric.cohort_event:
             raise ValueError(f"Retention metric {metric_name} missing required fields (entity, cohort_event)")
+
+        if not model and metric_name in self.graph.metric_owners:
+            # Explicit ownership is authoritative, including when another model
+            # declares the same entity dimension. Missing owners must fail.
+            model = self.graph.get_model(self.graph.metric_owners[metric_name])
 
         # Find the model that owns this metric if not already found
         if not model:
@@ -5925,7 +5951,7 @@ JOIN cohort_sizes c USING (cohort_date){order_clause}{limit_clause}{offset_claus
         metric = None
         model = None
 
-        if "." in metric_name:
+        if "." in metric_name and metric_name not in self.graph.metrics:
             # model.metric format
             model_name, measure_name = metric_name.split(".", 1)
             model = self.graph.get_model(model_name)
@@ -6094,7 +6120,7 @@ conversions AS (
     AND conv.event_time BETWEEN base.event_time AND base.event_time + {self._build_interval(window_num, window_unit)}
 )
 SELECT
-{dim_select}  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {metric.name}
+{dim_select}  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {self._quote_alias(metric.name)}
 FROM base_events
 LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 """
@@ -6137,7 +6163,9 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
         # Find the model that owns this metric
         model = None
-        if "." in metric_name:
+        if metric_name in self.graph.metric_owners:
+            model = self.graph.get_model(self.graph.metric_owners[metric_name])
+        elif "." in metric_name and metric_name not in self.graph.metrics:
             model_name, _ = metric_name.split(".", 1)
             model = self.graph.get_model(model_name)
         if not model:
@@ -6333,7 +6361,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
 
         # Build final SELECT: count distinct entities from each step CTE
         # Also alias the last step count to the metric name for ORDER BY compatibility
-        metric_name_only = metric_name.split(".", 1)[-1] if "." in metric_name else metric_name
+        metric_name_only = metric.name
         final_select_parts = []
         for alias in dim_aliases:
             final_select_parts.append(f"step_1.{alias} AS {alias}")
@@ -6341,7 +6369,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         for i in range(1, num_steps + 1):
             final_select_parts.append(f"COUNT(DISTINCT step_{i}.entity) AS step_{i}_count")
         # Add metric-named column (last step count) so ORDER BY metric_name works
-        final_select_parts.append(f"COUNT(DISTINCT step_{num_steps}.entity) AS {metric_name_only}")
+        final_select_parts.append(f"COUNT(DISTINCT step_{num_steps}.entity) AS {self._quote_alias(metric_name_only)}")
         final_select = ",\n  ".join(final_select_parts)
 
         # Build LEFT JOIN chain: step_1 LEFT JOIN step_2 LEFT JOIN step_3 ...
@@ -6421,12 +6449,15 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         time_comparison_base_plans = {}
         regular_expression_metric_plans = {}
         precomputed_cumulative_metrics = []
+        metric_output_aliases = {}
 
         def add_unique(items: list[str], value: str | None) -> None:
             if value and value not in items:
                 items.append(value)
 
         def metric_ref_alias(metric_ref: str) -> str:
+            if metric_ref in metric_output_aliases:
+                return metric_output_aliases[metric_ref]
             return metric_ref.split(".", 1)[1] if "." in metric_ref else metric_ref
 
         def canonical_ref(metric_ref: str, model_context: str | None = None) -> str:
@@ -6445,6 +6476,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
         def resolve_metric_ref(metric_ref: str, model_context: str | None = None):
             if "." in metric_ref:
+                # Exact graph identities precede model-qualified names, just
+                # as they do in public query dispatch and policy discovery.
+                if metric_ref in self.graph.metrics:
+                    return self.graph.get_metric(metric_ref), self.graph.metric_owners.get(metric_ref)
                 model_name, metric_name = metric_ref.split(".", 1)
                 try:
                     model = self.graph.get_model(model_name)
@@ -6454,10 +6489,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     model_metric = model.get_metric(metric_name)
                     if model_metric:
                         return model_metric, model_name
-                try:
-                    return self.graph.get_metric(metric_ref), model_context
-                except KeyError:
-                    return None, model_context
+                return None, model_context
 
             if model_context:
                 try:
@@ -6513,7 +6545,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 if not dependencies:
                     add_unique(base_metrics, canon_ref)
                     return
-                for dep in dependencies:
+                for dep in sorted(dependencies):
                     collect_leaf_base_metrics(dep, resolved_context, visited)
                 return
 
@@ -6604,7 +6636,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     )
                 )
                 if is_expression_metric:
+                    first_dependency = len(base_metrics)
                     collect_leaf_base_metrics(metric_ref, resolved_context)
+                    # Dependency sets must not make the public column order
+                    # depend on the interpreter's hash seed.
+                    base_metrics[first_dependency:] = sorted(base_metrics[first_dependency:])
                     regular_expression_metric_plans[m] = {
                         "metric_ref": metric_ref,
                         "metric_context": resolved_context,
@@ -6670,7 +6706,6 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         # Build inner query with base aggregations
         # Dedupe base_metrics to avoid duplicate column names
         base_metrics = list(dict.fromkeys(base_metrics))
-        base_metric_aliases = {metric_ref_alias(m) for m in base_metrics}
 
         inner_query = self.generate(
             metrics=base_metrics,
@@ -6684,6 +6719,34 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
         # Parse dimensions for outer SELECT
         parsed_dims = self._parse_dimension_refs(dimensions)
+        # Bind window inputs to the actual grouped outputs. Colliding dimension
+        # names are prefixed by the inner planner (items_label, refunds_label).
+        inner_outputs = sqlglot.parse_one(inner_query, read=self.dialect).named_selects
+        dimension_aliases = dict(zip(parsed_dims, inner_outputs[: len(parsed_dims)], strict=True))
+        # Resolve metric identity with the same collision policy as grouped
+        # output, and verify against the emitted projection. Nested window
+        # queries can expose extra dependencies, so positional metric matching
+        # would bind the wrong column.
+        resolved_base_metrics = {}
+        output_name_counts = {}
+        for dim_ref, gran in parsed_dims:
+            name = f"{dim_ref.split('.')[-1]}__{gran}" if gran else dim_ref.split(".")[-1]
+            output_name_counts[name] = output_name_counts.get(name, 0) + 1
+        for reference in base_metrics:
+            metric, owner = resolve_metric_ref(reference)
+            name = metric.name if metric else metric_ref_alias(reference)
+            resolved_base_metrics[reference] = (name, owner)
+            output_name_counts[name] = output_name_counts.get(name, 0) + 1
+        for reference, (name, owner) in resolved_base_metrics.items():
+            alias = f"{owner}_{name}" if owner and output_name_counts[name] > 1 else name
+            if alias not in inner_outputs:
+                # Existing time-comparison outputs retain their qualified name.
+                if reference in inner_outputs:
+                    alias = reference
+                else:
+                    raise ValueError(f"Missing grouped metric output for '{reference}'")
+            metric_output_aliases[reference] = alias
+        base_metric_aliases = set(metric_output_aliases.values())
 
         def sql_identifier(name: str) -> str:
             import re
@@ -6755,12 +6818,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
         # Add dimensions
         for dim_ref, gran in parsed_dims:
-            # Inner query uses simple alias without model prefix
-            dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
-            alias = dim_name
-            if gran:
-                alias = f"{alias}__{gran}"
-            select_exprs.append(f"base.{alias}")
+            alias = dimension_aliases[dim_ref, gran]
+            select_exprs.append(f"base.{sql_identifier(alias)}")
 
         # Add base metrics (pass through)
         for m in base_metrics:
@@ -6815,23 +6874,22 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     if model:
                         dim = model.get_dimension(dim_name)
                         if dim and dim.type == "time":
-                            # Use simple alias without model prefix
-                            time_dim = f"base.{dim_name}"
-                            if gran:
-                                time_dim = f"base.{dim_name}__{gran}"
+                            time_dim = f"base.{sql_identifier(dimension_aliases[dim_ref, gran])}"
                             break
 
             # Allow window_order to override auto-detected time dimension
             if metric.window_order:
-                output_aliases = {
-                    f"{ref.split('.')[-1]}__{gran}" if gran else ref.split(".")[-1] for ref, gran in parsed_dims
-                } | {metric_ref_alias(ref) for ref in base_metrics}
+                output_aliases = set(dimension_aliases.values()) | {metric_ref_alias(ref) for ref in base_metrics}
                 order_alias = metric.window_order
+                metric_context = m.split(".", 1)[0] if "." in m else None
+                order_reference = canonical_ref(order_alias, metric_context)
+                if order_reference in metric_output_aliases:
+                    order_alias = metric_output_aliases[order_reference]
                 if order_alias not in output_aliases:
                     # A selected dimension may be materialized at an explicit or
                     # default grain, so bind its semantic name to that output.
                     matches = [
-                        f"{ref.split('.')[-1]}__{gran}" if gran else ref.split(".")[-1]
+                        dimension_aliases[ref, gran]
                         for ref, gran in parsed_dims
                         if order_alias in (ref, ref.split(".")[-1])
                     ]
@@ -6851,7 +6909,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 dimension = self.graph.get_model(partition_model).get_dimension(dim_name)
                 if dimension and dimension.type == "time":
                     continue
-                alias = f"{dim_name}__{gran}" if gran else dim_name
+                alias = dimension_aliases[dim_ref, gran]
                 column = f"base.{self._quote_alias(alias)}"
                 if column != time_dim and column not in partition_cols:
                     partition_cols.append(column)
@@ -6878,7 +6936,19 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             if metric.window_expression:
                 order_col = time_dim
                 frame = frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-                window_value = f"{metric.window_expression} OVER ({partition_clause}ORDER BY {order_col} {frame})"
+                window_expression = sqlglot.parse_one(metric.window_expression, read=self.dialect)
+                metric_context = m.split(".", 1)[0] if "." in m else None
+
+                def bind_window_input(node):
+                    if isinstance(node, exp.Column) and node.table.lower() == "base":
+                        reference = canonical_ref(node.name, metric_context)
+                        alias = metric_output_aliases.get(reference)
+                        if alias:
+                            return exp.column(alias, table="base", quoted=True)
+                    return node
+
+                window_expression = window_expression.transform(bind_window_input).sql(dialect=self.dialect)
+                window_value = f"{window_expression} OVER ({partition_clause}ORDER BY {order_col} {frame})"
                 window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
                 select_exprs.append(window_expr)
                 cumulative_window_entries.append((window_expr, metric_alias))
@@ -6886,33 +6956,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
             # Option A: Use agg + sql (supports AVG, COUNT, etc.)
             # Get base measure/metric to apply window function to
-            base_ref = metric.sql
-            if "." in base_ref:
-                # It's a direct measure reference - extract just the measure name
-                base_alias = base_ref.split(".")[1]
-            else:
-                # It's an unqualified reference - check model first, then graph-level
-                base_metric = None
-                # Get model name from the cumulative metric reference
-                cum_model_name = m.split(".")[0] if "." in m else None
-                if cum_model_name:
-                    cum_model = self.graph.get_model(cum_model_name)
-                    if cum_model:
-                        base_metric = cum_model.get_metric(base_ref)
-
-                # Fallback to graph-level metric
-                if not base_metric:
-                    try:
-                        base_metric = self.graph.get_metric(base_ref)
-                    except KeyError:
-                        pass
-
-                if base_metric and base_metric.sql:
-                    # Window over the base query's metric alias, not the raw column behind that metric.
-                    base_alias = base_metric.name
-                else:
-                    # Fallback to the metric name itself
-                    base_alias = base_ref
+            metric_context = m.split(".", 1)[0] if "." in m else None
+            base_ref = canonical_ref(metric.sql, metric_context)
+            base_alias = sql_identifier(metric_ref_alias(base_ref))
 
             # Determine aggregation function (default to SUM for backwards compatibility)
             agg_func = self._agg_sql_name(metric.agg or "sum")
@@ -6964,10 +7010,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
             # Add dimensions and base metrics
             for dim_ref, gran in parsed_dims:
-                dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
-                alias = dim_name
-                if gran:
-                    alias = f"{alias}__{gran}"
+                alias = dimension_aliases[dim_ref, gran]
                 lag_selects.append(f"base.{sql_identifier(alias)}")
                 lag_cte_columns.append(alias)
 
@@ -7008,9 +7051,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                         if model:
                             dim = model.get_dimension(dim_name)
                             if dim and dim.type == "time":
-                                time_dim = f"base.{dim_name}"
-                                if gran:
-                                    time_dim = f"base.{dim_name}__{gran}"
+                                time_dim = f"base.{sql_identifier(dimension_aliases[dim_ref, gran])}"
                                 time_dim_gran = gran or dim.granularity
                                 break
 
@@ -7020,13 +7061,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 # Partition by non-time dimensions to avoid cross-group leakage.
                 partition_cols = []
                 for partition_dim_ref, partition_gran in parsed_dims:
-                    partition_dim_name = (
-                        partition_dim_ref.split(".")[1] if "." in partition_dim_ref else partition_dim_ref
-                    )
-                    partition_alias = partition_dim_name
-                    if partition_gran:
-                        partition_alias = f"{partition_alias}__{partition_gran}"
-                    partition_col = f"base.{partition_alias}"
+                    partition_alias = dimension_aliases[partition_dim_ref, partition_gran]
+                    partition_col = f"base.{sql_identifier(partition_alias)}"
                     if partition_col != time_dim and partition_col not in partition_cols:
                         partition_cols.append(partition_col)
                 partition_clause = ""
@@ -7067,7 +7103,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             # Add LAG expressions for each offset ratio metric
             for m in offset_ratio_metrics:
                 metric_context = m.split(".", 1)[0] if "." in m else None
-                metric, _ = resolve_metric_ref(m, metric_context)
+                metric, resolved_context = resolve_metric_ref(m, metric_context)
                 if not metric or not metric.numerator or not metric.denominator:
                     continue
 
@@ -7082,9 +7118,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                         if model:
                             dim = model.get_dimension(dim_name)
                             if dim and dim.type == "time":
-                                time_dim = f"base.{dim_name}"
-                                if gran:
-                                    time_dim = f"base.{dim_name}__{gran}"
+                                time_dim = f"base.{sql_identifier(dimension_aliases[dim_ref, gran])}"
                                 # Fall back to the dimension's own base granularity when the
                                 # query did not request an explicit __gran suffix, so an
                                 # offset_window like "7 days" maps to the right number of rows.
@@ -7097,13 +7131,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 # Partition by non-time dimensions to avoid cross-group leakage.
                 partition_cols = []
                 for partition_dim_ref, partition_gran in parsed_dims:
-                    partition_dim_name = (
-                        partition_dim_ref.split(".")[1] if "." in partition_dim_ref else partition_dim_ref
-                    )
-                    partition_alias = partition_dim_name
-                    if partition_gran:
-                        partition_alias = f"{partition_alias}__{partition_gran}"
-                    partition_col = f"base.{partition_alias}"
+                    partition_alias = dimension_aliases[partition_dim_ref, partition_gran]
+                    partition_col = f"base.{sql_identifier(partition_alias)}"
                     if partition_col != time_dim and partition_col not in partition_cols:
                         partition_cols.append(partition_col)
                 partition_clause = ""
@@ -7111,7 +7140,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     partition_clause = f"PARTITION BY {', '.join(partition_cols)} "
 
                 # Get denominator alias
-                denom_alias = metric_ref_alias(metric.denominator)
+                denom_alias = metric_ref_alias(canonical_ref(metric.denominator, resolved_context))
 
                 denominator_expr = f"base.{sql_identifier(denom_alias)}"
                 interval = self._parse_period_interval(metric.offset_window) if time_dim_gran else None
@@ -7139,7 +7168,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
             # Re-add dimensions and base metrics from lag_cte
             for col in lag_cte_columns:
-                final_selects.append(col)
+                final_selects.append(sql_identifier(col))
 
             # Add time comparison metrics
             for m in time_comparison_metrics:
@@ -7173,11 +7202,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             # Add offset ratio metrics
             for m in offset_ratio_metrics:
                 metric_context = m.split(".", 1)[0] if "." in m else None
-                metric, _ = resolve_metric_ref(m, metric_context)
+                metric, resolved_context = resolve_metric_ref(m, metric_context)
                 if not metric:
                     continue
 
-                num_alias = sql_identifier(metric_ref_alias(metric.numerator))
+                num_alias = sql_identifier(metric_ref_alias(canonical_ref(metric.numerator, resolved_context)))
 
                 # Quote aliases to handle dotted metric names
                 prev_denom_col = self._quote_alias(f"{m}_prev_denom")
@@ -7199,7 +7228,17 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         # Add ORDER BY if specified
         if order_by:
             output_names = sqlglot.parse_one(outer_query, read=self.dialect).named_selects
-            outer_query += self._specialized_order_clause(order_by, output_names)
+            dimension_order_aliases = {
+                f"{reference}__{grain}" if grain else reference: alias
+                for (reference, grain), alias in dimension_aliases.items()
+            }
+            dimension_order_aliases.update(metric_output_aliases)
+            resolved_order = []
+            for field in order_by:
+                reference, suffix = split_order_field(field, [*dimension_order_aliases, *output_names])
+                alias = dimension_order_aliases.get(reference)
+                resolved_order.append(f"{self._quote_alias(alias)} {suffix}" if alias else field)
+            outer_query += self._specialized_order_clause(resolved_order, output_names)
 
         # Add LIMIT and OFFSET if specified
         if limit is not None:

@@ -265,6 +265,46 @@ impl<'a> SqlGenerator<'a> {
 
         // Parse all references
         let dimension_refs = self.parse_dimension_refs(&effective_dimensions)?;
+        // A scalar graph calculation has no single source grain. Beside a
+        // window metric, carry its reference into the grouped inner planner
+        // instead of forcing it through source-local metric resolution.
+        let mut deferred_graph_metrics = HashSet::new();
+        if self.graph.has_strict_metric_scope() {
+            for reference in &query.metrics {
+                if let Some(metric) = self.graph.get_metric(reference) {
+                    if matches!(metric.r#type, MetricType::Derived | MetricType::Ratio)
+                        && metric.offset_window.is_none()
+                        && self.graph_metric_owner_models(reference, metric)?.len() > 1
+                    {
+                        deferred_graph_metrics.insert(reference.clone());
+                    }
+                }
+            }
+        }
+        if !deferred_graph_metrics.is_empty() {
+            let scoped_metrics: Vec<_> = query
+                .metrics
+                .iter()
+                .filter(|reference| !deferred_graph_metrics.contains(*reference))
+                .cloned()
+                .collect();
+            let metric_refs = self.parse_metric_refs(&scoped_metrics)?;
+            if self.has_cumulative_metrics(&metric_refs)? {
+                // Window owners remain query inputs even when their base
+                // aggregates belong to another source and no owner dimension
+                // survives in the grouped inner query.
+                let direct_models = self.find_required_models(&dimension_refs, &metric_refs)?;
+                self.ensure_queryable_sources(&direct_models)?;
+                self.reject_totals_route(query, "window")?;
+                return self.generate_with_cumulative(
+                    query,
+                    &effective_dimensions,
+                    &dimension_refs,
+                    &metric_refs,
+                    &deferred_graph_metrics,
+                );
+            }
+        }
         let metric_refs = self.parse_metric_refs(&query.metrics)?;
         let direct_required_models = self.find_required_models(&dimension_refs, &metric_refs)?;
         self.ensure_queryable_sources(&direct_required_models)?;
@@ -300,6 +340,7 @@ impl<'a> SqlGenerator<'a> {
                 &effective_dimensions,
                 &dimension_refs,
                 &metric_refs,
+                &HashSet::new(),
             );
         }
 
@@ -1410,16 +1451,17 @@ impl<'a> SqlGenerator<'a> {
         metric: &Metric,
         visiting: &mut HashSet<String>,
     ) -> Result<Vec<String>> {
-        // Cohort output expressions bind inner-result columns, not other metrics.
-        // Its source population must be declared, never inferred from those names.
-        if metric.r#type == MetricType::Cohort {
+        // Population metrics bind one source through their entity declaration.
+        // Cohort output expressions name inner-result columns; conversion event
+        // labels are values. Neither is a scalar metric dependency.
+        if matches!(
+            metric.r#type,
+            MetricType::Cohort | MetricType::Conversion | MetricType::Retention
+        ) {
             return self
                 .graph
-                .metric_owner(reference)
-                .map(|owner| vec![owner.to_string()])
-                .ok_or_else(|| SidemanticError::UnsupportedSemanticFeatures {
-                    capabilities: vec!["metric.cohort_owner".into()],
-                });
+                .population_metric_owner(reference, metric)
+                .map(|owner| vec![owner]);
         }
         let mut owners = HashSet::new();
         let window_dependency = Self::window_output_dependency(metric)?;
@@ -2688,6 +2730,7 @@ impl<'a> SqlGenerator<'a> {
         effective_dimensions: &[String],
         dimension_refs: &[DimensionRef],
         metric_refs: &[MetricRef],
+        deferred_graph_metrics: &HashSet<String>,
     ) -> Result<String> {
         let mut base_metrics: Vec<String> = Vec::new();
         let mut seen_metrics: HashSet<String> = HashSet::new();
@@ -2698,7 +2741,23 @@ impl<'a> SqlGenerator<'a> {
         let mut retention_metrics: Vec<MetricRef> = Vec::new();
         let mut cohort_metrics: Vec<MetricRef> = Vec::new();
 
-        for metric_ref in metric_refs {
+        let mut scoped_metrics = metric_refs.iter();
+        let mut scalar_outputs = Vec::new();
+        for reference in &query.metrics {
+            if deferred_graph_metrics.contains(reference) {
+                for leaf in aggregate_plan::window_scalar_leaves(self, reference)? {
+                    if seen_metrics.insert(leaf.clone()) {
+                        base_metrics.push(leaf);
+                    }
+                }
+                if !scalar_outputs.contains(reference) {
+                    scalar_outputs.push(reference.clone());
+                }
+                continue;
+            }
+            let metric_ref = scoped_metrics.next().ok_or_else(|| {
+                SidemanticError::SqlGeneration("Missing window metric reference".into())
+            })?;
             let metric = self.metric_for_ref(metric_ref)?;
 
             match metric.r#type {
@@ -2870,8 +2929,13 @@ impl<'a> SqlGenerator<'a> {
             );
         }
 
+        let inner_metrics: Vec<_> = base_metrics
+            .iter()
+            .chain(&scalar_outputs)
+            .cloned()
+            .collect();
         let mut inner_query = SemanticQuery::new()
-            .with_metrics(base_metrics.clone())
+            .with_metrics(inner_metrics.clone())
             .with_dimensions(effective_dimensions.to_vec())
             .with_filters(query.filters.clone())
             .with_segments(query.segments.clone())
@@ -2881,17 +2945,36 @@ impl<'a> SqlGenerator<'a> {
         inner_query.required_population_models = query.required_population_models.clone();
 
         let inner_sql = self.generate(&inner_query)?;
+        // Keep one identity map for projections, window inputs and ordering.
+        // A metric leaf can collide with another metric or a dimension.
+        let grouped_outputs = self.selected_output_names(&inner_query)?;
+        let metric_output = |reference: &str, model: &str| -> Result<String> {
+            let reference = self.metric_ref_for_inner_query(reference, model);
+            grouped_outputs.get(&reference).cloned().ok_or_else(|| {
+                SidemanticError::Validation(format!("Unknown grouped metric output '{reference}'"))
+            })
+        };
+        let mut output_dimensions = dimension_refs.to_vec();
+        for (reference, dimension) in effective_dimensions.iter().zip(&mut output_dimensions) {
+            dimension.alias = grouped_outputs[reference].clone();
+        }
+        let dimension_refs = output_dimensions.as_slice();
         let mut select_exprs: Vec<String> = Vec::new();
         let mut lag_cte_columns: Vec<String> = Vec::new();
 
         for dim_ref in dimension_refs {
-            select_exprs.push(format!("base.{}", dim_ref.alias));
+            select_exprs.push(format!("base.{}", self.quote_identifier(&dim_ref.alias)));
             lag_cte_columns.push(dim_ref.alias.clone());
         }
 
         for base_ref in &base_metrics {
-            let alias = self.metric_alias_from_ref(base_ref);
-            select_exprs.push(format!("base.{alias}"));
+            let alias = metric_output(base_ref, "")?;
+            select_exprs.push(format!("base.{}", self.quote_identifier(&alias)));
+            lag_cte_columns.push(alias);
+        }
+        for reference in &scalar_outputs {
+            let alias = metric_output(reference, "")?;
+            select_exprs.push(format!("base.{}", self.quote_identifier(&alias)));
             lag_cte_columns.push(alias);
         }
 
@@ -2903,11 +2986,13 @@ impl<'a> SqlGenerator<'a> {
                 let exact_output = dimension_refs
                     .iter()
                     .any(|dimension| &dimension.alias == window_order)
-                    || base_metrics
-                        .iter()
-                        .any(|reference| self.metric_alias_from_ref(reference) == *window_order);
+                    || grouped_outputs.values().any(|alias| alias == window_order);
                 let order_alias = if exact_output {
                     window_order.as_str()
+                } else if let Some(alias) = grouped_outputs
+                    .get(&self.metric_ref_for_inner_query(window_order, &metric_ref.model))
+                {
+                    alias
                 } else {
                     // Resolve only selected dimensions, preserving the requested
                     // grain rather than falling back to a physical source column.
@@ -2934,6 +3019,26 @@ impl<'a> SqlGenerator<'a> {
             };
 
             if let Some(window_expr) = metric.window_expression.as_ref() {
+                let mut replacements = HashMap::new();
+                for name in temporal::window_output_references(window_expr)? {
+                    let reference = self.metric_ref_for_inner_query(&name, &metric_ref.model);
+                    if let Some(alias) = grouped_outputs.get(&reference) {
+                        replacements.insert(
+                            (Some("base".to_string()), name),
+                            format!("base.\"{}\"", alias.replace('"', "\"\"")),
+                        );
+                    }
+                }
+                // The window composer parses its function in the handoff
+                // dialect; target quoting is applied only after composition.
+                let window_expr = polyglot_sql::generate(
+                    &crate::core::replace_semantic_columns(
+                        parse_semantic_expression(window_expr)?,
+                        &replacements,
+                    )?,
+                    SOURCE_DIALECT,
+                )
+                .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
                 let partitions = self.temporal_partition_columns(dimension_refs, &order_col);
                 let partition = if partitions.is_empty() {
                     String::new()
@@ -2946,7 +3051,7 @@ impl<'a> SqlGenerator<'a> {
                     .unwrap_or("ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW");
                 let value = self.fill_metric_expression(
                     metric,
-                    self.output_window_expression(window_expr, &partition, &order_col, frame)?,
+                    self.output_window_expression(&window_expr, &partition, &order_col, frame)?,
                 )?;
                 let expression = format!("{value} AS {}", metric_ref.alias);
                 select_exprs.push(expression.clone());
@@ -2964,7 +3069,7 @@ impl<'a> SqlGenerator<'a> {
                         metric_ref.alias
                     ))
                 })?;
-            let base_alias = self.metric_alias_from_ref(base_ref);
+            let base_alias = self.quote_identifier(&metric_output(base_ref, &metric_ref.model)?);
             let base_col = if metric.agg == Some(Aggregation::CountDistinct) {
                 format!("DISTINCT base.{base_alias}")
             } else {
@@ -3001,7 +3106,7 @@ impl<'a> SqlGenerator<'a> {
         let mut sql = if !offset_ratio_metrics.is_empty() || !time_comparison_metrics.is_empty() {
             let mut lag_selects: Vec<String> = lag_cte_columns
                 .iter()
-                .map(|column| format!("base.{column}"))
+                .map(|column| format!("base.{}", self.quote_identifier(column)))
                 .collect();
             for (expression, alias) in cumulative_selects {
                 lag_selects.push(expression);
@@ -3018,7 +3123,8 @@ impl<'a> SqlGenerator<'a> {
                         metric_ref.alias
                     ))
                 })?;
-                let base_alias = self.metric_alias_from_ref(base_ref);
+                let base_alias =
+                    self.quote_identifier(&metric_output(base_ref, &metric_ref.model)?);
                 let lag_offset = self.calculate_lag_offset(
                     metric.comparison_type.as_ref(),
                     time_granularity.as_deref(),
@@ -3049,7 +3155,8 @@ impl<'a> SqlGenerator<'a> {
                         metric_ref.alias
                     ))
                 })?;
-                let denom_alias = self.metric_alias_from_ref(denominator);
+                let denom_alias =
+                    self.quote_identifier(&metric_output(denominator, &metric_ref.model)?);
                 let prev_alias = format!("{}_prev_denom", metric_ref.alias);
                 let window_clause = self.lag_window_clause(dimension_refs, &time_col, None);
                 let lag_rows = Self::offset_window_lag_rows(
@@ -3077,7 +3184,10 @@ impl<'a> SqlGenerator<'a> {
             lag_cte_sql.push_str(&inner_sql);
             lag_cte_sql.push_str("\n  ) AS base\n)");
 
-            let mut final_selects = lag_cte_columns.clone();
+            let mut final_selects: Vec<_> = lag_cte_columns
+                .iter()
+                .map(|column| self.quote_identifier(column))
+                .collect();
 
             for metric_ref in &time_comparison_metrics {
                 let metric = self.metric_for_ref(metric_ref)?;
@@ -3087,7 +3197,8 @@ impl<'a> SqlGenerator<'a> {
                         metric_ref.alias
                     ))
                 })?;
-                let base_alias = self.metric_alias_from_ref(base_ref);
+                let base_alias =
+                    self.quote_identifier(&metric_output(base_ref, &metric_ref.model)?);
                 let prev_value_col = format!("{}_prev_value", metric_ref.alias);
                 let calculation = metric
                     .calculation
@@ -3116,7 +3227,8 @@ impl<'a> SqlGenerator<'a> {
                         metric_ref.alias
                     ))
                 })?;
-                let numerator_alias = self.metric_alias_from_ref(numerator);
+                let numerator_alias =
+                    self.quote_identifier(&metric_output(numerator, &metric_ref.model)?);
                 let prev_denom_col = format!("{}_prev_denom", metric_ref.alias);
                 let value = self.fill_metric_expression(
                     metric,
@@ -3145,11 +3257,20 @@ impl<'a> SqlGenerator<'a> {
                 let mut tokens = order.split_whitespace();
                 let field = tokens.next().unwrap_or(order);
                 let suffix = tokens.collect::<Vec<&str>>().join(" ");
-                let alias = field
-                    .split('.')
-                    .next_back()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| field.to_string());
+                let alias = effective_dimensions
+                    .iter()
+                    .zip(dimension_refs)
+                    .find(|(reference, dimension)| {
+                        reference.as_str() == field
+                            || format!("{}.{}", dimension.model, dimension.name) == field
+                    })
+                    .map(|(_, dimension)| self.quote_identifier(&dimension.alias))
+                    .or_else(|| {
+                        grouped_outputs
+                            .get(field)
+                            .map(|alias| self.quote_identifier(alias))
+                    })
+                    .unwrap_or_else(|| self.metric_alias_from_ref(field));
                 if suffix.is_empty() {
                     order_parts.push(alias);
                 } else {
@@ -6370,69 +6491,53 @@ impl<'a> SqlGenerator<'a> {
         result
     }
 
-    /// Check if metrics from a model are at fan-out risk
-    /// Returns the set of models whose metrics will be inflated due to fan-out
+    /// Check each source grain against the edges actually used by this query.
+    /// A to-many edge anywhere along a route can repeat the source's rows,
+    /// including a sibling reached through a shared many-to-one parent.
     fn detect_fan_out_risk(
         &self,
         base_model: &str,
         join_paths: &HashMap<String, JoinPath>,
     ) -> HashSet<String> {
-        let mut at_risk = HashSet::new();
-
-        // Every participating source can repeat across a Cartesian edge,
-        // including the target side when there is more than one anchor row.
-        if join_paths.values().any(|path| {
-            path.steps
-                .iter()
-                .any(|step| step.relationship_type == RelationshipType::Cross)
-        }) {
-            at_risk.insert(base_model.to_string());
-            for path in join_paths.values() {
-                for step in &path.steps {
-                    at_risk.insert(step.from_model.clone());
-                    at_risk.insert(step.to_model.clone());
-                }
-            }
-        }
-
-        // For each model we join to, check if the path has fan-out
-        for (model, path) in join_paths {
-            if path.has_fan_out() {
-                // All models BEFORE the fan-out boundary are at risk
-                // The base model's metrics can be inflated if we join to a "many" side
-                if let Some(boundary) = path.fan_out_boundary() {
-                    // If we're joining to a model that causes fan-out,
-                    // the base model's metrics are at risk
-                    if model != boundary {
-                        at_risk.insert(base_model.to_string());
-                    }
-                }
-            }
-        }
-
-        // Also check reverse: if the base model is a "many" side model
-        // and we're pulling metrics from a "one" side model
-        for (model, path) in join_paths {
-            if model == base_model {
-                continue;
-            }
-            // If the path TO this model has no fan-out, but the REVERSE would,
-            // then metrics from this model might be duplicated
-            // This is detected by checking if any step is one_to_many
+        let mut neighbors: HashMap<&str, Vec<(&str, bool)>> = HashMap::new();
+        neighbors.entry(base_model).or_default();
+        for path in join_paths.values() {
             for step in &path.steps {
-                if step.causes_fan_out() {
-                    // The TO model of this step's metrics would be duplicated
-                    // when viewed from the base model's grain
-                    at_risk.insert(step.from_model.clone());
-                }
-                if step.relationship_type == RelationshipType::ManyToOne {
-                    // Joining from a many-side base grain to a one-side model duplicates
-                    // metrics owned by the one-side model across the base rows.
-                    at_risk.insert(step.to_model.clone());
-                }
+                neighbors
+                    .entry(&step.from_model)
+                    .or_default()
+                    .push((&step.to_model, step.causes_fan_out()));
+                let reverse_fanout = matches!(
+                    step.relationship_type,
+                    RelationshipType::ManyToOne
+                        | RelationshipType::ManyToMany
+                        | RelationshipType::Cross
+                );
+                neighbors
+                    .entry(&step.to_model)
+                    .or_default()
+                    .push((&step.from_model, reverse_fanout));
             }
         }
 
+        let mut at_risk = HashSet::new();
+        for &model in neighbors.keys() {
+            let mut visited = HashSet::from([model]);
+            let mut pending = vec![model];
+            'source: while let Some(current) = pending.pop() {
+                for &(target, expands) in &neighbors[current] {
+                    // Do not traverse an edge back to its originating grain.
+                    if !visited.insert(target) {
+                        continue;
+                    }
+                    if expands {
+                        at_risk.insert(model.to_string());
+                        break 'source;
+                    }
+                    pending.push(target);
+                }
+            }
+        }
         at_risk
     }
 

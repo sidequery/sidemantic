@@ -154,11 +154,8 @@ impl SqlGenerator<'_> {
         // Direct query identifiers use target syntax. The source-expression
         // binders above retain canonical quotes until AST emission.
         let quote = |name: &str| self.cohort_target_identifier(name);
-        if reference.graph_metric
-            && self.graph.metric_owner(&reference.name) != Some(reference.model.as_str())
-        {
-            return Err(unsupported("owner"));
-        }
+        // Metric reference resolution already enforces a declared owner or a
+        // unique entity source for graph-level cohorts.
         let model = self
             .graph
             .get_model(&reference.model)

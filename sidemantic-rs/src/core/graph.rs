@@ -123,6 +123,44 @@ impl SemanticGraph {
         self.metric_owners.get(metric).map(String::as_str)
     }
 
+    /// Resolve population ownership identically before policy preparation and SQL generation.
+    pub(crate) fn population_metric_owner(
+        &self,
+        reference: &str,
+        metric: &Metric,
+    ) -> Result<String> {
+        if let Some(owner) = self.metric_owner(reference) {
+            return Ok(owner.to_string());
+        }
+        // Match the public Python entity-dimension inference contract. Do not
+        // guess from table count, event literals, or unrelated output columns.
+        let mut owners: Vec<_> = self
+            .models()
+            .filter(|model| {
+                metric
+                    .entity
+                    .as_deref()
+                    .is_some_and(|entity| model.get_dimension(entity).is_some())
+            })
+            .map(|model| model.name.clone())
+            .collect();
+        owners.sort();
+        match owners.len() {
+            1 => Ok(owners.pop().unwrap()),
+            0 => Err(SidemanticError::UnsupportedSemanticFeatures {
+                capabilities: vec![if metric.r#type == MetricType::Cohort {
+                    "metric.cohort_owner".into()
+                } else {
+                    format!("metric.graph_scope.{reference}")
+                }],
+            }),
+            _ => Err(SidemanticError::AmbiguousReference {
+                field: metric.entity.clone().unwrap(),
+                models: owners.join(", "),
+            }),
+        }
+    }
+
     pub fn has_strict_metric_scope(&self) -> bool {
         self.strict_metric_scope
     }

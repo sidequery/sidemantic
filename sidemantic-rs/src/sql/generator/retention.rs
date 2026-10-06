@@ -113,9 +113,8 @@ impl SqlGenerator<'_> {
         reference: &MetricRef,
         query: &SemanticQuery,
     ) -> Result<String> {
-        if reference.graph_metric {
-            return Err(unsupported("graph_scope"));
-        }
+        // Graph-level retention references have the same uniquely resolved
+        // entity source as model-local references by this point.
         if !query.dimensions.is_empty() || query.ungrouped || !query.table_calculations.is_empty() {
             return Err(unsupported("query_shape"));
         }

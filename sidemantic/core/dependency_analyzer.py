@@ -103,7 +103,20 @@ def extract_metric_dependencies(metric_obj, graph=None, model_context=None) -> s
                     if resolved:
                         continue
 
-                # Try to resolve as metric first
+                # Bare dependencies prefer the owning model, as promised by
+                # model_context. A same-named graph metric must not redirect
+                # either compilation or source-policy discovery.
+                if not qualifier and model_context:
+                    try:
+                        model = graph.get_model(model_context)
+                        if model and model.get_metric(ref):
+                            deps.add(f"{model_context}.{ref}")
+                            continue
+                    except (KeyError, AttributeError):
+                        pass
+
+                # Top-level names and unresolved qualified references retain
+                # their existing graph-metric fallback.
                 try:
                     if graph.get_metric(ref):
                         deps.add(ref)
@@ -112,8 +125,8 @@ def extract_metric_dependencies(metric_obj, graph=None, model_context=None) -> s
                 except KeyError:
                     pass
 
-                # If we have model context, check that model first
-                if not resolved and model_context:
+                # Preserve contextual fallback for unresolved qualified names.
+                if not resolved and qualifier and model_context:
                     try:
                         model = graph.get_model(model_context)
                         if model and model.get_metric(ref):

@@ -1,0 +1,126 @@
+{
+  "data_variant": 0,
+  "family": "multi_source",
+  "features": [
+    "multi_source",
+    "numeric:integer",
+    "aggregation:sum",
+    "empty_source",
+    "grain:day",
+    "many_to_one",
+    "selected:combined",
+    "selected:accounts.quota",
+    "selected:facts.running",
+    "selected:facts.rows",
+    "limit"
+  ],
+  "index": 33,
+  "metrics": [
+    {
+      "name": "combined",
+      "sql": "facts.total + accounts.quota",
+      "type": "derived"
+    }
+  ],
+  "models": [
+    {
+      "dimensions": [
+        {
+          "granularity": "day",
+          "name": "day",
+          "type": "time"
+        }
+      ],
+      "metrics": [
+        {
+          "agg": "sum",
+          "fill_nulls_with": 0,
+          "name": "total",
+          "sql": "amount - quantity"
+        },
+        {
+          "name": "running",
+          "sql": "total",
+          "type": "cumulative"
+        }
+      ],
+      "name": "facts",
+      "primary_key": "id",
+      "relationships": [
+        {
+          "foreign_key": "account_id",
+          "name": "accounts",
+          "type": "many_to_one"
+        }
+      ],
+      "segments": [],
+      "table": "generated_facts"
+    },
+    {
+      "dimensions": [],
+      "metrics": [
+        {
+          "agg": "sum",
+          "name": "quota",
+          "sql": "quota"
+        }
+      ],
+      "name": "accounts",
+      "primary_key": "id",
+      "table": "generated_accounts"
+    }
+  ],
+  "query": {
+    "dimensions": [
+      "facts.day__day"
+    ],
+    "metrics": [
+      "combined",
+      "facts.running"
+    ]
+  },
+  "seed": 20261005,
+  "tables": [
+    {
+      "columns": [
+        [
+          "id",
+          "integer"
+        ],
+        [
+          "amount",
+          "integer"
+        ],
+        [
+          "quantity",
+          "integer"
+        ],
+        [
+          "account_id",
+          "integer"
+        ],
+        [
+          "day",
+          "date"
+        ]
+      ],
+      "name": "generated_facts",
+      "rows": []
+    },
+    {
+      "columns": [
+        [
+          "id",
+          "integer"
+        ],
+        [
+          "quota",
+          "integer"
+        ]
+      ],
+      "name": "generated_accounts",
+      "rows": []
+    }
+  ],
+  "version": 1
+}

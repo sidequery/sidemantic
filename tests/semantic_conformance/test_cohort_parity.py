@@ -312,12 +312,10 @@ def test_nonexistent_explicit_owner_does_not_fall_back_to_entity_match(layer):
 
 
 @pytest.mark.parametrize("layer", ["rust_owned"], indirect=True)
-@pytest.mark.parametrize("mutation", ["unowned", "unknown_metric", "wrapper", "joined_dimension"])
+@pytest.mark.parametrize("mutation", ["unknown_metric", "wrapper", "joined_dimension"])
 def test_owned_graph_cohort_unsupported_shapes_remain_gated(layer, mutation):
     query = {}
-    if mutation == "unowned":
-        layer.graph.metric_owners.clear()
-    elif mutation == "unknown_metric":
+    if mutation == "unknown_metric":
         layer.graph.metric_owners["ghost"] = "events"
     elif mutation == "wrapper":
         layer.graph.add_metric(Metric(name="wrapped", type="derived", sql="qualified * 2"))

@@ -43,14 +43,14 @@ def _lower(
 def test_metric_references_bind_computed_fields_before_physical_fallback(sql, flat):
     result = _lower(sql=sql, flat=flat)
     assert result.valid, result.diagnostics
-    layer = SemanticLayer.from_catalog(result.catalog, engine="python", fallback=False, auto_register=False)
+    layer = SemanticLayer.from_catalog(result.catalog, fallback=False, auto_register=False)
     assert layer.query(metrics=["total"]).fetchall() == [(60,)]
 
 
 def test_quoted_declarations_bind_without_losing_their_identity():
     result = _lower(dataset='"orders"', field='"amount"', sql='SUM("orders"."amount")')
     assert result.valid, result.diagnostics
-    layer = SemanticLayer.from_catalog(result.catalog, engine="python", fallback=False, auto_register=False)
+    layer = SemanticLayer.from_catalog(result.catalog, fallback=False, auto_register=False)
     assert layer.query(metrics=["total"]).fetchall() == [(60,)]
 
 
@@ -89,7 +89,7 @@ def test_invalid_row_expressions_are_rejected_before_querying(field_sql, flat):
 def test_metric_dependencies_expand_after_normalized_lookup():
     result = _lower(sql="BASE * 2", extra_metrics=[{"name": "base", "expression": _expression("SUM(orders.amount)")}])
     assert result.valid, result.diagnostics
-    layer = SemanticLayer.from_catalog(result.catalog, engine="python", fallback=False, auto_register=False)
+    layer = SemanticLayer.from_catalog(result.catalog, fallback=False, auto_register=False)
     assert layer.query(metrics=["total"]).fetchall() == [(120,)]
 
 
@@ -121,6 +121,6 @@ def test_quoted_and_regular_dataset_names_do_not_merge_runtime_identity():
     graph = result.catalog["commerce"].graph
     assert len(graph.models) == 2
     assert {model.metadata["ossie_source_name"] for model in graph.models.values()} == {"Orders", '"Orders"'}
-    layer = SemanticLayer.from_catalog(result.catalog, engine="python", fallback=False, auto_register=False)
+    layer = SemanticLayer.from_catalog(result.catalog, fallback=False, auto_register=False)
     assert layer.query(metrics=["regular"]).fetchall() == [(10,)]
     assert layer.query(metrics=["quoted"]).fetchall() == [(20,)]

@@ -77,7 +77,6 @@ def test_postprocess_keeps_paginated_calculations(layer):
     assert_rows(actual, layer.query(**query).fetchall())
 
 
-@pytest.mark.parametrize("layer", ["python"], indirect=True)
 @pytest.mark.parametrize("alias", ["gross", "Gross Revenue"])
 @pytest.mark.parametrize("qualified", [True, False])
 def test_sequential_calculations_order_by_custom_output_aliases(layer, alias, qualified):

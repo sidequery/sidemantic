@@ -396,6 +396,16 @@ impl<'a> Population<'a> {
     }
 
     fn column(&mut self, column: &Column, context: Option<&str>) -> Result<()> {
+        let reference = column.table.as_ref().map_or_else(
+            || column.name.name.clone(),
+            |table| format!("{}.{}", table.name, column.name.name),
+        );
+        // An exact graph identity can contain a real model name as its prefix.
+        // Resolve its dependencies before treating that prefix as a source.
+        // Bare references retain their model context below.
+        if reference.contains('.') && self.graph.get_metric(&reference).is_some() {
+            return self.metric(&reference, context);
+        }
         let model = column
             .table
             .as_ref()
@@ -404,10 +414,6 @@ impl<'a> Population<'a> {
         if let Some(model) = model {
             self.add_model(model);
         }
-        let reference = column.table.as_ref().map_or_else(
-            || column.name.name.clone(),
-            |table| format!("{}.{}", table.name, column.name.name),
-        );
         // Bare physical filter columns must not bind to unrelated model metrics.
         if model.is_some() || self.graph.get_metric(&reference).is_some() {
             self.metric(&reference, context)?;
@@ -434,6 +440,17 @@ fn check_visibility(
     candidates: &BTreeSet<String>,
     metric_models: &BTreeSet<String>,
 ) -> Result<()> {
+    let check_graph_metric = |reference: &str| -> Result<bool> {
+        let Some(metric) = graph.get_metric(reference) else {
+            return Ok(false);
+        };
+        if !metric.public {
+            return Err(SidemanticError::Security(format!(
+                "Field '{reference}' is not public"
+            )));
+        }
+        Ok(true)
+    };
     let check = |model: &str, name: &str| -> Result<()> {
         let Some(model_definition) = graph.get_model(model) else {
             return Ok(());
@@ -456,6 +473,9 @@ fn check_visibility(
         Ok(())
     };
     for reference in query.metrics.iter().chain(&query.dimensions) {
+        if query.metrics.contains(reference) && check_graph_metric(reference)? {
+            continue;
+        }
         if let Some((model, name)) = reference.split_once('.') {
             check(model, name)?;
         } else if graph
@@ -517,6 +537,13 @@ fn check_visibility(
         columns.extend(order_columns(order, query)?);
     }
     for column in columns {
+        let reference = column.table.as_ref().map_or_else(
+            || column.name.name.clone(),
+            |table| format!("{}.{}", table.name, column.name.name),
+        );
+        if reference.contains('.') && check_graph_metric(&reference)? {
+            continue;
+        }
         if let Some(model) = column
             .table
             .as_ref()

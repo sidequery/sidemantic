@@ -1,10 +1,9 @@
 """Time-key display buckets do not replace row identity for joins or fanout."""
 
-from datetime import date
-
 import pytest
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from tests.duckdb_compat import date_bucket
 
 
 @pytest.fixture(params=["python", "rust"])
@@ -46,9 +45,9 @@ def execute(layer, **query):
 @pytest.mark.parametrize("dimension", ["events.event_time", "events.event_time__day"])
 @pytest.mark.parametrize("timezone", [None, "America/Los_Angeles"])
 def test_time_identity_projection_uses_requested_or_default_grain(layer, dimension, timezone):
-    first, second = (date(2026, 1, 1), date(2026, 1, 2))
+    first, second = (date_bucket(2026, 1, 1), date_bucket(2026, 1, 2))
     if timezone:
-        first, second = date(2025, 12, 31), date(2026, 1, 1)
+        first, second = date_bucket(2025, 12, 31), date_bucket(2026, 1, 1)
     columns, rows = execute(
         layer, metrics=["events.amount"], dimensions=[dimension], order_by=[dimension], timezone=timezone
     )
@@ -92,5 +91,5 @@ def test_time_identity_stays_unbucketed_for_join_and_fanout(layer):
         order_by=["events.event_time__day", "logs.category"],
     ) == (
         ["event_time__day", "category", "amount", "people"],
-        [(date(2026, 1, 1), "x", 7, 2), (date(2026, 1, 2), "y", 8, 1)],
+        [(date_bucket(2026, 1, 1), "x", 7, 2), (date_bucket(2026, 1, 2), "y", 8, 1)],
     )

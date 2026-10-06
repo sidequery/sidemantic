@@ -13,6 +13,7 @@ from sidemantic import SecurityPolicy, SemanticLayer
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.validation import QueryValidationError
+from tests.duckdb_compat import date_bucket
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -155,12 +156,12 @@ def test_sparse_comparison_uses_calendar_month_and_category(layer_for):
         },
         ["day__month", "category", "revenue", "month_change"],
         [
-            ("2024-01-01", "a", 100, None),
-            ("2024-03-01", "a", 180, None),
-            ("2024-04-01", "a", 210, 30),
-            ("2024-01-01", "b", 10, None),
-            ("2024-03-01", "b", 30, None),
-            ("2024-04-01", "b", 50, 20),
+            (date_bucket(2024, 1, 1).isoformat(), "a", 100, None),
+            (date_bucket(2024, 3, 1).isoformat(), "a", 180, None),
+            (date_bucket(2024, 4, 1).isoformat(), "a", 210, 30),
+            (date_bucket(2024, 1, 1).isoformat(), "b", 10, None),
+            (date_bucket(2024, 3, 1).isoformat(), "b", 30, None),
+            (date_bucket(2024, 4, 1).isoformat(), "b", 50, 20),
         ],
     )
 
@@ -198,12 +199,12 @@ def test_rolling_sum_partitions_categories(layer_for):
         },
         ["day__month", "category", "revenue", "rolling_revenue"],
         [
-            ("2024-01-01", "a", 100, 100),
-            ("2024-03-01", "a", 180, 280),
-            ("2024-04-01", "a", 210, 390),
-            ("2024-01-01", "b", 10, 10),
-            ("2024-03-01", "b", 30, 40),
-            ("2024-04-01", "b", 50, 80),
+            (date_bucket(2024, 1, 1).isoformat(), "a", 100, 100),
+            (date_bucket(2024, 3, 1).isoformat(), "a", 180, 280),
+            (date_bucket(2024, 4, 1).isoformat(), "a", 210, 390),
+            (date_bucket(2024, 1, 1).isoformat(), "b", 10, 10),
+            (date_bucket(2024, 3, 1).isoformat(), "b", 30, 40),
+            (date_bucket(2024, 4, 1).isoformat(), "b", 50, 80),
         ],
     )
 
@@ -221,8 +222,8 @@ def test_policy_survives_temporal_child_queries(layer_for):
         },
         ["day__month", "revenue", "rolling_revenue", "month_change"],
         [
-            ("2024-01-01", 100, 100, None),
-            ("2024-03-01", 180, 280, None),
-            ("2024-04-01", 210, 390, 30),
+            (date_bucket(2024, 1, 1).isoformat(), 100, 100, None),
+            (date_bucket(2024, 3, 1).isoformat(), 180, 280, None),
+            (date_bucket(2024, 4, 1).isoformat(), 210, 390, 30),
         ],
     )

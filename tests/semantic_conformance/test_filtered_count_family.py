@@ -7,6 +7,7 @@ import pytest
 from sidemantic import Dimension, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.semantic_handoff import graph_to_semantic_input
+from tests.duckdb_compat import date_bucket
 
 
 @pytest.fixture(params=["python", "rust"])
@@ -186,7 +187,7 @@ def test_count_family_cross_source_counts_restore_absent_zero(counts, restricted
     )
     assert result(counts, metrics=["combined"], dimensions=["regions.region"], order_by=["regions.region"]) == (
         ["region", "combined"],
-        [("a", 12), ("b", 20), (None, None)] if restricted else [("a", 13), ("b", 21), ("c", 30), (None, None)],
+        [(None, None), ("a", 12), ("b", 20)] if restricted else [(None, None), ("a", 13), ("b", 21), ("c", 30)],
     )
 
 
@@ -251,8 +252,6 @@ def test_owned_count_generator_sees_live_graph_changes(counts):
 @pytest.mark.parametrize("counts", ["graph"], indirect=True)
 @pytest.mark.parametrize("name,expected", [("star", [2, 2, 3]), ("one", [2, 2, 3]), ("nulls", [0, 0, 0])])
 def test_owned_count_as_cumulative_base_preserves_public_output(counts, name, expected):
-    from datetime import date
-
     layer, refs = counts
     layer.adapter.execute(
         "alter table count_family_orders add column day date; update count_family_orders set day = case when id in (1,2,4,5) then date '2024-01-01' when id in (3,7,8) then date '2024-01-02' else date '2024-01-03' end"
@@ -262,7 +261,7 @@ def test_owned_count_as_cumulative_base_preserves_public_output(counts, name, ex
     columns, rows = result(counts, metrics=["running"], dimensions=["orders.day"], order_by=["orders.day"])
     assert columns == ["day", name, "running"]
     daily = [2, 0, 1] if name != "nulls" else [0, 0, 0]
-    assert rows == [(date(2024, 1, index + 1), daily[index], expected[index]) for index in range(3)]
+    assert rows == [(date_bucket(2024, 1, index + 1), daily[index], expected[index]) for index in range(3)]
 
 
 @pytest.mark.parametrize("expression", ["COUNT(*)", "COUNT(1)", "COUNT(NULL)"])

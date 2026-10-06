@@ -1331,6 +1331,11 @@ class SQLGenerator:
         """Order specialized results by their exposed columns, never raw SQL."""
         fields = []
         for field in order_by or []:
+            reference, suffix = split_order_field(field, output_names)
+            if reference in output_names:
+                # Public graph identities may contain dots or spaces. Quote
+                # the exact selected name before parsing SQL qualification.
+                field = f"{exp.column(reference, quoted=True).sql(dialect=self.dialect)} {suffix}"
             try:
                 order = parse_query_fragment(field, self.dialect, order_by=True)
             except ValueError:
@@ -3226,7 +3231,12 @@ class SQLGenerator:
                 group_name = complete_groups[reference]
             else:
                 group_name = model_name
-            if reference in complete_metrics or (model_name is not None and aggregate_models == {model_name}):
+            # Scalar formulas must run after the full join, including model-local
+            # formulas: absent source counts/defaults still feed their arithmetic.
+            scalar_calculation = metric.type in ("derived", "ratio") and not metric.sql_is_complete
+            if reference in complete_metrics or (
+                model_name is not None and aggregate_models == {model_name} and not scalar_calculation
+            ):
                 if reference not in leaf_refs:
                     leaf_refs.append(reference)
                     child_aliases[reference] = f"__sidemantic_metric_{len(leaf_refs) - 1}"
@@ -6502,7 +6512,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                         return context_metric, model_context
 
             try:
-                return self.graph.get_metric(metric_ref), model_context
+                return self.graph.get_metric(metric_ref), self.graph.metric_owners.get(metric_ref, model_context)
             except KeyError:
                 pass
 
@@ -6567,8 +6577,18 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             # Classify metric by type
             if metric and metric.type == "cumulative":
                 add_unique(cumulative_metrics, m)
+                if self.dialect == "redshift" and metric.agg == "approx_count_distinct":
+                    raise QueryValidationError(
+                        "Redshift does not support approximate distinct window functions "
+                        "(metric.approx_count_distinct_window_redshift)"
+                    )
                 if metric.window_expression:
                     expression = sqlglot.parse_one(metric.window_expression, read=self.dialect)
+                    if self.dialect == "redshift" and expression.find(exp.ApproxDistinct):
+                        raise QueryValidationError(
+                            "Redshift does not support approximate distinct window functions "
+                            "(metric.approx_count_distinct_window_redshift)"
+                        )
                     for column in expression.find_all(exp.Column):
                         if column.table.lower() != "base":
                             continue
@@ -6839,30 +6859,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
         # Add cumulative metrics with window functions
         for m in cumulative_metrics:
-            # Handle both qualified (model.measure) and unqualified references
-            metric = None
-            if "." in m:
-                model_name, measure_name = m.split(".", 1)
-                try:
-                    model = self.graph.get_model(model_name)
-                    metric = model.get_metric(measure_name) if model else None
-                except KeyError:
-                    pass
-                # Fall back to graph-level metric with dotted name
-                if not metric:
-                    try:
-                        metric = self.graph.get_metric(m)
-                    except KeyError:
-                        pass
-                # Use just the measure name as alias if it's model.measure, otherwise full name
-                # Quote to handle any special characters
-                metric_alias = self._quote_alias(measure_name if metric and "." not in metric.name else m)
-            else:
-                metric = self.graph.get_metric(m)
-                # Quote to handle dotted metric names
-                metric_alias = self._quote_alias(m)
+            # Use the same graph-first identity and owner as dependency collection.
+            metric, metric_context = resolve_metric_ref(m)
             if not metric or (not metric.sql and not metric.window_expression):
                 continue
+            metric_alias = self._quote_alias(metric.name)
 
             # Find the time dimension to order by
             time_dim = None
@@ -6881,7 +6882,6 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             if metric.window_order:
                 output_aliases = set(dimension_aliases.values()) | {metric_ref_alias(ref) for ref in base_metrics}
                 order_alias = metric.window_order
-                metric_context = m.split(".", 1)[0] if "." in m else None
                 order_reference = canonical_ref(order_alias, metric_context)
                 if order_reference in metric_output_aliases:
                     order_alias = metric_output_aliases[order_reference]
@@ -6937,7 +6937,6 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 order_col = time_dim
                 frame = frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
                 window_expression = sqlglot.parse_one(metric.window_expression, read=self.dialect)
-                metric_context = m.split(".", 1)[0] if "." in m else None
 
                 def bind_window_input(node):
                     if isinstance(node, exp.Column) and node.table.lower() == "base":
@@ -6956,7 +6955,6 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
             # Option A: Use agg + sql (supports AVG, COUNT, etc.)
             # Get base measure/metric to apply window function to
-            metric_context = m.split(".", 1)[0] if "." in m else None
             base_ref = canonical_ref(metric.sql, metric_context)
             base_alias = sql_identifier(metric_ref_alias(base_ref))
 

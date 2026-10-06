@@ -1,33 +1,33 @@
 {
   "schema_version": 3,
   "summary": {
-    "source_records": 728,
+    "source_records": 740,
     "by_kind": {
-      "engine-control": 240,
-      "engine-matrix": 90,
+      "engine-control": 244,
+      "engine-matrix": 94,
       "implementation-import": 83,
-      "importorskip": 198,
+      "importorskip": 202,
       "integration-marker": 13,
       "legacy-adapter-import": 6,
       "public-layer-import": 20,
       "skip": 65,
       "skipif": 13
     },
-    "exception_records": 362,
-    "observation_records": 366,
+    "exception_records": 366,
+    "observation_records": 374,
     "exceptions_by_category": {
       "external-service": 42,
       "intentional-Python-only": 35,
-      "optional-host": 231,
+      "optional-host": 235,
       "real-gap": 54
     },
     "exceptions_by_direction": {
-      "both-engines": 275,
+      "both-engines": 279,
       "python-only-exclusion": 14,
       "rust-coverage-exclusion": 73
     },
-    "declared_test_functions": 6492,
-    "collected_nodeids": 11583,
+    "declared_test_functions": 6511,
+    "collected_nodeids": 11876,
     "direct_helper_tests": {
       "native_counterpart_or_route": 84,
       "intentional_python_implementation": 126,
@@ -130,32 +130,32 @@
     },
     {
       "path": ".github/workflows/integration.yml",
+      "line": 179,
+      "source": "uv run --with \"fakesnow==0.11.11\" pytest --test-engine python -m integration tests/db/test_snowflake_integration.py -v"
+    },
+    {
+      "path": ".github/workflows/integration.yml",
       "line": 180,
-      "source": "uv run pytest --test-engine python -m integration tests/db/test_snowflake_integration.py -v"
+      "source": "uv run --with \"fakesnow==0.11.11\" pytest --test-engine rust -m integration tests/db/test_snowflake_integration.py -v"
     },
     {
       "path": ".github/workflows/integration.yml",
-      "line": 181,
-      "source": "uv run pytest --test-engine rust -m integration tests/db/test_snowflake_integration.py -v"
-    },
-    {
-      "path": ".github/workflows/integration.yml",
-      "line": 241,
+      "line": 240,
       "source": "uv run pytest --test-engine python -m integration tests/db/test_clickhouse_integration.py -v"
     },
     {
       "path": ".github/workflows/integration.yml",
-      "line": 242,
+      "line": 241,
       "source": "uv run pytest --test-engine rust -m integration tests/db/test_clickhouse_integration.py -v"
     },
     {
       "path": ".github/workflows/integration.yml",
-      "line": 352,
+      "line": 351,
       "source": "uv run pytest --test-engine python -m integration tests/db/test_adbc_ci_smoke.py -v"
     },
     {
       "path": ".github/workflows/integration.yml",
-      "line": 353,
+      "line": 352,
       "source": "uv run pytest --test-engine rust -m integration tests/db/test_adbc_ci_smoke.py -v"
     },
     {
@@ -441,7 +441,7 @@
     },
     {
       "path": "tests/adapters/test_fixture_functionality_contracts.py",
-      "line": 22,
+      "line": 21,
       "scope": "<module>",
       "kind": "legacy-adapter-import",
       "category": "real-gap",
@@ -452,7 +452,7 @@
     },
     {
       "path": "tests/adapters/test_fixture_functionality_contracts.py",
-      "line": 28,
+      "line": 27,
       "scope": "<module>",
       "kind": "implementation-import",
       "category": "real-gap",
@@ -2001,7 +2001,7 @@
     },
     {
       "path": "tests/metrics/test_cumulative.py",
-      "line": 478,
+      "line": 480,
       "scope": "test_time_comparison_over_derived_cumulative_chain",
       "kind": "implementation-import",
       "category": "real-gap",
@@ -2012,7 +2012,7 @@
     },
     {
       "path": "tests/metrics/test_cumulative.py",
-      "line": 538,
+      "line": 540,
       "scope": "test_time_comparison_over_ratio_cumulative_chain",
       "kind": "implementation-import",
       "category": "real-gap",
@@ -2023,7 +2023,7 @@
     },
     {
       "path": "tests/metrics/test_cumulative.py",
-      "line": 598,
+      "line": 600,
       "scope": "test_time_comparison_with_dependency_free_expression_metric",
       "kind": "implementation-import",
       "category": "real-gap",
@@ -2208,7 +2208,7 @@
     },
     {
       "path": "tests/queries/test_yardstick_measures_replay.py",
-      "line": 107,
+      "line": 108,
       "scope": "_yardstick_upstream_checkout",
       "kind": "skip",
       "category": "external-service",
@@ -2222,7 +2222,7 @@
     },
     {
       "path": "tests/queries/test_yardstick_measures_replay.py",
-      "line": 762,
+      "line": 774,
       "scope": "_replay_yardstick_sql_test",
       "kind": "skip",
       "category": "optional-host",
@@ -2359,7 +2359,7 @@
     },
     {
       "path": "tests/semantic_conformance/test_cli.py",
-      "line": 62,
+      "line": 63,
       "scope": "test_cli_rewrite_executes_imported_query",
       "kind": "importorskip",
       "category": "optional-host",
@@ -2584,7 +2584,7 @@
     },
     {
       "path": "tests/semantic_conformance/test_computed_keys.py",
-      "line": 12,
+      "line": 13,
       "scope": "layer",
       "kind": "importorskip",
       "category": "optional-host",
@@ -2633,19 +2633,44 @@
       "affected_scope": "scope-172"
     },
     {
+      "path": "tests/semantic_conformance/test_cross_source_windows.py",
+      "line": 15,
+      "scope": "test_native_window_expression_preserves_quoted_input_across_dialects",
+      "kind": "importorskip",
+      "category": "optional-host",
+      "exclusion_direction": "both-engines",
+      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "rationale": "reason-4",
+      "affected_scope": "scope-173"
+    },
+    {
+      "path": "tests/semantic_conformance/test_cross_source_windows.py",
+      "line": 43,
+      "scope": "layer",
+      "kind": "importorskip",
+      "category": "optional-host",
+      "exclusion_direction": "both-engines",
+      "conditions": [
+        "request.param == 'rust'"
+      ],
+      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Cross-source window acceptance requires the real Rust extension\")",
+      "rationale": "reason-4",
+      "affected_scope": "scope-174"
+    },
+    {
       "path": "tests/semantic_conformance/test_default_time_differential.py",
-      "line": 9,
+      "line": 7,
       "scope": "<module>",
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-173"
+      "affected_scope": "scope-175"
     },
     {
       "path": "tests/semantic_conformance/test_default_time_differential.py",
-      "line": 15,
+      "line": 14,
       "scope": "layer",
       "kind": "importorskip",
       "category": "optional-host",
@@ -2655,7 +2680,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires real native extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-174"
+      "affected_scope": "scope-176"
     },
     {
       "path": "tests/semantic_conformance/test_dialect_boundary.py",
@@ -2669,7 +2694,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires matching native extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-175"
+      "affected_scope": "scope-177"
     },
     {
       "path": "tests/semantic_conformance/test_dialect_boundary.py",
@@ -2683,7 +2708,7 @@
       ],
       "source": "pytest.skip(\"Native boundary syntax contract; target-dialect result oracle is shared above\")",
       "rationale": "reason-95",
-      "affected_scope": "scope-176"
+      "affected_scope": "scope-178"
     },
     {
       "path": "tests/semantic_conformance/test_dialect_boundary.py",
@@ -2697,7 +2722,7 @@
       ],
       "source": "pytest.skip(\"Native rewrite boundary contract\")",
       "rationale": "reason-95",
-      "affected_scope": "scope-177"
+      "affected_scope": "scope-179"
     },
     {
       "path": "tests/semantic_conformance/test_dialect_boundary.py",
@@ -2711,7 +2736,7 @@
       ],
       "source": "pytest.skip(\"Native input validation contract\")",
       "rationale": "reason-95",
-      "affected_scope": "scope-178"
+      "affected_scope": "scope-180"
     },
     {
       "path": "tests/semantic_conformance/test_dialect_boundary.py",
@@ -2725,7 +2750,7 @@
       ],
       "source": "pytest.skip(\"Native source-dialect literal contract\")",
       "rationale": "reason-95",
-      "affected_scope": "scope-179"
+      "affected_scope": "scope-181"
     },
     {
       "path": "tests/semantic_conformance/test_direct_many_relationships.py",
@@ -2739,11 +2764,11 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Direct relationship parity requires the real extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-180"
+      "affected_scope": "scope-182"
     },
     {
       "path": "tests/semantic_conformance/test_feature_parity.py",
-      "line": 23,
+      "line": 24,
       "scope": "engine",
       "kind": "importorskip",
       "category": "optional-host",
@@ -2753,11 +2778,11 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Migration acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-181"
+      "affected_scope": "scope-183"
     },
     {
       "path": "tests/semantic_conformance/test_filtered_count_family.py",
-      "line": 15,
+      "line": 16,
       "scope": "engine",
       "kind": "importorskip",
       "category": "optional-host",
@@ -2767,40 +2792,40 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Count family acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-182"
+      "affected_scope": "scope-184"
     },
     {
       "path": "tests/semantic_conformance/test_filtered_count_family.py",
-      "line": 227,
+      "line": 228,
       "scope": "test_owned_count_generator_sees_live_graph_changes",
       "kind": "engine-matrix",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "pytest.mark.parametrize(\"engine\", [\"python\"])",
       "rationale": "reason-91",
-      "affected_scope": "scope-183"
+      "affected_scope": "scope-185"
     },
     {
       "path": "tests/semantic_conformance/test_filtered_count_family.py",
-      "line": 229,
+      "line": 230,
       "scope": "test_owned_count_generator_sees_live_graph_changes",
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-183"
+      "affected_scope": "scope-185"
     },
     {
       "path": "tests/semantic_conformance/test_filtered_count_family.py",
-      "line": 271,
+      "line": 270,
       "scope": "test_count_family_does_not_admit_other_filter_scopes",
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-184"
+      "affected_scope": "scope-186"
     },
     {
       "path": "tests/semantic_conformance/test_filtered_row_expressions.py",
@@ -2814,7 +2839,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Row-expression acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-185"
+      "affected_scope": "scope-187"
     },
     {
       "path": "tests/semantic_conformance/test_filtered_row_expressions.py",
@@ -2828,7 +2853,7 @@
       ],
       "source": "pytest.skip(\"PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
-      "affected_scope": "scope-186"
+      "affected_scope": "scope-188"
     },
     {
       "path": "tests/semantic_conformance/test_generated_differential.py",
@@ -2842,7 +2867,32 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Differential execution requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-187"
+      "affected_scope": "scope-189"
+    },
+    {
+      "path": "tests/semantic_conformance/test_graph_population_ownership.py",
+      "line": 17,
+      "scope": "layer",
+      "kind": "importorskip",
+      "category": "optional-host",
+      "exclusion_direction": "both-engines",
+      "conditions": [
+        "request.param == 'rust'"
+      ],
+      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "rationale": "reason-4",
+      "affected_scope": "scope-190"
+    },
+    {
+      "path": "tests/semantic_conformance/test_graph_population_ownership.py",
+      "line": 70,
+      "scope": "test_native_dotted_graph_population_visibility",
+      "kind": "importorskip",
+      "category": "optional-host",
+      "exclusion_direction": "both-engines",
+      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "rationale": "reason-4",
+      "affected_scope": "scope-191"
     },
     {
       "path": "tests/semantic_conformance/test_many_role_results.py",
@@ -2853,11 +2903,11 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-188"
+      "affected_scope": "scope-192"
     },
     {
       "path": "tests/semantic_conformance/test_multistep_conversion_parity.py",
-      "line": 14,
+      "line": 13,
       "scope": "layer",
       "kind": "importorskip",
       "category": "optional-host",
@@ -2867,7 +2917,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Funnel acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-189"
+      "affected_scope": "scope-193"
     },
     {
       "path": "tests/semantic_conformance/test_nested_policy_sql.py",
@@ -2878,7 +2928,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Nested policy SQL requires the installed Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-190"
+      "affected_scope": "scope-194"
     },
     {
       "path": "tests/semantic_conformance/test_null_fill.py",
@@ -2892,7 +2942,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Null-fill acceptance requires the matching Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-191"
+      "affected_scope": "scope-195"
     },
     {
       "path": "tests/semantic_conformance/test_ossie_aggregate_inputs.py",
@@ -2903,7 +2953,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the source-built Rust runtime\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-192"
+      "affected_scope": "scope-196"
     },
     {
       "path": "tests/semantic_conformance/test_ossie_aggregate_inputs.py",
@@ -2914,7 +2964,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-193"
+      "affected_scope": "scope-197"
     },
     {
       "path": "tests/semantic_conformance/test_parameterized_segments.py",
@@ -2928,7 +2978,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires matching native extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-194"
+      "affected_scope": "scope-198"
     },
     {
       "path": "tests/semantic_conformance/test_policy_aggregate_parity.py",
@@ -2942,7 +2992,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Population acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-195"
+      "affected_scope": "scope-199"
     },
     {
       "path": "tests/semantic_conformance/test_policy_cli.py",
@@ -2953,7 +3003,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Policy CLI acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-196"
+      "affected_scope": "scope-200"
     },
     {
       "path": "tests/semantic_conformance/test_postgres_policies.py",
@@ -2967,7 +3017,7 @@
       ],
       "source": "pytest.skip(\"PostgreSQL policy execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
-      "affected_scope": "scope-197"
+      "affected_scope": "scope-201"
     },
     {
       "path": "tests/semantic_conformance/test_query_catalogs.py",
@@ -2981,7 +3031,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Catalog acceptance requires the real extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-198"
+      "affected_scope": "scope-202"
     },
     {
       "path": "tests/semantic_conformance/test_query_catalogs.py",
@@ -2992,7 +3042,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-199"
+      "affected_scope": "scope-203"
     },
     {
       "path": "tests/semantic_conformance/test_query_catalogs.py",
@@ -3003,7 +3053,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-200"
+      "affected_scope": "scope-204"
     },
     {
       "path": "tests/semantic_conformance/test_query_options_parity.py",
@@ -3017,7 +3067,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the actual Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-201"
+      "affected_scope": "scope-205"
     },
     {
       "path": "tests/semantic_conformance/test_query_timezone_parity.py",
@@ -3031,11 +3081,11 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-202"
+      "affected_scope": "scope-206"
     },
     {
       "path": "tests/semantic_conformance/test_reference.py",
-      "line": 40,
+      "line": 41,
       "scope": "test_compiler_results",
       "kind": "importorskip",
       "category": "optional-host",
@@ -3045,7 +3095,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"The real Rust extension must be installed for acceptance\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-203"
+      "affected_scope": "scope-207"
     },
     {
       "path": "tests/semantic_conformance/test_relationship_role_parity.py",
@@ -3059,7 +3109,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Scoped role acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-204"
+      "affected_scope": "scope-208"
     },
     {
       "path": "tests/semantic_conformance/test_relative_date_operators.py",
@@ -3073,7 +3123,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the built Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-205"
+      "affected_scope": "scope-209"
     },
     {
       "path": "tests/semantic_conformance/test_retention_parity.py",
@@ -3087,7 +3137,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Retention parity requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-206"
+      "affected_scope": "scope-210"
     },
     {
       "path": "tests/semantic_conformance/test_rewriter_ci_regressions.py",
@@ -3101,7 +3151,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-207"
+      "affected_scope": "scope-211"
     },
     {
       "path": "tests/semantic_conformance/test_rewriter_ci_regressions.py",
@@ -3115,7 +3165,7 @@
       ],
       "source": "pytest.skip(\"Native subquery scope regression\")",
       "rationale": "reason-95",
-      "affected_scope": "scope-208"
+      "affected_scope": "scope-212"
     },
     {
       "path": "tests/semantic_conformance/test_rewriter_count_keys.py",
@@ -3129,7 +3179,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-209"
+      "affected_scope": "scope-213"
     },
     {
       "path": "tests/semantic_conformance/test_rollup_reconstruction.py",
@@ -3143,7 +3193,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Rollup execution requires the matching Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-210"
+      "affected_scope": "scope-214"
     },
     {
       "path": "tests/semantic_conformance/test_rollup_reconstruction.py",
@@ -3157,7 +3207,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-211"
+      "affected_scope": "scope-215"
     },
     {
       "path": "tests/semantic_conformance/test_rollup_reconstruction.py",
@@ -3171,7 +3221,7 @@
       ],
       "source": "pytest.skip(\"PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
-      "affected_scope": "scope-212"
+      "affected_scope": "scope-216"
     },
     {
       "path": "tests/semantic_conformance/test_rollup_reconstruction.py",
@@ -3185,7 +3235,7 @@
       ],
       "source": "pytest.skip(\"Native output-name collision contract\")",
       "rationale": "reason-95",
-      "affected_scope": "scope-213"
+      "affected_scope": "scope-217"
     },
     {
       "path": "tests/semantic_conformance/test_rollup_reconstruction.py",
@@ -3199,18 +3249,18 @@
       ],
       "source": "pytest.skip(\"Native effective-anchor routing regression\")",
       "rationale": "reason-95",
-      "affected_scope": "scope-214"
+      "affected_scope": "scope-218"
     },
     {
       "path": "tests/semantic_conformance/test_rollup_routing.py",
-      "line": 14,
+      "line": 15,
       "scope": "layer",
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Rollup acceptance requires the matching Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-215"
+      "affected_scope": "scope-219"
     },
     {
       "path": "tests/semantic_conformance/test_selected_table_calculations.py",
@@ -3224,7 +3274,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires real native extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-216"
+      "affected_scope": "scope-220"
     },
     {
       "path": "tests/semantic_conformance/test_selected_table_calculations.py",
@@ -3235,7 +3285,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires real native extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-217"
+      "affected_scope": "scope-221"
     },
     {
       "path": "tests/semantic_conformance/test_selected_table_calculations.py",
@@ -3249,7 +3299,7 @@
       ],
       "source": "pytest.skip(\"PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
-      "affected_scope": "scope-218"
+      "affected_scope": "scope-222"
     },
     {
       "path": "tests/semantic_conformance/test_semantic_sql_binding.py",
@@ -3263,7 +3313,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the built Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-219"
+      "affected_scope": "scope-223"
     },
     {
       "path": "tests/semantic_conformance/test_sibling_fanout_parity.py",
@@ -3277,7 +3327,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Sibling fanout acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-220"
+      "affected_scope": "scope-224"
     },
     {
       "path": "tests/semantic_conformance/test_snapshot_parity.py",
@@ -3291,7 +3341,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Snapshot parity requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-221"
+      "affected_scope": "scope-225"
     },
     {
       "path": "tests/semantic_conformance/test_snowflake_dates.py",
@@ -3302,7 +3352,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires matching native extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-222"
+      "affected_scope": "scope-226"
     },
     {
       "path": "tests/semantic_conformance/test_source_null_ordering.py",
@@ -3316,7 +3366,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires real native extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-223"
+      "affected_scope": "scope-227"
     },
     {
       "path": "tests/semantic_conformance/test_source_null_ordering.py",
@@ -3327,11 +3377,11 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires real native extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-224"
+      "affected_scope": "scope-228"
     },
     {
       "path": "tests/semantic_conformance/test_special_population.py",
-      "line": 13,
+      "line": 12,
       "scope": "layer",
       "kind": "importorskip",
       "category": "optional-host",
@@ -3341,7 +3391,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Population parity requires the real Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-225"
+      "affected_scope": "scope-229"
     },
     {
       "path": "tests/semantic_conformance/test_temporal_dialect_fallback.py",
@@ -3355,7 +3405,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Temporal dialect parity requires the Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-226"
+      "affected_scope": "scope-230"
     },
     {
       "path": "tests/semantic_conformance/test_temporal_null_fill.py",
@@ -3369,11 +3419,11 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Temporal fill requires matching installed Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-227"
+      "affected_scope": "scope-231"
     },
     {
       "path": "tests/semantic_conformance/test_time_key_projection.py",
-      "line": 13,
+      "line": 12,
       "scope": "layer",
       "kind": "importorskip",
       "category": "optional-host",
@@ -3383,11 +3433,11 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-228"
+      "affected_scope": "scope-232"
     },
     {
       "path": "tests/semantic_conformance/test_time_key_projection.py",
-      "line": 69,
+      "line": 68,
       "scope": "test_time_identity_stays_unbucketed_for_join_and_fanout",
       "kind": "skip",
       "category": "real-gap",
@@ -3397,11 +3447,11 @@
       ],
       "source": "pytest.skip(\"Python joins physical keys; native computed-key identity has its own independent oracle\")",
       "rationale": "reason-17",
-      "affected_scope": "scope-229"
+      "affected_scope": "scope-233"
     },
     {
       "path": "tests/semantic_conformance/test_window_output_parity.py",
-      "line": 13,
+      "line": 14,
       "scope": "layer",
       "kind": "importorskip",
       "category": "optional-host",
@@ -3411,11 +3461,11 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Window acceptance requires the Rust extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-230"
+      "affected_scope": "scope-234"
     },
     {
       "path": "tests/semantic_conformance/test_window_output_parity.py",
-      "line": 262,
+      "line": 263,
       "scope": "rust_layer",
       "kind": "skip",
       "category": "intentional-Python-only",
@@ -3425,7 +3475,7 @@
       ],
       "source": "pytest.skip(\"Strict Rust compiler validation contract\")",
       "rationale": "reason-95",
-      "affected_scope": "scope-231"
+      "affected_scope": "scope-235"
     },
     {
       "path": "tests/semantic_conformance/test_yardstick_source_dialects.py",
@@ -3439,7 +3489,7 @@
       ],
       "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires matching native extension\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-232"
+      "affected_scope": "scope-236"
     },
     {
       "path": "tests/semantic_conformance/test_yardstick_source_dialects.py",
@@ -3453,7 +3503,7 @@
       ],
       "source": "pytest.skip(\"Existing native direct-call batch contract; public Python rejects strict batches\")",
       "rationale": "reason-95",
-      "affected_scope": "scope-233"
+      "affected_scope": "scope-237"
     },
     {
       "path": "tests/server/test_api_security.py",
@@ -3464,7 +3514,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-234"
+      "affected_scope": "scope-238"
     },
     {
       "path": "tests/server/test_api_security.py",
@@ -3475,7 +3525,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-234"
+      "affected_scope": "scope-238"
     },
     {
       "path": "tests/server/test_api_security.py",
@@ -3486,7 +3536,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"httpx\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-234"
+      "affected_scope": "scope-238"
     },
     {
       "path": "tests/server/test_api_server.py",
@@ -3497,7 +3547,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-235"
+      "affected_scope": "scope-239"
     },
     {
       "path": "tests/server/test_api_server.py",
@@ -3508,7 +3558,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-235"
+      "affected_scope": "scope-239"
     },
     {
       "path": "tests/server/test_api_server.py",
@@ -3519,7 +3569,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"httpx\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-235"
+      "affected_scope": "scope-239"
     },
     {
       "path": "tests/server/test_api_server.py",
@@ -3533,7 +3583,7 @@
       ],
       "source": "pytest.skip(\"web UI bundle not built (run scripts/build_webapp.py)\")",
       "rationale": "reason-6",
-      "affected_scope": "scope-236"
+      "affected_scope": "scope-240"
     },
     {
       "path": "tests/server/test_concurrency.py",
@@ -3544,7 +3594,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-237"
+      "affected_scope": "scope-241"
     },
     {
       "path": "tests/server/test_concurrency.py",
@@ -3555,7 +3605,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-237"
+      "affected_scope": "scope-241"
     },
     {
       "path": "tests/server/test_concurrency.py",
@@ -3566,7 +3616,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"httpx\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-237"
+      "affected_scope": "scope-241"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3577,7 +3627,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-238"
+      "affected_scope": "scope-242"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3588,7 +3638,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-238"
+      "affected_scope": "scope-242"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3599,7 +3649,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-239"
+      "affected_scope": "scope-243"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3610,7 +3660,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-239"
+      "affected_scope": "scope-243"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3621,7 +3671,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-240"
+      "affected_scope": "scope-244"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3632,7 +3682,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-240"
+      "affected_scope": "scope-244"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3643,7 +3693,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-241"
+      "affected_scope": "scope-245"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3654,7 +3704,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-241"
+      "affected_scope": "scope-245"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3665,7 +3715,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-242"
+      "affected_scope": "scope-246"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3676,7 +3726,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-242"
+      "affected_scope": "scope-246"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3687,7 +3737,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-243"
+      "affected_scope": "scope-247"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3698,7 +3748,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-243"
+      "affected_scope": "scope-247"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3709,7 +3759,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-244"
+      "affected_scope": "scope-248"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3720,7 +3770,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-244"
+      "affected_scope": "scope-248"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3731,7 +3781,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-245"
+      "affected_scope": "scope-249"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3742,7 +3792,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-245"
+      "affected_scope": "scope-249"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3753,7 +3803,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-246"
+      "affected_scope": "scope-250"
     },
     {
       "path": "tests/server/test_connection.py",
@@ -3764,7 +3814,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-246"
+      "affected_scope": "scope-250"
     },
     {
       "path": "tests/server/test_transport_security_parity.py",
@@ -3775,7 +3825,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-247"
+      "affected_scope": "scope-251"
     },
     {
       "path": "tests/server/test_transport_security_parity.py",
@@ -3786,7 +3836,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"httpx\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-247"
+      "affected_scope": "scope-251"
     },
     {
       "path": "tests/server/test_transport_security_parity.py",
@@ -3797,7 +3847,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-247"
+      "affected_scope": "scope-251"
     },
     {
       "path": "tests/templates/test_parameters.py",
@@ -3808,7 +3858,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-248"
+      "affected_scope": "scope-252"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3819,7 +3869,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-249"
+      "affected_scope": "scope-253"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3830,7 +3880,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-250"
+      "affected_scope": "scope-254"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3841,7 +3891,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-250"
+      "affected_scope": "scope-254"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3852,7 +3902,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-251"
+      "affected_scope": "scope-255"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3863,7 +3913,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-251"
+      "affected_scope": "scope-255"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3874,7 +3924,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-252"
+      "affected_scope": "scope-256"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3885,7 +3935,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-252"
+      "affected_scope": "scope-256"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3896,7 +3946,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"riffq\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-253"
+      "affected_scope": "scope-257"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3907,7 +3957,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"mcp\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-254"
+      "affected_scope": "scope-258"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3918,7 +3968,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"textual\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-255"
+      "affected_scope": "scope-259"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3929,7 +3979,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-256"
+      "affected_scope": "scope-260"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3940,7 +3990,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"anywidget\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-256"
+      "affected_scope": "scope-260"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3951,7 +4001,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-257"
+      "affected_scope": "scope-261"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3962,7 +4012,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"anywidget\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-257"
+      "affected_scope": "scope-261"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3973,7 +4023,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-258"
+      "affected_scope": "scope-262"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3984,7 +4034,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"anywidget\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-258"
+      "affected_scope": "scope-262"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -3995,7 +4045,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-259"
+      "affected_scope": "scope-263"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -4006,7 +4056,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"anywidget\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-259"
+      "affected_scope": "scope-263"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -4017,7 +4067,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-260"
+      "affected_scope": "scope-264"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -4028,7 +4078,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"anywidget\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-260"
+      "affected_scope": "scope-264"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -4039,7 +4089,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-261"
+      "affected_scope": "scope-265"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -4050,7 +4100,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"anywidget\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-261"
+      "affected_scope": "scope-265"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -4061,7 +4111,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-262"
+      "affected_scope": "scope-266"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -4072,7 +4122,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"anywidget\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-262"
+      "affected_scope": "scope-266"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -4083,7 +4133,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"polars\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-262"
+      "affected_scope": "scope-266"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -4094,7 +4144,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-263"
+      "affected_scope": "scope-267"
     },
     {
       "path": "tests/test_adapter_integration.py",
@@ -4105,7 +4155,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"anywidget\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-263"
+      "affected_scope": "scope-267"
     },
     {
       "path": "tests/test_bugfix_batch.py",
@@ -4116,7 +4166,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-264"
+      "affected_scope": "scope-268"
     },
     {
       "path": "tests/test_charts.py",
@@ -4127,7 +4177,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.skip(\"altair not installed - chart generation unavailable\")",
       "rationale": "reason-6",
-      "affected_scope": "scope-265"
+      "affected_scope": "scope-269"
     },
     {
       "path": "tests/test_charts.py",
@@ -4138,7 +4188,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.skip(\"altair not installed\")",
       "rationale": "reason-6",
-      "affected_scope": "scope-266"
+      "affected_scope": "scope-270"
     },
     {
       "path": "tests/test_charts.py",
@@ -4149,7 +4199,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.skip(\"altair not installed\")",
       "rationale": "reason-6",
-      "affected_scope": "scope-267"
+      "affected_scope": "scope-271"
     },
     {
       "path": "tests/test_cli_commands.py",
@@ -4160,7 +4210,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"textual\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-268"
+      "affected_scope": "scope-272"
     },
     {
       "path": "tests/test_cli_commands.py",
@@ -4171,7 +4221,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-269"
+      "affected_scope": "scope-273"
     },
     {
       "path": "tests/test_cli_commands.py",
@@ -4182,7 +4232,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-270"
+      "affected_scope": "scope-274"
     },
     {
       "path": "tests/test_cli_commands.py",
@@ -4193,7 +4243,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-271"
+      "affected_scope": "scope-275"
     },
     {
       "path": "tests/test_cli_contract.py",
@@ -4204,7 +4254,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-272"
+      "affected_scope": "scope-276"
     },
     {
       "path": "tests/test_cli_project_contract.py",
@@ -4215,7 +4265,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-273"
+      "affected_scope": "scope-277"
     },
     {
       "path": "tests/test_cli_t2_contract.py",
@@ -4226,7 +4276,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-274"
+      "affected_scope": "scope-278"
     },
     {
       "path": "tests/test_dashboard.py",
@@ -4237,7 +4287,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-275"
+      "affected_scope": "scope-279"
     },
     {
       "path": "tests/test_dashboard.py",
@@ -4248,7 +4298,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"httpx\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-275"
+      "affected_scope": "scope-279"
     },
     {
       "path": "tests/test_dashboard.py",
@@ -4259,7 +4309,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"fastapi\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-276"
+      "affected_scope": "scope-280"
     },
     {
       "path": "tests/test_dashboard.py",
@@ -4270,7 +4320,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"httpx\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-276"
+      "affected_scope": "scope-280"
     },
     {
       "path": "tests/test_mcp_apps.py",
@@ -4281,7 +4331,7 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"mcp\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-277"
+      "affected_scope": "scope-281"
     },
     {
       "path": "tests/test_native_build_cache.py",
@@ -4295,7 +4345,7 @@
       ],
       "source": "pytest.skip(\"uv is required to exercise its wheel cache\")",
       "rationale": "reason-6",
-      "affected_scope": "scope-278"
+      "affected_scope": "scope-282"
     },
     {
       "path": "tests/test_performance.py",
@@ -4306,7 +4356,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
-      "affected_scope": "scope-279"
+      "affected_scope": "scope-283"
     },
     {
       "path": "tests/test_performance.py",
@@ -4317,7 +4367,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
-      "affected_scope": "scope-280"
+      "affected_scope": "scope-284"
     },
     {
       "path": "tests/test_performance.py",
@@ -4328,7 +4378,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-281"
+      "affected_scope": "scope-285"
     },
     {
       "path": "tests/test_performance.py",
@@ -4339,7 +4389,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-282"
+      "affected_scope": "scope-286"
     },
     {
       "path": "tests/test_performance.py",
@@ -4350,7 +4400,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-283"
+      "affected_scope": "scope-287"
     },
     {
       "path": "tests/test_performance.py",
@@ -4361,7 +4411,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
-      "affected_scope": "scope-284"
+      "affected_scope": "scope-288"
     },
     {
       "path": "tests/test_performance.py",
@@ -4372,7 +4422,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-285"
+      "affected_scope": "scope-289"
     },
     {
       "path": "tests/test_query_fragment_boundary.py",
@@ -4383,7 +4433,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
-      "affected_scope": "scope-286"
+      "affected_scope": "scope-290"
     },
     {
       "path": "tests/test_query_fragment_boundary.py",
@@ -4394,7 +4444,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
-      "affected_scope": "scope-287"
+      "affected_scope": "scope-291"
     },
     {
       "path": "tests/test_sql_generation_security.py",
@@ -4405,7 +4455,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-288"
+      "affected_scope": "scope-292"
     },
     {
       "path": "tests/test_sql_generation_security.py",
@@ -4416,7 +4466,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-289"
+      "affected_scope": "scope-293"
     },
     {
       "path": "tests/test_sql_generation_security.py",
@@ -4427,7 +4477,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-290"
+      "affected_scope": "scope-294"
     },
     {
       "path": "tests/test_sql_generation_security.py",
@@ -4438,7 +4488,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-291"
+      "affected_scope": "scope-295"
     },
     {
       "path": "tests/test_sql_generation_security.py",
@@ -4449,7 +4499,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-292"
+      "affected_scope": "scope-296"
     },
     {
       "path": "tests/test_sql_generation_security.py",
@@ -4460,7 +4510,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.generator import SQLGenerator",
       "rationale": "reason-2",
-      "affected_scope": "scope-293"
+      "affected_scope": "scope-297"
     },
     {
       "path": "tests/test_workbench_demo.py",
@@ -4471,7 +4521,7 @@
       "exclusion_direction": "rust-coverage-exclusion",
       "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
-      "affected_scope": "scope-294"
+      "affected_scope": "scope-298"
     },
     {
       "path": "tests/widget/test_widget_examples.py",
@@ -4482,14 +4532,14 @@
       "exclusion_direction": "both-engines",
       "source": "pytest.importorskip(\"pyarrow\")",
       "rationale": "reason-4",
-      "affected_scope": "scope-295"
+      "affected_scope": "scope-299"
     }
   ],
   "execution_evidence": {
-    "label": "Historical Rust shared-suite JUnit: GitHub Actions run 37315672416, head e2ace6aa (tree identical to main merge 2826dfb8). This does not validate current edits; the overall CI run had a separate schema-update failure. Collection scope is prefinal local Rust selection with cached optional dependencies: 11583 selected, 89 deselected; newer regression additions require a final collection refresh.",
-    "testcases": 11532,
+    "label": "PR 409 review working tree based on 5ca50124, Python 3.13 / DuckDB 1.5.6 / rebuilt native engine. Full Rust shared lane before the final Python local-calculation and funnel DATE-expectation fixes: 11724 passed, 147 skipped, 2 failed. Both failures were the funnel DATE expectation; after repair its full module passed 45 tests. Final calculation follow-ups: 2913 conformance passes plus those two repaired assertions, 958 metric/query passes, and 520/520 generated inputs agreed.",
+    "testcases": 11873,
     "skipped": 147,
-    "failures": 0,
+    "failures": 2,
     "errors": 0,
     "skip_reasons": {
       "Existing native direct-call batch contract; public Python rejects strict batches": 2,
@@ -8861,6 +8911,7 @@
         "test_absent_count_zero_is_used_by_aggregate_filter_and_order",
         "test_absent_counts_are_zero_and_other_aggregates_remain_null",
         "test_count_zero_flows_into_derived_and_ratio_before_outer_defaults",
+        "test_local_calculations_use_absent_source_defaults",
         "test_policy_does_not_restore_unauthorized_groups",
         "test_source_populations_preserve_orphans_with_zero_customer_count",
         "test_three_source_groups_merge_when_the_first_source_has_no_row"
@@ -8874,6 +8925,8 @@
         "tests/semantic_conformance/test_absent_counts.py::test_count_zero_flows_into_derived_and_ratio_before_outer_defaults[rust]",
         "tests/semantic_conformance/test_absent_counts.py::test_source_populations_preserve_orphans_with_zero_customer_count[python]",
         "tests/semantic_conformance/test_absent_counts.py::test_source_populations_preserve_orphans_with_zero_customer_count[rust]",
+        "tests/semantic_conformance/test_absent_counts.py::test_local_calculations_use_absent_source_defaults[python]",
+        "tests/semantic_conformance/test_absent_counts.py::test_local_calculations_use_absent_source_defaults[rust]",
         "tests/semantic_conformance/test_absent_counts.py::test_policy_does_not_restore_unauthorized_groups[python]",
         "tests/semantic_conformance/test_absent_counts.py::test_policy_does_not_restore_unauthorized_groups[rust]",
         "tests/semantic_conformance/test_absent_counts.py::test_three_source_groups_merge_when_the_first_source_has_no_row[python]",
@@ -9877,7 +9930,6 @@
         "tests/semantic_conformance/test_cohort_parity.py::test_explicit_owner_wins_over_other_entity_and_metric_names[rust_owned]",
         "tests/semantic_conformance/test_cohort_parity.py::test_nonexistent_explicit_owner_does_not_fall_back_to_entity_match[python_owned]",
         "tests/semantic_conformance/test_cohort_parity.py::test_nonexistent_explicit_owner_does_not_fall_back_to_entity_match[rust_owned]",
-        "tests/semantic_conformance/test_cohort_parity.py::test_owned_graph_cohort_unsupported_shapes_remain_gated[unowned-rust_owned]",
         "tests/semantic_conformance/test_cohort_parity.py::test_owned_graph_cohort_unsupported_shapes_remain_gated[unknown_metric-rust_owned]",
         "tests/semantic_conformance/test_cohort_parity.py::test_owned_graph_cohort_unsupported_shapes_remain_gated[wrapper-rust_owned]",
         "tests/semantic_conformance/test_cohort_parity.py::test_owned_graph_cohort_unsupported_shapes_remain_gated[joined_dimension-rust_owned]",
@@ -10464,6 +10516,106 @@
       ]
     },
     "scope-173": {
+      "path": "tests/semantic_conformance/test_cross_source_windows.py",
+      "declared_tests": [
+        "test_native_window_expression_preserves_quoted_input_across_dialects"
+      ],
+      "collected_tests": [
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-order-duckdb]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-order-postgres]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-order-tsql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-order-mysql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-order-bigquery]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-daily amount-duckdb]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-daily amount-postgres]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-daily amount-tsql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-daily amount-mysql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-daily amount-bigquery]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-order-duckdb]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-order-postgres]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-order-tsql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-order-mysql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-order-bigquery]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-daily amount-duckdb]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-daily amount-postgres]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-daily amount-tsql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-daily amount-mysql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-daily amount-bigquery]"
+      ]
+    },
+    "scope-174": {
+      "path": "tests/semantic_conformance/test_cross_source_windows.py",
+      "declared_tests": [
+        "test_cross_source_calculation_beside_cumulative_preserves_leaf_grains",
+        "test_deferred_calculation_keeps_unqueryable_window_owner_validation",
+        "test_native_window_expression_preserves_quoted_input_across_dialects",
+        "test_window_inputs_keep_qualified_metric_identity",
+        "test_window_partitions_bind_both_colliding_sibling_dimensions"
+      ],
+      "collected_tests": [
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-order-duckdb]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-order-postgres]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-order-tsql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-order-mysql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-order-bigquery]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-daily amount-duckdb]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-daily amount-postgres]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-daily amount-tsql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-daily amount-mysql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[day-daily amount-bigquery]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-order-duckdb]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-order-postgres]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-order-tsql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-order-mysql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-order-bigquery]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-daily amount-duckdb]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-daily amount-postgres]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-daily amount-tsql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-daily amount-mysql]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_native_window_expression_preserves_quoted_input_across_dialects[order day-daily amount-bigquery]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[python-False-populated]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[python-False-empty_facts]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[python-False-empty_accounts]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[python-False-both_empty]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[python-True-populated]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[python-True-empty_facts]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[python-True-empty_accounts]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[python-True-both_empty]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[rust-False-populated]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[rust-False-empty_facts]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[rust-False-empty_accounts]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[rust-False-both_empty]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[rust-True-populated]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[rust-True-empty_facts]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[rust-True-empty_accounts]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_cross_source_calculation_beside_cumulative_preserves_leaf_grains[rust-True-both_empty]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_partitions_bind_both_colliding_sibling_dimensions[python-running]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_partitions_bind_both_colliding_sibling_dimensions[python-expression]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_partitions_bind_both_colliding_sibling_dimensions[python-lag]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_partitions_bind_both_colliding_sibling_dimensions[rust-running]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_partitions_bind_both_colliding_sibling_dimensions[rust-expression]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_partitions_bind_both_colliding_sibling_dimensions[rust-lag]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[python-running-metric]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[python-running-dimension]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[python-expression-metric]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[python-expression-dimension]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[python-lag-metric]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[python-lag-dimension]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[python-ratio-metric]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[python-ratio-dimension]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[rust-running-metric]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[rust-running-dimension]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[rust-expression-metric]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[rust-expression-dimension]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[rust-lag-metric]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[rust-lag-dimension]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[rust-ratio-metric]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_window_inputs_keep_qualified_metric_identity[rust-ratio-dimension]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_deferred_calculation_keeps_unqueryable_window_owner_validation[False-rust]",
+        "tests/semantic_conformance/test_cross_source_windows.py::test_deferred_calculation_keeps_unqueryable_window_owner_validation[True-rust]"
+      ]
+    },
+    "scope-175": {
       "path": "tests/semantic_conformance/test_default_time_differential.py",
       "declared_tests": [
         "test_skipped_model_defaults_remain_skipped_in_source_children"
@@ -10473,7 +10625,7 @@
         "tests/semantic_conformance/test_default_time_differential.py::test_skipped_model_defaults_remain_skipped_in_source_children[rust]"
       ]
     },
-    "scope-174": {
+    "scope-176": {
       "path": "tests/semantic_conformance/test_default_time_differential.py",
       "declared_tests": [
         "test_graph_calculation_without_dimensions_is_scalar",
@@ -10491,7 +10643,7 @@
         "tests/semantic_conformance/test_default_time_differential.py::test_model_default_or_explicit_time_grain_is_projected[rust-True]"
       ]
     },
-    "scope-175": {
+    "scope-177": {
       "path": "tests/semantic_conformance/test_dialect_boundary.py",
       "declared_tests": [
         "test_native_declared_graph_and_query_syntax",
@@ -10584,7 +10736,7 @@
         "tests/semantic_conformance/test_dialect_boundary.py::test_target_policy_literals_survive_alias_wrapping[rust-O'Brien-spark]"
       ]
     },
-    "scope-176": {
+    "scope-178": {
       "path": "tests/semantic_conformance/test_dialect_boundary.py",
       "declared_tests": [
         "test_native_declared_graph_and_query_syntax"
@@ -10602,7 +10754,7 @@
         "tests/semantic_conformance/test_dialect_boundary.py::test_native_declared_graph_and_query_syntax[rust-postgres-COALESCE(\"amount\", 0)-\"orders\".\"tenant\" = 1-\"orders\".\"label\" DESC NULLS LAST]"
       ]
     },
-    "scope-177": {
+    "scope-179": {
       "path": "tests/semantic_conformance/test_dialect_boundary.py",
       "declared_tests": [
         "test_native_rewrite_syntax_and_policy_context"
@@ -10616,7 +10768,7 @@
         "tests/semantic_conformance/test_dialect_boundary.py::test_native_rewrite_syntax_and_policy_context[rust-postgres-\"]"
       ]
     },
-    "scope-178": {
+    "scope-180": {
       "path": "tests/semantic_conformance/test_dialect_boundary.py",
       "declared_tests": [
         "test_native_fragment_framing_and_source_snapshot"
@@ -10626,7 +10778,7 @@
         "tests/semantic_conformance/test_dialect_boundary.py::test_native_fragment_framing_and_source_snapshot[rust]"
       ]
     },
-    "scope-179": {
+    "scope-181": {
       "path": "tests/semantic_conformance/test_dialect_boundary.py",
       "declared_tests": [
         "test_source_dialect_preserves_typed_policy_and_parameter_values"
@@ -10658,7 +10810,7 @@
         "tests/semantic_conformance/test_dialect_boundary.py::test_source_dialect_preserves_typed_policy_and_parameter_values[rust-O'Brien-spark]"
       ]
     },
-    "scope-180": {
+    "scope-182": {
       "path": "tests/semantic_conformance/test_direct_many_relationships.py",
       "declared_tests": [
         "test_bridge_keys_override_direct_only_custom_sql",
@@ -10683,7 +10835,7 @@
         "tests/semantic_conformance/test_direct_many_relationships.py::test_bridge_keys_override_direct_only_custom_sql[rust]"
       ]
     },
-    "scope-181": {
+    "scope-183": {
       "path": "tests/semantic_conformance/test_feature_parity.py",
       "declared_tests": [
         "test_access_denial_precedes_sql",
@@ -10747,7 +10899,7 @@
         "tests/semantic_conformance/test_feature_parity.py::test_policy_survives_temporal_child_queries[rust]"
       ]
     },
-    "scope-182": {
+    "scope-184": {
       "path": "tests/semantic_conformance/test_filtered_count_family.py",
       "declared_tests": [
         "test_count_family_cross_source_counts_restore_absent_zero",
@@ -10822,7 +10974,7 @@
         "tests/semantic_conformance/test_filtered_count_family.py::test_owned_count_as_cumulative_base_preserves_public_output[rust-nulls-expected2-graph]"
       ]
     },
-    "scope-183": {
+    "scope-185": {
       "path": "tests/semantic_conformance/test_filtered_count_family.py",
       "declared_tests": [
         "test_owned_count_generator_sees_live_graph_changes"
@@ -10831,7 +10983,7 @@
         "tests/semantic_conformance/test_filtered_count_family.py::test_owned_count_generator_sees_live_graph_changes[python-graph]"
       ]
     },
-    "scope-184": {
+    "scope-186": {
       "path": "tests/semantic_conformance/test_filtered_count_family.py",
       "declared_tests": [
         "test_count_family_does_not_admit_other_filter_scopes"
@@ -10848,7 +11000,7 @@
         "tests/semantic_conformance/test_filtered_count_family.py::test_count_family_does_not_admit_other_filter_scopes[(select count(*) from orders) > 0-COUNT(NULL)]"
       ]
     },
-    "scope-185": {
+    "scope-187": {
       "path": "tests/semantic_conformance/test_filtered_row_expressions.py",
       "declared_tests": [
         "test_distinct_case_strings_keep_physical_literal_values",
@@ -10985,7 +11137,7 @@
         "tests/semantic_conformance/test_filtered_row_expressions.py::test_filter_column_formatting_preserves_expression_precedence[rust-adjusted-price + 1-5]"
       ]
     },
-    "scope-186": {
+    "scope-188": {
       "path": "tests/semantic_conformance/test_filtered_row_expressions.py",
       "declared_tests": [
         "test_postgres_filtered_row_expression_oracles"
@@ -11005,17 +11157,102 @@
         "tests/semantic_conformance/test_filtered_row_expressions.py::test_postgres_filtered_row_expression_oracles[True-CASE WHEN qty > 0 THEN price * qty ELSE 9 END-expected2-graph]"
       ]
     },
-    "scope-187": {
+    "scope-189": {
       "path": "tests/semantic_conformance/test_generated_differential.py",
       "declared_tests": [
         "test_replay_differential_fixture",
         "test_seeded_differential_campaign"
       ],
       "collected_tests": [
-        "tests/semantic_conformance/test_generated_differential.py::test_seeded_differential_campaign"
+        "tests/semantic_conformance/test_generated_differential.py::test_seeded_differential_campaign",
+        "tests/semantic_conformance/test_generated_differential.py::test_replay_differential_fixture[absent-local-calculation.case.json]",
+        "tests/semantic_conformance/test_generated_differential.py::test_replay_differential_fixture[cross-source-cumulative.case.json]",
+        "tests/semantic_conformance/test_generated_differential.py::test_replay_differential_fixture[cumulative-dimension-collision.case.json]",
+        "tests/semantic_conformance/test_generated_differential.py::test_replay_differential_fixture[cumulative-null-date.case.json]",
+        "tests/semantic_conformance/test_generated_differential.py::test_replay_differential_fixture[scalar-default-time.case.json]",
+        "tests/semantic_conformance/test_generated_differential.py::test_replay_differential_fixture[sibling-fanout.case.json]"
       ]
     },
-    "scope-188": {
+    "scope-190": {
+      "path": "tests/semantic_conformance/test_graph_population_ownership.py",
+      "declared_tests": [
+        "test_dotted_graph_multistep_conversion_preserves_identity_and_policy",
+        "test_dotted_graph_population_identity_preserves_source_policy",
+        "test_dotted_graph_population_order_does_not_add_prefix_model_to_policy_population",
+        "test_graph_cohort_approximate_count_requires_unambiguous_entity_source",
+        "test_graph_population_metric_infers_unique_entity_and_preserves_policy",
+        "test_graph_population_metric_rejects_ambiguous_entity_sources",
+        "test_inferred_graph_cohort_approximate_count_uses_authorized_entities",
+        "test_local_dependency_precedes_global_name_during_policy_discovery"
+      ],
+      "collected_tests": [
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[python-inferred-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[python-inferred-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[python-inferred-retention]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[python-explicit-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[python-explicit-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[python-explicit-retention]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[rust-inferred-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[rust-inferred-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[rust-inferred-retention]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[rust-explicit-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[rust-explicit-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_infers_unique_entity_and_preserves_policy[rust-explicit-retention]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_rejects_ambiguous_entity_sources[python-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_rejects_ambiguous_entity_sources[python-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_rejects_ambiguous_entity_sources[python-retention]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_rejects_ambiguous_entity_sources[rust-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_rejects_ambiguous_entity_sources[rust-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_population_metric_rejects_ambiguous_entity_sources[rust-retention]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[python-analytics-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[python-analytics-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[python-analytics-retention]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[python-events-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[python-events-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[python-events-retention]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[rust-analytics-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[rust-analytics-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[rust-analytics-retention]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[rust-events-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[rust-events-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_identity_preserves_source_policy[rust-events-retention]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_local_dependency_precedes_global_name_during_policy_discovery[python]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_local_dependency_precedes_global_name_during_policy_discovery[rust]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_order_does_not_add_prefix_model_to_policy_population[python-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_order_does_not_add_prefix_model_to_policy_population[python-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_order_does_not_add_prefix_model_to_policy_population[rust-cohort]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_population_order_does_not_add_prefix_model_to_policy_population[rust-conversion]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_multistep_conversion_preserves_identity_and_policy[python]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_dotted_graph_multistep_conversion_preserves_identity_and_policy[rust]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_inferred_graph_cohort_approximate_count_uses_authorized_entities[python]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_inferred_graph_cohort_approximate_count_uses_authorized_entities[rust]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_cohort_approximate_count_requires_unambiguous_entity_source[python-missing]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_cohort_approximate_count_requires_unambiguous_entity_source[python-ambiguous]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_cohort_approximate_count_requires_unambiguous_entity_source[rust-missing]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_graph_cohort_approximate_count_requires_unambiguous_entity_source[rust-ambiguous]"
+      ]
+    },
+    "scope-191": {
+      "path": "tests/semantic_conformance/test_graph_population_ownership.py",
+      "declared_tests": [
+        "test_native_dotted_graph_population_visibility"
+      ],
+      "collected_tests": [
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[select-analytics-compile]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[select-analytics-rewrite]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[select-events-compile]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[select-events-rewrite]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[filter-analytics-compile]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[filter-analytics-rewrite]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[filter-events-compile]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[filter-events-rewrite]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[order-analytics-compile]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[order-analytics-rewrite]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[order-events-compile]",
+        "tests/semantic_conformance/test_graph_population_ownership.py::test_native_dotted_graph_population_visibility[order-events-rewrite]"
+      ]
+    },
+    "scope-192": {
       "path": "tests/semantic_conformance/test_many_role_results.py",
       "declared_tests": [
         "test_access_denial_on_every_population",
@@ -11050,7 +11287,7 @@
         "tests/semantic_conformance/test_many_role_results.py::test_composite_junction_keys_do_not_cross_tenants"
       ]
     },
-    "scope-189": {
+    "scope-193": {
       "path": "tests/semantic_conformance/test_multistep_conversion_parity.py",
       "declared_tests": [
         "test_dimension_and_metric_ordering_with_limit",
@@ -11121,7 +11358,7 @@
         "tests/semantic_conformance/test_multistep_conversion_parity.py::test_mapped_time_cannot_change_source_scope[(select max(occurred) from funnel_events)-rust]"
       ]
     },
-    "scope-190": {
+    "scope-194": {
       "path": "tests/semantic_conformance/test_nested_policy_sql.py",
       "declared_tests": [
         "test_chained_ctes_and_column_aliases_preserve_outer_aggregation",
@@ -11189,7 +11426,7 @@
         "tests/semantic_conformance/test_nested_policy_sql.py::test_native_nested_shapes_compile_every_policy_leaf[select coalesce((select accounts.quota from metrics), 0) as quota from (select purchases.revenue from metrics) q-expected6]"
       ]
     },
-    "scope-191": {
+    "scope-195": {
       "path": "tests/semantic_conformance/test_null_fill.py",
       "declared_tests": [
         "test_filled_leaf_participates_in_cross_source_calculation",
@@ -11219,7 +11456,7 @@
         "tests/semantic_conformance/test_null_fill.py::test_policy_excluded_groups_are_not_created_by_fill[rust]"
       ]
     },
-    "scope-192": {
+    "scope-196": {
       "path": "tests/semantic_conformance/test_ossie_aggregate_inputs.py",
       "declared_tests": [
         "test_column_free_aggregate_uses_sole_dataset_population",
@@ -11252,7 +11489,7 @@
         "tests/semantic_conformance/test_ossie_aggregate_inputs.py::test_joined_aggregate_preserves_compound_computed_relationship_keys"
       ]
     },
-    "scope-193": {
+    "scope-197": {
       "path": "tests/semantic_conformance/test_ossie_aggregate_inputs.py",
       "declared_tests": [
         "test_graph_measures_preserve_input_scope"
@@ -11284,7 +11521,7 @@
         "tests/semantic_conformance/test_ossie_aggregate_inputs.py::test_graph_measures_preserve_input_scope[True-gross-True-fanout]"
       ]
     },
-    "scope-194": {
+    "scope-198": {
       "path": "tests/semantic_conformance/test_parameterized_segments.py",
       "declared_tests": [
         "test_control_values_remain_raw_while_outputs_are_typed",
@@ -11399,7 +11636,7 @@
         "tests/semantic_conformance/test_parameterized_segments.py::test_segment_subqueries_keep_physical_scope[rust-parameters1-10-snowflake]"
       ]
     },
-    "scope-195": {
+    "scope-199": {
       "path": "tests/semantic_conformance/test_policy_aggregate_parity.py",
       "declared_tests": [
         "test_account_invariant_excludes_inactive_denominator_rows",
@@ -11434,7 +11671,7 @@
         "tests/semantic_conformance/test_policy_aggregate_parity.py::test_visibility_denies_hidden_fields_in_every_query_position[rust-order]"
       ]
     },
-    "scope-196": {
+    "scope-200": {
       "path": "tests/semantic_conformance/test_policy_cli.py",
       "declared_tests": [
         "test_cli_authorized_context_reaches_rust",
@@ -11532,7 +11769,7 @@
         "tests/semantic_conformance/test_policy_cli.py::test_scoped_filters_and_alias_pagination_keep_authorized_rows"
       ]
     },
-    "scope-197": {
+    "scope-201": {
       "path": "tests/semantic_conformance/test_postgres_policies.py",
       "declared_tests": [
         "test_explicit_postgres_graph_input_preserves_policy_results",
@@ -11586,7 +11823,7 @@
         "tests/semantic_conformance/test_postgres_policies.py::test_postgres_public_null_ordering_matches_adapter[sql]"
       ]
     },
-    "scope-198": {
+    "scope-202": {
       "path": "tests/semantic_conformance/test_query_catalogs.py",
       "declared_tests": [
         "test_active_explore_is_enforced",
@@ -11624,7 +11861,7 @@
         "tests/semantic_conformance/test_query_catalogs.py::test_invalid_catalog_identity_is_rejected[definitions3-rust]"
       ]
     },
-    "scope-199": {
+    "scope-203": {
       "path": "tests/semantic_conformance/test_query_catalogs.py",
       "declared_tests": [
         "test_raw_active_catalog_requests_are_never_ignored"
@@ -11635,7 +11872,7 @@
         "tests/semantic_conformance/test_query_catalogs.py::test_raw_active_catalog_requests_are_never_ignored[table_calculations-value2-rust]"
       ]
     },
-    "scope-200": {
+    "scope-204": {
       "path": "tests/semantic_conformance/test_query_catalogs.py",
       "declared_tests": [
         "test_invalid_catalog_identity_is_rejected"
@@ -11647,7 +11884,7 @@
         "tests/semantic_conformance/test_query_catalogs.py::test_invalid_catalog_identity_is_rejected[definitions3-rust]"
       ]
     },
-    "scope-201": {
+    "scope-205": {
       "path": "tests/semantic_conformance/test_query_options_parity.py",
       "declared_tests": [
         "test_aliases_bind_selected_calculation_order",
@@ -11915,7 +12152,7 @@
         "tests/semantic_conformance/test_query_options_parity.py::test_calculation_pagination_preserves_ordinary_null_order[rust-postgres-True-1- DESC NULLS LAST]"
       ]
     },
-    "scope-202": {
+    "scope-206": {
       "path": "tests/semantic_conformance/test_query_timezone_parity.py",
       "declared_tests": [
         "test_absent_timezone_keeps_utc_buckets",
@@ -11970,7 +12207,7 @@
         "tests/semantic_conformance/test_query_timezone_parity.py::test_timezone_bypasses_utc_rollup[rust]"
       ]
     },
-    "scope-203": {
+    "scope-207": {
       "path": "tests/semantic_conformance/test_reference.py",
       "declared_tests": [
         "test_compiler_results"
@@ -12014,7 +12251,7 @@
         "tests/semantic_conformance/test_reference.py::test_compiler_results[complete_aggregate_physical_filter-rust]"
       ]
     },
-    "scope-204": {
+    "scope-208": {
       "path": "tests/semantic_conformance/test_relationship_role_parity.py",
       "declared_tests": [
         "test_equally_short_undeclared_join_choice_is_rejected",
@@ -12030,7 +12267,7 @@
         "tests/semantic_conformance/test_relationship_role_parity.py::test_equally_short_undeclared_join_choice_is_rejected[rust]"
       ]
     },
-    "scope-205": {
+    "scope-209": {
       "path": "tests/semantic_conformance/test_relative_date_operators.py",
       "declared_tests": [
         "test_relative_date_operator_result_matches_period_contract"
@@ -12094,7 +12331,7 @@
         "tests/semantic_conformance/test_relative_date_operators.py::test_relative_date_operator_result_matches_period_contract[rust-this month->=-sql]"
       ]
     },
-    "scope-206": {
+    "scope-210": {
       "path": "tests/semantic_conformance/test_retention_parity.py",
       "declared_tests": [
         "test_aliased_dimension_filter_can_empty_cohort_population",
@@ -12205,7 +12442,7 @@
         "tests/semantic_conformance/test_retention_parity.py::test_retention_output_dialects_preserve_calendar_periods[rust-month-months_since-rows2-snowflake]"
       ]
     },
-    "scope-207": {
+    "scope-211": {
       "path": "tests/semantic_conformance/test_rewriter_ci_regressions.py",
       "declared_tests": [
         "test_correlated_semantic_sources_fail_before_execution",
@@ -12254,7 +12491,7 @@
         "tests/semantic_conformance/test_rewriter_ci_regressions.py::test_subquery_local_alias_can_shadow_outer_semantic_source[rust]"
       ]
     },
-    "scope-208": {
+    "scope-212": {
       "path": "tests/semantic_conformance/test_rewriter_ci_regressions.py",
       "declared_tests": [
         "test_subquery_local_alias_can_shadow_outer_semantic_source"
@@ -12264,7 +12501,7 @@
         "tests/semantic_conformance/test_rewriter_ci_regressions.py::test_subquery_local_alias_can_shadow_outer_semantic_source[rust]"
       ]
     },
-    "scope-209": {
+    "scope-213": {
       "path": "tests/semantic_conformance/test_rewriter_count_keys.py",
       "declared_tests": [
         "test_composite_primary_keys_preserve_selected_aggregate_grain",
@@ -12284,7 +12521,7 @@
         "tests/semantic_conformance/test_rewriter_count_keys.py::test_composite_relationship_rewrite_uses_both_key_components[rust]"
       ]
     },
-    "scope-210": {
+    "scope-214": {
       "path": "tests/semantic_conformance/test_rollup_reconstruction.py",
       "declared_tests": [
         "test_average_and_derived_having_reconstruct_unselected_dependencies",
@@ -12390,7 +12627,7 @@
         "tests/semantic_conformance/test_rollup_reconstruction.py::test_global_filtered_distinct_rollup_count_population[rust-True]"
       ]
     },
-    "scope-211": {
+    "scope-215": {
       "path": "tests/semantic_conformance/test_rollup_reconstruction.py",
       "declared_tests": [
         "test_average_and_derived_having_reconstruct_unselected_dependencies",
@@ -12493,7 +12730,7 @@
         "tests/semantic_conformance/test_rollup_reconstruction.py::test_global_filtered_distinct_rollup_count_population[rust-True]"
       ]
     },
-    "scope-212": {
+    "scope-216": {
       "path": "tests/semantic_conformance/test_rollup_reconstruction.py",
       "declared_tests": [
         "test_postgres_rollup_reconstruction_executes"
@@ -12504,7 +12741,7 @@
         "tests/semantic_conformance/test_rollup_reconstruction.py::test_postgres_rollup_reconstruction_executes[lambda]"
       ]
     },
-    "scope-213": {
+    "scope-217": {
       "path": "tests/semantic_conformance/test_rollup_reconstruction.py",
       "declared_tests": [
         "test_colliding_join_dimension_outputs_keep_raw_contract"
@@ -12514,7 +12751,7 @@
         "tests/semantic_conformance/test_rollup_reconstruction.py::test_colliding_join_dimension_outputs_keep_raw_contract[rust]"
       ]
     },
-    "scope-214": {
+    "scope-218": {
       "path": "tests/semantic_conformance/test_rollup_reconstruction.py",
       "declared_tests": [
         "test_join_rollup_preserves_local_and_role_source_population"
@@ -12526,7 +12763,7 @@
         "tests/semantic_conformance/test_rollup_reconstruction.py::test_join_rollup_preserves_local_and_role_source_population[rust-role-owner]"
       ]
     },
-    "scope-215": {
+    "scope-219": {
       "path": "tests/semantic_conformance/test_rollup_routing.py",
       "declared_tests": [
         "test_access_denied_before_rollup_access",
@@ -12576,7 +12813,7 @@
         "tests/semantic_conformance/test_rollup_routing.py::test_colliding_state_and_dimension_aliases_cannot_materialize_or_route[True]"
       ]
     },
-    "scope-216": {
+    "scope-220": {
       "path": "tests/semantic_conformance/test_selected_table_calculations.py",
       "declared_tests": [
         "test_all_calculations_match_independent_processor",
@@ -12657,7 +12894,7 @@
         "tests/semantic_conformance/test_selected_table_calculations.py::test_calculations_use_only_authorized_population[rust]"
       ]
     },
-    "scope-217": {
+    "scope-221": {
       "path": "tests/semantic_conformance/test_selected_table_calculations.py",
       "declared_tests": [
         "test_canonical_validation_checks_active_calculations"
@@ -12670,7 +12907,7 @@
         "tests/semantic_conformance/test_selected_table_calculations.py::test_canonical_validation_checks_active_calculations[unknown_option]"
       ]
     },
-    "scope-218": {
+    "scope-222": {
       "path": "tests/semantic_conformance/test_selected_table_calculations.py",
       "declared_tests": [
         "test_postgres_calculation_results_match_processor"
@@ -12686,7 +12923,7 @@
         "tests/semantic_conformance/test_selected_table_calculations.py::test_postgres_calculation_results_match_processor[rust-population3]"
       ]
     },
-    "scope-219": {
+    "scope-223": {
       "path": "tests/semantic_conformance/test_semantic_sql_binding.py",
       "declared_tests": [
         "test_ad_hoc_aggregate_inputs_are_physical_and_do_not_mutate_model",
@@ -12726,7 +12963,7 @@
         "tests/semantic_conformance/test_semantic_sql_binding.py::test_expression_dependencies_do_not_escape_requested_projection[rust]"
       ]
     },
-    "scope-220": {
+    "scope-224": {
       "path": "tests/semantic_conformance/test_sibling_fanout_parity.py",
       "declared_tests": [
         "test_empty_sibling_population_has_no_groups",
@@ -12742,10 +12979,12 @@
         "tests/semantic_conformance/test_sibling_fanout_parity.py::test_sibling_groups_preserve_each_item_and_null_population[rust-False]",
         "tests/semantic_conformance/test_sibling_fanout_parity.py::test_sibling_groups_preserve_each_item_and_null_population[rust-True]",
         "tests/semantic_conformance/test_sibling_fanout_parity.py::test_empty_sibling_population_has_no_groups[python]",
-        "tests/semantic_conformance/test_sibling_fanout_parity.py::test_empty_sibling_population_has_no_groups[rust]"
+        "tests/semantic_conformance/test_sibling_fanout_parity.py::test_empty_sibling_population_has_no_groups[rust]",
+        "tests/semantic_conformance/test_sibling_fanout_parity.py::test_source_identity_survives_three_edge_fanout_path[python]",
+        "tests/semantic_conformance/test_sibling_fanout_parity.py::test_source_identity_survives_three_edge_fanout_path[rust]"
       ]
     },
-    "scope-221": {
+    "scope-225": {
       "path": "tests/semantic_conformance/test_snapshot_parity.py",
       "declared_tests": [
         "test_coarse_time_uses_snapshot_within_each_month",
@@ -12827,7 +13066,7 @@
         "tests/semantic_conformance/test_snapshot_parity.py::test_snapshot_source_coalesce_is_distinct_from_final_count_default[rust]"
       ]
     },
-    "scope-222": {
+    "scope-226": {
       "path": "tests/semantic_conformance/test_snowflake_dates.py",
       "declared_tests": [
         "test_snowflake_date_differences"
@@ -12859,21 +13098,161 @@
         "tests/semantic_conformance/test_snowflake_dates.py::test_snowflake_date_differences[compile-COALESCE(DATEDIFF(day, NULL, DATE '2024-01-01'), 42)-42]"
       ]
     },
-    "scope-223": {
+    "scope-227": {
       "path": "tests/semantic_conformance/test_source_null_ordering.py",
       "declared_tests": [
+        "test_multi_source_ordering_renders_target_dialect",
         "test_source_ordering_matches_independent_rows"
       ],
-      "collected_tests": []
+      "collected_tests": [
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False--dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False--dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False--dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False--metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False--metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False--metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC NULLS LAST-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC NULLS LAST-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC NULLS LAST-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC NULLS LAST-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC NULLS LAST-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- ASC NULLS LAST-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC NULLS FIRST-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC NULLS FIRST-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC NULLS FIRST-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC NULLS FIRST-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC NULLS FIRST-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-False- DESC NULLS FIRST-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True--dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True--dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True--dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True--metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True--metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True--metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC NULLS LAST-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC NULLS LAST-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC NULLS LAST-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC NULLS LAST-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC NULLS LAST-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- ASC NULLS LAST-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC NULLS FIRST-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC NULLS FIRST-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC NULLS FIRST-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC NULLS FIRST-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC NULLS FIRST-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[python-True- DESC NULLS FIRST-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False--dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False--dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False--dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False--metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False--metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False--metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC NULLS LAST-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC NULLS LAST-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC NULLS LAST-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC NULLS LAST-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC NULLS LAST-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- ASC NULLS LAST-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC NULLS FIRST-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC NULLS FIRST-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC NULLS FIRST-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC NULLS FIRST-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC NULLS FIRST-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-False- DESC NULLS FIRST-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True--dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True--dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True--dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True--metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True--metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True--metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC NULLS LAST-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC NULLS LAST-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC NULLS LAST-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC NULLS LAST-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC NULLS LAST-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- ASC NULLS LAST-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC NULLS FIRST-dimension-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC NULLS FIRST-dimension-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC NULLS FIRST-dimension-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC NULLS FIRST-metric-ordinary]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC NULLS FIRST-metric-fanout]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_source_ordering_matches_independent_rows[rust-True- DESC NULLS FIRST-metric-multi_source]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[python- ASC-tsql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[python- ASC-mysql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[python- DESC-tsql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[python- DESC-mysql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[python- ASC NULLS LAST-tsql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[python- ASC NULLS LAST-mysql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[python- DESC NULLS FIRST-tsql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[python- DESC NULLS FIRST-mysql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[rust- ASC-tsql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[rust- ASC-mysql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[rust- DESC-tsql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[rust- DESC-mysql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[rust- ASC NULLS LAST-tsql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[rust- ASC NULLS LAST-mysql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[rust- DESC NULLS FIRST-tsql]",
+        "tests/semantic_conformance/test_source_null_ordering.py::test_multi_source_ordering_renders_target_dialect[rust- DESC NULLS FIRST-mysql]"
+      ]
     },
-    "scope-224": {
+    "scope-228": {
       "path": "tests/semantic_conformance/test_source_null_ordering.py",
       "declared_tests": [
         "test_minimized_nullable_fanout_case"
       ],
-      "collected_tests": []
+      "collected_tests": [
+        "tests/semantic_conformance/test_source_null_ordering.py::test_minimized_nullable_fanout_case"
+      ]
     },
-    "scope-225": {
+    "scope-229": {
       "path": "tests/semantic_conformance/test_special_population.py",
       "declared_tests": [
         "test_cumulative_computed_population_excludes_orphans_and_hidden_rows",
@@ -12894,7 +13273,7 @@
         "tests/semantic_conformance/test_special_population.py::test_special_routes_evaluate_computed_keys_instead_of_shadow_columns[rust]"
       ]
     },
-    "scope-226": {
+    "scope-230": {
       "path": "tests/semantic_conformance/test_temporal_dialect_fallback.py",
       "declared_tests": [
         "test_calendar_capable_dialects_preserve_exact_period_lookup",
@@ -12949,7 +13328,7 @@
         "tests/semantic_conformance/test_temporal_dialect_fallback.py::test_calendar_capable_dialects_preserve_exact_period_lookup[rust-postgres]"
       ]
     },
-    "scope-227": {
+    "scope-231": {
       "path": "tests/semantic_conformance/test_temporal_null_fill.py",
       "declared_tests": [
         "test_base_fill_and_temporal_fill_are_separate",
@@ -13009,7 +13388,7 @@
         "tests/semantic_conformance/test_temporal_null_fill.py::test_comparison_fill_keeps_python_precedence_for_cumulative_controls[rust-controls1]"
       ]
     },
-    "scope-228": {
+    "scope-232": {
       "path": "tests/semantic_conformance/test_time_key_projection.py",
       "declared_tests": [
         "test_numeric_computed_identity_keeps_unbucketed_projection",
@@ -13031,7 +13410,7 @@
         "tests/semantic_conformance/test_time_key_projection.py::test_time_identity_stays_unbucketed_for_join_and_fanout[rust]"
       ]
     },
-    "scope-229": {
+    "scope-233": {
       "path": "tests/semantic_conformance/test_time_key_projection.py",
       "declared_tests": [
         "test_time_identity_stays_unbucketed_for_join_and_fanout"
@@ -13041,7 +13420,7 @@
         "tests/semantic_conformance/test_time_key_projection.py::test_time_identity_stays_unbucketed_for_join_and_fanout[rust]"
       ]
     },
-    "scope-230": {
+    "scope-234": {
       "path": "tests/semantic_conformance/test_window_output_parity.py",
       "declared_tests": [
         "test_aggregate_reference_honors_explicit_range_frame",
@@ -13175,7 +13554,7 @@
         "tests/semantic_conformance/test_window_output_parity.py::test_scalar_window_expression_is_typed_unsupported[rust-ABS(base.daily_amount)]"
       ]
     },
-    "scope-231": {
+    "scope-235": {
       "path": "tests/semantic_conformance/test_window_output_parity.py",
       "declared_tests": [
         "test_graph_window_rejects_missing_or_ambiguous_period_metric",
@@ -13204,7 +13583,7 @@
         "tests/semantic_conformance/test_window_output_parity.py::test_scalar_window_expression_is_typed_unsupported[rust-ABS(base.daily_amount)]"
       ]
     },
-    "scope-232": {
+    "scope-236": {
       "path": "tests/semantic_conformance/test_yardstick_source_dialects.py",
       "declared_tests": [
         "test_native_ordinary_statement_batches_retain_both_results",
@@ -13252,7 +13631,7 @@
         "tests/semantic_conformance/test_yardstick_source_dialects.py::test_native_ordinary_statement_batches_retain_both_results[rust-snowflake-\"]"
       ]
     },
-    "scope-233": {
+    "scope-237": {
       "path": "tests/semantic_conformance/test_yardstick_source_dialects.py",
       "declared_tests": [
         "test_native_ordinary_statement_batches_retain_both_results"
@@ -13264,7 +13643,7 @@
         "tests/semantic_conformance/test_yardstick_source_dialects.py::test_native_ordinary_statement_batches_retain_both_results[rust-snowflake-\"]"
       ]
     },
-    "scope-234": {
+    "scope-238": {
       "path": "tests/server/test_api_security.py",
       "declared_tests": [
         "test_custom_user_header_name",
@@ -13318,7 +13697,7 @@
         "tests/server/test_api_security.py::test_mounted_mcp_identity_does_not_persist_between_requests"
       ]
     },
-    "scope-235": {
+    "scope-239": {
       "path": "tests/server/test_api_server.py",
       "declared_tests": [
         "test_bearer_exchange_issues_short_lived_header_session",
@@ -13393,7 +13772,7 @@
         "tests/server/test_api_server.py::test_sql_endpoint_strict_mode_returns_409_when_rollup_missing"
       ]
     },
-    "scope-236": {
+    "scope-240": {
       "path": "tests/server/test_api_server.py",
       "declared_tests": [
         "test_serve_ui_serves_spa_and_keeps_api_gated"
@@ -13402,7 +13781,7 @@
         "tests/server/test_api_server.py::test_serve_ui_serves_spa_and_keeps_api_gated"
       ]
     },
-    "scope-237": {
+    "scope-241": {
       "path": "tests/server/test_concurrency.py",
       "declared_tests": [
         "test_concurrent_reads_do_not_serialize",
@@ -13413,7 +13792,7 @@
         "tests/server/test_concurrency.py::test_mutation_style_endpoint_works_while_queries_run"
       ]
     },
-    "scope-238": {
+    "scope-242": {
       "path": "tests/server/test_connection.py",
       "declared_tests": [
         "test_handle_auth"
@@ -13422,7 +13801,7 @@
         "tests/server/test_connection.py::test_handle_auth"
       ]
     },
-    "scope-239": {
+    "scope-243": {
       "path": "tests/server/test_connection.py",
       "declared_tests": [
         "test_handle_auth_partial_config_fails_closed"
@@ -13431,7 +13810,7 @@
         "tests/server/test_connection.py::test_handle_auth_partial_config_fails_closed"
       ]
     },
-    "scope-240": {
+    "scope-244": {
       "path": "tests/server/test_connection.py",
       "declared_tests": [
         "test_handle_system_queries"
@@ -13440,7 +13819,7 @@
         "tests/server/test_connection.py::test_handle_system_queries"
       ]
     },
-    "scope-241": {
+    "scope-245": {
       "path": "tests/server/test_connection.py",
       "declared_tests": [
         "test_dml_passthrough"
@@ -13449,7 +13828,7 @@
         "tests/server/test_connection.py::test_dml_passthrough"
       ]
     },
-    "scope-242": {
+    "scope-246": {
       "path": "tests/server/test_connection.py",
       "declared_tests": [
         "test_query_error_raises_exception"
@@ -13458,7 +13837,7 @@
         "tests/server/test_connection.py::test_query_error_raises_exception"
       ]
     },
-    "scope-243": {
+    "scope-247": {
       "path": "tests/server/test_connection.py",
       "declared_tests": [
         "test_user_attributes_lookup_by_session_user"
@@ -13467,7 +13846,7 @@
         "tests/server/test_connection.py::test_user_attributes_lookup_by_session_user"
       ]
     },
-    "scope-244": {
+    "scope-248": {
       "path": "tests/server/test_connection.py",
       "declared_tests": [
         "test_enforce_pg_access_denies_secured_model_without_attrs"
@@ -13476,7 +13855,7 @@
         "tests/server/test_connection.py::test_enforce_pg_access_denies_secured_model_without_attrs"
       ]
     },
-    "scope-245": {
+    "scope-249": {
       "path": "tests/server/test_connection.py",
       "declared_tests": [
         "test_pg_catalog_filters_session_models_and_physical_sources",
@@ -13522,7 +13901,7 @@
         "tests/server/test_connection.py::test_pg_session_setting_remains_safe_with_controls"
       ]
     },
-    "scope-246": {
+    "scope-250": {
       "path": "tests/server/test_connection.py",
       "declared_tests": [
         "test_empty_pg_catalog_is_valid"
@@ -13531,7 +13910,7 @@
         "tests/server/test_connection.py::test_empty_pg_catalog_is_valid"
       ]
     },
-    "scope-247": {
+    "scope-251": {
       "path": "tests/server/test_transport_security_parity.py",
       "declared_tests": [
         "test_allowed_identity_gets_identical_rows_across_http_and_mcp",
@@ -13570,7 +13949,7 @@
         "tests/server/test_transport_security_parity.py::test_projection_queries_remain_available_with_controls[select 1 as ok union all select 2 as ok]"
       ]
     },
-    "scope-248": {
+    "scope-252": {
       "path": "tests/templates/test_parameters.py",
       "declared_tests": [
         "test_parameters_with_actual_data",
@@ -13585,7 +13964,7 @@
         "tests/templates/test_parameters.py::test_parameters_with_actual_data"
       ]
     },
-    "scope-249": {
+    "scope-253": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestSemanticLayerAdapterInterface::test_layer_adapter_fetch_record_batch"
@@ -13594,7 +13973,7 @@
         "tests/test_adapter_integration.py::TestSemanticLayerAdapterInterface::test_layer_adapter_fetch_record_batch"
       ]
     },
-    "scope-250": {
+    "scope-254": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestServerConnectionAdapterIntegration::test_connection_handler_uses_adapter_for_dml"
@@ -13603,7 +13982,7 @@
         "tests/test_adapter_integration.py::TestServerConnectionAdapterIntegration::test_connection_handler_uses_adapter_for_dml"
       ]
     },
-    "scope-251": {
+    "scope-255": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestServerConnectionAdapterIntegration::test_connection_handler_uses_adapter_for_system_queries"
@@ -13612,7 +13991,7 @@
         "tests/test_adapter_integration.py::TestServerConnectionAdapterIntegration::test_connection_handler_uses_adapter_for_system_queries"
       ]
     },
-    "scope-252": {
+    "scope-256": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestServerConnectionAdapterIntegration::test_connection_handler_uses_adapter_for_pg_namespace"
@@ -13621,7 +14000,7 @@
         "tests/test_adapter_integration.py::TestServerConnectionAdapterIntegration::test_connection_handler_uses_adapter_for_pg_namespace"
       ]
     },
-    "scope-253": {
+    "scope-257": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestServerCatalogAdapterIntegration::test_start_server_uses_adapter_for_catalog_queries"
@@ -13630,7 +14009,7 @@
         "tests/test_adapter_integration.py::TestServerCatalogAdapterIntegration::test_start_server_uses_adapter_for_catalog_queries"
       ]
     },
-    "scope-254": {
+    "scope-258": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestMCPServerAdapterIntegration::test_mcp_run_query_uses_adapter"
@@ -13639,7 +14018,7 @@
         "tests/test_adapter_integration.py::TestMCPServerAdapterIntegration::test_mcp_run_query_uses_adapter"
       ]
     },
-    "scope-255": {
+    "scope-259": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestWorkbenchAdapterIntegration::test_workbench_command_wiring"
@@ -13648,7 +14027,7 @@
         "tests/test_adapter_integration.py::TestWorkbenchAdapterIntegration::test_workbench_command_wiring"
       ]
     },
-    "scope-256": {
+    "scope-260": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestWidgetAdapterIntegration::test_widget_generator_uses_layer_dialect"
@@ -13657,7 +14036,7 @@
         "tests/test_adapter_integration.py::TestWidgetAdapterIntegration::test_widget_generator_uses_layer_dialect"
       ]
     },
-    "scope-257": {
+    "scope-261": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestWidgetAdapterIntegration::test_widget_date_range_query_handles_qualified_table"
@@ -13666,7 +14045,7 @@
         "tests/test_adapter_integration.py::TestWidgetAdapterIntegration::test_widget_date_range_query_handles_qualified_table"
       ]
     },
-    "scope-258": {
+    "scope-262": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestWidgetAdapterIntegration::test_widget_sets_time_series_column_in_config"
@@ -13675,7 +14054,7 @@
         "tests/test_adapter_integration.py::TestWidgetAdapterIntegration::test_widget_sets_time_series_column_in_config"
       ]
     },
-    "scope-259": {
+    "scope-263": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestWidgetAdapterIntegration::test_widget_binary_transport_populates_binary_traits"
@@ -13684,7 +14063,7 @@
         "tests/test_adapter_integration.py::TestWidgetAdapterIntegration::test_widget_binary_transport_populates_binary_traits"
       ]
     },
-    "scope-260": {
+    "scope-264": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestWidgetAdapterIntegration::test_widget_uses_adapter_in_layer_mode"
@@ -13693,7 +14072,7 @@
         "tests/test_adapter_integration.py::TestWidgetAdapterIntegration::test_widget_uses_adapter_in_layer_mode"
       ]
     },
-    "scope-261": {
+    "scope-265": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestWidgetAdapterIntegration::test_widget_execute_routes_through_adapter"
@@ -13702,7 +14081,7 @@
         "tests/test_adapter_integration.py::TestWidgetAdapterIntegration::test_widget_execute_routes_through_adapter"
       ]
     },
-    "scope-262": {
+    "scope-266": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestWidgetAdapterIntegration::test_widget_dataframe_mode_uses_raw_connection"
@@ -13711,7 +14090,7 @@
         "tests/test_adapter_integration.py::TestWidgetAdapterIntegration::test_widget_dataframe_mode_uses_raw_connection"
       ]
     },
-    "scope-263": {
+    "scope-267": {
       "path": "tests/test_adapter_integration.py",
       "declared_tests": [
         "TestWidgetAdapterIntegration::test_widget_execute_arrow_uses_fetch_record_batch"
@@ -13720,7 +14099,7 @@
         "tests/test_adapter_integration.py::TestWidgetAdapterIntegration::test_widget_execute_arrow_uses_fetch_record_batch"
       ]
     },
-    "scope-264": {
+    "scope-268": {
       "path": "tests/test_bugfix_batch.py",
       "declared_tests": [
         "TestConversionMetricDimensions::test_conversion_dimension_join_prevents_cross_group_leaking",
@@ -13755,7 +14134,7 @@
         "tests/test_bugfix_batch.py::TestConversionMetricDimensions::test_conversion_with_derived_dimension_sql"
       ]
     },
-    "scope-265": {
+    "scope-269": {
       "path": "tests/test_charts.py",
       "declared_tests": [
         "test_chart_generation_available"
@@ -13764,7 +14143,7 @@
         "tests/test_charts.py::test_chart_generation_available"
       ]
     },
-    "scope-266": {
+    "scope-270": {
       "path": "tests/test_charts.py",
       "declared_tests": [
         "test_format_label"
@@ -13773,7 +14152,7 @@
         "tests/test_charts.py::test_format_label"
       ]
     },
-    "scope-267": {
+    "scope-271": {
       "path": "tests/test_charts.py",
       "declared_tests": [
         "test_color_palette"
@@ -13782,7 +14161,7 @@
         "tests/test_charts.py::test_color_palette"
       ]
     },
-    "scope-268": {
+    "scope-272": {
       "path": "tests/test_cli_commands.py",
       "declared_tests": [
         "test_workbench_calls_runner"
@@ -13791,7 +14170,7 @@
         "tests/test_cli_commands.py::test_workbench_calls_runner"
       ]
     },
-    "scope-269": {
+    "scope-273": {
       "path": "tests/test_cli_commands.py",
       "declared_tests": [
         "test_api_serve_calls_start_server"
@@ -13800,7 +14179,7 @@
         "tests/test_cli_commands.py::test_api_serve_calls_start_server"
       ]
     },
-    "scope-270": {
+    "scope-274": {
       "path": "tests/test_cli_commands.py",
       "declared_tests": [
         "test_api_serve_legacy_warning_precedes_start_server"
@@ -13809,7 +14188,7 @@
         "tests/test_cli_commands.py::test_api_serve_legacy_warning_precedes_start_server"
       ]
     },
-    "scope-271": {
+    "scope-275": {
       "path": "tests/test_cli_commands.py",
       "declared_tests": [
         "test_http_entrypoints_forward_trusted_identity"
@@ -13823,7 +14202,7 @@
         "tests/test_cli_commands.py::test_http_entrypoints_forward_trusted_identity[command2-True]"
       ]
     },
-    "scope-272": {
+    "scope-276": {
       "path": "tests/test_cli_contract.py",
       "declared_tests": [
         "test_api_auth_token_can_be_read_from_stdin"
@@ -13832,7 +14211,7 @@
         "tests/test_cli_contract.py::test_api_auth_token_can_be_read_from_stdin"
       ]
     },
-    "scope-273": {
+    "scope-277": {
       "path": "tests/test_cli_project_contract.py",
       "declared_tests": [
         "test_dashboard_serve_discovers_default_spec_and_project"
@@ -13841,7 +14220,7 @@
         "tests/test_cli_project_contract.py::test_dashboard_serve_discovers_default_spec_and_project"
       ]
     },
-    "scope-274": {
+    "scope-278": {
       "path": "tests/test_cli_t2_contract.py",
       "declared_tests": [
         "test_format_default_does_not_suppress_unstructured_server_status"
@@ -13850,7 +14229,7 @@
         "tests/test_cli_t2_contract.py::test_format_default_does_not_suppress_unstructured_server_status"
       ]
     },
-    "scope-275": {
+    "scope-279": {
       "path": "tests/test_dashboard.py",
       "declared_tests": [
         "test_crossfilter_dashboard_asgi_app_routes_requests_without_eager_preagg"
@@ -13859,7 +14238,7 @@
         "tests/test_dashboard.py::test_crossfilter_dashboard_asgi_app_routes_requests_without_eager_preagg"
       ]
     },
-    "scope-276": {
+    "scope-280": {
       "path": "tests/test_dashboard.py",
       "declared_tests": [
         "test_crossfilter_dashboard_asgi_app_loads_non_initial_tab_specs_lazily"
@@ -13868,7 +14247,7 @@
         "tests/test_dashboard.py::test_crossfilter_dashboard_asgi_app_loads_non_initial_tab_specs_lazily"
       ]
     },
-    "scope-277": {
+    "scope-281": {
       "path": "tests/test_mcp_apps.py",
       "declared_tests": [
         "test_build_chart_html",
@@ -13882,9 +14261,20 @@
         "test_protocol_widget_resource_uses_lazy_built_asset",
         "test_protocol_widget_source_is_self_contained_and_csp_safe"
       ],
-      "collected_tests": []
+      "collected_tests": [
+        "tests/test_mcp_apps.py::test_build_chart_html",
+        "tests/test_mcp_apps.py::test_protocol_widget_source_is_self_contained_and_csp_safe",
+        "tests/test_mcp_apps.py::test_protocol_widget_lifecycle_cleans_up_stale_renders",
+        "tests/test_mcp_apps.py::test_protocol_widget_resource_uses_lazy_built_asset",
+        "tests/test_mcp_apps.py::test_protocol_widget_loader_reports_missing_build",
+        "tests/test_mcp_apps.py::test_build_chart_html_escapes_json",
+        "tests/test_mcp_apps.py::test_build_chart_html_prevents_script_injection",
+        "tests/test_mcp_apps.py::test_create_chart_resource",
+        "tests/test_mcp_apps.py::test_create_chart_with_apps_enabled",
+        "tests/test_mcp_apps.py::test_create_chart_without_apps_returns_dict"
+      ]
     },
-    "scope-278": {
+    "scope-282": {
       "path": "tests/test_native_build_cache.py",
       "declared_tests": [
         "test_native_source_changes_invalidate_uv_wheels"
@@ -13898,7 +14288,7 @@
         "tests/test_native_build_cache.py::test_native_source_changes_invalidate_uv_wheels[crates/dax-pyo3-python/sidemantic_dax/__init__.py]"
       ]
     },
-    "scope-279": {
+    "scope-283": {
       "path": "tests/test_performance.py",
       "declared_tests": [
         "test_simple_rewrite_performance"
@@ -13907,7 +14297,7 @@
         "tests/test_performance.py::test_simple_rewrite_performance"
       ]
     },
-    "scope-280": {
+    "scope-284": {
       "path": "tests/test_performance.py",
       "declared_tests": [
         "test_complex_rewrite_performance"
@@ -13916,7 +14306,7 @@
         "tests/test_performance.py::test_complex_rewrite_performance"
       ]
     },
-    "scope-281": {
+    "scope-285": {
       "path": "tests/test_performance.py",
       "declared_tests": [
         "test_sql_generation_performance"
@@ -13925,7 +14315,7 @@
         "tests/test_performance.py::test_sql_generation_performance"
       ]
     },
-    "scope-282": {
+    "scope-286": {
       "path": "tests/test_performance.py",
       "declared_tests": [
         "test_multi_join_generation_performance"
@@ -13934,7 +14324,7 @@
         "tests/test_performance.py::test_multi_join_generation_performance"
       ]
     },
-    "scope-283": {
+    "scope-287": {
       "path": "tests/test_performance.py",
       "declared_tests": [
         "test_filter_parsing_performance"
@@ -13943,7 +14333,7 @@
         "tests/test_performance.py::test_filter_parsing_performance"
       ]
     },
-    "scope-284": {
+    "scope-288": {
       "path": "tests/test_performance.py",
       "declared_tests": [
         "test_query_rewriter_warm_vs_cold"
@@ -13952,7 +14342,7 @@
         "tests/test_performance.py::test_query_rewriter_warm_vs_cold"
       ]
     },
-    "scope-285": {
+    "scope-289": {
       "path": "tests/test_performance.py",
       "declared_tests": [
         "test_parameter_substitution_performance"
@@ -13961,7 +14351,7 @@
         "tests/test_performance.py::test_parameter_substitution_performance"
       ]
     },
-    "scope-286": {
+    "scope-290": {
       "path": "tests/test_query_fragment_boundary.py",
       "declared_tests": [
         "test_rewriter_cte_scope_does_not_authorize_structured_or_later_calls"
@@ -13970,7 +14360,7 @@
         "tests/test_query_fragment_boundary.py::test_rewriter_cte_scope_does_not_authorize_structured_or_later_calls"
       ]
     },
-    "scope-287": {
+    "scope-291": {
       "path": "tests/test_query_fragment_boundary.py",
       "declared_tests": [
         "test_cte_scope_allows_expression_plan_and_identifier_folding"
@@ -13979,7 +14369,7 @@
         "tests/test_query_fragment_boundary.py::test_cte_scope_allows_expression_plan_and_identifier_folding"
       ]
     },
-    "scope-288": {
+    "scope-292": {
       "path": "tests/test_sql_generation_security.py",
       "declared_tests": [
         "test_conversion_invalid_entity_rejected"
@@ -13988,7 +14378,7 @@
         "tests/test_sql_generation_security.py::test_conversion_invalid_entity_rejected"
       ]
     },
-    "scope-289": {
+    "scope-293": {
       "path": "tests/test_sql_generation_security.py",
       "declared_tests": [
         "test_conversion_invalid_window_rejected"
@@ -13997,7 +14387,7 @@
         "tests/test_sql_generation_security.py::test_conversion_invalid_window_rejected"
       ]
     },
-    "scope-290": {
+    "scope-294": {
       "path": "tests/test_sql_generation_security.py",
       "declared_tests": [
         "test_conversion_event_name_quotes_escaped"
@@ -14006,7 +14396,7 @@
         "tests/test_sql_generation_security.py::test_conversion_event_name_quotes_escaped"
       ]
     },
-    "scope-291": {
+    "scope-295": {
       "path": "tests/test_sql_generation_security.py",
       "declared_tests": [
         "test_build_interval_duckdb"
@@ -14015,7 +14405,7 @@
         "tests/test_sql_generation_security.py::test_build_interval_duckdb"
       ]
     },
-    "scope-292": {
+    "scope-296": {
       "path": "tests/test_sql_generation_security.py",
       "declared_tests": [
         "test_build_interval_bigquery"
@@ -14024,7 +14414,7 @@
         "tests/test_sql_generation_security.py::test_build_interval_bigquery"
       ]
     },
-    "scope-293": {
+    "scope-297": {
       "path": "tests/test_sql_generation_security.py",
       "declared_tests": [
         "test_build_interval_postgres"
@@ -14033,7 +14423,7 @@
         "tests/test_sql_generation_security.py::test_build_interval_postgres"
       ]
     },
-    "scope-294": {
+    "scope-298": {
       "path": "tests/test_workbench_demo.py",
       "declared_tests": [
         "test_workbench_demo_starter_queries_execute"
@@ -14042,7 +14432,7 @@
         "tests/test_workbench_demo.py::test_workbench_demo_starter_queries_execute"
       ]
     },
-    "scope-295": {
+    "scope-299": {
       "path": "tests/widget/test_widget_examples.py",
       "declared_tests": [
         "test_build_auto_model_sets_simple_aggs"

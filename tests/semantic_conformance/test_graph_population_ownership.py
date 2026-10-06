@@ -5,6 +5,9 @@ from datetime import date
 import pytest
 
 from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
+from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.core.semantic_layer import SecurityError
+from sidemantic.rust_bridge import compile_semantic_input, rewrite_semantic_input
 from sidemantic.semantic_handoff import graph_to_semantic_input
 
 
@@ -58,6 +61,36 @@ def population_metric(kind):
         },
     }
     return Metric(name="population", type=kind, entity="user_id", **options[kind])
+
+
+@pytest.mark.parametrize("entrypoint", ["compile", "rewrite"])
+@pytest.mark.parametrize("prefix", ["analytics", "events"])
+@pytest.mark.parametrize("reference_location", ["select", "filter", "order"])
+def test_native_dotted_graph_population_visibility(entrypoint, prefix, reference_location):
+    pytest.importorskip("sidemantic_rs")
+    graph = SemanticGraph()
+    graph.add_model(Model(name="events", table="events", dimensions=[Dimension(name="user_id", type="categorical")]))
+    graph.add_model(Model(name="analytics", table="must_not_read"))
+    hidden = population_metric("cohort")
+    hidden.name = f"{prefix}.population"
+    hidden.public = False
+    graph.add_metric(hidden)
+    visible = population_metric("cohort")
+    visible.name = "visible"
+    graph.add_metric(visible)
+    query = {"metrics": [hidden.name if reference_location == "select" else visible.name], "enforce_visibility": True}
+    sql = f'select "{query["metrics"][0]}" from metrics'
+    if reference_location == "filter":
+        query["filters"] = [f"{hidden.name} > 0"]
+        sql += f' where "{hidden.name}" > 0'
+    elif reference_location == "order":
+        query["order_by"] = [hidden.name]
+        sql += f' order by "{hidden.name}"'
+    with pytest.raises(SecurityError, match="not public"):
+        if entrypoint == "compile":
+            compile_semantic_input(graph, query)
+        else:
+            rewrite_semantic_input(graph, sql, enforce_visibility=True)
 
 
 @pytest.mark.parametrize("kind", ["cohort", "conversion", "retention"])
@@ -119,6 +152,19 @@ def test_local_dependency_precedes_global_name_during_policy_discovery(layer):
     layer.graph.models["unrelated"].security = SecurityPolicy(access=False)
     layer.graph.add_metric(Metric(name="total", agg="sum", sql="unrelated.id"))
     assert layer.query(metrics=["events.double_total"], user_attributes={"tenant": 1}).fetchall() == [(30,)]
+
+
+@pytest.mark.parametrize("kind", ["cohort", "conversion"])
+def test_dotted_graph_population_order_does_not_add_prefix_model_to_policy_population(layer, kind):
+    layer.graph.models["unrelated"].security = SecurityPolicy(access=False)
+    metric = population_metric(kind)
+    metric.name = "unrelated.population"
+    layer.graph.add_metric(metric)
+    result = layer.query(metrics=[metric.name], order_by=[metric.name], user_attributes={"tenant": 1})
+    assert [column[0] for column in result.description] == [metric.name]
+    assert result.fetchall() == ([(2,)] if kind == "cohort" else [(pytest.approx(1 / 3),)])
+    if layer.engine == "rust":
+        assert layer.last_engine_selection == {"engine": "rust", "reason": None}
 
 
 def test_dotted_graph_multistep_conversion_preserves_identity_and_policy(layer):

@@ -1,35 +1,39 @@
 """Window wrappers preserve independent source grains and grouped output names."""
 
-from datetime import date
-
 import pytest
 import sqlglot
 from sqlglot import exp
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from tests.duckdb_compat import date_bucket
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "tsql", "mysql", "bigquery"])
 @pytest.mark.parametrize("metric_name", ["order", "daily amount"])
-def test_native_window_expression_preserves_quoted_input_across_dialects(dialect, metric_name):
+@pytest.mark.parametrize("day_name", ["day", "order day"])
+def test_native_window_expression_preserves_quoted_input_across_dialects(dialect, metric_name, day_name):
     pytest.importorskip("sidemantic_rs")
+    # Authored expressions use the layer's input dialect, including its quoting.
+    window_input = exp.column(metric_name, table="base", quoted=True).sql(dialect=dialect)
     with SemanticLayer(engine="rust", fallback=False, dialect=dialect, auto_register=False) as layer:
         layer.add_model(
             Model(
                 name="events",
                 table="events",
-                dimensions=[Dimension(name="day", type="time", granularity="day")],
+                dimensions=[Dimension(name=day_name, type="time", granularity="day")],
                 metrics=[
                     Metric(name=metric_name, agg="sum", sql="amount"),
-                    Metric(name="running", type="cumulative", window_expression=f'SUM(base."{metric_name}")'),
+                    Metric(name="running amount", type="cumulative", window_expression=f"SUM({window_input})"),
                 ],
             )
         )
-        sql = layer.compile(metrics=["events.running"], dimensions=["events.day"])
+        sql = layer.compile(metrics=["events.running amount"], dimensions=[f"events.{day_name}"])
         parsed = sqlglot.parse_one(sql, read=dialect)
         window = next(parsed.find_all(exp.Window))
         columns = list(window.this.find_all(exp.Column))
         assert [(column.table, column.name) for column in columns] == [("base", metric_name)]
+        assert window.parent.alias == "running amount"
+        assert window.args["order"].expressions[0].this.name == day_name
         assert layer.last_engine_selection == {"engine": "rust", "reason": None}
 
 
@@ -95,9 +99,9 @@ def test_cross_source_calculation_beside_cumulative_preserves_leaf_grains(layer,
     records = [dict(zip(columns, row, strict=True)) for row in rows]
     actual = [(r["day"], r["quota"], r["total"], r["combined"], r["running"]) for r in records]
     expected = {
-        "populated": [(date(2024, 1, 1), 10, 5, 15, 5), (date(2024, 1, 2), 30, 18, 48, 23)],
+        "populated": [(date_bucket(2024, 1, 1), 10, 5, 15, 5), (date_bucket(2024, 1, 2), 30, 18, 48, 23)],
         "empty_facts": [(None, 30, 0, 30, 0)],
-        "empty_accounts": [(date(2024, 1, 1), None, 5, None, 5), (date(2024, 1, 2), None, 18, None, 23)],
+        "empty_accounts": [(date_bucket(2024, 1, 1), None, 5, None, 5), (date_bucket(2024, 1, 2), None, 18, None, 23)],
         "both_empty": [],
     }
     assert actual == expected[population]
@@ -168,12 +172,12 @@ def test_window_partitions_bind_both_colliding_sibling_dimensions(layer, window_
     rows = result.fetchall()
     expected_windows = [None, 1, None, 1, None, 10] if window_kind == "lag" else [2, 5, 2, 5, 10, 30]
     expected_groups = [
-        (date(2024, 1, 1), "a", "x", 2),
-        (date(2024, 1, 2), "a", "x", 3),
-        (date(2024, 1, 1), "a", "y", 2),
-        (date(2024, 1, 2), "a", "y", 3),
-        (date(2024, 1, 1), "b", "x", 10),
-        (date(2024, 1, 2), "b", "x", 20),
+        (date_bucket(2024, 1, 1), "a", "x", 2),
+        (date_bucket(2024, 1, 2), "a", "x", 3),
+        (date_bucket(2024, 1, 1), "a", "y", 2),
+        (date_bucket(2024, 1, 2), "a", "y", 3),
+        (date_bucket(2024, 1, 1), "b", "x", 10),
+        (date_bucket(2024, 1, 2), "b", "x", 20),
     ]
     assert rows == [(*group, window) for group, window in zip(expected_groups, expected_windows, strict=True)]
 
@@ -258,7 +262,10 @@ def test_deferred_calculation_keeps_unqueryable_window_owner_validation(layer, i
             primary_key="id",
             dimensions=[Dimension(name="day", type="time", granularity="day")],
             metrics=[Metric(name="total", agg="sum", sql="amount")],
-            relationships=[Relationship(name="accounts", type="many_to_one", foreign_key="account_id")],
+            relationships=[
+                Relationship(name="accounts", type="many_to_one", foreign_key="account_id"),
+                Relationship(name="unavailable", type="many_to_one", foreign_key="unavailable_id"),
+            ],
         )
     )
     layer.add_model(

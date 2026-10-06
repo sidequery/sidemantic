@@ -1,11 +1,10 @@
 """Sequential funnel populations from independently specified synthetic events."""
 
-from datetime import date
-
 import pytest
 
 from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
 from sidemantic.core.semantic_layer import SecurityError
+from tests.duckdb_compat import date_bucket
 
 
 @pytest.fixture(params=["python", "rust"])
@@ -150,7 +149,7 @@ def test_step_literal_is_not_rewritten_as_model_reference(layer):
 def test_time_bucket_belongs_to_first_step(layer):
     assert result(layer, dimensions=["events.occurred__month"], order_by=["events.occurred__month"]) == (
         ["occurred__month", *COLUMNS],
-        [(date(2024, 1, 1), 5, 5, 3, 2, 2), (None, 1, 1, 0, 0, 0)],
+        [(date_bucket(2024, 1, 1), 5, 5, 3, 2, 2), (None, 1, 1, 0, 0, 0)],
     )
 
 

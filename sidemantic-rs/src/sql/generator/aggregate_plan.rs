@@ -1708,7 +1708,9 @@ mod tests {
             "{sql}"
         );
         assert!(
-            sql.contains("ORDER BY orders_revenue DESC, customers_revenue ASC NULLS FIRST"),
+            sql.contains(
+                "ORDER BY orders_revenue DESC NULLS LAST, customers_revenue ASC NULLS FIRST"
+            ),
             "{sql}"
         );
         assert_valid_sql(&sql);

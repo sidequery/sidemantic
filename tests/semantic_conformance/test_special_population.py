@@ -1,10 +1,9 @@
 """Special aggregate routes preserve Explore populations and computed join keys."""
 
-from datetime import date
-
 import pytest
 
 from sidemantic import Dimension, Explore, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
+from tests.duckdb_compat import date_bucket
 
 
 @pytest.fixture(params=["python", "rust"])
@@ -86,7 +85,7 @@ def test_query_row_filter_restricts_every_independent_leaf(layer):
 
 def test_cumulative_computed_population_excludes_orphans_and_hidden_rows(layer):
     result = rows(layer, metrics=["events.running"], dimensions=["events.day"], order_by=["events.day"])
-    assert result == [(date(2024, 1, 1), 3, 3), (date(2024, 1, 2), 12, 15), (None, None, 15)]
+    assert result == [(date_bucket(2024, 1, 1), 3, 3), (date_bucket(2024, 1, 2), 12, 15), (None, None, 15)]
 
 
 def test_snapshot_computed_population_and_null_unmatched_group(layer):

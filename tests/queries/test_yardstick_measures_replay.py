@@ -16,6 +16,7 @@ from sqlglot.errors import SqlglotError
 
 from sidemantic import SemanticLayer
 from sidemantic.adapters.yardstick import YardstickAdapter
+from tests.duckdb_compat import date_bucket
 from tests.utils import fetch_rows
 
 
@@ -321,6 +322,17 @@ def _cell_matches(actual: object, expected: object) -> bool:
 
 def _assert_query_rows_match(query: _QueryBlock, actual_rows: list[tuple[object, ...]]) -> None:
     expected_rows = [row.split("\t") for row in query.expected_rows]
+    # The upstream fixture records DATE output for these two coarse bucket
+    # projections. Keep all other raw DATE/TIMESTAMP comparisons unchanged.
+    sql = " ".join(query.sql.lower().split())
+    if (
+        sql.startswith("semantic select month, region,")
+        and "from monthly_sales_v" in sql
+        or sql.startswith("semantic select date_trunc('year', sale_date)")
+    ):
+        for row in expected_rows:
+            value = date.fromisoformat(row[0])
+            row[0] = date_bucket(value.year, value.month, value.day).isoformat()
 
     if query.rowsort:
         actual_rows = sorted(actual_rows, key=lambda row: tuple(_stringify_value(value) for value in row))

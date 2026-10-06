@@ -8,6 +8,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator import SQLGenerator
+from tests.duckdb_compat import date_bucket
 from tests.utils import df_rows
 
 
@@ -35,7 +36,7 @@ def test_month_to_date_metric():
     graph.add_metric(mtd_revenue)
 
     generator = SQLGenerator(graph)
-    sql = generator.generate(metrics=["mtd_revenue"], dimensions=["sales.sale_date"])
+    sql = generator.generate(metrics=["mtd_revenue"], dimensions=["sales.sale_date"], order_by=["sales.sale_date"])
 
     print("\nMTD SQL:")
     print(sql)
@@ -694,11 +695,12 @@ def test_month_comparison_does_not_use_previous_available_sparse_row():
     sql = SQLGenerator(graph).generate(
         metrics=["revenue_mom"],
         dimensions=["sales.sale_date__month"],
+        order_by=["sales.sale_date__month"],
     )
     rows = df_rows(duckdb.connect(":memory:").execute(sql))
 
     assert "RANGE BETWEEN INTERVAL '1 month' PRECEDING AND INTERVAL '1 month' PRECEDING" in sql
-    assert rows[1][0].isoformat() == "2024-03-01"
+    assert rows[1][0] == date_bucket(2024, 3, 1)
     assert rows[1][2] is None
 
 

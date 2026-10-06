@@ -6,6 +6,7 @@ import pytest
 from playwright.sync_api import Browser, Page, expect, sync_playwright
 
 from sidemantic import DashboardDocument, Dimension, Metric, Model, SemanticLayer
+from tests.duckdb_compat import date_bucket
 
 
 def _build_layer() -> SemanticLayer:
@@ -57,7 +58,7 @@ def browser() -> Iterator[Browser]:
 
 @pytest.fixture
 def browser_page(browser: Browser) -> Iterator[tuple[Page, list[str]]]:
-    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page = browser.new_page(viewport={"width": 1280, "height": 900}, timezone_id="America/Los_Angeles")
     errors: list[str] = []
     page.on("pageerror", lambda error: errors.append(f"pageerror: {error}"))
     page.on(
@@ -275,7 +276,12 @@ def test_crossfilter_live_endpoint_filters_update_each_renderer_in_browser(
     )
 
     assert requests[-1]["filters"] == [
-        {"type": "xRange", "field": "created_at__month", "min": "2024-01-01", "max": "2024-02-01"}
+        {
+            "type": "xRange",
+            "field": "created_at__month",
+            "min": date_bucket(2024, 1, 1).isoformat(),
+            "max": date_bucket(2024, 2, 1).isoformat(),
+        }
     ]
     assert requests[-1]["interaction_preaggregations"] is False
     assert page.evaluate("window.__SIDEMANTIC_CROSSFILTER__.totalRows") == 4

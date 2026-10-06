@@ -8,33 +8,33 @@ This is an auditable source inventory, not a passing-test claim. The JSON contai
 
 ```json
 {
-  "source_records": 728,
+  "source_records": 740,
   "by_kind": {
-    "engine-control": 240,
-    "engine-matrix": 90,
+    "engine-control": 244,
+    "engine-matrix": 94,
     "implementation-import": 83,
-    "importorskip": 198,
+    "importorskip": 202,
     "integration-marker": 13,
     "legacy-adapter-import": 6,
     "public-layer-import": 20,
     "skip": 65,
     "skipif": 13
   },
-  "exception_records": 362,
-  "observation_records": 366,
+  "exception_records": 366,
+  "observation_records": 374,
   "exceptions_by_category": {
     "external-service": 42,
     "intentional-Python-only": 35,
-    "optional-host": 231,
+    "optional-host": 235,
     "real-gap": 54
   },
   "exceptions_by_direction": {
-    "both-engines": 275,
+    "both-engines": 279,
     "python-only-exclusion": 14,
     "rust-coverage-exclusion": 73
   },
-  "declared_test_functions": 6492,
-  "collected_nodeids": 11583,
+  "declared_test_functions": 6511,
+  "collected_nodeids": 11876,
   "direct_helper_tests": {
     "native_counterpart_or_route": 84,
     "intentional_python_implementation": 126,
@@ -136,9 +136,9 @@ Each count below is a unique declared function, not parametrized cases. Native c
 
 ## Execution evidence
 
-Historical Rust shared-suite JUnit: GitHub Actions run 37315672416, head e2ace6aa (tree identical to main merge 2826dfb8). This does not validate current edits; the overall CI run had a separate schema-update failure. Collection scope is prefinal local Rust selection with cached optional dependencies: 11583 selected, 89 deselected; newer regression additions require a final collection refresh.
+PR 409 review working tree based on 5ca50124, Python 3.13 / DuckDB 1.5.6 / rebuilt native engine. Full Rust shared lane before the final Python local-calculation and funnel DATE-expectation fixes: 11724 passed, 147 skipped, 2 failed. Both failures were the funnel DATE expectation; after repair its full module passed 45 tests. Final calculation follow-ups: 2913 conformance passes plus those two repaired assertions, 958 metric/query passes, and 520/520 generated inputs agreed.
 
-JUnit: 11532 cases, 147 skipped, 0 failures, 0 errors.
+JUnit: 11873 cases, 147 skipped, 2 failures, 0 errors.
 
 JUnit does not enumerate deselected tests. Historical results do not validate current edits.
 

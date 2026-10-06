@@ -3053,7 +3053,7 @@ impl<'a> SqlGenerator<'a> {
                     metric,
                     self.output_window_expression(&window_expr, &partition, &order_col, frame)?,
                 )?;
-                let expression = format!("{value} AS {}", metric_ref.alias);
+                let expression = format!("{value} AS {}", self.quote_identifier(&metric_ref.alias));
                 select_exprs.push(expression.clone());
                 cumulative_selects.push((expression, metric_ref.alias.clone()));
                 continue;
@@ -3098,7 +3098,7 @@ impl<'a> SqlGenerator<'a> {
             };
             let value =
                 self.fill_metric_expression(metric, format!("{aggregate} OVER ({window_clause})"))?;
-            let expression = format!("{value} AS {}", metric_ref.alias);
+            let expression = format!("{value} AS {}", self.quote_identifier(&metric_ref.alias));
             select_exprs.push(expression.clone());
             cumulative_selects.push((expression, metric_ref.alias.clone()));
         }
@@ -3355,7 +3355,7 @@ impl<'a> SqlGenerator<'a> {
             };
             if dim.r#type == crate::core::DimensionType::Time {
                 return Ok((
-                    format!("base.{}", dim_ref.alias),
+                    format!("base.{}", self.quote_identifier(&dim_ref.alias)),
                     dim_ref
                         .granularity
                         .clone()
@@ -3392,7 +3392,7 @@ impl<'a> SqlGenerator<'a> {
     ) -> Vec<String> {
         let mut partition_cols = Vec::new();
         for dim_ref in dimension_refs {
-            let dim_col = format!("base.{}", dim_ref.alias);
+            let dim_col = format!("base.{}", self.quote_identifier(&dim_ref.alias));
             if dim_col == time_col {
                 continue;
             }

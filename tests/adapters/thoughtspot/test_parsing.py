@@ -1,6 +1,7 @@
 """Tests for ThoughtSpot adapter - parsing."""
 
 import tempfile
+from datetime import date
 from pathlib import Path
 
 import yaml
@@ -8,7 +9,6 @@ import yaml
 from sidemantic import SemanticLayer
 from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter, _extract_all_join_refs
 from sidemantic.loaders import load_from_directory
-from tests.duckdb_compat import date_bucket
 
 # =============================================================================
 # BASIC PARSING TESTS
@@ -887,7 +887,7 @@ def test_thoughtspot_joined_model_is_queryable():
         dimensions=["sales_model.order_date", "sales_model.customer_name", "sales_model.region_name"],
     )
     rows = con.execute(sql).fetchall()
-    assert rows == [(date_bucket(2024, 1, 1), "Acme", "West", 150.0, 135.0, 2)]
+    assert rows == [(date(2024, 1, 1), "Acme", "West", 150.0, 135.0, 2)]
 
 
 def test_thoughtspot_role_playing_joins_stay_distinct():

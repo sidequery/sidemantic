@@ -1,11 +1,12 @@
 """Default time grain must be resolved once, before splitting metric sources."""
 
+from datetime import date
+
 import pytest
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 from sidemantic.rust_bridge import compile_semantic_input
 from sidemantic.sql.generator import SQLGenerator
-from tests.duckdb_compat import date_bucket
 
 
 @pytest.fixture(params=["python", "rust"])
@@ -69,7 +70,7 @@ def test_model_default_or_explicit_time_grain_is_projected(layer, explicit):
     # The account linked to both days contributes once per day. The unmatched
     # account retains its own NULL-day group in the full source reconciliation.
     assert set(result.fetchall()) == {
-        (date_bucket(2024, 1, 7), 2, 10),
-        (date_bucket(2024, 2, 1), 8, 10),
+        (date(2024, 1, 7), 2, 10),
+        (date(2024, 2, 1), 8, 10),
         (None, None, 10),
     }

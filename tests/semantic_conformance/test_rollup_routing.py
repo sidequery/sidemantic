@@ -1,13 +1,12 @@
 """Actual rollup builds and routed execution with independent population contracts."""
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
 from sidemantic import Dimension, Metric, Model, PreAggregation, Relationship, SecurityPolicy, SemanticLayer
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.rust_bridge import generate_preaggregation_materialization_sql_with_rust
-from tests.duckdb_compat import date_bucket
 
 
 @pytest.fixture
@@ -101,7 +100,7 @@ def assert_result(layer, query, rows, *, routed):
                 "dimensions": ["orders.created__month"],
                 "order_by": ["orders.created__month"],
             },
-            [(date_bucket(2026, 1, 1), 970), (date_bucket(2026, 2, 1), None)],
+            [(date(2026, 1, 1), 970), (date(2026, 2, 1), None)],
         ),
         ({"metrics": ["orders.revenue"], "filters": ["orders.status in ('paid')"]}, [(930,)]),
     ],
@@ -218,7 +217,7 @@ def test_week_rollup_cannot_serve_calendar_month(layer):
     assert_result(
         layer,
         {"metrics": ["orders.revenue"], "dimensions": ["orders.created__month"], "order_by": ["orders.created__month"]},
-        [(date_bucket(2026, 1, 1), 970), (date_bucket(2026, 2, 1), None)],
+        [(date(2026, 1, 1), 970), (date(2026, 2, 1), None)],
         routed=False,
     )
 

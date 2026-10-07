@@ -3,6 +3,7 @@
 #include "sidemantic_compat.hpp"
 #include "sidemantic.h"
 
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/planner/binder.hpp"
 
@@ -13,12 +14,40 @@ struct CatalogBindData : TableFunctionData {
     string kind;
     string model;
     string metric;
+    // Result types of fields without a declared data type, by qualified name.
+    case_insensitive_map_t<string> result_types;
 };
 
 struct CatalogState : GlobalTableFunctionState {
     vector<vector<Value>> rows;
     idx_t offset = 0;
 };
+
+// Report the type a field produces, as information_schema does, when its
+// definition declares none. Fields whose source cannot bind stay NULL.
+static void BindResultTypes(ClientContext &context, CatalogBindData &data) {
+    auto snapshot = ReadSidemanticCatalog(context);
+    if (snapshot.payload.empty()) return;
+    struct CatalogResult {
+        SidemanticCatalogEntries result;
+        ~CatalogResult() { sidemantic_free_catalog_entries(result); }
+    } result {sidemantic_snapshot_catalog(snapshot.payload.c_str(), data.kind.c_str(), data.model.c_str(),
+                                          data.metric.empty() ? nullptr : data.metric.c_str())};
+    if (result.result.error) return;
+    for (idx_t i = 0; i < result.result.count; ++i) {
+        auto &entry = result.result.entries[i];
+        string kind(entry.kind);
+        if (entry.data_type || !entry.model_name || (kind != "dimension" && kind != "metric")) continue;
+        try {
+            data.result_types[entry.qualified_name] =
+                SidemanticFieldType(context, snapshot.payload, entry.model_name, entry.name).ToString();
+        } catch (const std::exception &exception) {
+            auto error = ErrorData(exception);
+            if (error.Type() == ExceptionType::INTERRUPT || error.Type() == ExceptionType::INTERNAL ||
+                error.Type() == ExceptionType::FATAL) throw;
+        }
+    }
+}
 
 static unique_ptr<FunctionData> CatalogBind(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &types, vector<SidemanticIdentifier> &names) {
@@ -41,6 +70,7 @@ static unique_ptr<FunctionData> CatalogBind(ClientContext &context, TableFunctio
     types.emplace_back(LogicalType::BOOLEAN);
     names.emplace_back("definition");
     types.emplace_back(LogicalType::VARCHAR);
+    BindResultTypes(context, *data);
     return std::move(data);
 }
 
@@ -53,7 +83,7 @@ static unique_ptr<GlobalTableFunctionState> CatalogInit(ClientContext &context, 
         if (result.error) {
             string error(result.error);
             sidemantic_free_result(result);
-            throw InvalidInputException("Sidemantic: %s", error);
+            throw InvalidInputException("Sidemantic: %s", SidemanticErrorText(error));
         }
         string definition(result.sql);
         sidemantic_free_result(result);
@@ -65,7 +95,7 @@ static unique_ptr<GlobalTableFunctionState> CatalogInit(ClientContext &context, 
         ~CatalogResult() { sidemantic_free_catalog_entries(result); }
     } result {sidemantic_snapshot_catalog(snapshot.payload.c_str(), data.kind.c_str(), data.model.c_str(),
                                           data.metric.empty() ? nullptr : data.metric.c_str())};
-    if (result.result.error) throw InvalidInputException("Sidemantic: %s", result.result.error);
+    if (result.result.error) throw InvalidInputException("Sidemantic: %s", SidemanticErrorText(result.result.error));
     for (idx_t i = 0; i < result.result.count; ++i) {
         auto &entry = result.result.entries[i];
         vector<Value> row;
@@ -74,6 +104,8 @@ static unique_ptr<GlobalTableFunctionState> CatalogInit(ClientContext &context, 
                           entry.target_model, entry.relationship_type, entry.granularity}) {
             row.push_back(value ? Value(value) : Value(LogicalType::VARCHAR));
         }
+        auto result_type = data.result_types.find(entry.qualified_name);
+        if (!entry.data_type && result_type != data.result_types.end()) row[7] = Value(result_type->second);
         row.push_back(Value::BOOLEAN(entry.is_public));
         row.push_back(Value(entry.definition));
         state->rows.push_back(std::move(row));

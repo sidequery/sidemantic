@@ -49,6 +49,9 @@ def _date_trunc_simple_cached(granularity: str, column_expr: str, dialect: str) 
     return date_trunc.sql(dialect=dialect)
 
 
+# Time grains whose buckets are whole days.
+DATE_GRANULARITIES = frozenset({"day", "week", "month", "quarter", "year"})
+
 _dialect_cache: dict[str, Dialect] = {}
 _tls = threading.local()
 
@@ -746,12 +749,24 @@ class SQLGenerator:
 
         # Handle {model} placeholder or complex expressions - fall back to string
         if "{" in column_expr or "(" in column_expr:
-            return f"DATE_TRUNC('{granularity}', {column_expr})"
+            truncated = f"DATE_TRUNC('{granularity}', {column_expr})"
+        else:
+            # Parse the column expression to handle table.column references. The
+            # serialization (and the parse below) are memoized module-side because
+            # exp.DateTrunc.sql() re-parses internally in several dialects.
+            truncated = _date_trunc_simple_cached(granularity, column_expr, self.dialect)
 
-        # Parse the column expression to handle table.column references. The
-        # serialization (and the parse below) are memoized module-side because
-        # exp.DateTrunc.sql() re-parses internally in several dialects.
-        return _date_trunc_simple_cached(granularity, column_expr, self.dialect)
+        return self._as_grain_type(granularity, truncated)
+
+    def _as_grain_type(self, granularity: str, truncated: str) -> str:
+        """Type an already truncated time bucket.
+
+        DATE_TRUNC returns a timestamp in these dialects even for DATE input. Day and
+        coarser buckets carry no time of day, so they are DATE values for every source type.
+        """
+        if self.dialect in {"duckdb", "postgres", "redshift"} and granularity.lower() in DATE_GRANULARITIES:
+            return f"CAST({truncated} AS DATE)"
+        return truncated
 
     def _build_interval(self, num: str, unit: str) -> str:
         """Build dialect-specific INTERVAL expression.
@@ -7553,9 +7568,12 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
 
             if dim_model_name == metric_model_name:
                 column_name = dim_name
+                column_expr = f"{rollup_alias}.{self._quote_identifier(column_name)}"
                 if preagg.time_dimension == dim_name and preagg.granularity:
                     column_name = f"{dim_name}_{preagg.granularity}"
-                column_expr = f"{rollup_alias}.{self._quote_identifier(column_name)}"
+                    column_expr = f"{rollup_alias}.{self._quote_identifier(column_name)}"
+                    if not granularity:
+                        column_expr = self._as_grain_type(preagg.granularity, column_expr)
             else:
                 dimension = remote_model.get_dimension(dim_name)
                 dimension_sql = dimension.sql if dimension and dimension.sql else dim_name
@@ -7835,7 +7853,8 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
 
                 if gran == preagg.granularity:
                     # Exact match - use as is with proper alias
-                    select_exprs.append(f"{preagg_col} AS {self._quote_alias(output_name)}")
+                    bucket = self._as_grain_type(gran, preagg_col)
+                    select_exprs.append(f"{bucket} AS {self._quote_alias(output_name)}")
                 else:
                     # Roll up to coarser granularity
                     date_trunc_expr = self._date_trunc(gran, preagg_col)

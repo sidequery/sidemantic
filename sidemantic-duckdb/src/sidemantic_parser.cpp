@@ -10,6 +10,8 @@
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/main/valid_checker.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/expression/conjunction_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
@@ -232,21 +234,82 @@ struct ModelListOwner {
     SidemanticModelList list;
 };
 
+// Fields are canonical model names; a time grain suffix applies to its base.
+bool CanonicalField(const SidemanticModelInfo *model, string &name) {
+    if (!model) return false;
+    for (idx_t i = 0; i < model->field_count; ++i) {
+        if (StringUtil::CIEquals(name, model->fields[i])) {
+            name = model->fields[i];
+            return true;
+        }
+    }
+    auto field = name;
+    auto suffix = field.rfind("__");
+    string grain_suffix;
+    if (suffix != string::npos) {
+        auto grain = StringUtil::Lower(field.substr(suffix + 2));
+        static const case_insensitive_set_t grains {"year", "quarter", "month", "week", "day", "hour", "minute", "second"};
+        if (grains.count(grain)) {
+            field.resize(suffix);
+            grain_suffix = "__" + grain;
+        }
+    }
+    for (idx_t i = 0; i < model->field_count; ++i) {
+        if (StringUtil::CIEquals(field, model->fields[i])) {
+            name = model->fields[i] + grain_suffix;
+            return true;
+        }
+    }
+    return false;
+}
+
+string UnknownFieldMessage(const SidemanticModelInfo &model, const string &field) {
+    vector<string> fields(model.fields, model.fields + model.field_count);
+    auto suffix = field.rfind("__");
+    if (suffix != string::npos) {
+        for (auto &candidate : fields) {
+            if (StringUtil::CIEquals(candidate, field.substr(0, suffix))) {
+                return StringUtil::Format("Sidemantic: unknown time grain '%s' in %s.%s. Valid grains: year, "
+                                          "quarter, month, week, day, hour, minute, second",
+                                          field.substr(suffix + 2), model.name, field);
+            }
+        }
+    }
+    auto message = StringUtil::Format("Sidemantic: model %s has no field '%s'.", model.name, field);
+    auto close = StringUtil::TopNLevenshtein(fields, field, 3);
+    if (!close.empty()) message += " Did you mean " + StringUtil::Join(close, ", ") + "?";
+    return message + " Fields: " + StringUtil::Join(fields, ", ");
+}
+
+// A same-name table or view and a semantic model. Each reference through the
+// name is classified, so ordinary SQL against the table keeps its meaning.
+struct RelationUse {
+    BaseTableRef *table = nullptr;
+    string model;
+    SidemanticPhysicalRelation physical;
+    string semantic_field; // first field only the model provides
+    string physical_field; // first column only the table provides
+};
+
 // A null binding shadows a semantic model name (e.g. a CTE or a physical table
 // aliased to that name). Each query has its own scope, including nested SELECTs.
 struct ModelBinding {
-    ModelBinding(const SidemanticModelInfo *model_p = nullptr, bool semantic_schema_p = false)
-        : model(model_p), semantic_schema(semantic_schema_p) {
+    ModelBinding(const SidemanticModelInfo *model_p = nullptr, bool semantic_schema_p = false,
+                 shared_ptr<RelationUse> use_p = nullptr)
+        : model(model_p), semantic_schema(semantic_schema_p), use(std::move(use_p)) {
     }
     const SidemanticModelInfo *model;
     bool semantic_schema;
+    shared_ptr<RelationUse> use;
 };
 using ModelScope = case_insensitive_map_t<ModelBinding>;
 using CteNames = case_insensitive_set_t;
 
 class SemanticReferences {
 public:
-    SemanticReferences(ClientContext &context, const SidemanticModelList &list) : context(context) {
+    SemanticReferences(ClientContext &context, const SidemanticModelList &list, bool explicit_semantic,
+                       const unordered_set<const TableRef *> &compiled)
+        : context(context), explicit_semantic(explicit_semantic), compiled(compiled) {
         for (idx_t i = 0; i < list.count; ++i) {
             models[list.models[i].name] = {&list.models[i], false};
         }
@@ -281,7 +344,19 @@ public:
         auto &select = node.Cast<SelectNode>();
         auto scope = std::move(inherited);
         for (auto &name : ctes) scope[name] = {};
-        if (select.from_table) CollectTables(*select.from_table, scope, ctes, found);
+        vector<shared_ptr<RelationUse>> uses;
+        vector<string> sources;
+        if (select.from_table) CollectTables(*select.from_table, scope, ctes, found, uses, sources);
+        // A lone model source owns unqualified names that are not output aliases.
+        lone_model = nullptr;
+        output_aliases.clear();
+        if (sources.size() == 1) {
+            auto &binding = scope[sources[0]];
+            if (binding.model && !binding.use) lone_model = binding.model;
+            for (auto &expression : select.select_list) {
+                if (expression->HasAlias()) output_aliases.insert(SidemanticName(expression->GetAlias()));
+            }
+        }
         auto inspect = [&](unique_ptr<ParsedExpression> &expression) {
             found |= Expression(*expression, scope, ctes);
         };
@@ -292,53 +367,75 @@ public:
         if (select.qualify) inspect(select.qualify);
         if (select.from_table) found |= TableExpressions(*select.from_table, scope, ctes);
         ParsedExpressionIterator::EnumerateQueryNodeModifiers(node, inspect);
+        lone_model = nullptr;
+        for (auto &use : uses) ResolveShadowing(*use);
         return found;
+    }
+
+    // Unknown qualified fields are always errors. A bare unknown name could be
+    // a lambda parameter or alias, so it is reported only for an otherwise
+    // non-semantic query, which could not bind against a model natively either.
+    void ThrowUnknownField(bool found) {
+        if (qualified_unknown.model) throw BinderException(UnknownFieldMessage(*qualified_unknown.model, qualified_unknown.field));
+        if (!found && bare_unknown.model) throw BinderException(UnknownFieldMessage(*bare_unknown.model, bare_unknown.field));
     }
 
 private:
     ClientContext &context;
+    bool explicit_semantic;
+    const unordered_set<const TableRef *> &compiled;
     ModelScope models;
+    const SidemanticModelInfo *lone_model = nullptr;
+    case_insensitive_set_t output_aliases;
+    struct UnknownField {
+        const SidemanticModelInfo *model = nullptr;
+        string field;
+    };
+    UnknownField qualified_unknown;
+    UnknownField bare_unknown;
 
-    bool CanonicalField(const SidemanticModelInfo *model, string &name) {
-        if (!model) return false;
-        for (idx_t i = 0; i < model->field_count; ++i) {
-            if (StringUtil::CIEquals(name, model->fields[i])) {
-                name = model->fields[i];
-                return true;
-            }
-        }
-        auto field = name;
-        auto suffix = field.rfind("__");
-        string grain_suffix;
-        if (suffix != string::npos) {
-            auto grain = StringUtil::Lower(field.substr(suffix + 2));
-            static const case_insensitive_set_t grains {"year", "quarter", "month", "week", "day", "hour", "minute", "second"};
-            if (grains.count(grain)) {
-                field.resize(suffix);
-                grain_suffix = "__" + grain;
-            }
-        }
-        for (idx_t i = 0; i < model->field_count; ++i) {
-            if (StringUtil::CIEquals(field, model->fields[i])) {
-                name = model->fields[i] + grain_suffix;
-                return true;
-            }
-        }
-        return false;
+    void Unknown(UnknownField &unknown, const SidemanticModelInfo &model, const string &field) {
+        if (unknown.model) return;
+        unknown.model = &model;
+        unknown.field = field;
     }
 
-    void CollectTables(TableRef &ref, ModelScope &scope, const CteNames &ctes, bool &found) {
+    void ResolveShadowing(RelationUse &use) {
+        if (!use.semantic_field.empty() && !use.physical_field.empty()) {
+            throw BinderException("Sidemantic: '%s' names both table %s.%s.%s and a semantic model. This query "
+                                  "uses table column '%s' and model field '%s'. Query the model as semantic.%s "
+                                  "or the table as %s.%s",
+                                  use.model, use.physical.catalog, use.physical.schema, use.model,
+                                  use.physical_field, use.semantic_field, use.model, use.physical.schema,
+                                  use.model);
+        }
+        if (!use.semantic_field.empty() || explicit_semantic) return;
+        // Every reference binds to the table, so the query keeps its native
+        // meaning, including inside a statement that the compiler rewrites.
+#if SIDEMANTIC_QUALIFIED_TABLE_API
+        use.table->SetQualifiedName(Identifier(use.physical.catalog), Identifier(use.physical.schema),
+                                    Identifier(use.model));
+#else
+        use.table->catalog_name = use.physical.catalog;
+        use.table->schema_name = use.physical.schema;
+#endif
+    }
+
+    void CollectTables(TableRef &ref, ModelScope &scope, const CteNames &ctes, bool &found,
+                       vector<shared_ptr<RelationUse>> &uses, vector<string> &sources) {
         if (ref.type == TableReferenceType::JOIN) {
             auto &join = ref.Cast<JoinRef>();
-            CollectTables(*join.left, scope, ctes, found);
-            CollectTables(*join.right, scope, ctes, found);
+            CollectTables(*join.left, scope, ctes, found, uses, sources);
+            CollectTables(*join.right, scope, ctes, found, uses, sources);
             return;
         }
-        if (ref.type == TableReferenceType::SUBQUERY) {
+        // Semantic relations compiled ahead of this pass are ordinary SQL.
+        if (ref.type == TableReferenceType::SUBQUERY && !compiled.count(&ref)) {
             found |= Query(*ref.Cast<SubqueryRef>().subquery->node, scope, ctes);
         }
         const SidemanticModelInfo *model = nullptr;
         bool virtual_relation = false;
+        shared_ptr<RelationUse> use;
         string name;
         if (ref.type == TableReferenceType::BASE_TABLE) {
             auto &table = ref.Cast<BaseTableRef>();
@@ -360,6 +457,14 @@ private:
             if (model) {
                 virtual_relation = semantic_schema;
                 name = model->name;
+                SidemanticPhysicalRelation physical;
+                if (!semantic_schema && SidemanticFindPhysicalRelation(context, name, physical)) {
+                    use = make_shared_ptr<RelationUse>();
+                    use->table = &table;
+                    use->model = name;
+                    use->physical = std::move(physical);
+                    uses.push_back(use);
+                }
 #if SIDEMANTIC_QUALIFIED_TABLE_API
                 table.SetTable(Identifier(name));
 #else
@@ -369,7 +474,10 @@ private:
             }
         }
         auto alias = ref.alias.empty() ? name : SidemanticName(ref.alias);
-        if (!alias.empty()) scope[alias] = {model, virtual_relation};
+        if (!alias.empty()) {
+            scope[alias] = {model, virtual_relation, use};
+            sources.push_back(alias);
+        }
     }
 
     bool TableExpressions(TableRef &ref, const ModelScope &scope, const CteNames &ctes) {
@@ -377,6 +485,16 @@ private:
         auto &join = ref.Cast<JoinRef>();
         bool found = join.condition && Expression(*join.condition, scope, ctes);
         return TableExpressions(*join.left, scope, ctes) | TableExpressions(*join.right, scope, ctes) | found;
+    }
+
+    // Returns whether the reference can only mean a semantic field.
+    bool Field(const SidemanticModelInfo *model, const shared_ptr<RelationUse> &use, string &field) {
+        auto original = field;
+        bool semantic = CanonicalField(model, field);
+        bool physical = use && use->physical.HasColumn(original);
+        if (use && semantic && !physical && use->semantic_field.empty()) use->semantic_field = field;
+        if (use && physical && !semantic && use->physical_field.empty()) use->physical_field = original;
+        return semantic && !physical;
     }
 
     bool Expression(ParsedExpression &expression, const ModelScope &scope, const CteNames &ctes) {
@@ -413,8 +531,10 @@ private:
                 auto qualifier = SidemanticName(names[0]);
                 auto local = scope.find(qualifier);
                 const SidemanticModelInfo *model = nullptr;
+                shared_ptr<RelationUse> use;
                 if (local != scope.end()) {
                     model = local->second.model;
+                    use = local->second.use;
                     qualifier = local->first;
                 } else {
                     auto entry = models.find(qualifier);
@@ -426,18 +546,28 @@ private:
                 if (!model) return false;
                 names[0] = SidemanticIdentifier(qualifier);
                 auto field = SidemanticName(names[1]);
-                bool found = CanonicalField(model, field);
-                if (found) names[1] = SidemanticIdentifier(field);
-                return found;
+                bool semantic = Field(model, use, field);
+                if (field != SidemanticName(names[1]) || semantic) {
+                    names[1] = SidemanticIdentifier(field);
+                } else if (!use || !use->physical.HasColumn(field)) {
+                    Unknown(qualified_unknown, *model, field);
+                }
+                return semantic;
             }
             if (names.size() == 1) {
+                auto original = SidemanticName(names[0]);
                 for (auto &binding : scope) {
-                    auto field = SidemanticName(names[0]);
-                    if (CanonicalField(binding.second.model, field)) {
-                        names[0] = SidemanticIdentifier(field);
-                        return true;
+                    if (!binding.second.model) continue;
+                    auto field = original;
+                    bool semantic = Field(binding.second.model, binding.second.use, field);
+                    if (field == original && !semantic &&
+                        !(binding.second.use && binding.second.use->physical.HasColumn(original))) {
+                        continue;
                     }
+                    if (field != original || semantic) names[0] = SidemanticIdentifier(field);
+                    return semantic;
                 }
+                if (lone_model && !output_aliases.count(original)) Unknown(bare_unknown, *lone_model, original);
             }
             return false;
         }
@@ -448,12 +578,575 @@ private:
 #else
             auto &query = expression.Cast<SubqueryExpression>().subquery;
 #endif
+            auto lone = lone_model;
+            auto aliases = output_aliases;
             found |= Query(*query->node, scope, ctes);
+            lone_model = lone;
+            output_aliases = std::move(aliases);
         }
         ParsedExpressionIterator::EnumerateChildren(expression, [&](ParsedExpression &child) {
             found |= Expression(child, scope, ctes);
         });
         return found;
+    }
+};
+
+struct FieldInfo {
+    bool metric = false;
+    string aggregation;
+    string type;
+    idx_t position = 0;
+};
+
+struct CatalogFieldsOwner {
+    explicit CatalogFieldsOwner(const string &snapshot)
+        : result(sidemantic_snapshot_catalog(snapshot.c_str(), "", "", nullptr)) {
+        if (result.error) {
+            string error(result.error);
+            sidemantic_free_catalog_entries(result);
+            throw InvalidInputException("Sidemantic catalog: %s", error);
+        }
+    }
+    ~CatalogFieldsOwner() { sidemantic_free_catalog_entries(result); }
+    SidemanticCatalogEntries result;
+};
+
+bool IsAggregateFunction(const string &name) {
+    static const case_insensitive_set_t aggregates {
+        "sum", "count", "count_star", "avg", "mean", "min", "max", "any_value", "first", "last", "arbitrary",
+        "median", "mode", "quantile", "quantile_cont", "quantile_disc", "approx_count_distinct",
+        "approx_quantile", "stddev", "stddev_pop", "stddev_samp", "variance", "var_pop", "var_samp",
+        "string_agg", "group_concat", "listagg", "list", "array_agg", "product", "bool_and", "bool_or",
+        "fsum", "sumkahan", "kahan_sum", "favg", "arg_min", "arg_max", "argmin", "argmax", "min_by", "max_by",
+        "histogram", "entropy", "kurtosis", "skewness", "geomean", "geometric_mean", "bit_and", "bit_or",
+        "bit_xor", "count_if", "countif", "mad", "corr", "covar_pop", "covar_samp"};
+    return aggregates.count(name);
+}
+
+string FunctionName(ParsedExpression &expression) {
+    auto &function = expression.Cast<FunctionExpression>();
+#if SIDEMANTIC_NEW_EXPRESSION_API
+    return StringUtil::Lower(SidemanticName(function.FunctionName()));
+#else
+    return StringUtil::Lower(function.function_name);
+#endif
+}
+
+string StarRelation(ParsedExpression &expression) {
+    auto &star = expression.Cast<StarExpression>();
+#if SIDEMANTIC_NEW_EXPRESSION_API
+    return SidemanticName(star.RelationName());
+#else
+    return star.relation_name;
+#endif
+}
+
+string QuoteName(const string &name) {
+    return "\"" + StringUtil::Replace(name, "\"", "\"\"") + "\"";
+}
+
+// semantic.<model> behaves like a view whose grain is the set of model
+// dimensions the surrounding query uses. Each reference becomes a derived
+// table; DuckDB keeps ownership of joins, outer aggregates and other SQL.
+class SemanticRelations {
+public:
+    SemanticRelations(ClientContext &context, const SidemanticModelList &list, const string &snapshot)
+        : context(context), snapshot(snapshot) {
+        for (idx_t i = 0; i < list.count; ++i) models[list.models[i].name] = &list.models[i];
+    }
+
+    // Derived tables created for semantic relations, in creation order.
+    vector<reference<SubqueryRef>> relations;
+
+    void Query(QueryNode &node) {
+        for (auto &cte : node.cte_map.map) {
+#if SIDEMANTIC_NEW_IDENTIFIER_API
+            Query(*cte.second->query_node);
+#else
+            Query(*cte.second->query->node);
+#endif
+        }
+        switch (node.type) {
+        case QueryNodeType::SET_OPERATION_NODE:
+            for (auto &child : node.Cast<SetOperationNode>().children) Query(*child);
+            return;
+        case QueryNodeType::RECURSIVE_CTE_NODE:
+            Query(*node.Cast<RecursiveCTENode>().left);
+            Query(*node.Cast<RecursiveCTENode>().right);
+            return;
+        case QueryNodeType::CTE_NODE:
+            Query(*node.Cast<CTENode>().query);
+            Query(*node.Cast<CTENode>().child);
+            return;
+        case QueryNodeType::SELECT_NODE:
+            Select(node.Cast<SelectNode>());
+            return;
+        default:
+            return;
+        }
+    }
+
+private:
+    struct Relation {
+        unique_ptr<TableRef> *slot;
+        const SidemanticModelInfo *model;
+        string alias;
+        bool nullable;
+        bool star = false;
+        vector<string> fields;
+        vector<unique_ptr<ParsedExpression>> filters;
+    };
+
+    ClientContext &context;
+    const string &snapshot;
+    case_insensitive_map_t<const SidemanticModelInfo *> models;
+    unique_ptr<CatalogFieldsOwner> catalog;
+    case_insensitive_map_t<case_insensitive_map_t<FieldInfo>> fields;
+
+    // Selectable fields (dimensions and metrics), in SELECT * order.
+    vector<string> Columns(const Relation &relation) {
+        Info(relation, relation.model->name);
+        vector<std::pair<idx_t, string>> ordered;
+        for (auto &field : fields[relation.model->name]) {
+            if (field.second.position) ordered.emplace_back(field.second.position, field.first);
+        }
+        std::sort(ordered.begin(), ordered.end());
+        vector<string> result;
+        for (auto &field : ordered) result.push_back(field.second);
+        return result;
+    }
+
+    const FieldInfo &Info(const Relation &relation, const string &field) {
+        if (!catalog) {
+            catalog = make_uniq<CatalogFieldsOwner>(snapshot);
+            for (idx_t i = 0; i < catalog->result.count; ++i) {
+                auto &entry = catalog->result.entries[i];
+                string kind(entry.kind);
+                if (!entry.model_name || (kind != "metric" && kind != "dimension")) continue;
+                auto &info = fields[entry.model_name][entry.name];
+                info.metric = kind == "metric";
+                info.aggregation = entry.aggregation ? entry.aggregation : "";
+                info.type = entry.semantic_type ? entry.semantic_type : "";
+                info.position = entry.column_index;
+            }
+        }
+        auto base = field;
+        auto suffix = base.rfind("__");
+        auto &model_fields = fields[relation.model->name];
+        if (!model_fields.count(base) && suffix != string::npos) base.resize(suffix);
+        return model_fields[base];
+    }
+
+    void Select(SelectNode &select) {
+        vector<Relation> found;
+        if (select.from_table) Collect(select.from_table, false, found);
+        auto nested = [&](unique_ptr<ParsedExpression> &expression) { Subqueries(*expression); };
+        Expressions(select, nested);
+        if (found.empty()) return;
+
+        // Predicates on one relation's dimensions filter that relation before
+        // grouping. They do not add to its grain.
+        if (select.where_clause) {
+            vector<unique_ptr<ParsedExpression>> conjuncts;
+            Conjuncts(std::move(select.where_clause), conjuncts);
+            vector<unique_ptr<ParsedExpression>> remaining;
+            for (auto &conjunct : conjuncts) {
+                auto target = FilterTarget(*conjunct, found);
+                if (target) target->filters.push_back(std::move(conjunct));
+                else remaining.push_back(std::move(conjunct));
+            }
+            for (auto &conjunct : remaining) {
+                select.where_clause = select.where_clause
+                    ? make_uniq<ConjunctionExpression>(ExpressionType::CONJUNCTION_AND, std::move(select.where_clause),
+                                                       std::move(conjunct))
+                    : std::move(conjunct);
+            }
+        }
+        auto grain = [&](unique_ptr<ParsedExpression> &expression) { References(*expression, found, true); };
+        Expressions(select, grain);
+        if (select.from_table) UsingColumns(*select.from_table, found);
+        for (auto &relation : found) {
+            if (relation.star) {
+                for (auto &field : Columns(relation)) AddField(relation, field);
+            }
+            if (relation.fields.empty()) {
+                throw BinderException("Sidemantic: semantic.%s has no row grain. Select at least one of its "
+                                      "dimensions or metrics, for example SELECT %s FROM semantic.%s",
+                                      relation.model->name, Columns(relation).empty() ? "*" : Columns(relation)[0],
+                                      relation.model->name);
+            }
+        }
+        CheckReaggregation(select, found);
+        for (auto &relation : found) Replace(relation);
+    }
+
+    template <class CALLBACK>
+    void Expressions(SelectNode &select, CALLBACK &callback) {
+        for (auto &expression : select.select_list) callback(expression);
+        for (auto &expression : select.groups.group_expressions) callback(expression);
+        if (select.where_clause) callback(select.where_clause);
+        if (select.having) callback(select.having);
+        if (select.qualify) callback(select.qualify);
+        if (select.from_table) JoinConditions(*select.from_table, callback);
+        ParsedExpressionIterator::EnumerateQueryNodeModifiers(select, callback);
+    }
+
+    template <class CALLBACK>
+    void JoinConditions(TableRef &ref, CALLBACK &callback) {
+        if (ref.type != TableReferenceType::JOIN) return;
+        auto &join = ref.Cast<JoinRef>();
+        if (join.condition) callback(join.condition);
+        JoinConditions(*join.left, callback);
+        JoinConditions(*join.right, callback);
+    }
+
+    void Subqueries(ParsedExpression &expression) {
+        if (expression.GetExpressionClass() == ExpressionClass::SUBQUERY) {
+#if SIDEMANTIC_NEW_EXPRESSION_API
+            Query(*expression.Cast<SubqueryExpression>().Subquery()->node);
+#else
+            Query(*expression.Cast<SubqueryExpression>().subquery->node);
+#endif
+        }
+        ParsedExpressionIterator::EnumerateChildren(expression, [&](ParsedExpression &child) { Subqueries(child); });
+    }
+
+    void Collect(unique_ptr<TableRef> &slot, bool nullable, vector<Relation> &found) {
+        auto &ref = *slot;
+        switch (ref.type) {
+        case TableReferenceType::JOIN: {
+            auto &join = ref.Cast<JoinRef>();
+            bool left_nullable = join.type == JoinType::RIGHT || join.type == JoinType::OUTER;
+            bool right_nullable = join.type == JoinType::LEFT || join.type == JoinType::OUTER;
+            Collect(join.left, nullable || left_nullable, found);
+            Collect(join.right, nullable || right_nullable, found);
+            return;
+        }
+        case TableReferenceType::SUBQUERY:
+            Query(*ref.Cast<SubqueryRef>().subquery->node);
+            return;
+        case TableReferenceType::SHOW_REF: {
+            auto &show = ref.Cast<ShowRef>();
+            if (show.query) Query(*show.query);
+            return;
+        }
+        case TableReferenceType::BASE_TABLE:
+            break;
+        default:
+            return;
+        }
+        auto &table = ref.Cast<BaseTableRef>();
+#if SIDEMANTIC_QUALIFIED_TABLE_API
+        auto name = SidemanticName(table.Table());
+        auto schema = SidemanticName(table.GetQualifiedName().Schema());
+        auto catalog_name = SidemanticName(table.GetQualifiedName().Catalog());
+#else
+        auto name = table.table_name;
+        auto schema = table.schema_name;
+        auto catalog_name = table.catalog_name;
+#endif
+        if (!StringUtil::CIEquals(schema, "semantic")) return;
+        if (!catalog_name.empty() &&
+            !StringUtil::CIEquals(catalog_name, SidemanticName(DatabaseManager::GetDefaultDatabase(context)))) {
+            return;
+        }
+        // A user-created semantic schema keeps its physical relations.
+        if (SidemanticPhysicalRelationExists(context, name)) return;
+        auto entry = models.find(name);
+        if (entry == models.end()) {
+            vector<string> names;
+            for (auto &model : models) names.push_back(model.first);
+            auto close = StringUtil::TopNLevenshtein(names, name, 3);
+            throw BinderException("Sidemantic: no semantic model named '%s'%s", name,
+                                  close.empty() ? "" : ". Did you mean " + StringUtil::Join(close, ", ") + "?");
+        }
+        Relation relation;
+        relation.slot = &slot;
+        relation.model = entry->second;
+        relation.alias = ref.alias.empty() ? string(entry->second->name) : SidemanticName(ref.alias);
+        relation.nullable = nullable;
+        found.push_back(std::move(relation));
+    }
+
+    // Resolve a column reference to a relation field. Rewrites semantic.model.field
+    // to alias.field and canonicalizes field names.
+    Relation *Resolve(ColumnRefExpression &column, vector<Relation> &found, string &field) {
+#if SIDEMANTIC_NEW_EXPRESSION_API
+        auto &names = column.ColumnNamesMutable();
+#else
+        auto &names = column.column_names;
+#endif
+        Relation *relation = nullptr;
+        if (names.size() >= 3 && StringUtil::CIEquals(SidemanticName(names[names.size() - 3]), "semantic")) {
+            for (auto &candidate : found) {
+                if (StringUtil::CIEquals(candidate.model->name, SidemanticName(names[names.size() - 2])) &&
+                    StringUtil::CIEquals(candidate.alias, candidate.model->name)) {
+                    relation = &candidate;
+                }
+            }
+            if (!relation) return nullptr;
+            bool current_catalog = names.size() == 3 ||
+                (names.size() == 4 && StringUtil::CIEquals(SidemanticName(names[0]),
+                    SidemanticName(DatabaseManager::GetDefaultDatabase(context))));
+            if (!current_catalog) {
+                throw BinderException("Semantic column qualifier must name the current database's semantic schema");
+            }
+            names.erase(names.begin(), names.end() - 2);
+        } else if (names.size() >= 3) {
+            for (auto &candidate : found) {
+                if (StringUtil::CIEquals(candidate.alias, SidemanticName(names[names.size() - 2]))) {
+                    throw BinderException("Column qualifier does not match the semantic relation");
+                }
+            }
+            return nullptr;
+        } else if (names.size() == 2) {
+            for (auto &candidate : found) {
+                if (StringUtil::CIEquals(candidate.alias, SidemanticName(names[0]))) relation = &candidate;
+            }
+            if (!relation) return nullptr;
+        } else if (names.size() == 1) {
+            for (auto &candidate : found) {
+                auto name = SidemanticName(names[0]);
+                if (!CanonicalField(candidate.model, name)) continue;
+                if (relation) {
+                    throw BinderException("Sidemantic: field '%s' is ambiguous between semantic.%s and semantic.%s; "
+                                          "qualify it", name, relation->model->name, candidate.model->name);
+                }
+                relation = &candidate;
+            }
+            if (!relation) {
+                // An unknown grain on a field of exactly one relation is a
+                // semantic reference, not a column of another source.
+                auto name = SidemanticName(names[0]);
+                auto suffix = name.rfind("__");
+                for (auto &candidate : found) {
+                    auto base = suffix == string::npos ? string() : name.substr(0, suffix);
+                    if (!base.empty() && CanonicalField(candidate.model, base)) {
+                        throw BinderException(UnknownFieldMessage(*candidate.model, name));
+                    }
+                }
+                return nullptr;
+            }
+        } else {
+            return nullptr;
+        }
+        field = SidemanticName(names.back());
+        if (!CanonicalField(relation->model, field)) {
+            throw BinderException(UnknownFieldMessage(*relation->model, field));
+        }
+        return relation;
+    }
+
+    // JOIN ... USING (name) reads that column from both sides. Relations
+    // outside the join's operands do not join on it.
+    void UsingColumns(TableRef &ref, vector<Relation> &found) {
+        if (ref.type != TableReferenceType::JOIN) return;
+        auto &join = ref.Cast<JoinRef>();
+        for (auto &column : join.using_columns) {
+            for (auto &relation : found) {
+                auto field = SidemanticName(column);
+                if (Contains(ref, relation) && CanonicalField(relation.model, field)) AddField(relation, field);
+            }
+        }
+        UsingColumns(*join.left, found);
+        UsingColumns(*join.right, found);
+    }
+
+    bool Contains(TableRef &ref, const Relation &relation) {
+        if (relation.slot->get() == &ref) return true;
+        if (ref.type != TableReferenceType::JOIN) return false;
+        auto &join = ref.Cast<JoinRef>();
+        return Contains(*join.left, relation) || Contains(*join.right, relation);
+    }
+
+    void AddField(Relation &relation, const string &field) {
+        for (auto &existing : relation.fields) {
+            if (StringUtil::CIEquals(existing, field)) return;
+        }
+        relation.fields.push_back(field);
+    }
+
+    void References(ParsedExpression &expression, vector<Relation> &found, bool record) {
+        if (expression.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+            string field;
+            auto relation = Resolve(expression.Cast<ColumnRefExpression>(), found, field);
+            if (relation && record) AddField(*relation, field);
+            return;
+        }
+        if (expression.GetExpressionClass() == ExpressionClass::STAR) {
+            auto name = StarRelation(expression);
+            for (auto &relation : found) {
+                if (name.empty() || StringUtil::CIEquals(name, relation.alias)) relation.star = true;
+            }
+        }
+        if (expression.GetExpressionClass() == ExpressionClass::SUBQUERY) {
+            // Correlated references to an outer semantic relation add to its grain.
+#if SIDEMANTIC_NEW_EXPRESSION_API
+            auto &node = *expression.Cast<SubqueryExpression>().Subquery()->node;
+#else
+            auto &node = *expression.Cast<SubqueryExpression>().subquery->node;
+#endif
+            if (node.type == QueryNodeType::SELECT_NODE) {
+                auto correlated = [&](unique_ptr<ParsedExpression> &child) { Qualified(*child, found); };
+                Expressions(node.Cast<SelectNode>(), correlated);
+            }
+        }
+        ParsedExpressionIterator::EnumerateChildren(expression, [&](ParsedExpression &child) {
+            References(child, found, record);
+        });
+    }
+
+    void Qualified(ParsedExpression &expression, vector<Relation> &found) {
+        if (expression.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+            auto &column = expression.Cast<ColumnRefExpression>();
+#if SIDEMANTIC_NEW_EXPRESSION_API
+            auto size = column.ColumnNames().size();
+#else
+            auto size = column.column_names.size();
+#endif
+            if (size >= 2) References(expression, found, true);
+            return;
+        }
+        ParsedExpressionIterator::EnumerateChildren(expression, [&](ParsedExpression &child) { Qualified(child, found); });
+    }
+
+    void Conjuncts(unique_ptr<ParsedExpression> expression, vector<unique_ptr<ParsedExpression>> &result) {
+        if (expression->GetExpressionType() != ExpressionType::CONJUNCTION_AND) {
+            result.push_back(std::move(expression));
+            return;
+        }
+        ParsedExpressionIterator::EnumerateChildren(*expression, [&](unique_ptr<ParsedExpression> &child) {
+            Conjuncts(std::move(child), result);
+        });
+    }
+
+    // The relation a predicate can filter directly: it reads only dimensions of
+    // one relation that is never NULL-extended, without aggregates or subqueries.
+    Relation *FilterTarget(ParsedExpression &predicate, vector<Relation> &found) {
+        Relation *target = nullptr;
+        bool pushable = true;
+        std::function<void(ParsedExpression &)> visit = [&](ParsedExpression &expression) {
+            if (!pushable) return;
+            switch (expression.GetExpressionClass()) {
+            case ExpressionClass::SUBQUERY:
+            case ExpressionClass::WINDOW:
+            case ExpressionClass::STAR:
+                pushable = false;
+                return;
+            case ExpressionClass::FUNCTION:
+                if (IsAggregateFunction(FunctionName(expression))) {
+                    pushable = false;
+                    return;
+                }
+                break;
+            case ExpressionClass::COLUMN_REF: {
+                string field;
+                auto relation = Resolve(expression.Cast<ColumnRefExpression>(), found, field);
+                if (!relation || relation->nullable || Info(*relation, field).metric ||
+                    (target && target != relation)) {
+                    pushable = false;
+                }
+                target = relation;
+                return;
+            }
+            default:
+                break;
+            }
+            ParsedExpressionIterator::EnumerateChildren(expression, visit);
+        };
+        visit(predicate);
+        return pushable ? target : nullptr;
+    }
+
+    bool Reaggregatable(const string &function, const FieldInfo &metric) {
+        if (!metric.type.empty() && metric.type != "simple") return false;
+        auto aggregation = StringUtil::Lower(metric.aggregation);
+        if (function == "sum") return aggregation == "sum" || aggregation == "count";
+        if (function == "min" || function == "max") return aggregation == function;
+        return false;
+    }
+
+    // Aggregating a metric again is exact when each group holds one relation
+    // row, or when the metric's own aggregation composes (SUM of SUM/COUNT,
+    // MIN of MIN, MAX of MAX). Anything else silently computes a different number.
+    void CheckReaggregation(SelectNode &select, vector<Relation> &found) {
+        case_insensitive_map_t<case_insensitive_set_t> grouped;
+        auto group = [&](ParsedExpression &expression) {
+            if (expression.GetExpressionClass() != ExpressionClass::COLUMN_REF) return;
+            string field;
+            auto relation = Resolve(expression.Cast<ColumnRefExpression>(), found, field);
+            if (relation) grouped[relation->alias].insert(field);
+        };
+        bool group_all = select.aggregate_handling == AggregateHandling::FORCE_AGGREGATES;
+        for (auto &expression : select.groups.group_expressions) group(*expression);
+        if (group_all) {
+            for (auto &expression : select.select_list) group(*expression);
+        }
+        std::function<void(ParsedExpression &, const string &)> visit = [&](ParsedExpression &expression,
+                                                                               const string &aggregate) {
+            switch (expression.GetExpressionClass()) {
+            case ExpressionClass::WINDOW:
+            case ExpressionClass::SUBQUERY:
+                return;
+            case ExpressionClass::FUNCTION: {
+                auto name = FunctionName(expression);
+                if (aggregate.empty() && IsAggregateFunction(name)) {
+                    ParsedExpressionIterator::EnumerateChildren(expression, [&](ParsedExpression &child) {
+                        visit(child, name);
+                    });
+                    return;
+                }
+                break;
+            }
+            case ExpressionClass::COLUMN_REF: {
+                if (aggregate.empty()) return;
+                string field;
+                auto relation = Resolve(expression.Cast<ColumnRefExpression>(), found, field);
+                if (!relation || !Info(*relation, field).metric) return;
+                bool single_row_groups = true;
+                for (auto &dimension : relation->fields) {
+                    if (!Info(*relation, dimension).metric && !grouped[relation->alias].count(dimension)) {
+                        single_row_groups = false;
+                    }
+                }
+                if (single_row_groups || Reaggregatable(aggregate, Info(*relation, field))) return;
+                throw BinderException("Sidemantic: %s(%s) re-aggregates metric %s.%s over the grain of semantic.%s, "
+                                      "which gives a different result than the metric itself. Select %s directly "
+                                      "and group by the dimensions you need",
+                                      aggregate, field, relation->model->name, field, relation->model->name, field);
+            }
+            default:
+                break;
+            }
+            ParsedExpressionIterator::EnumerateChildren(expression, [&](ParsedExpression &child) {
+                visit(child, aggregate);
+            });
+        };
+        for (auto &expression : select.select_list) visit(*expression, "");
+        if (select.having) visit(*select.having, "");
+        if (select.qualify) visit(*select.qualify, "");
+        ParsedExpressionIterator::EnumerateQueryNodeModifiers(select, [&](unique_ptr<ParsedExpression> &child) {
+            visit(*child, "");
+        });
+    }
+
+    void Replace(Relation &relation) {
+        string sql = "SELECT ";
+        for (idx_t i = 0; i < relation.fields.size(); ++i) {
+            if (i) sql += ", ";
+            sql += QuoteName(relation.alias) + "." + QuoteName(relation.fields[i]) + " AS " +
+                   QuoteName(relation.fields[i]);
+        }
+        auto source = (*relation.slot)->ToString();
+        sql += " FROM " + source;
+        for (idx_t i = 0; i < relation.filters.size(); ++i) {
+            sql += (i ? " AND (" : " WHERE (") + relation.filters[i]->ToString() + ")";
+        }
+        Parser parser(SidemanticBuiltinParserOptions());
+        parser.ParseQuery("SELECT * FROM (" + sql + ") AS " + QuoteName(relation.alias));
+        auto &wrapper = parser.statements.at(0)->Cast<SelectStatement>().node->Cast<SelectNode>();
+        *relation.slot = std::move(wrapper.from_table);
+        relations.push_back((*relation.slot)->Cast<SubqueryRef>());
     }
 };
 
@@ -501,20 +1194,12 @@ SelectStatement *QueryInStatement(SQLStatement &statement, bool include_insert_c
     return nullptr;
 }
 
-unique_ptr<SQLStatement> CompileSemanticStatement(ClientContext &context, SQLStatement &statement,
-                                                 const SidemanticCatalogSnapshot &snapshot,
-                                                 bool explicit_semantic = false) {
-    auto rewritten = statement.Copy();
-    auto query = QueryInStatement(*rewritten, true);
-    if (!query) return nullptr;
-    ModelListOwner models(snapshot.payload);
-    if (!SemanticReferences(context, models.list).Query(*query->node) && !explicit_semantic) return nullptr;
-    auto sql = query->ToString();
+unique_ptr<QueryNode> CompileSemanticSelect(const SidemanticCatalogSnapshot &snapshot, const string &sql) {
     auto result = sidemantic_snapshot_rewrite(snapshot.payload.c_str(), sql.c_str());
     if (result.error) {
         string error(result.error);
         sidemantic_free_result(result);
-        throw BinderException("Sidemantic: %s", error);
+        throw BinderException("Sidemantic: %s", SidemanticErrorText(error));
     }
     if (!result.sql) {
         sidemantic_free_result(result);
@@ -527,7 +1212,34 @@ unique_ptr<SQLStatement> CompileSemanticStatement(ClientContext &context, SQLSta
     if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
         throw BinderException("Sidemantic rewrite must produce one SELECT statement");
     }
-    query->node = std::move(parser.statements[0]->Cast<SelectStatement>().node);
+    return std::move(parser.statements[0]->Cast<SelectStatement>().node);
+}
+
+unique_ptr<SQLStatement> CompileSemanticStatement(ClientContext &context, SQLStatement &statement,
+                                                 const SidemanticCatalogSnapshot &snapshot,
+                                                 bool explicit_semantic = false) {
+    auto rewritten = statement.Copy();
+    auto query = QueryInStatement(*rewritten, true);
+    if (!query) return nullptr;
+    ModelListOwner models(snapshot.payload);
+    SemanticRelations relations(context, models.list, snapshot.payload);
+    relations.Query(*query->node);
+    unordered_set<const TableRef *> derived;
+    for (auto &relation : relations.relations) derived.insert(&relation.get());
+    SemanticReferences references(context, models.list, explicit_semantic, derived);
+    bool found = references.Query(*query->node) || explicit_semantic;
+    references.ThrowUnknownField(found);
+    if (!found) {
+        if (relations.relations.empty()) return nullptr;
+        // Only semantic relations: compile each derived table and leave the
+        // rest of the statement, including DESCRIBE/SUMMARIZE, to DuckDB.
+        for (auto &relation : relations.relations) {
+            auto &subquery = *relation.get().subquery;
+            subquery.node = CompileSemanticSelect(snapshot, subquery.node->ToString());
+        }
+        return rewritten;
+    }
+    query->node = CompileSemanticSelect(snapshot, query->ToString());
     return rewritten;
 }
 
@@ -967,7 +1679,7 @@ ParserExtensionPlanResult sidemantic_plan(ParserExtensionInfo *, ClientContext &
         return PlanSidemanticCatalog(data.operation.substr(5), data.content, "");
     }
     if (!data.operation.empty()) {
-        return PlanSidemanticMutation(context, data.operation, data.content, data.replace, "Semantic definitions updated");
+        return PlanSidemanticMutation(context, data.operation, data.content, data.replace);
     }
     context.registered_state->Remove("sidemantic_bind");
     context.registered_state->Insert("sidemantic_bind", make_shared_ptr<SidemanticBindState>(std::move(parsed)));

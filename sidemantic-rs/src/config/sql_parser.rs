@@ -1091,6 +1091,27 @@ fn flush_legacy_sql_model(
     models.push(model);
 }
 
+const ONE_DECLARATION_PER_LINE: &str =
+    "Compact model blocks take one declaration per line, e.g. `primary key (id)`, `status` and `sum(amount) as revenue` on separate lines";
+
+/// Index of the parenthesis closing the one at `open`.
+fn matching_paren(line: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, character) in line[open..].char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn strip_line_comment(line: &str) -> &str {
     line.split_once("--")
         .map(|(before, _)| before)
@@ -1316,13 +1337,14 @@ fn build_compact_model(
             let open = line.find('(').ok_or_else(|| {
                 SidemanticError::Validation("Primary key requires column list".to_string())
             })?;
-            let close = line.rfind(')').ok_or_else(|| {
+            let close = matching_paren(line, open).ok_or_else(|| {
                 SidemanticError::Validation("Primary key requires column list".to_string())
             })?;
-            if close <= open {
-                return Err(SidemanticError::Validation(
-                    "Primary key requires at least one column".to_string(),
-                ));
+            let rest = line[close + 1..].trim();
+            if !rest.is_empty() {
+                return Err(SidemanticError::Validation(format!(
+                    "Unexpected text after primary key in model '{name}': `{rest}`. {ONE_DECLARATION_PER_LINE}"
+                )));
             }
             let columns = split_columns(&line[open + 1..close])?;
             model.primary_key = columns[0].clone();
@@ -1388,6 +1410,11 @@ fn build_compact_model(
         if field_name.is_empty() {
             return Err(SidemanticError::Validation(format!(
                 "Unrecognized statement in model '{name}': {line}"
+            )));
+        }
+        if field_name.split_whitespace().count() > 1 && !field_name.starts_with('"') {
+            return Err(SidemanticError::Validation(format!(
+                "Unrecognized field declaration in model '{name}': `{line}`. {ONE_DECLARATION_PER_LINE}"
             )));
         }
         if !seen_fields.insert(field_name.clone()) {
@@ -2685,6 +2712,25 @@ model orders from orders (
 
         let err = parse_sql_model(sql).unwrap_err();
         assert!(err.to_string().contains("must compare model columns"));
+    }
+
+    #[test]
+    fn test_parse_compact_sql_model_requires_one_declaration_per_line() {
+        for sql in [
+            "model orders from orders (primary key (id) status sum(amount) AS revenue)",
+            "model orders from orders (\n  primary key (id)\n  amount * 2\n)",
+        ] {
+            let err = parse_sql_model(sql).unwrap_err().to_string();
+            assert!(err.contains("one declaration per line"), "{sql}: {err}");
+        }
+
+        let model = parse_sql_model(
+            "model orders from orders (\n  primary key (id)\n  status\n  sum(amount) AS revenue\n)",
+        )
+        .unwrap();
+        assert_eq!(model.primary_key, "id");
+        assert!(model.get_dimension("status").is_some());
+        assert!(model.get_metric("revenue").is_some());
     }
 
     #[test]

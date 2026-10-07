@@ -14,7 +14,6 @@ from sidemantic.core.table_calculation import TableCalculation
 from sidemantic.loaders import load_from_directory
 from sidemantic.sql.query_rewriter import QueryRewriter
 from sidemantic.sql.table_calc_processor import TableCalculationProcessor
-from tests.duckdb_compat import date_bucket
 
 FIXTURE_SUITE_ROOT = Path(__file__).parents[1] / "native-fixtures"
 
@@ -146,19 +145,6 @@ def test_native_fixture_loads_compiles_and_executes(fixture, query_manifest):
         {column: normalize_value(value) for column, value in zip(result_columns, row, strict=True)} for row in rows
     ]
     expected = json.loads((fixture_root / expected_result).read_text())
-
-    # Only these fixtures execute date_trunc. In particular, the routed
-    # preaggregation fixture reads an already-materialized DATE column.
-    bucket_columns = {
-        ("default_time_dimension", "revenue_by_default_month"): "created_at__month",
-        ("advanced_metrics", "cumulative_revenue_by_month"): "event_date__month",
-        ("advanced_metrics", "revenue_mom_by_month_region"): "event_date__month",
-    }
-    bucket_column = bucket_columns.get((fixture["name"], query_manifest["name"]))
-    if bucket_column:
-        for row in expected:
-            value = date.fromisoformat(row[bucket_column])
-            row[bucket_column] = date_bucket(value.year, value.month, value.day).isoformat()
 
     assert actual == expected
 

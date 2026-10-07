@@ -18,7 +18,7 @@ from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.rust_bridge import rewrite_semantic_input
 from sidemantic.semantic_handoff import RustBackendUnavailableError, UnsupportedSemanticFeaturesError
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
-from sidemantic.sql.generator import SQLGenerator
+from sidemantic.sql.generator import DATE_GRANULARITIES, SQLGenerator
 from sidemantic.sql.parsing import parse_fragment
 from sidemantic.sql.planner import CandidatePlan, RewriteExplanation, SemanticQueryPlan
 
@@ -79,6 +79,7 @@ class _AggregateBoundaryAnalysis:
     row_filters: list[str]
     aggregate_filters: list[str]
     applied_rules: list[str]
+    timestamp_dimensions: list[str]
 
     @property
     def pushed_filters(self) -> list[str]:
@@ -882,6 +883,7 @@ class QueryRewriter:
             plan.metrics = aggregate_boundary.metrics
             plan.dimensions = aggregate_boundary.dimensions
             plan.aliases = aggregate_boundary.aliases
+            plan.timestamp_dimensions = aggregate_boundary.timestamp_dimensions
             if aggregate_boundary.pushed_filters:
                 plan.filters = [*plan.filters, *aggregate_boundary.pushed_filters]
                 plan.row_filters = [*plan.row_filters, *aggregate_boundary.row_filters]
@@ -1924,6 +1926,7 @@ class QueryRewriter:
 
         selected_dimensions: list[str] = []
         selected_metrics: list[str] = []
+        timestamp_dimensions: list[str] = []
         aliases: dict[str, str] = {}
         visible_name_to_ref: dict[str, str] = {}
         projected_refs: set[str] = set()
@@ -1932,6 +1935,11 @@ class QueryRewriter:
         for projection in select.expressions:
             alias = projection.alias if isinstance(projection, exp.Alias) else None
             expression = self._projection_expression(projection)
+            # The database names an unaliased expression after its SQL text, in
+            # dialect-specific ways. Keep the written query so its names hold.
+            if alias is None and not isinstance(expression, exp.Column):
+                rejected_rules[rule_name] = "outer_projection_expression_unaliased"
+                return None
 
             time_rollup_ref = self._resolve_outer_time_rollup_dimension(
                 expression,
@@ -1956,6 +1964,8 @@ class QueryRewriter:
                 visible_name_to_ref[output_name] = time_rollup_ref
                 if alias:
                     aliases[time_rollup_ref] = alias
+                if self._timestamp_trunc_unit(expression) in DATE_GRANULARITIES:
+                    timestamp_dimensions.append(time_rollup_ref)
                 applied_rules.append("time_grain_rollup")
                 continue
 
@@ -2029,6 +2039,7 @@ class QueryRewriter:
             row_filters=filters.row_filters,
             aggregate_filters=filters.aggregate_filters,
             applied_rules=self._dedupe(applied_rules),
+            timestamp_dimensions=timestamp_dimensions,
         )
 
     def _projection_expression(self, projection: exp.Expression) -> exp.Expression:
@@ -3163,6 +3174,7 @@ class QueryRewriter:
             user_attributes=getattr(self, "_rewrite_user_attributes", None),
             _query_ctes=self._query_ctes_in_scope(query),
         )
+        generated_sql = self._preserve_outer_trunc_types(generated_sql, plan)
         # Structured queries emit dimensions first and some temporal generators
         # expose extra base measures. SQL SELECT owns its output order and fields,
         # including separate aliases for repeated semantic references.
@@ -3238,6 +3250,35 @@ class QueryRewriter:
                                     rewritten += "\n" + line
                         return rewritten
         return generated_sql
+
+    def _preserve_outer_trunc_types(self, generated_sql: str, plan: SemanticQueryPlan) -> str:
+        """Keep the SQL result type of an outer DATE_TRUNC folded into a semantic grain.
+
+        DATE_TRUNC returns a timestamp in these dialects, while semantic day and coarser
+        buckets are dates. The optimized query must return what the written SQL returns.
+        """
+        if self.dialect not in {"duckdb", "postgres", "redshift"}:
+            return generated_sql
+        names = {plan.aliases[ref] for ref in plan.timestamp_dimensions}
+        if not names:
+            return generated_sql
+        generated = parse_fragment(generated_sql, self.dialect)
+        if not isinstance(generated, exp.Select):
+            return generated_sql
+        projections = []
+        for expression in generated.expressions:
+            if expression.alias_or_name in names:
+                source = expression.this if isinstance(expression, exp.Alias) else expression
+                expression = exp.cast(source.copy(), "TIMESTAMP").as_(expression.alias_or_name)
+            projections.append(expression)
+        generated.set("expressions", projections)
+        rewritten = generated.sql(dialect=self.dialect)
+        # Keep routing metadata comments, as the projection restore below does.
+        for line in generated_sql.splitlines():
+            if line.startswith("-- sidemantic:") or line == "-- used_preagg=true":
+                if line not in rewritten:
+                    rewritten += "\n" + line
+        return rewritten
 
     def _dedupe(self, values: list[str]) -> list[str]:
         deduped = []

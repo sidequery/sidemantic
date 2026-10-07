@@ -1,11 +1,12 @@
 """Window wrappers preserve independent source grains and grouped output names."""
 
+from datetime import date
+
 import pytest
 import sqlglot
 from sqlglot import exp
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from tests.duckdb_compat import date_bucket
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "tsql", "mysql", "bigquery"])
@@ -99,9 +100,9 @@ def test_cross_source_calculation_beside_cumulative_preserves_leaf_grains(layer,
     records = [dict(zip(columns, row, strict=True)) for row in rows]
     actual = [(r["day"], r["quota"], r["total"], r["combined"], r["running"]) for r in records]
     expected = {
-        "populated": [(date_bucket(2024, 1, 1), 10, 5, 15, 5), (date_bucket(2024, 1, 2), 30, 18, 48, 23)],
+        "populated": [(date(2024, 1, 1), 10, 5, 15, 5), (date(2024, 1, 2), 30, 18, 48, 23)],
         "empty_facts": [(None, 30, 0, 30, 0)],
-        "empty_accounts": [(date_bucket(2024, 1, 1), None, 5, None, 5), (date_bucket(2024, 1, 2), None, 18, None, 23)],
+        "empty_accounts": [(date(2024, 1, 1), None, 5, None, 5), (date(2024, 1, 2), None, 18, None, 23)],
         "both_empty": [],
     }
     assert actual == expected[population]
@@ -172,12 +173,12 @@ def test_window_partitions_bind_both_colliding_sibling_dimensions(layer, window_
     rows = result.fetchall()
     expected_windows = [None, 1, None, 1, None, 10] if window_kind == "lag" else [2, 5, 2, 5, 10, 30]
     expected_groups = [
-        (date_bucket(2024, 1, 1), "a", "x", 2),
-        (date_bucket(2024, 1, 2), "a", "x", 3),
-        (date_bucket(2024, 1, 1), "a", "y", 2),
-        (date_bucket(2024, 1, 2), "a", "y", 3),
-        (date_bucket(2024, 1, 1), "b", "x", 10),
-        (date_bucket(2024, 1, 2), "b", "x", 20),
+        (date(2024, 1, 1), "a", "x", 2),
+        (date(2024, 1, 2), "a", "x", 3),
+        (date(2024, 1, 1), "a", "y", 2),
+        (date(2024, 1, 2), "a", "y", 3),
+        (date(2024, 1, 1), "b", "x", 10),
+        (date(2024, 1, 2), "b", "x", 20),
     ]
     assert rows == [(*group, window) for group, window in zip(expected_groups, expected_windows, strict=True)]
 

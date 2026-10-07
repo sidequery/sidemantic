@@ -163,6 +163,20 @@ pub struct SidemanticCatalogEntry {
     pub column_index: usize,
 }
 
+fn without_nulls(value: &Value) -> Value {
+    match value {
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .filter(|(_, value)| !value.is_null())
+                .map(|(name, value)| (name.clone(), without_nulls(value)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_nulls).collect()),
+        other => other.clone(),
+    }
+}
+
 impl SidemanticCatalogEntry {
     fn from_entry(entry: CatalogEntry) -> CatalogResult<Self> {
         // Validate every allocation before transferring ownership to C. Null
@@ -191,7 +205,9 @@ impl SidemanticCatalogEntry {
             None
         };
         let granularity = property("granularity")?;
-        let definition = field(Some(&entry.definition.to_string()))?;
+        // Absent metadata is omitted from the displayed definition; the
+        // dedicated columns above still report it as NULL.
+        let definition = field(Some(&without_nulls(&entry.definition).to_string()))?;
         let raw = |value: Option<CString>| value.map_or(ptr::null_mut(), CString::into_raw);
         Ok(Self {
             kind: raw(kind),
@@ -429,6 +445,32 @@ metadata:
         assert_eq!(entries(&snapshot, "metric", "").unwrap().len(), 3);
         assert!(entries(&snapshot, "metric", "missing").is_err());
         assert!(entries(&snapshot, "unknown", "").is_err());
+    }
+
+    #[test]
+    fn displayed_definitions_omit_absent_metadata() {
+        let snapshot = snapshot();
+        let row = entries(&snapshot, "metric", "orders")
+            .unwrap()
+            .into_iter()
+            .find(|row| row.qualified_name == "orders.revenue")
+            .unwrap();
+        let entry = SidemanticCatalogEntry::from_entry(row).unwrap();
+        let definition = unsafe { std::ffi::CStr::from_ptr(entry.definition) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let label = unsafe { std::ffi::CStr::from_ptr(entry.label) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        drop(entry);
+        assert!(!definition.contains("null"), "{definition}");
+        assert_eq!(label, "Revenue");
+        assert_eq!(
+            serde_json::from_str::<Value>(&definition).unwrap()["sql"],
+            "amount"
+        );
     }
 
     #[test]

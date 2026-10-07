@@ -1,5 +1,7 @@
 """Test advanced metric features: grain-to-date, fill_nulls_with, offsets, conversion."""
 
+from datetime import date
+
 import duckdb
 import pytest
 
@@ -8,7 +10,6 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator import SQLGenerator
-from tests.duckdb_compat import date_bucket
 from tests.utils import df_rows
 
 
@@ -700,7 +701,7 @@ def test_month_comparison_does_not_use_previous_available_sparse_row():
     rows = df_rows(duckdb.connect(":memory:").execute(sql))
 
     assert "RANGE BETWEEN INTERVAL '1 month' PRECEDING AND INTERVAL '1 month' PRECEDING" in sql
-    assert rows[1][0] == date_bucket(2024, 3, 1)
+    assert rows[1][0] == date(2024, 3, 1)
     assert rows[1][2] is None
 
 

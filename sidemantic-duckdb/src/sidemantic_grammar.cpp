@@ -1,6 +1,7 @@
 #include "sidemantic_parser.hpp"
 
 #if SIDEMANTIC_GRAMMAR_EXTENSION
+#include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/grammar_extension.hpp"
 #include "duckdb/parser/peg/compiled_grammar.hpp"
@@ -157,7 +158,13 @@ shared_ptr<ParserExtensionInfo> RegisterSidemanticGrammar(DatabaseInstance &db) 
     GrammarExtension::Register(db, extension);
     auto info = make_shared_ptr<SidemanticGrammarInfo>();
     info->default_grammar = db.GetParserCache().GetMatcher();
+#if SIDEMANTIC_GRAMMAR_EXTENSION_LIST
     info->grammar = CompiledGrammar::Create(vector<reference<GrammarExtension>> {*extension});
+#else
+    // Earlier 2.0 builds compile registered grammars by name for a client.
+    Connection connection(db);
+    info->grammar = CompiledGrammar::Create(*connection.context, case_insensitive_set_t {"sidemantic"});
+#endif
     return info;
 }
 

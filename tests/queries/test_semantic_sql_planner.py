@@ -1512,7 +1512,52 @@ def test_aggregate_boundary_time_grain_rollup_day_to_month(semantic_layer):
     }
     assert "aggregate_boundary_rollup" in explanation.applied_rules
     assert "time_grain_rollup" in explanation.applied_rules
-    assert "DATE_TRUNC('MONTH', order_date) AS order_date__month" in explanation.rewritten_sql
+    assert "CAST(DATE_TRUNC('MONTH', order_date) AS DATE) AS order_date__month" in explanation.rewritten_sql
+
+
+def test_aggregate_boundary_time_grain_rollup_keeps_date_trunc_type(semantic_layer):
+    explanation = _python_plan(
+        semantic_layer,
+        """
+        SELECT DATE_TRUNC('month', order_date__day) AS order_month, SUM(revenue) AS revenue
+        FROM (
+            SELECT orders.order_date__day, orders.revenue FROM orders
+        ) sq
+        GROUP BY 1
+        """,
+    )
+    result = semantic_layer.conn.execute(explanation.rewritten_sql)
+
+    assert "time_grain_rollup" in explanation.applied_rules
+    assert str(result.description[0][1]) == "TIMESTAMP"
+
+
+def test_aggregate_boundary_keeps_written_unaliased_expressions(semantic_layer):
+    inner_sql = "SELECT orders.order_date__day, orders.revenue FROM orders"
+    projections = "DATE_TRUNC('month', order_date__day) AS order_month, SUM(revenue)"
+    wrapped_sql = f"SELECT {projections} FROM ({inner_sql}) sq GROUP BY 1"
+    baseline_sql = (
+        f"SELECT {projections} FROM {_subquery(_compiled_semantic_sql(semantic_layer, inner_sql))} sq GROUP BY 1"
+    )
+
+    explanation = _assert_query_matches_baseline(semantic_layer, wrapped_sql, baseline_sql)
+
+    assert explanation.rejected_rules["aggregate_boundary_rollup"] == "outer_projection_expression_unaliased"
+    optimized = semantic_layer.conn.execute(explanation.rewritten_sql).description
+    baseline = semantic_layer.conn.execute(baseline_sql).description
+    assert [(column[0], str(column[1])) for column in optimized] == [(column[0], str(column[1])) for column in baseline]
+
+
+def test_aggregate_boundary_keeps_unaliased_date_trunc_type(semantic_layer):
+    explanation = _python_plan(
+        semantic_layer,
+        "SELECT DATE_TRUNC('month', order_date__day), SUM(revenue) AS revenue "
+        "FROM (SELECT orders.order_date__day, orders.revenue FROM orders) sq GROUP BY 1",
+    )
+    result = semantic_layer.conn.execute(explanation.rewritten_sql)
+
+    assert explanation.rejected_rules["aggregate_boundary_rollup"] == "outer_projection_expression_unaliased"
+    assert str(result.description[0][1]) == "TIMESTAMP"
 
 
 def test_aggregate_boundary_time_grain_rollup_uses_daily_preaggregation(semantic_layer):
@@ -2466,7 +2511,7 @@ def test_join_key_preaggregation_reads_ungrained_local_time_dimension_from_grain
 
     assert explanation.chosen_plan == "join_key_preaggregation"
     assert "orders_preagg_by_customer_day" in explanation.rewritten_sql
-    assert "orders_rollup.order_date_day AS order_date" in explanation.rewritten_sql
+    assert "CAST(orders_rollup.order_date_day AS DATE) AS order_date" in explanation.rewritten_sql
     assert "orders_rollup.order_date AS order_date" not in explanation.rewritten_sql
 
 

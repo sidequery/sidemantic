@@ -46,8 +46,11 @@ def test_local_time_buckets_and_dst(layer, grain, dimension):
         metrics=["events.total"], dimensions=[f"events.{dimension}__{grain}"], timezone="America/New_York"
     )
     expression = "ts" if dimension == "ts" else "ts + INTERVAL '1 hour'"
+    bucket = f"date_trunc('{grain}', ({expression}) at time zone 'UTC' at time zone 'America/New_York')"
+    if grain != "hour":
+        bucket = f"cast({bucket} as date)"
     expected = layer.adapter.execute(f"""
-        select date_trunc('{grain}', ({expression}) at time zone 'UTC' at time zone 'America/New_York'),
+        select {bucket},
                sum(amount)
         from timezone_events group by 1 order by 1
     """).fetchall()
@@ -91,7 +94,7 @@ def test_absent_timezone_keeps_utc_buckets(layer, timezone):
     assert (
         sorted(layer.adapter.execute(sql).fetchall())
         == layer.adapter.execute("""
-        select date_trunc('day', ts), sum(amount)
+        select cast(date_trunc('day', ts) as date), sum(amount)
         from timezone_events group by 1 order by 1
     """).fetchall()
     )

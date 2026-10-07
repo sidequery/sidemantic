@@ -4,6 +4,8 @@
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database_manager.hpp"
@@ -77,7 +79,10 @@ struct SemanticMetadata {
     vector<SemanticRelation> relations;
 };
 
-LogicalType BindFieldType(ClientContext &context, const string &snapshot, const string &model, const string &field) {
+} // namespace
+
+LogicalType SidemanticFieldType(ClientContext &context, const string &snapshot, const string &model,
+                                const string &field) {
     auto sql = "SELECT " + QuoteName(model) + "." + QuoteName(field) + " FROM " + QuoteName(model);
     auto result = sidemantic_snapshot_rewrite(snapshot.c_str(), sql.c_str());
     string compiled = result.sql ? result.sql : "";
@@ -92,6 +97,8 @@ LogicalType BindFieldType(ClientContext &context, const string &snapshot, const 
     if (bound.types.size() != 1) throw BinderException("Semantic field must produce one column");
     return bound.types[0];
 }
+
+namespace {
 
 SemanticMetadata ReadMetadata(ClientContext &context) {
     SemanticMetadata metadata;
@@ -137,7 +144,7 @@ SemanticMetadata ReadMetadata(ClientContext &context) {
             column.ordinal = field.column_index;
             column.comment = field.description ? Value(field.description) : Value();
             try {
-                column.type = BindFieldType(context, snapshot.payload, relation.name, column.name);
+                column.type = SidemanticFieldType(context, snapshot.payload, relation.name, column.name);
             } catch (const std::exception &exception) {
                 // Like DuckDB's unbound views, keep the relation discoverable
                 // without inventing a physical type for an unavailable source.
@@ -280,7 +287,7 @@ void OverlayScans(PlannerExtensionInput &input, unique_ptr<LogicalOperator> &pla
     auto rows = BuildRows(*metadata, name, get.names, get.returned_types);
     if (rows->rows.empty()) return;
     TableFunction function("sidemantic_catalog_scan", {}, ScanDiscovery, nullptr, InitDiscovery);
-#if SIDEMANTIC_NEW_IDENTIFIER_API
+#if SIDEMANTIC_BOUND_TABLE_FUNCTION
     auto extra = make_uniq<LogicalGet>(input.binder.GenerateTableIndex(), BoundTableFunction(function), std::move(rows),
                                       get.returned_types, get.names);
 #else
@@ -314,6 +321,41 @@ bool SidemanticPhysicalRelationExists(ClientContext &context, const string &mode
     EntryLookupInfo lookup(CatalogType::TABLE_ENTRY, model);
     return Catalog::GetEntry(context, catalog.GetName(), SEMANTIC_SCHEMA, lookup, OnEntryNotFound::RETURN_NULL) != nullptr;
 #endif
+}
+
+bool SidemanticFindPhysicalRelation(ClientContext &context, const string &name, SidemanticPhysicalRelation &relation) {
+    // Resolve exactly as an unqualified table reference would: temporary
+    // objects and the search path, including views.
+#if SIDEMANTIC_NEW_IDENTIFIER_API
+    EntryLookupInfo lookup(CatalogType::TABLE_ENTRY, QualifiedName(Identifier(name)));
+    auto entry = Catalog::GetEntry(context, lookup, OnEntryNotFound::RETURN_NULL);
+#else
+    EntryLookupInfo lookup(CatalogType::TABLE_ENTRY, name);
+    auto entry = Catalog::GetEntry(context, INVALID_CATALOG, INVALID_SCHEMA, lookup, OnEntryNotFound::RETURN_NULL);
+#endif
+    if (!entry) return false;
+    relation.catalog = SidemanticName(entry->ParentCatalog().GetName());
+    relation.schema = SidemanticName(entry->ParentSchema().name);
+    relation.columns.clear();
+    relation.all_columns = false;
+    if (entry->type == CatalogType::TABLE_ENTRY) {
+        for (auto &column : entry->Cast<TableCatalogEntry>().GetColumns().GetColumnNames()) {
+            relation.columns.insert(column);
+        }
+    } else if (entry->type == CatalogType::VIEW_ENTRY) {
+        auto &view = entry->Cast<ViewCatalogEntry>();
+        auto info = view.GetColumnInfo();
+        if (!info) {
+            relation.all_columns = true;
+            return true;
+        }
+        for (idx_t i = 0; i < info->names.size(); ++i) {
+            relation.columns.insert(SidemanticName(i < view.aliases.size() ? view.aliases[i] : info->names[i]));
+        }
+    } else {
+        relation.all_columns = true;
+    }
+    return true;
 }
 
 void RegisterSidemanticDiscovery(DatabaseInstance &db) {

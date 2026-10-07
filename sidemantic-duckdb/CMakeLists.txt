@@ -21,14 +21,15 @@ function(sidemantic_detect_apis)
             parser/expression/columnref_expression.hpp parser/tableref/basetableref.hpp
             parser/parser_options.hpp parser/expression/constant_expression.hpp
             parser/statement/insert_statement.hpp
-            parser/grammar_extension.hpp parser/peg/compiled_grammar.hpp)
+            parser/grammar_extension.hpp parser/peg/compiled_grammar.hpp
+            planner/operator/logical_get.hpp)
         if(EXISTS "${CMAKE_SOURCE_DIR}/src/include/duckdb/${header}")
             file(SHA256 "${CMAKE_SOURCE_DIR}/src/include/duckdb/${header}" header_hash)
             string(APPEND host_api ";${header_hash}")
         endif()
     endforeach()
     if(NOT SIDEMANTIC_HOST_API STREQUAL host_api)
-        foreach(api TOKEN_PARSE_FN NEW_IDENTIFIER_API NEW_EXPRESSION_API QUALIFIED_TABLE_API BUILTIN_PARSER_OPTIONS LITERAL_API GRAMMAR_EXTENSION INSERT_QUERY_NODE)
+        foreach(api TOKEN_PARSE_FN NEW_IDENTIFIER_API NEW_EXPRESSION_API QUALIFIED_TABLE_API BUILTIN_PARSER_OPTIONS LITERAL_API GRAMMAR_EXTENSION INSERT_QUERY_NODE BOUND_TABLE_FUNCTION GRAMMAR_EXTENSION_LIST)
             unset(SIDEMANTIC_${api} CACHE)
         endforeach()
         set(SIDEMANTIC_HOST_API "${host_api}" CACHE INTERNAL "DuckDB headers used for compatibility probes" FORCE)
@@ -75,6 +76,17 @@ function(sidemantic_detect_apis)
             duckdb::GrammarChange::PrependChoice(\"Statement\", \"SidemanticStatement\");
         }
     " SIDEMANTIC_GRAMMAR_EXTENSION)
+    check_cxx_source_compiles("
+        #include <duckdb/planner/operator/logical_get.hpp>
+        void probe(duckdb::TableFunction &function) { (void)duckdb::BoundTableFunction(function); }
+    " SIDEMANTIC_BOUND_TABLE_FUNCTION)
+    check_cxx_source_compiles("
+        #include <duckdb/parser/grammar_extension.hpp>
+        #include <duckdb/parser/peg/compiled_grammar.hpp>
+        void probe(duckdb::GrammarExtension &extension) {
+            duckdb::CompiledGrammar::Create(duckdb::vector<duckdb::reference<duckdb::GrammarExtension>> {extension});
+        }
+    " SIDEMANTIC_GRAMMAR_EXTENSION_LIST)
     configure_file(src/include/sidemantic_compat.hpp.in sidemantic_compat.hpp)
     cmake_pop_check_state()
 endfunction()

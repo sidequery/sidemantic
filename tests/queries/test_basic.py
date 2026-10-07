@@ -1,5 +1,7 @@
 """Basic tests for Sidemantic core functionality."""
 
+from datetime import date
+
 import duckdb
 import pytest
 import sqlglot
@@ -7,7 +9,6 @@ from sqlglot import exp
 
 from sidemantic import Dimension, Metric, Model, Relationship, Segment, SemanticLayer
 from sidemantic.validation import QueryValidationError
-from tests.duckdb_compat import date_bucket
 from tests.utils import df_rows
 
 
@@ -553,7 +554,7 @@ def test_compiles_and_executes_columns_with_spaces():
     by_month = df_rows(
         layer.query(metrics=["Sales.qty"], dimensions=["Sales.Order Date"], order_by=["Sales.Order Date"])
     )
-    assert by_month == [(date_bucket(2024, 1, 1), 8), (date_bucket(2024, 2, 1), 7)]
+    assert by_month == [(date(2024, 1, 1), 8), (date(2024, 2, 1), 7)]
 
     # Group by a spaced categorical dimension, ordered by it.
     by_status = df_rows(

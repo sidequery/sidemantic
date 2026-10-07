@@ -123,6 +123,7 @@ impl QueryRewriter<'_> {
             policy_definitions: &reserved,
             rename_only: true,
             security_controls: false,
+            qualified_tables_physical: false,
             warnings: std::cell::RefCell::new(Vec::new()),
             used_preaggregation: std::cell::Cell::new(false),
         };
@@ -202,8 +203,7 @@ impl QueryRewriter<'_> {
                     matches!(source, Expression::Table(table)
                     if (table.schema.is_some() || table.catalog.is_some()
                         || !ctes.contains_key(&table.name.name.to_ascii_lowercase()))
-                        && (table.name.name.eq_ignore_ascii_case("metrics")
-                            || self.graph.get_model(&table.name.name).is_some()))
+                        && self.names_model(table))
                 })
             });
         // Scalar subqueries form independent scopes, including when hidden in

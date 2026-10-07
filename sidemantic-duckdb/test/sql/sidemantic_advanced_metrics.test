@@ -42,11 +42,11 @@ B	60	15.000
 query TTII
 SEMANTIC SELECT s.category, s.day__month, s.running, s.month_change FROM sales_metrics s ORDER BY s.category, s.day__month;
 ----
-A	2024-01-01 00:00:00	40	NULL
-A	2024-02-01 00:00:00	100	20
-A	2024-04-01 00:00:00	200	NULL
-B	2024-01-01 00:00:00	20	NULL
-B	2024-02-01 00:00:00	30	-10
+A	2024-01-01	40	NULL
+A	2024-02-01	100	20
+A	2024-04-01	200	NULL
+B	2024-01-01	20	NULL
+B	2024-02-01	30	-10
 
 statement ok
 CREATE TABLE metric_events (id INTEGER, user_id VARCHAR, event_type VARCHAR, event_date DATE, region VARCHAR, platform VARCHAR);

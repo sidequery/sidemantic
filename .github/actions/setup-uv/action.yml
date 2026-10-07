@@ -39,3 +39,10 @@ runs:
           crates/dax-pyo3/python/**/*.py
           crates/dax-pyo3/python/**/*.pyi
           crates/dax-pyo3/python/**/py.typed
+    # PyPI connections occasionally time out on hosted runners; the default
+    # three retries is not enough to ride those out.
+    - name: Retry dependency downloads
+      shell: bash
+      run: |
+        echo "UV_HTTP_RETRIES=8" >> "$GITHUB_ENV"
+        echo "UV_HTTP_TIMEOUT=60" >> "$GITHUB_ENV"

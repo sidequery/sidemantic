@@ -201,7 +201,7 @@ dimensions:
 | `name` | Yes | Unique within model. |
 | `type` | No | `categorical`, `time`, `boolean`, or `numeric`. Defaults to `categorical`. |
 | `sql` | No | SQL expression. If omitted, the dimension name is used. |
-| `granularity` | No | Default grain for time dimensions. |
+| `granularity` | No | Default grain for time dimensions. On DuckDB, PostgreSQL and Redshift, `day` and coarser grains return `DATE` values; `hour`, `minute` and `second` return timestamps. |
 | `supported_granularities` | No | Allowed grains for time dimensions. |
 | `description` | No | Human-readable description. |
 | `label` | No | Display label. |

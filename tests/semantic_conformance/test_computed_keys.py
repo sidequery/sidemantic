@@ -1,11 +1,12 @@
 """Independent executable contracts for source-bound semantic identity expressions."""
 
+from datetime import date
+
 import pytest
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 from sidemantic.rust_bridge import rewrite_semantic_input
 from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
-from tests.duckdb_compat import date_bucket
 
 
 @pytest.fixture
@@ -193,7 +194,7 @@ def test_disconnected_computed_model_does_not_block_temporal_query(layer):
         layer,
         {"metrics": ["sales.running"], "dimensions": ["sales.day"], "order_by": ["sales.day"]},
         ["day", "revenue", "running"],
-        [(date_bucket(2026, 1, 1), 3, 3), (date_bucket(2026, 1, 2), 4, 7)],
+        [(date(2026, 1, 1), 3, 3), (date(2026, 1, 2), 4, 7)],
     )
 
 

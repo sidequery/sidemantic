@@ -1,13 +1,13 @@
 """Owned filtered count populations, independent of their declaration location."""
 
 from copy import deepcopy
+from datetime import date
 
 import pytest
 
 from sidemantic import Dimension, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.semantic_handoff import graph_to_semantic_input
-from tests.duckdb_compat import date_bucket
 
 
 @pytest.fixture(params=["python", "rust"])
@@ -261,7 +261,7 @@ def test_owned_count_as_cumulative_base_preserves_public_output(counts, name, ex
     columns, rows = result(counts, metrics=["running"], dimensions=["orders.day"], order_by=["orders.day"])
     assert columns == ["day", name, "running"]
     daily = [2, 0, 1] if name != "nulls" else [0, 0, 0]
-    assert rows == [(date_bucket(2024, 1, index + 1), daily[index], expected[index]) for index in range(3)]
+    assert rows == [(date(2024, 1, index + 1), daily[index], expected[index]) for index in range(3)]
 
 
 @pytest.mark.parametrize("expression", ["COUNT(*)", "COUNT(1)", "COUNT(NULL)"])

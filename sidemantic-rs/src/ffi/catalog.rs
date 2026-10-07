@@ -1062,7 +1062,10 @@ pub extern "C" fn sidemantic_snapshot_rewrite(
         guard(|| {
             let graph = Snapshot::parse(&optional_arg(snapshot, "snapshot")?)?.into_graph()?;
             let sql = required_arg(sql, "sql")?;
+            // DuckDB callers own the database; `main.orders` names the
+            // physical table even when a model is also called `orders`.
             QueryRewriter::new(&graph)
+                .with_qualified_tables_physical()
                 .rewrite_with_dialect(&sql, polyglot_sql::DialectType::DuckDB)
                 .map_err(|e| e.to_string())
         })

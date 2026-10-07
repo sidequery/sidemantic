@@ -1,9 +1,10 @@
 """Window binding respects exact graph identities beside model-local names."""
 
+from datetime import date
+
 import pytest
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
-from tests.duckdb_compat import date_bucket
 
 
 @pytest.mark.parametrize("engine", ["python", "rust"])
@@ -31,6 +32,6 @@ def test_dotted_graph_window_shadows_local_metric(engine, expression):
         )
         result = layer.query(metrics=["events.running"], dimensions=["events.day"], order_by=["events.day"])
         assert [column[0] for column in result.description] == ["day", "total", "events.running"]
-        assert result.fetchall() == [(date_bucket(2024, 1, 1), 10, 10), (date_bucket(2024, 1, 2), 20, 30)]
+        assert result.fetchall() == [(date(2024, 1, 1), 10, 10), (date(2024, 1, 2), 20, 30)]
     finally:
         layer.adapter.close()

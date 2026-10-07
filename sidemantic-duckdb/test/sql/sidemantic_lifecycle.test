@@ -64,7 +64,7 @@ EXECUTE remove_metric;
 statement error
 SEMANTIC SELECT orders."Gross amount" FROM orders;
 ----
-not found
+has no field 'Gross amount'
 
 statement ok
 ROLLBACK;

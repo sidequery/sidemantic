@@ -79,18 +79,22 @@ METRIC avg_order_value AS AVG(amount);
 -- 4. Define dimensions (grouping attributes)
 DIMENSION (name status, type categorical);
 
--- 5. Query using semantic layer
-SELECT orders_model.status, orders_model.revenue FROM orders_model;
--- Automatically rewrites to:
--- SELECT status, SUM(amount) FROM orders GROUP BY 1
+-- 5. Query using semantic layer: revenue is summed per status
+SELECT orders_model.status, orders_model.revenue FROM orders_model ORDER BY 1;
 
--- Result:
--- ┌───────────┬────────────────────┐
--- │  status   │ sum(orders.amount) │
--- ├───────────┼────────────────────┤
--- │ pending   │              75.00 │
--- │ completed │             250.00 │
--- └───────────┴────────────────────┘
+-- ┌───────────┬───────────────┐
+-- │  status   │    revenue    │
+-- │  varchar  │ decimal(38,2) │
+-- ├───────────┼───────────────┤
+-- │ completed │        250.00 │
+-- │ pending   │         75.00 │
+-- └───────────┴───────────────┘
+
+-- The same query through the model's relation in the semantic schema
+SELECT status, revenue FROM semantic.orders_model;
+
+-- Inspect the generated SQL
+SELECT sidemantic_rewrite_sql('SELECT orders_model.status, orders_model.revenue FROM orders_model');
 ```
 
 ## Discover and manage definitions
@@ -112,9 +116,12 @@ FROM orders_model WHERE orders_model.status = 'completed';
 ```
 
 Discovery returns the definition kind, model and qualified name, label,
-description, semantic and declared data types, SQL, aggregation, relationship
-target and cardinality, granularity, visibility, and full JSON definition.
-Absent metadata is SQL `NULL`. `DESCRIBE MODEL` includes the model and all its
+description, semantic type, data type, SQL, aggregation, relationship
+target and cardinality, granularity, visibility, and the JSON definition.
+`data_type` is the declared type or, when none is declared, the type the field
+produces in the current database. Absent metadata is SQL `NULL` and omitted from
+the JSON definition. Definition statements and file loads report what they
+created, replaced or dropped. `DESCRIBE MODEL` includes the model and all its
 fields. `SHOW DIMENSIONS FOR` checks each dimension with the query compiler;
 use `EXPLAIN SELECT` to validate a complete combination of metrics and dimensions.
 `SHOW SEMANTIC METRICS`, and the corresponding forms for other kinds, are also
@@ -131,6 +138,31 @@ If a source cannot bind, its fields remain visible with `NULL` data types and
 table or view takes precedence. Discovery observes transactions and creates no
 persistent schema or views; `SET schema = 'semantic'` requires an actual schema
 created by the user.
+
+A `semantic.<model>` relation is grouped by the model dimensions the surrounding
+query uses, so it can be joined, filtered, aggregated, described and summarized
+like a view:
+
+```sql
+SELECT s.status, s.revenue, t.target
+FROM semantic.orders_model s JOIN status_targets t USING (status);
+
+SELECT sum(revenue) FROM semantic.orders_model WHERE status = 'completed';
+
+DESCRIBE semantic.orders_model;
+```
+
+- Dimensions in `SELECT`, `GROUP BY`, `ORDER BY`, join conditions and `USING`
+  set the grain. `SELECT *` selects every dimension and metric, so it returns
+  one row per distinct combination of all dimensions.
+- `WHERE` predicates that read only one relation's dimensions filter the model
+  before grouping and do not add to the grain.
+- Aggregating a metric again is allowed when each group holds one row of the
+  relation, or when the aggregation composes: `sum` of a `sum` or `count`
+  metric, `min` of `min`, `max` of `max`. Other cases, such as `avg` of a ratio
+  over a coarser grain, are rejected because they compute a different number.
+- A relation needs at least one field: `SELECT count(*) FROM semantic.orders_model`
+  is rejected.
 
 Qualified definitions work independently of the connection's active model:
 
@@ -271,8 +303,17 @@ SELECT "o"."revenue" FROM "orders_model" AS "o";
 ```
 
 Routing inspects DuckDB's parsed table and field references. Comments and strings
-do not trigger rewriting; physical tables, CTEs and subqueries can shadow model
-names. Once a semantic field is detected, compiler errors are reported directly.
+do not trigger rewriting; CTEs, subqueries and schema-qualified tables such as
+`main.orders` are never models.
+
+A model may share its name with a table or view, as in `name: orders` with
+`table: orders`. A query keeps its ordinary SQL meaning while every reference
+binds to the table, including `SELECT *` and raw columns. It becomes semantic
+when it references a field only the model provides, such as a metric or a time
+grain like `created_at__month`. Mixing table-only columns and model-only fields
+through one name is an error; query the model as `semantic.orders` or the table
+as `main.orders`. Once a semantic field is detected, compiler errors are reported
+directly, and unknown fields list the closest matches.
 Use `SEMANTIC SELECT` to explicitly request semantic compilation. Unsupported
 semantic SQL still raises an error; the extension does not implement every DuckDB
 query construct in the Rust compiler.
@@ -524,11 +565,7 @@ models:
 -- Query order revenue by customer country (auto-JOIN)
 SELECT orders.revenue, customers.country FROM orders;
 
--- Automatically rewrites to:
--- SELECT SUM(orders.amount), c.country
--- FROM orders
--- LEFT JOIN customers AS c ON orders.customers_id = c.id
--- GROUP BY 2
+-- Joins customers through the relationship and groups revenue by country
 ```
 
 ### Relationship Types
@@ -622,6 +659,19 @@ commit `80e17fc252edd6d9e9b090ae00a1100daef4876a`. Run its tests with
 switching DuckDB versions. CMake probes host APIs rather than assuming C++ ABI
 compatibility across releases. Release packaging targets unsigned Linux and macOS
 builds for 1.5.6; development-version CI does not publish stable artifacts.
+
+A preview artifact for a published 2.0 alpha runtime must be built from that
+runtime's exact commit and carry its version string, because the C++ extension
+API only loads in the identical build. For example, for `v2.0.0-alpha41489`:
+
+```bash
+make deps DUCKDB_VERSION=v2.0-cyanoptera DUCKDB_NEXT_COMMIT=10de9573794001c649621013bdd93553b54e00c9
+DUCKDB_VERSION=v2.0.0-alpha41489 make
+SIDEMANTIC_NATIVE_PEG=1 make test
+```
+
+Check `pragma version` in the target runtime first: `library_version` is the
+version string and `source_id` the commit prefix.
 
 ## Architecture
 

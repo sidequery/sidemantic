@@ -1,0 +1,214 @@
+# name: test/sql/sidemantic_semantic_relations.test
+# description: Same-name tables keep their SQL meaning; semantic.<model> composes like a relation
+# group: [sidemantic]
+
+require sidemantic
+
+statement ok
+CREATE TABLE customers AS SELECT * FROM (VALUES (1, 'US'), (2, 'DE'), (3, 'US')) t(id, country);
+
+statement ok
+CREATE TABLE orders AS SELECT * FROM (VALUES
+    (1, 1, 'completed', 100, DATE '2025-01-03'),
+    (2, 1, 'completed', 150, DATE '2025-02-10'),
+    (3, 2, 'pending', 75, DATE '2025-02-11'),
+    (4, 3, 'completed', 20, DATE '2025-03-01')
+) t(order_id, customer_id, status, amount, created_at);
+
+statement ok
+SELECT * FROM sidemantic_load('
+models:
+  - name: orders
+    table: orders
+    primary_key: order_id
+    dimensions:
+      - {name: status, type: categorical}
+      - {name: created_at, type: time, granularity: day}
+    metrics:
+      - {name: revenue, agg: sum, sql: amount}
+      - {name: order_count, agg: count}
+      - {name: aov, type: ratio, numerator: revenue, denominator: order_count}
+    relationships:
+      - {name: customers, type: many_to_one, foreign_key: customer_id}
+  - name: customers
+    table: customers
+    primary_key: id
+    dimensions:
+      - {name: country, type: categorical}
+    metrics:
+      - {name: customer_count, agg: count}
+');
+
+# Queries that bind against the same-name table keep their meaning.
+query I
+SELECT order_id FROM orders WHERE status = 'completed' ORDER BY order_id;
+----
+1
+2
+4
+
+query T
+SELECT orders.status FROM orders ORDER BY 1;
+----
+completed
+completed
+completed
+pending
+
+query TI
+SELECT status, sum(amount) FROM orders GROUP BY 1 ORDER BY 1;
+----
+completed	270
+pending	75
+
+query I
+SELECT count(*) FROM orders;
+----
+4
+
+# A model-only field makes the query semantic.
+query TI
+SELECT orders.status, orders.revenue FROM orders ORDER BY 1;
+----
+completed	270
+pending	75
+
+statement error
+SELECT amount, revenue FROM orders;
+----
+names both table
+
+# SEMANTIC requests the model for fields the table also has.
+query T
+SEMANTIC SELECT orders.status FROM orders ORDER BY 1;
+----
+completed
+pending
+
+# Physical subqueries inside a semantic statement stay physical.
+query TII
+SELECT s.country, s.revenue, c.n
+FROM (SELECT customers.country, orders.revenue FROM orders) s
+JOIN (SELECT country, count(*) AS n FROM customers GROUP BY 1) c USING (country)
+ORDER BY 1;
+----
+DE	75	1
+US	270	2
+
+query TII
+SELECT s.country, s.revenue, c.n
+FROM (SELECT customers.country, orders.revenue FROM orders) s
+JOIN (SELECT country, count(*) AS n FROM main.customers GROUP BY 1) c USING (country)
+ORDER BY 1;
+----
+DE	75	1
+US	270	2
+
+# semantic.<model> joins, filters and aggregates like a relation.
+query TII
+SELECT s.country, s.customer_count, c.id
+FROM semantic.customers s JOIN customers c USING (country)
+ORDER BY c.id;
+----
+US	2	1
+DE	1	2
+US	2	3
+
+query I
+SELECT sum(revenue) FROM semantic.orders;
+----
+345
+
+query II
+SELECT count(status), sum(revenue) FROM semantic.orders;
+----
+2	345
+
+# Dimension-only predicates filter the model before grouping.
+query R
+SELECT sum(aov) FROM semantic.orders WHERE status IN ('completed', 'pending');
+----
+86.25
+
+query TR
+SELECT o.status, max(o.aov) FROM semantic.orders o GROUP BY o.status ORDER BY 1;
+----
+completed	90.0
+pending	75.0
+
+statement error
+SELECT count(status), avg(aov) FROM semantic.orders;
+----
+re-aggregates metric orders.aov
+
+statement error
+SELECT count(*) FROM semantic.orders;
+----
+has no row grain
+
+query TI
+SELECT created_at__month, revenue FROM semantic.orders WHERE status = 'completed' ORDER BY 1;
+----
+2025-01-01	100
+2025-02-01	150
+2025-03-01	20
+
+# Day and coarser buckets are dates.
+query T
+SELECT typeof(created_at__month) FROM semantic.orders LIMIT 1;
+----
+DATE
+
+statement ok
+PREPARE status_revenue AS SELECT revenue FROM semantic.orders WHERE status = $1;
+
+query I
+EXECUTE status_revenue('pending');
+----
+75
+
+statement ok
+DESCRIBE semantic.orders;
+
+statement ok
+SUMMARIZE semantic.orders;
+
+# Unknown names explain what exists.
+statement error
+SELECT o.revnue FROM semantic.orders o;
+----
+Did you mean revenue
+
+statement error
+SELECT created_at__fortnight, revenue FROM semantic.orders;
+----
+unknown time grain 'fortnight'
+
+statement error
+SELECT revenue FROM semantic.ordrs;
+----
+Did you mean orders
+
+statement ok
+MODEL order_facts FROM orders (
+  primary key (order_id)
+  status
+  sum(amount) AS revenue
+);
+
+statement error
+SELECT order_facts.revenu FROM order_facts;
+----
+Did you mean revenue
+
+statement error
+SELECT revenu FROM order_facts;
+----
+Did you mean revenue
+
+# Compact model blocks take one declaration per line instead of silently
+# creating a model without fields.
+statement error
+MODEL one_line FROM orders (primary key (order_id) status sum(amount) AS revenue);
+----
+one declaration per line

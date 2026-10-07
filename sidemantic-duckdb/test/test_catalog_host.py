@@ -189,12 +189,12 @@ def test_export_import_roundtrip_and_readonly(tmp_path):
 def test_prefixless_physical_collision_and_prepared_catalog_changes():
     results = execute(
         """
-        select status, revenue from orders order by status;
+        select status, revenue from orders order by id;
         select semantic_total from orders where status = 'paid';
-        prepare by_status as select revenue from orders where status = $1;
+        prepare by_status as select semantic_total from orders where status = $1;
         execute by_status('paid');
         begin;
-        create or replace metric orders.revenue as count(*);
+        create or replace metric orders.semantic_total as count(*);
         execute by_status('paid');
         rollback;
         execute by_status('paid');
@@ -210,9 +210,14 @@ def test_prefixless_physical_collision_and_prepared_catalog_changes():
         );
         """,
     )
-    assert [(row["status"], int(row["revenue"])) for row in results[0]] == [("paid", 40), ("pending", 5)]
+    # Columns of the same-name table keep their native meaning.
+    assert [(row["status"], int(row["revenue"])) for row in results[0]] == [
+        ("paid", 999),
+        ("paid", 999),
+        ("pending", 999),
+    ]
     assert int(results[1][0]["semantic_total"]) == 40
-    totals = [int(rows[0]["revenue"]) for rows in results[2:] if rows and "revenue" in rows[0]]
+    totals = [int(rows[0]["semantic_total"]) for rows in results[2:] if rows and "semantic_total" in rows[0]]
     assert totals == [40, 2, 40]
 
 

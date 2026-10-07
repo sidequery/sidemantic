@@ -40,10 +40,10 @@ static void LoadFunction(ClientContext &context, TableFunctionInput &input, Data
     auto &state = input.global_state->Cast<LoadState>();
     if (state.done) return;
     auto &data = input.bind_data->Cast<LoadData>();
-    ExecuteSidemanticMutation(context, data.operation, data.content, false);
+    auto summary = ExecuteSidemanticMutation(context, data.operation, data.content, false);
     state.done = true;
     output.SetCardinality(1);
-    output.SetValue(0, 0, Value("Models loaded successfully"));
+    output.SetValue(0, 0, Value(summary));
 }
 
 struct ModelsState : public GlobalTableFunctionState {
@@ -66,7 +66,7 @@ static unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, T
     if (models.error) {
         string error(models.error);
         sidemantic_free_model_list(models);
-        throw InvalidInputException("Sidemantic: %s", error);
+        throw InvalidInputException("Sidemantic: %s", SidemanticErrorText(error));
     }
     for (idx_t i = 0; i < models.count; ++i) state->names.emplace_back(models.models[i].name);
     sidemantic_free_model_list(models);
@@ -90,7 +90,7 @@ static void RewriteFunction(DataChunk &args, ExpressionState &state, Vector &res
         if (rewritten.error) {
             string error(rewritten.error);
             sidemantic_free_result(rewritten);
-            throw InvalidInputException("Sidemantic: %s", error);
+            throw InvalidInputException("Sidemantic: %s", SidemanticErrorText(error));
         }
         if (!rewritten.sql) {
             sidemantic_free_result(rewritten);

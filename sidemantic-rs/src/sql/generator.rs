@@ -4188,7 +4188,27 @@ impl<'a> SqlGenerator<'a> {
                 _ => format!("DATE_TRUNC('{grain}', {column_expr})"),
             })
         } else {
-            Ok(format!("DATE_TRUNC('{granularity}', {column_expr})"))
+            Ok(self.grain_typed(
+                granularity,
+                format!("DATE_TRUNC('{granularity}', {column_expr})"),
+            ))
+        }
+    }
+
+    /// Type an already truncated time bucket. DATE_TRUNC returns a timestamp in
+    /// these dialects even for DATE input; day and coarser buckets carry no time
+    /// of day, so they are DATE values for every source type.
+    fn grain_typed(&self, granularity: &str, truncated: String) -> String {
+        if matches!(
+            self.dialect,
+            DialectType::DuckDB | DialectType::PostgreSQL | DialectType::Redshift
+        ) && matches!(
+            granularity.to_ascii_lowercase().as_str(),
+            "day" | "week" | "month" | "quarter" | "year"
+        ) {
+            format!("CAST({truncated} AS DATE)")
+        } else {
+            truncated
         }
     }
 
@@ -5364,11 +5384,12 @@ impl<'a> SqlGenerator<'a> {
                     let column =
                         self.quote_identifier(&format!("{}_{stored_grain}", dimension.name));
                     if grain == stored_grain {
-                        column
+                        self.grain_typed(grain, column)
                     } else {
-                        self.emit_expression(&parse_semantic_expression(&format!(
-                            "DATE_TRUNC('{grain}', {column})"
-                        ))?)?
+                        let truncated = self.emit_expression(&parse_semantic_expression(
+                            &format!("DATE_TRUNC('{grain}', {column})"),
+                        )?)?;
+                        self.grain_typed(grain, truncated)
                     }
                 }
             } else {

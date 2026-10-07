@@ -716,7 +716,7 @@ mod tests {
         metric.window = Some("2 months".into());
         assert_eq!(generator.cumulative_window_sql(&metric, &dimensions, "base.day__month").unwrap(), "PARTITION BY base.category ORDER BY base.day__month RANGE BETWEEN INTERVAL '2 month' PRECEDING AND CURRENT ROW");
         metric.grain_to_date = Some(TimeGrain::Year);
-        assert_eq!(generator.cumulative_window_sql(&metric, &dimensions, "base.day__month").unwrap(), "PARTITION BY base.category, DATE_TRUNC('year', base.day__month) ORDER BY base.day__month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW");
+        assert_eq!(generator.cumulative_window_sql(&metric, &dimensions, "base.day__month").unwrap(), "PARTITION BY base.category, CAST(DATE_TRUNC('year', base.day__month) AS DATE) ORDER BY base.day__month ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW");
     }
 
     #[test]

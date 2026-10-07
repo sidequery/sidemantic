@@ -18,7 +18,7 @@ from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.rust_bridge import rewrite_semantic_input
 from sidemantic.semantic_handoff import RustBackendUnavailableError, UnsupportedSemanticFeaturesError
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
-from sidemantic.sql.generator import SQLGenerator
+from sidemantic.sql.generator import DATE_GRANULARITIES, SQLGenerator
 from sidemantic.sql.parsing import parse_fragment
 from sidemantic.sql.planner import CandidatePlan, RewriteExplanation, SemanticQueryPlan
 
@@ -3163,6 +3163,7 @@ class QueryRewriter:
             user_attributes=getattr(self, "_rewrite_user_attributes", None),
             _query_ctes=self._query_ctes_in_scope(query),
         )
+        generated_sql = self._preserve_outer_trunc_types(generated_sql, query)
         # Structured queries emit dimensions first and some temporal generators
         # expose extra base measures. SQL SELECT owns its output order and fields,
         # including separate aliases for repeated semantic references.
@@ -3238,6 +3239,41 @@ class QueryRewriter:
                                     rewritten += "\n" + line
                         return rewritten
         return generated_sql
+
+    def _preserve_outer_trunc_types(self, generated_sql: str, query: exp.Select | None) -> str:
+        """Keep the SQL result type of an outer DATE_TRUNC folded into a semantic grain.
+
+        DATE_TRUNC returns a timestamp in these dialects, while semantic day and coarser
+        buckets are dates. The optimized query must return what the written SQL returns.
+        """
+        if query is None or self.dialect not in {"duckdb", "postgres", "redshift"}:
+            return generated_sql
+        names = {
+            expression.alias
+            for expression in query.expressions
+            if isinstance(expression, exp.Alias)
+            and isinstance(expression.this, exp.TimestampTrunc)
+            and self._timestamp_trunc_unit(expression.this) in DATE_GRANULARITIES
+        }
+        if not names:
+            return generated_sql
+        generated = parse_fragment(generated_sql, self.dialect)
+        if not isinstance(generated, exp.Select):
+            return generated_sql
+        projections = []
+        for expression in generated.expressions:
+            if expression.alias_or_name in names:
+                source = expression.this if isinstance(expression, exp.Alias) else expression
+                expression = exp.cast(source.copy(), "TIMESTAMP").as_(expression.alias_or_name)
+            projections.append(expression)
+        generated.set("expressions", projections)
+        rewritten = generated.sql(dialect=self.dialect)
+        # Keep routing metadata comments, as the projection restore below does.
+        for line in generated_sql.splitlines():
+            if line.startswith("-- sidemantic:") or line == "-- used_preagg=true":
+                if line not in rewritten:
+                    rewritten += "\n" + line
+        return rewritten
 
     def _dedupe(self, values: list[str]) -> list[str]:
         deduped = []

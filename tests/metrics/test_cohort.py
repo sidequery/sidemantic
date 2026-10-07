@@ -1,5 +1,7 @@
 """Tests for cohort metric type (two-level aggregation with HAVING)."""
 
+from datetime import date
+
 import duckdb
 import pytest
 
@@ -8,7 +10,6 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator import SQLGenerator
-from tests.duckdb_compat import date_bucket
 from tests.utils import df_rows
 
 
@@ -168,8 +169,8 @@ def test_cohort_with_time_grain_uses_grained_output_alias():
 
     assert [column[0] for column in result.description] == ["ts__month", "multi_platform_users"]
     assert [(row[0], row[1]) for row in df_rows(result)] == [
-        (date_bucket(2024, 1, 1), 1),
-        (date_bucket(2024, 2, 1), 1),
+        (date(2024, 1, 1), 1),
+        (date(2024, 2, 1), 1),
     ]
 
 

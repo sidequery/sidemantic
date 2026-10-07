@@ -27,6 +27,7 @@ pub struct QueryRewriter<'a> {
     policy_definitions: &'a str,
     rename_only: bool,
     security_controls: bool,
+    qualified_tables_physical: bool,
     warnings: std::cell::RefCell<Vec<String>>,
     used_preaggregation: std::cell::Cell<bool>,
 }
@@ -39,6 +40,7 @@ impl<'a> QueryRewriter<'a> {
             policy_definitions: "",
             rename_only: false,
             security_controls: false,
+            qualified_tables_physical: false,
             warnings: std::cell::RefCell::new(Vec::new()),
             used_preaggregation: std::cell::Cell::new(false),
         }
@@ -60,6 +62,30 @@ impl<'a> QueryRewriter<'a> {
         self.policy_definitions = policy_definitions;
         self.security_controls = security_controls;
         self
+    }
+
+    /// Treat catalog- or schema-qualified relations as physical tables unless
+    /// the schema is `semantic`. Only for hosts that grant direct table access
+    /// and enforce no request policies; by default qualifiers never bypass
+    /// semantic compilation.
+    pub(crate) fn with_qualified_tables_physical(mut self) -> Self {
+        self.qualified_tables_physical = true;
+        self
+    }
+
+    fn names_model(&self, table: &TableRef) -> bool {
+        let qualified = table.schema.is_some() || table.catalog.is_some();
+        if qualified
+            && self.qualified_tables_physical
+            && !table
+                .schema
+                .as_ref()
+                .is_some_and(|schema| schema.name.eq_ignore_ascii_case("semantic"))
+        {
+            return false;
+        }
+        table.name.name.eq_ignore_ascii_case("metrics")
+            || self.graph.get_model(&table.name.name).is_some()
     }
 
     /// Rewrite a SQL query using semantic layer definitions
@@ -487,6 +513,37 @@ mod tests {
         assert!(
             rewritten.contains("ORDER BY total DESC"),
             "expected projected alias ORDER BY, got: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn qualified_tables_stay_physical_only_when_enabled() {
+        let graph = create_test_graph();
+        let physical = QueryRewriter::new(&graph).with_qualified_tables_physical();
+
+        let rewritten = physical
+            .rewrite("SELECT status, count(*) FROM main.orders GROUP BY 1")
+            .unwrap();
+        assert!(
+            rewritten.contains("main.orders") && !rewritten.contains("public.orders"),
+            "expected the physical table to remain, got: {rewritten}"
+        );
+
+        let rewritten = physical
+            .rewrite("SELECT orders.revenue FROM semantic.orders")
+            .unwrap();
+        assert!(
+            rewritten.contains("SUM("),
+            "expected semantic.orders to compile, got: {rewritten}"
+        );
+
+        // Policy hosts rely on qualifiers never bypassing semantic compilation.
+        let rewritten = QueryRewriter::new(&graph)
+            .rewrite("SELECT orders.revenue FROM main.orders")
+            .unwrap();
+        assert!(
+            rewritten.contains("SUM("),
+            "expected the default to compile the model, got: {rewritten}"
         );
     }
 

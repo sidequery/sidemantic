@@ -40,19 +40,28 @@ MODEL prefixless_orders FROM prefixless_orders (
 statement ok
 SELECT 1; SHOW MODELS;
 
-# The native binder can resolve both columns. Semantic dimensions still group,
-# and a same-name physical metric column must not change the query's meaning.
+# Columns the same-name table provides keep their native meaning, even when
+# the model has fields with the same names.
 query TI
-SELECT status, revenue FROM prefixless_orders ORDER BY status;
+SELECT status, revenue FROM prefixless_orders ORDER BY id;
 ----
-paid	40
-pending	5
+paid	999
+paid	999
+pending	999
 
 query T
 SELECT status FROM prefixless_orders ORDER BY status;
 ----
 paid
+paid
 pending
+
+# A model-only field makes the query semantic; shared names then mean fields.
+query TII
+SELECT status, revenue, semantic_total FROM prefixless_orders ORDER BY status;
+----
+paid	40	40
+pending	5	5
 
 # Binding the missing physical metric fails after binding WHERE. Retry from the
 # pristine statement must preserve the filter instead of aggregating all rows.
@@ -79,35 +88,40 @@ EXECUTE prefixless_parameter('pending');
 ----
 5
 
+# Prepared semantic queries rebind to current definitions; prepared native
+# queries stay native.
 statement ok
-PREPARE prefixless_native_success AS SELECT revenue FROM prefixless_orders WHERE status = $1;
+PREPARE prefixless_semantic AS SELECT semantic_total FROM prefixless_orders WHERE status = $1;
 
-query I
-EXECUTE prefixless_native_success('paid');
-----
-40
+statement ok
+PREPARE prefixless_native AS SELECT sum(revenue) FROM prefixless_orders WHERE status = $1;
 
 statement ok
 BEGIN;
 
 statement ok
-CREATE OR REPLACE METRIC prefixless_orders.revenue AS COUNT(*);
+CREATE OR REPLACE METRIC prefixless_orders.semantic_total AS COUNT(*);
 
 query I
-EXECUTE prefixless_native_success('paid');
+EXECUTE prefixless_semantic('paid');
 ----
 2
+
+query I
+EXECUTE prefixless_native('paid');
+----
+1998
 
 statement ok
 ROLLBACK;
 
 query I
-EXECUTE prefixless_native_success('paid');
+EXECUTE prefixless_semantic('paid');
 ----
 40
 
 statement ok
-CREATE TABLE prefixless_totals AS SELECT status, revenue FROM prefixless_orders;
+CREATE TABLE prefixless_totals AS SELECT status, semantic_total FROM prefixless_orders;
 
 query TI
 SELECT * FROM prefixless_totals ORDER BY status;
@@ -128,7 +142,7 @@ statement ok
 CREATE TABLE prefixless_inserted (status VARCHAR, revenue BIGINT);
 
 statement ok
-INSERT INTO prefixless_inserted SELECT status, revenue FROM prefixless_orders WHERE status = 'paid';
+INSERT INTO prefixless_inserted SELECT status, semantic_total FROM prefixless_orders WHERE status = 'paid';
 
 query TI
 SELECT * FROM prefixless_inserted;
@@ -136,7 +150,7 @@ SELECT * FROM prefixless_inserted;
 paid	40
 
 statement ok
-EXPLAIN SELECT status, revenue FROM prefixless_orders;
+EXPLAIN SELECT status, semantic_total FROM prefixless_orders;
 
 # Explicit physical qualification and local scopes keep native meanings.
 query I
@@ -162,7 +176,7 @@ SELECT missing FROM prefixless_orders;
 missing
 
 statement error
-SELECT revenue, missing FROM prefixless_orders;
+SELECT semantic_total, missing FROM prefixless_orders;
 ----
 Sidemantic:
 
@@ -192,6 +206,6 @@ statement ok
 ROLLBACK;
 
 query I
-SELECT revenue FROM prefixless_orders;
+SELECT semantic_total FROM prefixless_orders;
 ----
 45

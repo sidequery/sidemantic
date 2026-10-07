@@ -1,12 +1,12 @@
 import json
 from collections.abc import Iterator
+from datetime import date
 from pathlib import Path
 
 import pytest
 from playwright.sync_api import Browser, Page, expect, sync_playwright
 
 from sidemantic import DashboardDocument, Dimension, Metric, Model, SemanticLayer
-from tests.duckdb_compat import date_bucket
 
 
 def _build_layer() -> SemanticLayer:
@@ -279,8 +279,8 @@ def test_crossfilter_live_endpoint_filters_update_each_renderer_in_browser(
         {
             "type": "xRange",
             "field": "created_at__month",
-            "min": date_bucket(2024, 1, 1).isoformat(),
-            "max": date_bucket(2024, 2, 1).isoformat(),
+            "min": date(2024, 1, 1).isoformat(),
+            "max": date(2024, 2, 1).isoformat(),
         }
     ]
     assert requests[-1]["interaction_preaggregations"] is False

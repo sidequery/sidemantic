@@ -1512,7 +1512,7 @@ def test_aggregate_boundary_time_grain_rollup_day_to_month(semantic_layer):
     }
     assert "aggregate_boundary_rollup" in explanation.applied_rules
     assert "time_grain_rollup" in explanation.applied_rules
-    assert "DATE_TRUNC('MONTH', order_date) AS order_date__month" in explanation.rewritten_sql
+    assert "CAST(DATE_TRUNC('MONTH', order_date) AS DATE) AS order_date__month" in explanation.rewritten_sql
 
 
 def test_aggregate_boundary_time_grain_rollup_uses_daily_preaggregation(semantic_layer):
@@ -2466,7 +2466,7 @@ def test_join_key_preaggregation_reads_ungrained_local_time_dimension_from_grain
 
     assert explanation.chosen_plan == "join_key_preaggregation"
     assert "orders_preagg_by_customer_day" in explanation.rewritten_sql
-    assert "orders_rollup.order_date_day AS order_date" in explanation.rewritten_sql
+    assert "CAST(orders_rollup.order_date_day AS DATE) AS order_date" in explanation.rewritten_sql
     assert "orders_rollup.order_date AS order_date" not in explanation.rewritten_sql
 
 

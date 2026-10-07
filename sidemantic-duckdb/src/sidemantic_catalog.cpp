@@ -14,6 +14,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include <algorithm>
+#include <map>
 
 namespace duckdb {
 
@@ -65,6 +66,11 @@ static shared_ptr<SidemanticCatalogSession> Session(ClientContext &context) {
     return context.registered_state->GetOrCreate<SidemanticCatalogSession>(SESSION_STATE);
 }
 
+string SidemanticErrorText(string error) {
+    if (StringUtil::StartsWith(error, "Error: ")) error = error.substr(strlen("Error: "));
+    return StringUtil::Replace(error, "Validation error: ", "");
+}
+
 struct SnapshotResultOwner {
     explicit SnapshotResultOwner(SidemanticSnapshotResult result) : result(result) {
     }
@@ -75,7 +81,7 @@ struct SnapshotResultOwner {
 
     SidemanticCatalogSnapshot Get() const {
         if (result.error) {
-            throw InvalidInputException("Sidemantic: %s", result.error);
+            throw InvalidInputException("Sidemantic: %s", SidemanticErrorText(result.error));
         }
         if (!result.snapshot) {
             throw InternalException("Sidemantic returned no catalog snapshot");
@@ -234,8 +240,66 @@ void RegisterSidemanticCatalogWrite(ClientContext &context, StatementProperties 
     properties.always_require_rebind = true;
 }
 
-void ExecuteSidemanticMutation(ClientContext &context, const string &operation,
-                              const string &content, bool replace) {
+// Definitions by "kind qualified_name", with their full JSON.
+std::map<string, string> CatalogDefinitions(const string &payload) {
+    std::map<string, string> result;
+    if (payload.empty()) return result;
+    auto entries = sidemantic_snapshot_catalog(payload.c_str(), "", "", nullptr);
+    for (idx_t i = 0; !entries.error && i < entries.count; ++i) {
+        auto &entry = entries.entries[i];
+        result[string(entry.kind) + " " + entry.qualified_name] = entry.definition ? entry.definition : "";
+    }
+    sidemantic_free_catalog_entries(entries);
+    return result;
+}
+
+// Summarize a mutation, e.g. "Created model orders; Replaced metric orders.revenue".
+// Fields of a created or dropped model are implied by the model itself.
+string DescribeCatalogChange(const string &before_payload, const string &after_payload) {
+    auto before = CatalogDefinitions(before_payload);
+    auto after = CatalogDefinitions(after_payload);
+    vector<string> created, replaced, dropped;
+    case_insensitive_set_t created_models, dropped_models, changed_models;
+    auto model_of = [](const string &key) {
+        auto name = key.substr(key.find(' ') + 1);
+        auto dot = name.find('.');
+        return dot == string::npos ? string() : name.substr(0, dot);
+    };
+    for (auto &entry : after) {
+        if (StringUtil::StartsWith(entry.first, "model ") && !before.count(entry.first)) created_models.insert(entry.first.substr(6));
+    }
+    for (auto &entry : before) {
+        if (StringUtil::StartsWith(entry.first, "model ") && !after.count(entry.first)) dropped_models.insert(entry.first.substr(6));
+    }
+    for (auto &entry : after) {
+        auto previous = before.find(entry.first);
+        if (previous != before.end() && previous->second == entry.second) continue;
+        auto model = model_of(entry.first);
+        if (created_models.count(model)) continue;
+        if (!model.empty()) changed_models.insert(model);
+        (previous == before.end() ? created : replaced).push_back(entry.first);
+    }
+    for (auto &entry : before) {
+        if (after.count(entry.first)) continue;
+        auto model = model_of(entry.first);
+        if (dropped_models.count(model)) continue;
+        if (!model.empty()) changed_models.insert(model);
+        dropped.push_back(entry.first);
+    }
+    // A model's definition embeds its fields; report the fields instead.
+    replaced.erase(std::remove_if(replaced.begin(), replaced.end(), [&](const string &key) {
+        return StringUtil::StartsWith(key, "model ") && changed_models.count(key.substr(6));
+    }), replaced.end());
+    vector<string> parts;
+    for (auto &group : {std::make_pair("Created", &created), std::make_pair("Replaced", &replaced),
+                        std::make_pair("Dropped", &dropped)}) {
+        if (!group.second->empty()) parts.push_back(string(group.first) + " " + StringUtil::Join(*group.second, ", "));
+    }
+    return parts.empty() ? "No semantic definitions changed" : StringUtil::Join(parts, "; ");
+}
+
+string ExecuteSidemanticMutation(ClientContext &context, const string &operation,
+                                 const string &content, bool replace) {
     if (content.find('\0') != string::npos) {
         throw InvalidInputException("Sidemantic definition contains a NUL byte");
     }
@@ -266,14 +330,16 @@ void ExecuteSidemanticMutation(ClientContext &context, const string &operation,
         catalog.CreateFunction(context, info);
     }
     // Publish the session preference only after the catalog write succeeds.
+    auto active_model = candidate.active_model;
     Session(context)->SetActive(catalog.GetOid(), std::move(candidate.active_model));
+    if (operation == "use") return "Using model " + active_model;
+    return DescribeCatalogChange(snapshot.payload, candidate.payload);
 }
 
 struct MutationBindData : public TableFunctionData {
     string operation;
     string content;
     bool replace;
-    string result_message;
 };
 
 struct MutationGlobalState : public GlobalTableFunctionState {
@@ -287,7 +353,6 @@ static unique_ptr<FunctionData> BindMutation(ClientContext &context, TableFuncti
     data->operation = input.inputs[0].GetValue<string>();
     data->content = input.inputs[1].GetValue<string>();
     data->replace = input.inputs[2].GetValue<bool>();
-    data->result_message = input.inputs[3].GetValue<string>();
     return_types.emplace_back(LogicalType::VARCHAR);
     names.emplace_back("result");
     if (input.binder) {
@@ -307,20 +372,19 @@ static void RunMutation(ClientContext &context, TableFunctionInput &input, DataC
         return;
     }
     auto &data = input.bind_data->Cast<MutationBindData>();
-    ExecuteSidemanticMutation(context, data.operation, data.content, data.replace);
+    auto summary = ExecuteSidemanticMutation(context, data.operation, data.content, data.replace);
     state.done = true;
     output.SetCardinality(1);
-    output.SetValue(0, 0, Value(data.result_message));
+    output.SetValue(0, 0, Value(summary));
 }
 
 ParserExtensionPlanResult PlanSidemanticMutation(ClientContext &context, const string &operation,
-                                                const string &content, bool replace,
-                                                const string &result_message) {
+                                                const string &content, bool replace) {
     ParserExtensionPlanResult result;
     result.function = TableFunction("sidemantic_definition",
-                                   {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BOOLEAN, LogicalType::VARCHAR},
+                                   {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BOOLEAN},
                                    RunMutation, BindMutation, InitMutation);
-    result.parameters = {Value(operation), Value(content), Value::BOOLEAN(replace), Value(result_message)};
+    result.parameters = {Value(operation), Value(content), Value::BOOLEAN(replace)};
     result.return_type = StatementReturnType::QUERY_RESULT;
     if (operation != "use") {
         StatementProperties properties;

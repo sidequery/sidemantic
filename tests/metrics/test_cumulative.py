@@ -4,11 +4,12 @@ Cumulative metrics use window functions for running totals and rolling windows.
 Examples: running_total_revenue, 7_day_rolling_average
 """
 
+from datetime import date
+
 import duckdb
 import pytest
 
 from sidemantic import Dimension, Metric, Model
-from tests.duckdb_compat import date_bucket
 
 
 @pytest.mark.parametrize(
@@ -64,7 +65,7 @@ def test_cumulative_partitions_groups_and_nulls(layer, options, expected, with_c
     records = [dict(zip(columns, row)) for row in result.fetchall()]
     by_group_day = {(row["category"], row["day"]): row for row in records}
     assert len(by_group_day) == 9
-    dates = [date_bucket(2024, 1, 28), date_bucket(2024, 1, 31), date_bucket(2024, 2, 1)]
+    dates = [date(2024, 1, 28), date(2024, 1, 31), date(2024, 2, 1)]
     for category, factor in groups:
         for day, amount in zip(dates, expected):
             assert by_group_day[category, day]["cumulative"] == factor * amount

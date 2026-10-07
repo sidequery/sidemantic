@@ -4104,7 +4104,9 @@ __VENDOR_SCRIPTS__
   function comparableValue(value) {
     if (value instanceof Date) return value.getTime();
     if (typeof value === 'string') {
-      const parsed = Date.parse(value);
+      // Treat date-only bounds like naive timestamp buckets, both in local time.
+      const dateValue = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value) ? `${value}T00:00:00` : value;
+      const parsed = Date.parse(dateValue);
       if (Number.isFinite(parsed)) return parsed;
     }
     const number = Number(value);

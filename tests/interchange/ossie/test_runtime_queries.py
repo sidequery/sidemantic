@@ -63,7 +63,7 @@ def commerce(*, source_key="customer_id", target_key="id", key_kind="primary_key
     parsed = parse_ossie_document(json.dumps(document).encode(), options=OssieParseOptions(target_dialect="duckdb"))
     lowered = lower_ossie_document(parsed)
     assert lowered.valid, lowered.diagnostics
-    layer = SemanticLayer.from_catalog(lowered.catalog, engine="python", fallback=False, auto_register=False)
+    layer = SemanticLayer.from_catalog(lowered.catalog, fallback=False, auto_register=False)
     layer.adapter.conn.execute("create table orders(id int, customer_id int, amount int)")
     layer.adapter.conn.execute("insert into orders values (1,1,10),(2,1,20),(3,2,30)")
     layer.adapter.conn.execute("create table customers(id int, name varchar, budget int)")
@@ -160,7 +160,7 @@ def test_qualified_fields_bind_to_the_dataset_source(source):
     parsed = parse_ossie_document(json.dumps(document).encode(), options=OssieParseOptions(target_dialect="duckdb"))
     lowered = lower_ossie_document(parsed)
     assert lowered.valid, lowered.diagnostics
-    layer = SemanticLayer.from_catalog(lowered.catalog, engine="python", fallback=False, auto_register=False)
+    layer = SemanticLayer.from_catalog(lowered.catalog, fallback=False, auto_register=False)
     layer.adapter.conn.execute("create table raw_orders(id int, amount int)")
     layer.adapter.conn.execute("insert into raw_orders values (1, 10), (2, 20)")
 

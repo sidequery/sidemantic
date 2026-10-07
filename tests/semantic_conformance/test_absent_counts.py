@@ -114,10 +114,28 @@ def test_source_populations_preserve_orphans_with_zero_customer_count(layer):
         )
     )
     assert cursor.fetchall() == [
+        (None, 1, 1, 0, 1, -1, 0),
         ("empty", 0, 0, 1, 1, 0, -2),
         ("matched", 2, 1, 1, 3, 2, 0.5),
-        (None, 1, 1, 0, 1, -1, 0),
     ]
+
+
+def test_local_calculations_use_absent_source_defaults(layer):
+    layer.graph.models["orders"].metrics.extend(
+        [
+            Metric(name="shifted", type="derived", sql="rows + 1"),
+            Metric(name="nested", type="derived", sql="shifted * 2"),
+            Metric(name="fraction", type="ratio", numerator="rows", denominator="shifted"),
+            Metric(name="nullable", type="derived", sql="amount + rows"),
+        ]
+    )
+    result = layer.query(
+        metrics=["orders.shifted", "orders.nested", "orders.fraction", "orders.nullable", "customers.customers"],
+        dimensions=["customers.region"],
+        filters=["customers.region IS NOT NULL"],
+        order_by=["customers.region"],
+    )
+    assert result.fetchall() == [("empty", 1, 2, 0, None, 1), ("matched", 3, 6, pytest.approx(2 / 3), 32, 1)]
 
 
 def test_policy_does_not_restore_unauthorized_groups(layer):
@@ -154,7 +172,7 @@ def test_three_source_groups_merge_when_the_first_source_has_no_row(layer):
     )
     # The empty group exists in the second and third sources, but not the first.
     # Joining every later source only against the first would split it into two rows.
-    assert cursor.fetchall() == [("empty", 0, 1, 1), ("matched", 2, 1, 0), (None, 1, 0, 0)]
+    assert cursor.fetchall() == [(None, 1, 0, 0), ("empty", 0, 1, 1), ("matched", 2, 1, 0)]
 
 
 def test_absent_count_zero_is_used_by_aggregate_filter_and_order(layer):

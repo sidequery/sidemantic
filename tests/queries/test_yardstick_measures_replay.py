@@ -16,6 +16,7 @@ from sqlglot.errors import SqlglotError
 
 from sidemantic import SemanticLayer
 from sidemantic.adapters.yardstick import YardstickAdapter
+from tests.duckdb_compat import date_bucket
 from tests.utils import fetch_rows
 
 
@@ -292,6 +293,11 @@ def _cell_matches(actual: object, expected: object) -> bool:
         actual_text = _stringify_value(actual)
         if actual_text == expected:
             return True
+        if isinstance(actual, datetime) and len(expected) > 10:
+            try:
+                return actual == datetime.fromisoformat(expected)
+            except ValueError:
+                return False
         if isinstance(actual, date) and not isinstance(actual, datetime):
             return f"{actual.isoformat()} 00:00:00" == expected
         return False
@@ -319,8 +325,45 @@ def _cell_matches(actual: object, expected: object) -> bool:
     return str(actual) == str(expected)
 
 
+@pytest.mark.parametrize("expected", ["2023-01-01 12:34:56", "2023-01-01T12:34:56"])
+def test_timestamp_fixture_separator_does_not_change_value(expected):
+    assert _cell_matches(datetime(2023, 1, 1, 12, 34, 56), expected)
+    assert not _cell_matches(datetime(2023, 1, 1), expected)
+    assert not _cell_matches(datetime(2023, 1, 1), "2023-01-01")
+
+
+@pytest.mark.parametrize("expected", ["2023-01-01", "2023-01-01 00:00:00", "2023-01-01T00:00:00", "NULL"])
+def test_coarse_bucket_fixture_accepts_date_and_timestamp_spellings(expected):
+    query = _QueryBlock(1, "query I", "SEMANTIC SELECT date_trunc('year', sale_date)", [expected], False)
+    actual = None if expected == "NULL" else date_bucket(2023, 1, 1)
+    _assert_query_rows_match(query, [(actual,)])
+
+
+def test_coarse_bucket_fixture_does_not_discard_expected_time():
+    query = _QueryBlock(1, "query I", "SEMANTIC SELECT date_trunc('year', sale_date)", ["2023-01-01 12:00:00"], False)
+    with pytest.raises(pytest.fail.Exception, match="Value mismatch"):
+        _assert_query_rows_match(query, [(date_bucket(2023, 1, 1),)])
+
+
 def _assert_query_rows_match(query: _QueryBlock, actual_rows: list[tuple[object, ...]]) -> None:
     expected_rows = [row.split("\t") for row in query.expected_rows]
+    # Vendored and live fixtures use DATE or midnight TIMESTAMP for these coarse
+    # buckets. Keep nonmidnight values and raw DATE/TIMESTAMP comparisons intact.
+    sql = " ".join(query.sql.lower().split())
+    if (
+        sql.startswith("semantic select month, region,")
+        and "from monthly_sales_v" in sql
+        or sql.startswith("semantic select date_trunc('year', sale_date)")
+    ):
+        for row in expected_rows:
+            if row[0] == "NULL":
+                continue
+            value = datetime.fromisoformat(row[0])
+            row[0] = (
+                date_bucket(value.year, value.month, value.day).isoformat()
+                if value.time() == time() and value.tzinfo is None
+                else value.isoformat()
+            )
 
     if query.rowsort:
         actual_rows = sorted(actual_rows, key=lambda row: tuple(_stringify_value(value) for value in row))

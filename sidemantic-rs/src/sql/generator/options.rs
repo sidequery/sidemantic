@@ -12,9 +12,8 @@ impl SqlGenerator<'_> {
         Ok(())
     }
 
-    /// Resolve the public output names before renaming. Internal CTE, metric,
-    /// snapshot and window references must retain their original names.
-    pub(super) fn selected_aliases(
+    /// Resolve each selected semantic reference to its public output identity.
+    pub(super) fn selected_output_names(
         &self,
         query: &SemanticQuery,
     ) -> Result<HashMap<String, String>> {
@@ -71,11 +70,26 @@ impl SqlGenerator<'_> {
         }
         Ok(fields
             .into_iter()
-            .filter_map(|(reference, model, name)| {
+            .map(|(reference, model, name)| {
+                (reference, self.output_alias(&model, &name, &collisions))
+            })
+            .collect())
+    }
+
+    /// Resolve the public output names before renaming. Internal CTE, metric,
+    /// snapshot and window references must retain their original names.
+    pub(super) fn selected_aliases(
+        &self,
+        query: &SemanticQuery,
+    ) -> Result<HashMap<String, String>> {
+        Ok(self
+            .selected_output_names(query)?
+            .into_iter()
+            .filter_map(|(reference, output)| {
                 query
                     .aliases
                     .get(&reference)
-                    .map(|alias| (self.output_alias(&model, &name, &collisions), alias.clone()))
+                    .map(|alias| (output, alias.clone()))
             })
             .collect())
     }

@@ -14,6 +14,7 @@ from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError, graph_to_semantic_input
 from sidemantic.validation import QueryValidationError
+from tests.duckdb_compat import date_bucket
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CASES = yaml.safe_load((FIXTURES / "cases.yml").read_text())
@@ -64,6 +65,9 @@ def test_compiler_results(case, engine):
         sql = layer.compile(**case["query"])
         result = layer.adapter.execute(sql)
         assert [column[0] for column in result.description] == case["columns"]
-        assert [[normalize(value) for value in row] for row in result.fetchall()] == case["rows"]
+        expected = case["rows"]
+        if case["name"] == "sparse_month_comparison":
+            expected = [[date_bucket(*map(int, row[0].split("-"))).isoformat(), *row[1:]] for row in expected]
+        assert [[normalize(value) for value in row] for row in result.fetchall()] == expected
     finally:
         layer.adapter.close()

@@ -1,0 +1,176 @@
+{
+  "family": "multi_source",
+  "features": [
+    "multi_source",
+    "numeric:double",
+    "aggregation:avg",
+    "null_values",
+    "many_to_one",
+    "selected:combined",
+    "selected:accounts.quota",
+    "selected:facts.filtered",
+    "selected:facts.rows",
+    "null_time"
+  ],
+  "index": 31,
+  "metrics": [
+    {
+      "name": "combined",
+      "sql": "facts.total + accounts.quota",
+      "type": "derived"
+    }
+  ],
+  "models": [
+    {
+      "default_time_dimension": "day",
+      "dimensions": [
+        {
+          "granularity": "day",
+          "name": "day",
+          "type": "time"
+        }
+      ],
+      "metrics": [
+        {
+          "agg": "sum",
+          "name": "total",
+          "sql": "amount * quantity"
+        }
+      ],
+      "name": "facts",
+      "primary_key": "id",
+      "relationships": [
+        {
+          "foreign_key": "account_id",
+          "name": "accounts",
+          "type": "many_to_one"
+        }
+      ],
+      "segments": [],
+      "table": "generated_facts"
+    },
+    {
+      "dimensions": [],
+      "metrics": [
+        {
+          "agg": "sum",
+          "name": "quota",
+          "sql": "quota"
+        }
+      ],
+      "name": "accounts",
+      "primary_key": "id",
+      "table": "generated_accounts"
+    }
+  ],
+  "query": {
+    "dimensions": [],
+    "metrics": [
+      "combined"
+    ]
+  },
+  "seed": 20261005,
+  "tables": [
+    {
+      "columns": [
+        [
+          "id",
+          "integer"
+        ],
+        [
+          "category",
+          "varchar"
+        ],
+        [
+          "status",
+          "varchar"
+        ],
+        [
+          "amount",
+          "double"
+        ],
+        [
+          "quantity",
+          "integer"
+        ],
+        [
+          "account_id",
+          "integer"
+        ],
+        [
+          "day",
+          "date"
+        ]
+      ],
+      "name": "generated_facts",
+      "rows": [
+        [
+          1,
+          "O'Brien",
+          null,
+          1,
+          2,
+          null,
+          null
+        ],
+        [
+          2,
+          "O'Brien",
+          "open",
+          8,
+          0,
+          2,
+          "2024-01-07"
+        ],
+        [
+          4,
+          "b",
+          null,
+          8,
+          1,
+          null,
+          "2024-02-01"
+        ],
+        [
+          5,
+          "b",
+          "paid",
+          1,
+          2,
+          3,
+          "2024-01-07"
+        ]
+      ]
+    },
+    {
+      "columns": [
+        [
+          "id",
+          "integer"
+        ],
+        [
+          "region",
+          "varchar"
+        ],
+        [
+          "quota",
+          "double"
+        ]
+      ],
+      "name": "generated_accounts",
+      "rows": [
+        [
+          3,
+          "east",
+          10
+        ],
+        [
+          4,
+          "west",
+          10
+        ]
+      ]
+    }
+  ],
+  "version": 1
+}

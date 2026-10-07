@@ -254,7 +254,7 @@ def test_approximate_dialect_rendering_and_population_results(layer, dialect, fu
         with pytest.raises(Exception, match="metric.approx_count_distinct_output_dialect"):
             layer.compile(metrics=[metric], dimensions=dimensions, order_by=dimensions, dialect=dialect)
         return
-    if layer.engine == "rust" and dialect == "redshift" and shape in {"cumulative", "window"}:
+    if dialect == "redshift" and shape in {"cumulative", "window"}:
         with pytest.raises(Exception, match="metric.approx_count_distinct_window_redshift"):
             layer.compile(metrics=[metric], dimensions=dimensions, order_by=dimensions, dialect=dialect)
         return

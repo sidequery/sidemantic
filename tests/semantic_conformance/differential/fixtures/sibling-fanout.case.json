@@ -1,0 +1,187 @@
+{
+  "family": "double_fanout",
+  "features": [
+    "double_fanout",
+    "numeric:integer",
+    "aggregation:min",
+    "null_values",
+    "one_to_many",
+    "selected:facts.filtered",
+    "selected:facts.rows",
+    "selected:items.items_value",
+    "null_time",
+    "segment",
+    "limit"
+  ],
+  "index": 8,
+  "metrics": [],
+  "models": [
+    {
+      "dimensions": [],
+      "metrics": [],
+      "name": "facts",
+      "primary_key": "id",
+      "relationships": [
+        {
+          "foreign_key": "fact_id",
+          "name": "items",
+          "type": "one_to_many"
+        },
+        {
+          "foreign_key": "fact_id",
+          "name": "refunds",
+          "type": "one_to_many"
+        }
+      ],
+      "segments": [],
+      "table": "generated_facts"
+    },
+    {
+      "dimensions": [],
+      "metrics": [
+        {
+          "agg": "sum",
+          "name": "items_value",
+          "sql": "value"
+        }
+      ],
+      "name": "items",
+      "primary_key": "id",
+      "table": "generated_items"
+    },
+    {
+      "dimensions": [
+        {
+          "name": "label",
+          "type": "categorical"
+        }
+      ],
+      "metrics": [],
+      "name": "refunds",
+      "primary_key": "id",
+      "table": "generated_refunds"
+    }
+  ],
+  "query": {
+    "dimensions": [
+      "refunds.label"
+    ],
+    "filters": [],
+    "metrics": [
+      "items.items_value"
+    ],
+    "segments": []
+  },
+  "seed": 20261005,
+  "tables": [
+    {
+      "columns": [
+        [
+          "id",
+          "integer"
+        ],
+        [
+          "category",
+          "varchar"
+        ],
+        [
+          "status",
+          "varchar"
+        ],
+        [
+          "amount",
+          "integer"
+        ],
+        [
+          "quantity",
+          "integer"
+        ],
+        [
+          "account_id",
+          "integer"
+        ],
+        [
+          "day",
+          "date"
+        ]
+      ],
+      "name": "generated_facts",
+      "rows": [
+        [
+          1,
+          "a",
+          "paid",
+          1,
+          1,
+          3,
+          null
+        ]
+      ]
+    },
+    {
+      "columns": [
+        [
+          "id",
+          "integer"
+        ],
+        [
+          "fact_id",
+          "integer"
+        ],
+        [
+          "label",
+          "varchar"
+        ],
+        [
+          "value",
+          "integer"
+        ]
+      ],
+      "name": "generated_items",
+      "rows": [
+        [
+          101,
+          1,
+          "duplicate",
+          3
+        ]
+      ]
+    },
+    {
+      "columns": [
+        [
+          "id",
+          "integer"
+        ],
+        [
+          "fact_id",
+          "integer"
+        ],
+        [
+          "label",
+          "varchar"
+        ],
+        [
+          "value",
+          "integer"
+        ]
+      ],
+      "name": "generated_refunds",
+      "rows": [
+        [
+          9,
+          1,
+          "x",
+          3
+        ],
+        [
+          11,
+          1,
+          "x",
+          3
+        ]
+      ]
+    }
+  ],
+  "version": 1
+}

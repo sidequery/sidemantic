@@ -573,7 +573,7 @@ fn decode_metric(
     let metric = project(raw, exemplar, path)?;
     if metric.agg == Some(crate::core::Aggregation::ApproxCountDistinct)
         && !model_local
-        && !(metric.r#type == crate::core::MetricType::Cohort && owner.is_some())
+        && metric.r#type != crate::core::MetricType::Cohort
     {
         return Err(unsupported("metric.approx_count_distinct_model_scope"));
     }

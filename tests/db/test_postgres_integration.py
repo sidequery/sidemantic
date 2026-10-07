@@ -408,7 +408,6 @@ def test_semantic_layer_postgres_limit(clean_postgres):
     assert len(rows) == 2
 
 
-@pytest.mark.skip(reason="Date functions test - may have issues with validation")
 def test_semantic_layer_postgres_date_functions(clean_postgres):
     """Test date/time functions in dimensions."""
     clean_postgres.execute(
@@ -435,8 +434,9 @@ def test_semantic_layer_postgres_date_functions(clean_postgres):
         table="events",
         primary_key="event_id",
         dimensions=[
-            Dimension(name="month", type="time", sql="TO_CHAR(event_date, 'YYYY-MM')", granularity="month"),
-            Dimension(name="year", type="time", sql="EXTRACT(YEAR FROM event_date)::TEXT", granularity="year"),
+            # Formatted dates are strings, so they must not be truncated again.
+            Dimension(name="month", type="categorical", sql="TO_CHAR(event_date, 'YYYY-MM')"),
+            Dimension(name="year", type="categorical", sql="EXTRACT(YEAR FROM event_date)::TEXT"),
         ],
         metrics=[Metric(name="event_count", agg="count", sql="event_id")],
     )
@@ -448,6 +448,7 @@ def test_semantic_layer_postgres_date_functions(clean_postgres):
 
     assert results_dict["2024-01"] == 2
     assert results_dict["2024-02"] == 2
+    assert layer.query(dimensions=["events.year"], metrics=["events.event_count"]).fetchall() == [("2024", 4)]
 
 
 def test_semantic_layer_postgres_symmetric_aggregates(clean_postgres):

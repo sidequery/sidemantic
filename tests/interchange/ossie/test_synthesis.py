@@ -743,7 +743,7 @@ def test_imported_identifier_provenance_remains_portable_with_bound_runtime_name
     assert reloaded.valid, reloaded.diagnostics
     metric_name = next(iter(graph.metrics))
     for catalog in (lowered.catalog, reloaded.catalog):
-        layer = SemanticLayer.from_catalog(catalog, engine="python", fallback=False, auto_register=False)
+        layer = SemanticLayer.from_catalog(catalog, fallback=False, auto_register=False)
         assert layer.query(metrics=[metric_name]).fetchall() == [(10,)]
     model = next(iter(graph.models.values()))
     model.dimensions[0].metadata["custom_behavior"] = "preserve"

@@ -1,7 +1,29 @@
 """Test automatic dependency detection."""
 
+import pytest
+
 from sidemantic.core.dependency_analyzer import extract_column_references
 from sidemantic.core.metric import Metric
+from sidemantic.core.model import Model
+from sidemantic.core.semantic_graph import SemanticGraph
+
+
+@pytest.mark.parametrize(
+    "sql, context, expected",
+    [
+        ("total * 2", "events", {"events.total"}),
+        ("total * 2", None, {"total"}),
+        ("other.total * 2", "events", {"other.total"}),
+        ("missing.total * 2", "events", {"total"}),
+    ],
+)
+def test_derived_dependency_context_precedes_global_shadow_only_for_bare_names(sql, context, expected):
+    graph = SemanticGraph()
+    for name in ["events", "other"]:
+        graph.add_model(Model(name=name, table=name, metrics=[Metric(name="total", agg="sum", sql="amount")]))
+    graph.add_metric(Metric(name="total", agg="sum", sql="other.amount"))
+    metric = Metric(name="double_total", type="derived", sql=sql)
+    assert metric.get_dependencies(graph, context) == expected
 
 
 def test_extract_column_references_simple():

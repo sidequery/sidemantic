@@ -170,15 +170,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra snowflake --extra dev
 
-      - name: Install fakesnow
-        run: uv pip install "fakesnow==0.11.11"
-
       - name: Run Snowflake integration tests
         env:
           SNOWFLAKE_TEST: "1"
         run: |
-          uv run pytest --test-engine python -m integration tests/db/test_snowflake_integration.py -v
-          uv run pytest --test-engine rust -m integration tests/db/test_snowflake_integration.py -v
+          # Resolve fakesnow with its compatible SQLGlot version on every run;
+          # a preceding uv pip install is undone by the locked project sync.
+          uv run --with "fakesnow==0.11.11" pytest --test-engine python -m integration tests/db/test_snowflake_integration.py -v
+          uv run --with "fakesnow==0.11.11" pytest --test-engine rust -m integration tests/db/test_snowflake_integration.py -v
 
       - name: Save completed build caches
         if: ${{ !cancelled() }}

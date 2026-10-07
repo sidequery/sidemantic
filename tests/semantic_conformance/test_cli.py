@@ -7,6 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from sidemantic.cli import app
+from tests.duckdb_compat import date_bucket
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -39,13 +40,13 @@ FIXTURES = Path(__file__).parent / "fixtures"
             "native/monthly",
             "select monthly.sale_date__month as month, revenue_mom as change from metrics order by month",
             ["month", "change"],
-            [("2024-01-01", None), ("2024-03-01", None)],
+            [(date_bucket(2024, 1, 1).isoformat(), None), (date_bucket(2024, 3, 1).isoformat(), None)],
         ),
         (
             "native/monthly",
             "select monthly.sale_date__month, revenue_mom from metrics order by monthly.sale_date__month",
             ["sale_date__month", "revenue_mom"],
-            [("2024-01-01", None), ("2024-03-01", None)],
+            [(date_bucket(2024, 1, 1).isoformat(), None), (date_bucket(2024, 3, 1).isoformat(), None)],
         ),
         (
             "native/roles",

@@ -761,23 +761,16 @@ class TestEdgeCasesAndHoles:
         assert rows[0]["count"] == 5
 
     def test_segment_from_joined_model(self, kitchen_sink_layer):
-        """Test using a segment from a joined model.
+        """Filter employees by a company segment across the department join."""
+        kitchen_sink_layer.adapter.execute("UPDATE companies SET is_active = false WHERE name = 'TechCorp'")
 
-        This might be a hole - do segments work across joins?
-        """
-        # This would use companies.active_companies segment when querying employees
-        # Many semantic layers don't support this
-        try:
-            result = kitchen_sink_layer.query(
-                metrics=["employees.count"],
-                segments=["companies.active_companies"],
-            )
-            rows = fetch_dicts(result)
-            # Should only include employees from active companies
-            # Excludes RetailCo which has no employees anyway in our data
-            assert rows[0]["count"] == 10
-        except Exception as e:
-            pytest.skip(f"Cross-model segments not supported: {e}")
+        assert fetch_dicts(kitchen_sink_layer.query(metrics=["employees.count"])) == [{"count": 10}]
+        result = kitchen_sink_layer.query(
+            metrics=["employees.count"],
+            segments=["companies.active_companies"],
+        )
+        # TechCorp's five employees must be excluded even without a company dimension.
+        assert fetch_dicts(result) == [{"count": 5}]
 
     def test_having_clause_on_aggregate(self, kitchen_sink_layer):
         """Test HAVING clause (filter on aggregated value).

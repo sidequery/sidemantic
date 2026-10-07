@@ -1,0 +1,778 @@
+{
+  "schema_version": 1,
+  "basis": "Source-level assertion review only; no execution is claimed. Native tests under src are included alongside integration tests.",
+  "groups": [
+    {
+      "id": "timezone-routing",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/dates/test_query_timezone.py::test_generator_timezone_bypasses_preagg_routing",
+        "tests/dates/test_query_timezone.py::test_timezone_value_is_validated_against_injection"
+      ],
+      "behavior": "Timezone queries bypass UTC rollups; quote/space/backslash/newline injection attempts are rejected before SQL.",
+      "counterparts": [
+        "tests/semantic_conformance/test_query_timezone_parity.py::test_timezone_bypasses_utc_rollup",
+        "tests/semantic_conformance/test_query_timezone_parity.py::test_timezone_rejects_invalid_characters"
+      ]
+    },
+    {
+      "id": "shared-native-manifest-rewrite",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/native_compat/test_basic_model_fixture.py::test_native_fixture_rewrites_semantic_sql"
+      ],
+      "behavior": "Both harnesses load tests/native-fixtures/manifest.yml rewrite_queries and assert each sql_contains token after semantic rewrite.",
+      "counterparts": [
+        "sidemantic-rs/tests/native_fixtures.rs::native_fixtures_load_and_compile"
+      ],
+      "limitation": "Compilation/token assertions only; this source test does not execute rewritten SQL."
+    },
+    {
+      "id": "nested-role-identity",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/core/test_relationship_role_aliases.py::test_nested_role_alias_is_scoped_to_parent_instance"
+      ],
+      "behavior": "origin$countries and destination$countries remain separately scoped join instances; native fixture asserts US/Canada and Canada/France independently.",
+      "counterparts": [
+        "tests/semantic_conformance/test_relationship_role_parity.py::test_nested_country_paths_keep_parent_role_identity"
+      ]
+    },
+    {
+      "id": "timezone-period-lookup",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/dates/test_time_comparison.py::test_named_calendar_comparison_without_declared_granularity"
+      ],
+      "behavior": "Named dod/wow/mom/qoq/yoy map to calendar intervals without a declared grain; month result regression independently verifies sparse periods and category partitions.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator/temporal.rs::named_comparisons_have_calendar_intervals_without_declared_granularity",
+        "tests/semantic_conformance/test_feature_parity.py::test_named_calendar_comparison_without_declared_granularity"
+      ],
+      "limitation": "All five intervals have native unit assertions; the dual-engine result counterpart executes month specifically."
+    },
+    {
+      "id": "cumulative-year-reset",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_year_to_date_metric"
+      ],
+      "behavior": "Year-to-date window partitions on calendar year rather than retaining prior-year rows.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator/temporal.rs::cumulative_frames_preserve_groups_and_calendar_reset"
+      ],
+      "limitation": "Native counterpart asserts emitted calendar-year partition/frame; it is not a result-level duplicate of the original fixture."
+    },
+    {
+      "id": "temporal-null-fill",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_cumulative_fill_nulls_applies_after_window",
+        "tests/metrics/test_advanced.py::test_time_comparison_fill_nulls_applies_to_missing_prior_period",
+        "tests/metrics/test_advanced.py::test_offset_ratio_fill_nulls_applies_to_missing_prior_period"
+      ],
+      "behavior": "Fill applies to final cumulative/comparison/offset-ratio result; empty/prior-missing periods use the declared default instead of feeding a filled base value into the temporal operation.",
+      "counterparts": [
+        "tests/semantic_conformance/test_temporal_null_fill.py::test_cumulative_final_default_keeps_null_base_and_partitions",
+        "tests/semantic_conformance/test_temporal_null_fill.py::test_missing_prior_and_zero_denominator_fill_after_calculation",
+        "tests/semantic_conformance/test_temporal_null_fill.py::test_offset_ratio_default_applies_after_sparse_prior_division"
+      ]
+    },
+    {
+      "id": "null-default-dependencies",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_fill_nulls_with_zero",
+        "tests/metrics/test_advanced.py::test_model_measure_null_fill_applies_to_direct_and_dependent_metrics"
+      ],
+      "behavior": "Model leaf defaults are used by direct, derived and ratio dependencies; null groups/empty aggregates retain explicit defaults.",
+      "counterparts": [
+        "tests/semantic_conformance/test_null_fill.py::test_metric_result_and_dependency_defaults",
+        "tests/semantic_conformance/test_null_fill.py::test_filled_leaf_participates_in_cross_source_calculation"
+      ]
+    },
+    {
+      "id": "sparse-month-comparison",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_mom_difference",
+        "tests/metrics/test_advanced.py::test_month_comparison_does_not_use_previous_available_sparse_row"
+      ],
+      "behavior": "Month comparison subtracts the matching prior calendar month within each category and yields null across a missing month.",
+      "counterparts": [
+        "tests/semantic_conformance/test_feature_parity.py::test_sparse_comparison_uses_calendar_month_and_category"
+      ]
+    },
+    {
+      "id": "model-conversion-window",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/dates/test_time_comparison.py::test_model_level_conversion_metric"
+      ],
+      "behavior": "Model-local conversion metric selects distinct signup entities and counts purchases within an inclusive seven-day window; late purchases do not convert.",
+      "counterparts": [
+        "tests/semantic_conformance/test_conversion_parity.py::test_unique_entities_and_inclusive_window"
+      ],
+      "limitation": "Python graph auto-registration bookkeeping remains Python-owned; the public native fixture tests model-local resolution and results."
+    },
+    {
+      "id": "model-retention",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_model_level_metric"
+      ],
+      "behavior": "Model-local retention executes with a fixed cohort/period/active_users/cohort_size/percentage schema.",
+      "counterparts": [
+        "tests/semantic_conformance/test_retention_parity.py::test_first_cohort_sparse_periods_nulls_and_inactive_denominator"
+      ]
+    },
+    {
+      "id": "retention-period-validation",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_periods_zero_raises_validation_error"
+      ],
+      "behavior": "Zero retention periods are rejected instead of silently defaulting to 28.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator/retention.rs::retention_requires_valid_period_and_granularity"
+      ]
+    },
+    {
+      "id": "cohort-group-results",
+      "category": null,
+      "status": "native-contract",
+      "source_tests": [
+        "tests/metrics/test_cohort.py::test_cohort_basic",
+        "tests/metrics/test_cohort.py::test_cohort_with_dimension",
+        "tests/metrics/test_cohort.py::test_cohort_with_time_grain_uses_grained_output_alias",
+        "tests/metrics/test_cohort.py::test_cohort_outer_sql_references_subquery",
+        "tests/metrics/test_cohort.py::test_cohort_reserved_word_dimension"
+      ],
+      "behavior": "Model-local inner count-distinct/HAVING cohort qualification preserves outer dimension/time-grain names; outer average reads qualified inner aggregate values, and reserved output dimensions are quoted.",
+      "counterparts": [
+        "tests/semantic_conformance/test_cohort_parity.py::test_count_counts_qualified_inner_groups_including_null_entity",
+        "tests/semantic_conformance/test_cohort_parity.py::test_query_grouping_changes_inner_and_outer_grain",
+        "tests/semantic_conformance/test_cohort_parity.py::test_time_bucket_is_carried_through_to_outer_output",
+        "tests/semantic_conformance/test_cohort_parity.py::test_outer_aggregations_read_qualified_inner_values",
+        "tests/semantic_conformance/test_cohort_parity.py::test_reserved_output_dimension_is_quoted"
+      ],
+      "limitation": "Counterparts cover the same operations with independent synthetic populations; graph-owner inference is explicitly excluded from this mapping."
+    },
+    {
+      "id": "legacy-rewriter-route",
+      "category": "intentional-Python-only",
+      "status": "implementation-contract",
+      "source_tests": [
+        "tests/queries/test_rust_query_rewriter_route.py::test_explicit_python_overrides_legacy_environment",
+        "tests/queries/test_sql_fallback_policy.py::test_non_strict_rewrite_does_not_hide_runtime_bug"
+      ],
+      "behavior": "Explicit Python route override and monkeypatched Python _rewrite_python RuntimeError propagation test the legacy implementation contract, not a missing native semantic query feature.",
+      "counterparts": []
+    },
+    {
+      "id": "python-helper-timings",
+      "category": "intentional-Python-only",
+      "status": "implementation-contract",
+      "source_tests": [
+        "tests/test_performance.py::test_simple_rewrite_performance",
+        "tests/test_performance.py::test_complex_rewrite_performance",
+        "tests/test_performance.py::test_sql_generation_performance",
+        "tests/test_performance.py::test_multi_join_generation_performance",
+        "tests/test_performance.py::test_filter_parsing_performance",
+        "tests/test_performance.py::test_query_rewriter_warm_vs_cold",
+        "tests/test_performance.py::test_parameter_substitution_performance"
+      ],
+      "behavior": "Timing thresholds and warm-cache comparisons directly benchmark Python SQLGenerator/QueryRewriter objects; these are not correctness exclusions or proof of native performance.",
+      "counterparts": []
+    },
+    {
+      "id": "unowned-graph-cohort",
+      "category": "real-gap",
+      "status": "unsupported-valid-shape",
+      "source_tests": [
+        "tests/metrics/test_cohort.py::test_cohort_graph_level_metric"
+      ],
+      "behavior": "Python infers the unique source model from the graph-level cohort entity without metric_owners. Rust strict graph scope requires an explicit cohort owner and rejects this valid Python shape.",
+      "counterparts": [
+        "tests/semantic_conformance/test_cohort_parity.py::test_owned_graph_cohort_unsupported_shapes_remain_gated",
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Counterpart is negative evidence: mutation=unowned is intentionally rejected. SemanticLayer.add_metric does not supply an owner, and graph_to_semantic_input preserves that absence. Source-confirmed; live repro remains lead-owned."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_conversion_metric",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_conversion_metric"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_conversion_funnel",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_conversion_funnel"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_conversion_2_steps_via_steps_list",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_conversion_2_steps_via_steps_list"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_conversion_metric_backwards_compatible",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_conversion_metric_backwards_compatible"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_conversion_metric_steps_and_base_event",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_conversion_metric_steps_and_base_event"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_monotonic_counts",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_monotonic_counts"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_total_excludes_non_entrants",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_total_excludes_non_entrants"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_chronological_order_enforced",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_chronological_order_enforced"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_qualified_filters",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_qualified_filters"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_filter_dimension_with_model_qualified_sql_expr",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_filter_dimension_with_model_qualified_sql_expr"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_repeated_actions_valid_path",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_repeated_actions_valid_path"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_only_prior_step2_not_counted",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_only_prior_step2_not_counted"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_expression_timestamp",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_expression_timestamp"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_or_step_with_filter",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_or_step_with_filter"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_placeholder_timestamp",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_model_placeholder_timestamp"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_placeholder_step_predicates",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_model_placeholder_step_predicates"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_name_prefix_step_predicates",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_model_name_prefix_step_predicates"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_placeholder_filter",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_model_placeholder_filter"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_advanced.py-test_multistep_funnel_order_by_metric_name",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_advanced.py::test_multistep_funnel_order_by_metric_name"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_retention.py-test_retention_sql_generation",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_sql_generation"
+      ],
+      "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_retention.py-test_retention_day_granularity_results",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_day_granularity_results"
+      ],
+      "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_retention.py-test_retention_default_activity_event",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_default_activity_event"
+      ],
+      "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_retention.py-test_retention_week_granularity",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_week_granularity"
+      ],
+      "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_retention.py-test_retention_model_placeholder_expansion_sql_model",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_model_placeholder_expansion_sql_model"
+      ],
+      "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_retention.py-test_retention_model_placeholder_expansion_table_model",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_model_placeholder_expansion_table_model"
+      ],
+      "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_retention.py-test_retention_model_placeholder_in_time_dimension",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_model_placeholder_in_time_dimension"
+      ],
+      "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_retention.py-test_retention_aliased_entity_dimension",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_aliased_entity_dimension"
+      ],
+      "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_retention.py-test_retention_metric_level_filters",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_metric_level_filters"
+      ],
+      "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_retention.py-test_retention_filter_with_model_qualified_sql_expr",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_filter_with_model_qualified_sql_expr"
+      ],
+      "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-metrics-test_retention.py-test_retention_offset_in_sql",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/metrics/test_retention.py::test_retention_offset_in_sql"
+      ],
+      "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-test_bugfix_batch.py-test_conversion_with_dimension",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/test_bugfix_batch.py::TestConversionMetricDimensions::test_conversion_with_dimension"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-test_bugfix_batch.py-test_conversion_without_dimensions_still_works",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/test_bugfix_batch.py::TestConversionMetricDimensions::test_conversion_without_dimensions_still_works"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-test_bugfix_batch.py-test_conversion_dimension_join_prevents_cross_group_leaking",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/test_bugfix_batch.py::TestConversionMetricDimensions::test_conversion_dimension_join_prevents_cross_group_leaking"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-test_bugfix_batch.py-test_conversion_with_time_granularity",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/test_bugfix_batch.py::TestConversionMetricDimensions::test_conversion_with_time_granularity"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unowned-tests-test_bugfix_batch.py-test_conversion_with_derived_dimension_sql",
+      "category": "real-gap",
+      "status": "graph-scope-coverage-gap",
+      "source_tests": [
+        "tests/test_bugfix_batch.py::TestConversionMetricDimensions::test_conversion_with_derived_dimension_sql"
+      ],
+      "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
+      "counterparts": [
+        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+      ],
+      "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
+    },
+    {
+      "id": "unresolved-public-helper-contracts",
+      "category": "real-gap",
+      "status": "unresolved-coverage",
+      "source_tests": [
+        "tests/adapters/bsl/test_parsing.py::TestBSLCurrentSyntaxSupport::test_all_calculated_measure_compiles_to_window_total",
+        "tests/adapters/bsl/test_parsing.py::TestBSLCurrentSyntaxSupport::test_cross_join_compiles",
+        "tests/adapters/bsl/test_parsing.py::TestBSLCurrentSyntaxSupport::test_deferred_calculated_measure_compiles",
+        "tests/adapters/bsl/test_parsing.py::TestBSLCurrentSyntaxSupport::test_join_aliases_self_join_and_how_roundtrip",
+        "tests/adapters/bsl/test_parsing.py::TestBSLCurrentSyntaxSupport::test_qualified_calculated_measure_compiles_joined_measure",
+        "tests/adapters/bsl/test_parsing.py::TestBSLCurrentSyntaxSupport::test_reused_join_aliases_scope_to_source_model",
+        "tests/adapters/cube/test_fixtures.py::TestTesseractFeatures::test_aggregate_complete_measures_queryable",
+        "tests/adapters/cube/test_fixtures.py::TestTesseractFeatures::test_complete_measure_applies_filters",
+        "tests/adapters/cube/test_fixtures.py::TestTesseractFeatures::test_complete_measure_preserves_raw_timestamp",
+        "tests/adapters/cube/test_fixtures.py::TestTesseractFeatures::test_plain_complete_measure_grouped_by_other_dimension",
+        "tests/adapters/cube/test_fixtures.py::TestTesseractFeatures::test_plain_non_numeric_measures_queryable",
+        "tests/adapters/metricflow/test_parsing.py::test_metricflow_adapter_join_discovery",
+        "tests/adapters/metricflow/test_parsing.py::test_metricflow_derived_non_offset_aliases_queryable",
+        "tests/adapters/metricflow/test_parsing.py::test_metricflow_disabled_model_skips_inline_metrics",
+        "tests/adapters/metricflow/test_parsing.py::test_metricflow_inline_constant_count_anchored_to_model",
+        "tests/adapters/metricflow/test_parsing.py::test_metricflow_inline_exprless_non_count_uses_metric_column",
+        "tests/adapters/metricflow/test_parsing.py::test_metricflow_keyless_inline_count_planner_contract",
+        "tests/adapters/metricflow/test_parsing.py::test_metricflow_latest_spec_inline_metric_queryable_alone",
+        "tests/adapters/sidemantic_adapter/test_parsing.py::test_dimension_window_in_sql_generation",
+        "tests/adapters/tableau/test_real_world.py::test_sf_trial_joined_metric_uses_collection_sql",
+        "tests/adapters/tableau/test_real_world.py::test_shapes_joined_dimension_uses_collection_sql",
+        "tests/adapters/test_added_fixture_coverage.py::test_added_fixtures_execute_sql_for_execution_candidates",
+        "tests/adapters/test_added_fixture_coverage.py::test_added_fixtures_generate_sql_for_compile_candidates",
+        "tests/adapters/test_fixture_functionality_contracts.py::test_fixture_adapter_exact_execution_semantics",
+        "tests/adapters/test_fixture_functionality_contracts.py::test_fixture_query_compilation_coverage",
+        "tests/adapters/test_fixture_functionality_contracts.py::test_fixture_query_execution_coverage",
+        "tests/adapters/test_fixture_functionality_contracts.py::test_fixture_representative_execution_semantics",
+        "tests/adapters/tmdl/test_parsing.py::test_tmdl_dax_only_calculated_table_is_not_compiled_as_sql",
+        "tests/adapters/tmdl/test_parsing.py::test_tmdl_untranslated_dax_dimension_is_not_compiled_as_sql",
+        "tests/core/test_relationship_role_aliases.py::test_role_alias_one_to_many_keeps_base_measure_fanout_safe",
+        "tests/core/test_relationship_role_aliases.py::test_two_roles_to_same_target_use_distinct_join_instances",
+        "tests/core/test_security_advisor_regressions.py::test_rewriter_threads_user_attributes",
+        "tests/dates/test_time_comparison.py::test_model_level_time_comparison_metric",
+        "tests/metrics/test_advanced.py::test_dotted_metric_name_alias",
+        "tests/metrics/test_advanced.py::test_fill_nulls_with_string",
+        "tests/metrics/test_advanced.py::test_month_to_date_metric",
+        "tests/metrics/test_advanced.py::test_offset_ratio_metric",
+        "tests/metrics/test_advanced.py::test_offset_ratio_metric_multi_period",
+        "tests/metrics/test_advanced.py::test_offset_ratio_metric_uses_base_granularity",
+        "tests/metrics/test_advanced.py::test_offset_ratio_metric_year_offset",
+        "tests/metrics/test_advanced.py::test_wow_percent_change_partitions_by_dimension",
+        "tests/metrics/test_advanced.py::test_wow_ratio",
+        "tests/metrics/test_advanced.py::test_yoy_percent_change",
+        "tests/metrics/test_cohort.py::test_cohort_ambiguous_unqualified_raises",
+        "tests/metrics/test_cohort.py::test_cohort_mixed_with_conversion_raises",
+        "tests/metrics/test_cohort.py::test_cohort_model_scoped_unqualified",
+        "tests/metrics/test_cohort.py::test_cohort_outer_agg_without_sql_raises",
+        "tests/metrics/test_cohort.py::test_cohort_unknown_dimension_raises",
+        "tests/metrics/test_cumulative.py::test_time_comparison_over_derived_cumulative_chain",
+        "tests/metrics/test_cumulative.py::test_time_comparison_over_ratio_cumulative_chain",
+        "tests/metrics/test_cumulative.py::test_time_comparison_with_dependency_free_expression_metric",
+        "tests/metrics/test_non_additive_guard.py::test_semi_additive_compiles_without_qualify_on_postgres",
+        "tests/metrics/test_retention.py::test_retention_ambiguous_model_raises",
+        "tests/metrics/test_retention.py::test_retention_graph_metric_does_not_bind_to_same_name_model_metric",
+        "tests/metrics/test_retention.py::test_retention_mixed_with_regular_metric_raises",
+        "tests/metrics/test_retention.py::test_retention_multiple_retention_metrics_raises",
+        "tests/metrics/test_symmetric_aggs.py::test_derived_and_ratio_metrics_reuse_fanout_safe_leaf_aggregates",
+        "tests/metrics/test_symmetric_aggs.py::test_fanout_evaluates_complete_sql_over_deduplicated_entity_rows",
+        "tests/metrics/test_symmetric_aggs.py::test_fanout_isolates_typed_entity_rows_for_double_sum_avg_and_nulls",
+        "tests/metrics/test_symmetric_aggs.py::test_fanout_rejects_filtered_unqualified_constant_complete_sql",
+        "tests/metrics/test_symmetric_aggs.py::test_fanout_typed_composite_keys_do_not_collide_on_delimiters",
+        "tests/metrics/test_symmetric_aggs.py::test_filter_only_sibling_fanout_is_deduplicated_for_non_base_metric",
+        "tests/metrics/test_symmetric_aggs.py::test_filtered_count_under_fanout",
+        "tests/metrics/test_symmetric_aggs.py::test_model_measure_null_fill_under_fanout",
+        "tests/metrics/test_symmetric_aggs.py::test_preagg_grain_preserved_with_filters",
+        "tests/metrics/test_symmetric_aggs.py::test_symmetric_aggregates_in_sql_generation",
+        "tests/metrics/test_symmetric_aggs.py::test_symmetric_aggregates_with_data",
+        "tests/queries/test_cross_model_calculated_grain.py::test_calculated_metrics_preserve_each_source_grain",
+        "tests/queries/test_cross_model_calculated_grain.py::test_cross_model_calculation_output_name_collisions",
+        "tests/queries/test_cross_model_calculated_grain.py::test_filtered_ratio_rejects_unknown_customer_grain",
+        "tests/queries/test_cross_model_calculated_grain.py::test_mixed_row_and_calculation_or_rejected",
+        "tests/queries/test_deterministic_join_anchor.py::test_graph_metric_sql_reference_order_determines_one_to_one_join_anchor",
+        "tests/queries/test_temporal_sql_projection.py::test_repeated_metric_keeps_each_projection_alias",
+        "tests/queries/test_temporal_sql_projection.py::test_temporal_sql_exposes_only_requested_projection",
+        "tests/semantic_conformance/test_complete_filters.py::test_tsql_complete_row_count_retains_existing_path",
+        "tests/templates/test_parameters.py::test_parameters_with_actual_data",
+        "tests/templates/test_parameters.py::test_sql_generator_with_default_parameter",
+        "tests/templates/test_parameters.py::test_sql_generator_with_multiple_parameters",
+        "tests/templates/test_parameters.py::test_sql_generator_with_parameters",
+        "tests/test_bugfix_batch.py::TestDuplicateSegmentResolution::test_segment_not_double_applied",
+        "tests/test_bugfix_batch.py::TestNullSafeJoin::test_join_condition_not_coalesce_equality",
+        "tests/test_bugfix_batch.py::TestNullSafeJoin::test_null_dimension_in_full_outer_join",
+        "tests/test_bugfix_batch.py::TestSharedFiltersOnOuterQuery::test_compound_and_filter_decomposed_into_pushdowns",
+        "tests/test_bugfix_batch.py::TestSharedFiltersOnOuterQuery::test_filter_rewrite_uses_ast",
+        "tests/test_bugfix_batch.py::TestSharedFiltersOnOuterQuery::test_model_specific_filter_pushdown",
+        "tests/test_bugfix_batch.py::TestSharedFiltersOnOuterQuery::test_or_group_parens_preserved_in_pushdown",
+        "tests/test_query_fragment_boundary.py::test_cte_scope_allows_expression_plan_and_identifier_folding",
+        "tests/test_query_fragment_boundary.py::test_rewriter_cte_scope_does_not_authorize_structured_or_later_calls",
+        "tests/test_sql_generation_security.py::test_conversion_event_name_quotes_escaped",
+        "tests/test_sql_generation_security.py::test_conversion_invalid_entity_rejected",
+        "tests/test_sql_generation_security.py::test_conversion_invalid_window_rejected",
+        "tests/test_workbench_demo.py::test_workbench_demo_starter_queries_execute"
+      ],
+      "behavior": "These direct Python helper assertions have no assertion-level native counterpart established by this audit. This is a coverage gap, not a claim that native behavior is defective.",
+      "counterparts": [],
+      "limitation": "Do not count shared Rust-selected success for these helpers as native execution evidence. Public engine replay or an independently asserted native contract is required to close each item."
+    }
+  ],
+  "scope": {
+    "baseline_unresolved_helper_tests": 158,
+    "all_baseline_tests_assessed": 158,
+    "native_contract_tests": 21,
+    "intentional_python_tests": 9,
+    "remaining_coverage_gap_tests": 128
+  }
+}

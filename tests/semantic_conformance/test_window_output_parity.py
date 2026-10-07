@@ -5,6 +5,7 @@ from datetime import date, datetime
 import pytest
 
 from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
+from tests.duckdb_compat import date_bucket
 
 
 @pytest.fixture(params=["python", "rust"])
@@ -50,10 +51,10 @@ def test_window_dimension_replaces_same_named_source_for_grouping_and_filters(la
         "dimensions": ["events.day"],
         "user_attributes": {"tenant": 1},
     }
-    assert layer.query(**query).fetchall() == [(date(2024, 1, 1), 82)]
+    assert layer.query(**query).fetchall() == [(date_bucket(2024, 1, 1), 82)]
     for predicate in ["events.day > '2024-01-02'", "coalesce(events.day, '2024-01-01') > '2024-01-02'"]:
         assert layer.query(**query, filters=[predicate]).fetchall() == []
-    assert layer.query(**query, filters=["events.day = '2024-01-01'"]).fetchall() == [(date(2024, 1, 1), 82)]
+    assert layer.query(**query, filters=["events.day = '2024-01-01'"]).fetchall() == [(date_bucket(2024, 1, 1), 82)]
 
 
 def test_graph_calculation_keeps_its_identity_beside_cumulative_metric(layer):
@@ -68,9 +69,9 @@ def test_graph_calculation_keeps_its_identity_beside_cumulative_metric(layer):
     columns = [column[0] for column in cursor.description]
     records = [dict(zip(columns, row)) for row in cursor.fetchall()]
     assert [(record["day"], record["total"], record["running"]) for record in records] == [
-        (date(2024, 1, 1), 15, 15),
-        (date(2024, 1, 3), 27, 42),
-        (date(2024, 1, 4), 40, 82),
+        (date_bucket(2024, 1, 1), 15, 15),
+        (date_bucket(2024, 1, 3), 27, 42),
+        (date_bucket(2024, 1, 4), 40, 82),
     ]
 
 

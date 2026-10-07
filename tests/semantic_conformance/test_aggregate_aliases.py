@@ -91,7 +91,7 @@ def test_two_grouping_dimensions_share_basename(layer, reverse_dimensions, rever
     dimensions = ["orders.region", "customers.region"]
     metrics = ["orders.revenue", "customers.quota"]
     columns = ["orders_region", "customers_region", "revenue", "quota"]
-    expected = [("east", "north", 30, 2), ("west", "south", 40, 4), (None, "west", None, 7), (None, None, None, 5)]
+    expected = [(None, None, None, 5), (None, "west", None, 7), ("east", "north", 30, 2), ("west", "south", 40, 4)]
     if reverse_dimensions:
         dimensions.reverse()
         columns[:2] = reversed(columns[:2])

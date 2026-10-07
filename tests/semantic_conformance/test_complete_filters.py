@@ -593,22 +593,36 @@ def test_complete_row_count_generator_reuse_observes_graph_changes(row_count_lay
     assert generator.graph is layer.graph
 
 
-@pytest.mark.parametrize("layer", ["python"], indirect=True)
 @pytest.mark.parametrize("sql,predicate", [("COUNT(*)", "status = ("), ("SUM(", "true")])
 def test_unused_invalid_complete_metric_does_not_break_other_query(row_count_layer, sql, predicate):
     row_count_layer.graph.models["orders"].metrics.append(
         Metric(name="unused", sql=sql, sql_is_complete=True, filters=[predicate])
     )
-    assert_result(row_count_layer, {"metrics": ["orders.paid_rows"]}, ["paid_rows"], [(3,)])
+    # Python lowers selected metrics lazily; Rust validates the entire semantic
+    # input and rejects malformed definitions even when they are not selected.
+    # This is validation timing for invalid SQL, not a gap in valid semantics.
+    if row_count_layer.engine == "rust":
+        with pytest.raises(UnsupportedSemanticFeaturesError) as caught:
+            row_count_layer.compile(metrics=["orders.paid_rows"])
+        assert set(caught.value.capabilities) == {"metric.complete_filters"}
+    else:
+        assert_result(row_count_layer, {"metrics": ["orders.paid_rows"]}, ["paid_rows"], [(3,)])
 
 
-@pytest.mark.parametrize("layer", ["python"], indirect=True)
 def test_selected_complete_row_count_invalid_filter_is_rejected(row_count_layer):
     import duckdb
 
     row_count_layer.graph.models["orders"].get_metric("paid_rows").filters = ["status = ("]
-    with pytest.raises(duckdb.ParserException):
-        row_count_layer.adapter.execute(row_count_layer.compile(metrics=["orders.paid_rows"]))
+    # Rust rejects this malformed filter before SQL reaches the database;
+    # Python retains its database-time parser rejection contract.
+    if row_count_layer.engine == "rust":
+        with pytest.raises(UnsupportedSemanticFeaturesError) as caught:
+            row_count_layer.compile(metrics=["orders.paid_rows"])
+        assert set(caught.value.capabilities) == {"metric.complete_filters"}
+    else:
+        sql = row_count_layer.compile(metrics=["orders.paid_rows"])
+        with pytest.raises(duckdb.ParserException):
+            row_count_layer.adapter.execute(sql)
 
 
 @pytest.mark.parametrize("layer", ["python"], indirect=True)

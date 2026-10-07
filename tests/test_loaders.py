@@ -99,7 +99,7 @@ source: orders is duckdb.table('orders') extend {
 }
 """
     )
-    layer = SemanticLayer(auto_register=False, engine="python")
+    layer = SemanticLayer(auto_register=False)
     layer.adapter.execute("create table customers (id integer)")
     layer.adapter.execute("create table orders (id integer, customer_id integer)")
 

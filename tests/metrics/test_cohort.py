@@ -8,6 +8,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.sql.generator import SQLGenerator
+from tests.duckdb_compat import date_bucket
 from tests.utils import df_rows
 
 
@@ -166,9 +167,9 @@ def test_cohort_with_time_grain_uses_grained_output_alias():
     result = duckdb.connect(":memory:").execute(sql)
 
     assert [column[0] for column in result.description] == ["ts__month", "multi_platform_users"]
-    assert [(row[0].isoformat(), row[1]) for row in df_rows(result)] == [
-        ("2024-01-01", 1),
-        ("2024-02-01", 1),
+    assert [(row[0], row[1]) for row in df_rows(result)] == [
+        (date_bucket(2024, 1, 1), 1),
+        (date_bucket(2024, 2, 1), 1),
     ]
 
 

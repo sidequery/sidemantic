@@ -103,12 +103,29 @@ pub(super) fn generate_entity_aggregates(
     if deduplicate {
         for source in sources {
             let source_model = generator.graph.get_model(source).unwrap();
-            if source_model.primary_keys().is_empty() {
+            let mut keys = source_model.primary_keys();
+            // Ossie unique keys identify entity rows just like a primary key.
+            // Use the imported declaration locally without changing the graph
+            // or inferring primary keys for native models.
+            if keys.is_empty()
+                && source_model
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.get("ossie_source_kind").is_some())
+            {
+                keys = source_model
+                    .unique_keys
+                    .as_ref()
+                    .and_then(|keys| keys.first())
+                    .cloned()
+                    .unwrap_or_default();
+            }
+            if keys.is_empty() {
                 return Err(SidemanticError::Validation(format!(
                     "Model '{source}' has no primary key; cannot safely aggregate across a fanout join"
                 )));
             }
-            for key in source_model.primary_keys() {
+            for key in keys {
                 inputs.add(source, generator.key_sql(source_model, &key, None)?, &[]);
             }
         }

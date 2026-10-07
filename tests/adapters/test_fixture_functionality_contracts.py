@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import date
 from functools import cache
 from pathlib import Path
 
@@ -33,6 +32,7 @@ from tests.adapters.test_added_fixture_coverage import (
     _pick_execution_query,
     _prepare_graph_for_execution,
 )
+from tests.duckdb_compat import date_bucket
 
 
 def test_execution_candidate_materializes_invariant_filter_columns():
@@ -265,7 +265,7 @@ EXECUTION_SEMANTIC_FIXTURE_CASES = (
         "query_kind": "dimension",
         "dimension_type": "time",
         "field_name": "order_date",
-        "expected_values": {date(2024, 1, 1), date(2024, 1, 2)},
+        "expected_values": {date_bucket(2024, 1, 1), date_bucket(2024, 1, 2)},
     },
 )
 
@@ -475,7 +475,7 @@ def _assert_exact_deterministic_result(query_spec: dict, rows: list[tuple], fixt
     result_values = {row[0] for row in rows}
     dimension_type = query_spec["dimension_type"]
     if dimension_type == "time":
-        assert result_values == {date(2024, 1, 1), date(2024, 1, 2)}, (
+        assert result_values == {date_bucket(2024, 1, 1), date_bucket(2024, 1, 2)}, (
             f"{fixture_path}: expected time values [2024-01-01, 2024-01-02], got {sorted(result_values)}"
         )
     elif dimension_type == "numeric":

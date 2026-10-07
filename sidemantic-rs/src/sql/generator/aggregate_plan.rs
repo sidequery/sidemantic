@@ -120,6 +120,7 @@ impl<'a, 'g> Plan<'a, 'g> {
         &mut self,
         node: &mut serde_json::Value,
         context: Option<&str>,
+        constant_owner: Option<&str>,
         bindings: &HashSet<String>,
         logical_inputs: bool,
     ) -> Result<()> {
@@ -139,6 +140,7 @@ impl<'a, 'g> Plan<'a, 'g> {
                 return self.expand_calculation(
                     &mut lambda["body"],
                     context,
+                    constant_owner,
                     &bindings,
                     logical_inputs,
                 );
@@ -175,7 +177,7 @@ impl<'a, 'g> Plan<'a, 'g> {
                         owners.insert(owner.to_string());
                     }
                     if owners.is_empty() {
-                        owners.extend(context.map(str::to_string));
+                        owners.extend(context.or(constant_owner).map(str::to_string));
                     }
                     if owners.is_empty() || (owners.len() > 1 && !logical_inputs) {
                         return Err(unsupported("cross_source_raw_input"));
@@ -224,12 +226,24 @@ impl<'a, 'g> Plan<'a, 'g> {
         match node {
             serde_json::Value::Object(fields) => {
                 for child in fields.values_mut() {
-                    self.expand_calculation(child, context, bindings, logical_inputs)?;
+                    self.expand_calculation(
+                        child,
+                        context,
+                        constant_owner,
+                        bindings,
+                        logical_inputs,
+                    )?;
                 }
             }
             serde_json::Value::Array(children) => {
                 for child in children {
-                    self.expand_calculation(child, context, bindings, logical_inputs)?;
+                    self.expand_calculation(
+                        child,
+                        context,
+                        constant_owner,
+                        bindings,
+                        logical_inputs,
+                    )?;
                 }
             }
             _ => {}
@@ -430,11 +444,27 @@ impl<'a, 'g> Plan<'a, 'g> {
                     ))
                 })?;
                 let sql = crate::core::replace_model_placeholder(sql, resolved.context.as_deref())?;
+                // A columnless leaf such as COUNT(*) shares the enclosing
+                // Ossie expression's population only when it names one source.
+                // Keep scalar metric lookup unowned and reject ambiguous counts.
+                let expression_owners: HashSet<_> = if has_logical_inputs(metric) {
+                    semantic_column_references(&sql)?
+                        .into_iter()
+                        .map(|column| column.model)
+                        .collect()
+                } else {
+                    HashSet::new()
+                };
+                let constant_owner = (expression_owners.len() == 1)
+                    .then(|| expression_owners.iter().next().unwrap().as_deref())
+                    .flatten()
+                    .filter(|owner| self.generator.graph.get_model(owner).is_some());
                 let mut ast = serde_json::to_value(parse_semantic_expression(&sql)?)
                     .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
                 self.expand_calculation(
                     &mut ast,
                     resolved.context.as_deref(),
+                    constant_owner,
                     &HashSet::new(),
                     has_logical_inputs(metric),
                 )?;
@@ -553,6 +583,34 @@ fn child_projection(
         ));
     }
     Ok(projection)
+}
+
+/// Resolve scalar dependencies without assigning the calculation a source grain.
+/// Window wrappers expose these grouped leaves alongside the selected output.
+pub(super) fn window_scalar_leaves(
+    generator: &SqlGenerator<'_>,
+    reference: &str,
+) -> Result<Vec<String>> {
+    let mut plan = Plan {
+        generator,
+        leaves: Vec::new(),
+        models: Vec::new(),
+        populations: Vec::new(),
+        expressions: HashMap::new(),
+        active: HashSet::new(),
+        cross_source_calculation: false,
+        inline_aggregates: false,
+    };
+    plan.expand(reference, None)?;
+    // Synthetic inline aggregates are not public metric references that the
+    // grouped inner query can request independently.
+    if plan.inline_aggregates {
+        return Err(unsupported("window_inline_calculation"));
+    }
+    let mut references: Vec<_> = plan.leaves.into_iter().map(|leaf| leaf.reference).collect();
+    references.sort();
+    references.dedup();
+    Ok(references)
 }
 
 /// Return None for the existing single-source/special-metric paths. Only this
@@ -1058,22 +1116,52 @@ pub(super) fn try_generate(
         ));
     }
     if !query.order_by.is_empty() {
+        let known_names: Vec<_> = order_names.keys().map(String::as_str).collect();
         let mut order = Vec::new();
         for item in &query.order_by {
-            let (reference, direction) = item
-                .rsplit_once(' ')
-                .filter(|(_, direction)| {
-                    direction.eq_ignore_ascii_case("asc") || direction.eq_ignore_ascii_case("desc")
-                })
-                .map_or((item.as_str(), ""), |(reference, direction)| {
-                    (reference, direction)
-                });
+            let (reference, suffix) = crate::sql::split_order_field(item, &known_names);
             let alias = order_names
                 .get(reference)
                 .ok_or_else(|| unsupported("unprojected_order_by"))?;
-            order.push(format!("{} {direction}", generator.quote_identifier(alias)));
+            // Source splitting must retain the ordinary query's NULL ordering.
+            let suffix = if suffix.contains("NULLS") {
+                suffix
+            } else {
+                let nulls = if suffix == "DESC" { "LAST" } else { "FIRST" };
+                format!("{suffix} NULLS {nulls}").trim().to_owned()
+            };
+            let mut column = Expression::column(alias);
+            if let Expression::Column(column) = &mut column {
+                if generator.quote_identifier(alias) != *alias {
+                    column.name = Identifier::quoted(alias);
+                }
+            }
+            let mut ordered = polyglot_sql::expressions::Ordered::asc(column);
+            ordered.desc = suffix.starts_with("DESC");
+            ordered.explicit_asc = suffix.starts_with("ASC");
+            ordered.nulls_first = Some(suffix.ends_with("NULLS FIRST"));
+            // The pinned Polyglot emitter does not emulate NULL placement for
+            // MySQL or TSQL. Preserve the order with a scalar CASE key.
+            if matches!(generator.dialect, DialectType::MySQL | DialectType::TSQL) {
+                let nulls_first = ordered.nulls_first.take().unwrap();
+                if nulls_first == ordered.desc {
+                    let identifier = alias.replace('"', "\"\"");
+                    let key = parse_semantic_expression(&format!(
+                        "CASE WHEN \"{identifier}\" IS NULL THEN 1 ELSE 0 END"
+                    ))?;
+                    let mut null_order = polyglot_sql::expressions::Ordered::asc(key);
+                    null_order.desc = nulls_first;
+                    order.push(null_order);
+                }
+            }
+            order.push(ordered);
         }
-        sql.push_str(&format!("\nORDER BY {}", order.join(", ")));
+        let clause = Expression::OrderBy(Box::new(polyglot_sql::expressions::OrderBy {
+            expressions: order,
+            siblings: false,
+            comments: Vec::new(),
+        }));
+        sql.push_str(&format!("\n{}", generator.emit_expression(&clause)?));
     }
     if let Some(limit) = query.limit {
         sql.push_str(&format!("\nLIMIT {limit}"));
@@ -1150,6 +1238,26 @@ mod tests {
             .with_filters(filters.iter().map(|s| s.to_string()).collect());
         try_generate(&SqlGenerator::new(graph), &query)?
             .ok_or_else(|| unsupported("test_not_planned"))
+    }
+
+    #[test]
+    fn imported_columnless_leaf_requires_one_expression_source() {
+        for (expression, supported) in [
+            ("SUM(orders.amount) / COUNT(*)", true),
+            ("(SUM(orders.amount) + SUM(customers.id)) / COUNT(*)", false),
+        ] {
+            let mut graph = graph();
+            let mut metric = Metric::derived("average_value", expression);
+            metric.sql_is_complete = true;
+            metric.metadata = Some(serde_json::json!({"ossie_expression_dialect": "ANSI_SQL"}));
+            graph.add_metric_unvalidated(metric).unwrap();
+            let query = SemanticQuery::new().with_metrics(vec!["average_value".into()]);
+            let sql = try_generate(&SqlGenerator::new(&graph), &query).unwrap();
+            assert_eq!(sql.is_some(), supported);
+            if let Some(sql) = sql {
+                assert_valid_sql(&sql);
+            }
+        }
     }
 
     #[test]
@@ -1571,7 +1679,7 @@ mod tests {
         assert!(sql.contains("__sidemantic_dimension_0 IS NOT DISTINCT FROM customers_preagg.__sidemantic_dimension_0"), "{sql}");
         assert!(sql.contains("__sidemantic_dimension_1 IS NOT DISTINCT FROM customers_preagg.__sidemantic_dimension_1"), "{sql}");
         assert!(
-            sql.contains("ORDER BY orders_region ASC, customers_region DESC"),
+            sql.contains("ORDER BY orders_region ASC NULLS FIRST, customers_region DESC"),
             "{sql}"
         );
         assert_valid_sql(&sql);
@@ -1600,7 +1708,9 @@ mod tests {
             "{sql}"
         );
         assert!(
-            sql.contains("ORDER BY orders_revenue DESC, customers_revenue ASC"),
+            sql.contains(
+                "ORDER BY orders_revenue DESC NULLS LAST, customers_revenue ASC NULLS FIRST"
+            ),
             "{sql}"
         );
         assert_valid_sql(&sql);

@@ -7,6 +7,7 @@ import pytest
 from sidemantic import SemanticLayer
 from sidemantic.loaders import load_from_directory
 from sidemantic.sql.query_rewriter import QueryRewriter
+from tests.duckdb_compat import date_bucket
 from tests.utils import fetch_dicts
 
 
@@ -1376,10 +1377,10 @@ FROM monthly_sales_v
     rows = fetch_dicts(result)
     values = {(str(row["month"]), row["region"]): (float(row["revenue"]), float(row["month_total"])) for row in rows}
     assert values == {
-        ("2023-01-01", "EU"): (50.0, 150.0),
-        ("2023-01-01", "US"): (100.0, 150.0),
-        ("2023-02-01", "EU"): (20.0, 220.0),
-        ("2023-02-01", "US"): (200.0, 220.0),
+        (str(date_bucket(2023, 1, 1)), "EU"): (50.0, 150.0),
+        (str(date_bucket(2023, 1, 1)), "US"): (100.0, 150.0),
+        (str(date_bucket(2023, 2, 1)), "EU"): (20.0, 220.0),
+        (str(date_bucket(2023, 2, 1)), "US"): (200.0, 220.0),
     }
 
 
@@ -2060,8 +2061,8 @@ INSERT INTO products_str VALUES
         )
     )
     assert {(str(row["yr"]), float(row["revenue"])) for row in by_year_trunc} == {
-        ("2023-01-01", 530.0),
-        ("2024-01-01", 430.0),
+        (str(date_bucket(2023, 1, 1)), 530.0),
+        (str(date_bucket(2024, 1, 1)), 430.0),
     }
 
     category_left = fetch_dicts(

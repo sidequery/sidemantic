@@ -57,3 +57,6 @@ package.json
 # GitHub Actions compiler cache and Cargo shim
 /.ci-mbx/
 /.ci-cache-bin/
+
+# Editor indexes
+**/.cache/clangd/

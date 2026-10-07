@@ -1935,6 +1935,11 @@ class QueryRewriter:
         for projection in select.expressions:
             alias = projection.alias if isinstance(projection, exp.Alias) else None
             expression = self._projection_expression(projection)
+            # The database names an unaliased expression after its SQL text, in
+            # dialect-specific ways. Keep the written query so its names hold.
+            if alias is None and not isinstance(expression, exp.Column):
+                rejected_rules[rule_name] = "outer_projection_expression_unaliased"
+                return None
 
             time_rollup_ref = self._resolve_outer_time_rollup_dimension(
                 expression,
@@ -3254,8 +3259,7 @@ class QueryRewriter:
         """
         if self.dialect not in {"duckdb", "postgres", "redshift"}:
             return generated_sql
-        # Unaliased projections use the generator's output name for the dimension.
-        names = {plan.aliases.get(ref, ref.split(".", 1)[1]) for ref in plan.timestamp_dimensions}
+        names = {plan.aliases[ref] for ref in plan.timestamp_dimensions}
         if not names:
             return generated_sql
         generated = parse_fragment(generated_sql, self.dialect)

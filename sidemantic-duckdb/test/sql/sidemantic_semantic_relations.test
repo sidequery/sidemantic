@@ -114,6 +114,14 @@ US	2	1
 DE	1	2
 US	2	3
 
+# USING adds to the grain of only the relations it joins.
+query III
+SELECT count(*), sum(o.revenue), sum(o2.revenue)
+FROM semantic.orders o
+CROSS JOIN (semantic.orders o2 JOIN (VALUES ('completed')) t(status) USING (status));
+----
+1	345	270
+
 query I
 SELECT sum(revenue) FROM semantic.orders;
 ----

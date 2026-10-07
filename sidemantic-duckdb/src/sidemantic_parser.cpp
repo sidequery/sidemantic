@@ -937,18 +937,26 @@ private:
         return relation;
     }
 
-    // JOIN ... USING (name) reads that column from both sides.
+    // JOIN ... USING (name) reads that column from both sides. Relations
+    // outside the join's operands do not join on it.
     void UsingColumns(TableRef &ref, vector<Relation> &found) {
         if (ref.type != TableReferenceType::JOIN) return;
         auto &join = ref.Cast<JoinRef>();
         for (auto &column : join.using_columns) {
             for (auto &relation : found) {
                 auto field = SidemanticName(column);
-                if (CanonicalField(relation.model, field)) AddField(relation, field);
+                if (Contains(ref, relation) && CanonicalField(relation.model, field)) AddField(relation, field);
             }
         }
         UsingColumns(*join.left, found);
         UsingColumns(*join.right, found);
+    }
+
+    bool Contains(TableRef &ref, const Relation &relation) {
+        if (relation.slot->get() == &ref) return true;
+        if (ref.type != TableReferenceType::JOIN) return false;
+        auto &join = ref.Cast<JoinRef>();
+        return Contains(*join.left, relation) || Contains(*join.right, relation);
     }
 
     void AddField(Relation &relation, const string &field) {

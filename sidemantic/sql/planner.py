@@ -34,6 +34,8 @@ class SemanticQueryPlan:
     limit: int | None = None
     offset: int | None = None
     aliases: dict[str, str] = field(default_factory=dict)
+    # Dimensions folded from a written DATE_TRUNC; their output keeps its TIMESTAMP type.
+    timestamp_dimensions: list[str] = field(default_factory=list)
     candidate_kind: str = "direct_semantic"
     candidate_plans: list[CandidatePlan] = field(default_factory=list)
     eligibility: dict[str, Any] = field(default_factory=dict)

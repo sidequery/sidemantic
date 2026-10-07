@@ -1515,6 +1515,25 @@ def test_aggregate_boundary_time_grain_rollup_day_to_month(semantic_layer):
     assert "CAST(DATE_TRUNC('MONTH', order_date) AS DATE) AS order_date__month" in explanation.rewritten_sql
 
 
+@pytest.mark.parametrize(
+    "projection", ["DATE_TRUNC('month', order_date__day) AS order_month", "DATE_TRUNC('month', order_date__day)"]
+)
+def test_aggregate_boundary_time_grain_rollup_keeps_date_trunc_type(semantic_layer, projection):
+    wrapped_sql = f"""
+        SELECT {projection}, SUM(revenue) AS revenue
+        FROM (
+            SELECT orders.order_date__day, orders.revenue FROM orders
+        ) sq
+        GROUP BY 1
+    """
+
+    explanation = _python_plan(semantic_layer, wrapped_sql)
+    result = semantic_layer.conn.execute(explanation.rewritten_sql)
+
+    assert "time_grain_rollup" in explanation.applied_rules
+    assert str(result.description[0][1]) == "TIMESTAMP"
+
+
 def test_aggregate_boundary_time_grain_rollup_uses_daily_preaggregation(semantic_layer):
     orders = semantic_layer.get_model("orders")
     orders.pre_aggregations = [

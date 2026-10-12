@@ -279,6 +279,9 @@ def _fixture_values(case: PythonTestParityCase) -> dict[str, object]:
             if case.module is auto_dimension_tests:
                 values["db"] = _call_fixture(case.module, "db")
                 values[fixture_name] = _call_fixture(case.module, "layer", values["db"])
+            elif case.module is date_integration_tests:
+                # The module fixture pins the layer clock; SemanticLayer is patched to Rust above.
+                values[fixture_name] = _call_fixture(case.module, "layer")
             else:
                 values[fixture_name] = RustRuntimeSemanticLayer(auto_register=False)
         elif fixture_name == "test_db":

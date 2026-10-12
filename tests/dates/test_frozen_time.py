@@ -152,6 +152,11 @@ def _events_layer(**kwargs) -> SemanticLayer:
     return layer
 
 
+def _compile(layer: SemanticLayer, **kwargs) -> str:
+    # The Rust engine parenthesizes the filtered column; normalize so assertions cover both engines.
+    return layer.compile(**kwargs).replace("(timestamp)", "timestamp")
+
+
 def _local_date_literal(days_ago: int) -> str:
     return f"CAST('{(NOW.astimezone().date() - timedelta(days=days_ago)).isoformat()} 00:00:00' AS TIMESTAMP)"
 
@@ -159,7 +164,8 @@ def _local_date_literal(days_ago: int) -> str:
 def test_compile_freezes_pushed_down_filters_on_duckdb():
     layer = _events_layer()
 
-    sql = layer.compile(
+    sql = _compile(
+        layer,
         metrics=["events.event_count"],
         filters=["events.timestamp >= current_date - interval 30 day", "events.timestamp < current_timestamp"],
     )
@@ -173,7 +179,7 @@ def test_compile_freezes_pushed_down_filters_on_duckdb():
 def test_compile_freezes_sidemantic_relative_date_range():
     layer = _events_layer()
 
-    sql = layer.compile(metrics=["events.event_count"], filters=["events.timestamp = 'yesterday'"])
+    sql = _compile(layer, metrics=["events.event_count"], filters=["events.timestamp = 'yesterday'"])
 
     yesterday = (NOW.astimezone().date() - timedelta(days=1)).isoformat()
     assert f"timestamp = CAST('{yesterday}' AS DATE)" in sql
@@ -213,7 +219,8 @@ def test_rust_engine_output_is_frozen():
     pytest.importorskip("sidemantic_rs", reason="Requires the built Rust extension")
     layer = _events_layer(engine="rust", fallback=False)
 
-    sql = layer.compile(
+    sql = _compile(
+        layer,
         metrics=["events.event_count"],
         filters=["events.timestamp >= current_date - interval 30 day"],
     )
@@ -227,7 +234,7 @@ def test_current_date_uses_the_duckdb_session_timezone():
     layer = _events_layer()
     layer.adapter.execute("SET TimeZone = 'Pacific/Kiritimati'")
     # 18:30 UTC on Oct 11 is already Oct 12 in UTC+14.
-    sql = layer.compile(metrics=["events.event_count"], filters=["events.timestamp >= current_date"])
+    sql = _compile(layer, metrics=["events.event_count"], filters=["events.timestamp >= current_date"])
 
     assert "timestamp >= CAST('2026-10-12' AS DATE)" in sql
 
@@ -236,7 +243,8 @@ def test_current_date_is_left_alone_when_session_timezone_is_unknown():
     layer = _events_layer()
     layer._duckdb_session_timezone = lambda: None
 
-    sql = layer.compile(
+    sql = _compile(
+        layer,
         metrics=["events.event_count"],
         filters=["events.timestamp >= current_date - interval 30 day", "events.timestamp < current_timestamp"],
     )

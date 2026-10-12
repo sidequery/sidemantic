@@ -131,6 +131,7 @@ def rewrite_transport_sql(
     transport: str,
     strict: bool = True,
     use_preaggregations: bool | None = None,
+    freeze_current_time: bool = True,
 ) -> str:
     """Rewrite SQL with row/access/column controls and reject unsafe passthrough.
 
@@ -138,6 +139,10 @@ def rewrite_transport_sql(
     regenerated as semantic SQL. A query that the rewriter leaves untouched is
     denied before execution because its policies cannot be proven to apply.
     Projection-only queries such as ``SELECT 1`` remain safe and available.
+
+    ``freeze_current_time`` applies the layer's current-time freezing (see
+    ``SemanticLayer.freeze_current_time``); callers that cache the rewrite pass
+    False and freeze each use of the cached SQL themselves.
     """
     from sidemantic.core.semantic_layer import SecurityError
     from sidemantic.sql.query_rewriter import QueryRewriter
@@ -211,6 +216,9 @@ def rewrite_transport_sql(
     else:
         rewritten = rewriter.rewrite(query, strict=strict, user_attributes=user_attributes)
     layer.last_engine_selection = rewriter.last_engine_selection
+    freeze = getattr(layer, "_freeze_current_time_sql", None)
+    if freeze_current_time and freeze is not None:
+        rewritten = freeze(rewritten)
     return rewritten
 
 

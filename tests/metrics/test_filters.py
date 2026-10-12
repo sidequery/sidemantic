@@ -1,5 +1,7 @@
 """Test metric-level filters."""
 
+from datetime import UTC, datetime, timedelta
+
 import duckdb
 from sqlglot import exp, parse_one
 
@@ -199,12 +201,19 @@ def test_metric_filter_with_time_dimension(layer):
     )
 
     layer.add_model(orders)
+    frozen_at = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
+    layer.clock = lambda: frozen_at
+    cutoff = frozen_at.astimezone().date() - timedelta(days=30)
 
     sql = layer.compile(metrics=["orders.recent_completed_revenue"], dimensions=["orders.created_at__month"])
 
-    # Both filters should be in CASE WHEN combined with AND
+    # Both filters should be in CASE WHEN combined with AND; CURRENT_DATE is frozen on DuckDB.
     _assert_metric_filter(
-        sql, "orders", "recent_completed_revenue", "status = 'completed' AND created_at >= CURRENT_DATE - 30", "amount"
+        sql,
+        "orders",
+        "recent_completed_revenue",
+        f"status = 'completed' AND created_at >= CAST('{cutoff.isoformat()}' AS DATE)",
+        "amount",
     )
     assert "recent_completed_revenue_raw" in sql
 

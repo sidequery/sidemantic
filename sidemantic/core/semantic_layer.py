@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from contextvars import ContextVar, Token
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sidemantic.core.consumption import (
     Explore,
@@ -87,6 +89,7 @@ class SemanticLayer:
         max_limit: int | None = None,
         allow_non_additive_unsafe: bool = False,
         enforce_visibility: bool = False,
+        freeze_current_time: bool | None = None,
     ):
         """Initialize semantic layer.
 
@@ -135,6 +138,16 @@ class SemanticLayer:
             enforce_visibility: When True, requesting a dimension/metric whose ``public=False``
                 raises during compile, and catalog/introspection listings omit non-public
                 fields. Defaults to False so library users are unaffected.
+            freeze_current_time: Replace ``CURRENT_DATE``/``today()``/``now()``/
+                ``CURRENT_TIMESTAMP`` in compiled query SQL with literals taken from one
+                compile-time instant (``self.clock``) so storage planners such as DuckDB's
+                Iceberg scan can prune on time filters. ``None`` (default) enables it only
+                for the DuckDB dialect, and freezes ``CURRENT_DATE`` only when the
+                connection's ``TimeZone`` setting can be read; remote engines evaluate
+                ``CURRENT_DATE`` in a server/session timezone the client cannot know.
+                ``True`` also freezes other dialects, using the DuckDB session timezone when
+                available and the process timezone otherwise.
+                See ``sidemantic.sql.frozen_time`` for the exact rewrite rules.
         """
         from sidemantic.db.base import BaseDatabaseAdapter
 
@@ -170,6 +183,9 @@ class SemanticLayer:
         self.max_limit = max_limit
         self.allow_non_additive_unsafe = allow_non_additive_unsafe
         self.enforce_visibility = enforce_visibility
+        self.freeze_current_time = freeze_current_time
+        # Source of the instant frozen into compiled SQL; replaceable for deterministic tests.
+        self.clock: Callable[[], datetime] = lambda: datetime.now(UTC)
         self._strict_rust_sql_generator_entrypoint = is_strict_for("sql_generator_entrypoint")
         self._strict_rust_query_validation = is_strict_for("semantic_core_query_validation")
         if engine == "python":
@@ -1349,7 +1365,45 @@ class SemanticLayer:
                     dialect or self.dialect,
                     aliases=aliases,
                 )
-        return self._apply_post_process(inner_sql, post_process)
+        return self._freeze_current_time_sql(self._apply_post_process(inner_sql, post_process), dialect or self.dialect)
+
+    def _freeze_current_time_sql(self, sql: str, dialect: str | None = None) -> str:
+        """Freeze current-time functions in compiled query SQL when enabled for ``dialect``.
+
+        Applied after generation (and after the generator/rewrite caches) so cached SQL
+        never carries a stale instant and both the Python and Rust engines are covered.
+        """
+        dialect = dialect or self.dialect
+        enabled = self.freeze_current_time if self.freeze_current_time is not None else dialect == "duckdb"
+        if not enabled:
+            return sql
+        from sidemantic.sql.frozen_time import freeze_current_time, uses_current_date
+
+        # CURRENT_DATE depends on the connection's TimeZone setting, which init_sql or SET can
+        # change, so read it from the live DuckDB session. When it is unknown, only an explicit
+        # opt-in falls back to the process timezone; otherwise CURRENT_DATE stays unchanged.
+        timezone = self._duckdb_session_timezone() if uses_current_date(sql) else None
+        return freeze_current_time(
+            sql,
+            dialect,
+            now=self.clock(),
+            timezone=timezone,
+            freeze_dates=timezone is not None or self.freeze_current_time is True,
+        )
+
+    def _duckdb_session_timezone(self) -> tzinfo | None:
+        """Return the ``TimeZone`` of this layer's DuckDB connection, or None if it cannot be read.
+
+        The setting is session-scoped, so it must be read on the layer's own connection rather
+        than a cursor.
+        """
+        if getattr(self.adapter, "dialect", None) != "duckdb":
+            return None
+        try:
+            row = self.adapter.raw_connection.execute("SELECT current_setting('TimeZone')").fetchone()
+            return ZoneInfo(row[0])
+        except Exception:
+            return None
 
     def _validate_query(
         self,
@@ -2254,12 +2308,15 @@ class SemanticLayer:
                 query,
                 user_attributes=user_attributes,
                 transport="SemanticLayer.sql()",
+                freeze_current_time=False,
             )
             if use_cache:
                 if len(self._sql_rewrite_cache) >= self._sql_rewrite_cache_limit:
                     self._sql_rewrite_cache.pop(next(iter(self._sql_rewrite_cache)))
                 selection = dict(self.last_engine_selection) if self.last_engine_selection is not None else None
                 self._sql_rewrite_cache[cache_key] = (rewritten_sql, selection)
+        # The cache holds unfrozen SQL; each execution freezes its own instant.
+        rewritten_sql = self._freeze_current_time_sql(rewritten_sql)
 
         def recompile_raw():
             return rewrite_transport_sql(

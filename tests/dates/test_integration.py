@@ -1,6 +1,29 @@
-"""Test relative date integration with queries."""
+"""Test relative date integration with queries.
 
-from sidemantic import Dimension, Metric, Model
+Relative dates expand to ``CURRENT_DATE`` expressions, which DuckDB compilation
+then freezes to literals of one pinned instant (see ``sidemantic.sql.frozen_time``).
+"""
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from sidemantic import Dimension, Metric, Model, SemanticLayer
+
+FROZEN_AT = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
+# CURRENT_DATE follows the local timezone, like DuckDB's default session TimeZone.
+TODAY = FROZEN_AT.astimezone().date()
+
+
+def _date_literal(days_ago: int = 0) -> str:
+    return f"CAST('{(TODAY - timedelta(days=days_ago)).isoformat()}' AS DATE)"
+
+
+@pytest.fixture
+def layer():
+    layer = SemanticLayer(auto_register=False)
+    layer.clock = lambda: FROZEN_AT
+    return layer
 
 
 def test_relative_date_in_filter(layer):
@@ -30,8 +53,9 @@ def test_relative_date_in_filter(layer):
     print("SQL with relative date filter:")
     print(sql)
 
-    # Should convert to SQL expression
-    assert "CURRENT_DATE - 7" in sql
+    # Should convert to SQL expression, folded to a literal date
+    assert f"created_at >= {_date_literal(7)}" in sql
+    assert "CURRENT_DATE" not in sql
     assert "'last 7 days'" not in sql  # Original string should be replaced
 
 
@@ -57,8 +81,9 @@ def test_multiple_relative_date_filters(layer):
     )
 
     # Should convert both
-    assert "CURRENT_DATE - 30" in sql
-    assert "CURRENT_DATE" in sql
+    assert f"created_at >= {_date_literal(30)}" in sql
+    assert f"created_at <= {_date_literal()}" in sql
+    assert "CURRENT_DATE" not in sql
 
 
 def test_this_month_filter(layer):
@@ -81,7 +106,7 @@ def test_this_month_filter(layer):
 
     # Should expand to range (case insensitive since SQLGlot may uppercase)
     sql_upper = sql.upper()
-    assert "DATE_TRUNC('MONTH', CURRENT_DATE)" in sql_upper or "DATE_TRUNC('month', CURRENT_DATE)" in sql
+    assert f"DATE_TRUNC('MONTH', {_date_literal()})" in sql_upper
     assert "INTERVAL" in sql_upper and "MONTH" in sql_upper
 
 
@@ -147,7 +172,7 @@ def test_not_equal_relative_date_single_day(layer):
 
     sql = layer.compile(metrics=["orders.revenue"], filters=["orders_cte.created_at != 'today'"])
 
-    assert "CURRENT_DATE" in sql
+    assert _date_literal() in sql
     assert "'today'" not in sql
     assert "NOT" in sql.upper() or "<>" in sql
 
@@ -221,6 +246,6 @@ def test_mixed_filters(layer):
     )
 
     # Relative date should be converted
-    assert "CURRENT_DATE - 7" in sql
+    assert f"created_at >= {_date_literal(7)}" in sql
     # Regular filter should remain
     assert "status = 'completed'" in sql

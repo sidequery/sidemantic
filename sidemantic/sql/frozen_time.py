@@ -16,8 +16,9 @@ Timezone handling mirrors DuckDB:
   literal of the UTC instant. Comparisons against naive TIMESTAMP columns still
   cast the column through the session timezone exactly as before.
 - ``CURRENT_DATE``/``today()`` (DuckDB type DATE, evaluated in the session
-  timezone) become a DATE literal of today's date in ``timezone``, which
-  defaults to the process's local timezone (DuckDB's default ``TimeZone``).
+  timezone) become a DATE literal of today's date in ``timezone``. Callers
+  that cannot determine the session timezone pass ``freeze_dates=False`` and
+  these calls stay unchanged.
 - ``CURRENT_DATE +/- <integer>`` folds to a DATE literal and
   ``CURRENT_DATE +/- INTERVAL n day|week|hour|minute|second`` folds to a naive
   TIMESTAMP literal, matching DuckDB's result types. TIMESTAMPTZ values fold
@@ -33,6 +34,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 
+import sqlglot
 from sqlglot import exp
 from sqlglot.dialects import Dialect
 from sqlglot.errors import SqlglotError
@@ -43,6 +45,8 @@ _CANDIDATE_PATTERN = re.compile(
     r"\b(?:current_date|current_timestamp|now|today|get_current_timestamp|transaction_timestamp)\b",
     re.IGNORECASE,
 )
+
+_DATE_CANDIDATE_PATTERN = re.compile(r"\b(?:current_date|today)\b", re.IGNORECASE)
 
 # Function name -> whether the bare keyword form (no parentheses) is a call.
 _DATE_FUNCTIONS = {"CURRENT_DATE": True, "TODAY": False}
@@ -127,18 +131,24 @@ def freeze_current_time(
     *,
     now: datetime | None = None,
     timezone: tzinfo | None = None,
+    freeze_dates: bool = True,
 ) -> str:
     """Return ``sql`` with current-time calls replaced by one frozen instant.
 
     Args:
-        sql: A single SQL query. Statements that are not queries (DDL/DML, or
-            multiple statements) are returned unchanged so a frozen literal is
-            never persisted into a view or table definition.
+        sql: A single SQL query. Statements that are not queries (DDL/DML,
+            including CTE-prefixed DML, or multiple statements) are returned
+            unchanged so a frozen literal is never persisted into a view or
+            table.
         dialect: SQLGlot dialect used to tokenize the query and render literals.
         now: The instant the query is frozen at (defaults to the current time).
             A naive value is interpreted as UTC.
         timezone: Session timezone used to derive ``CURRENT_DATE``
             (defaults to the process's local timezone).
+        freeze_dates: Whether to replace ``CURRENT_DATE``/``today()``. Pass
+            False when the session timezone is unknown; ``now()`` and
+            ``CURRENT_TIMESTAMP`` are timezone-independent instants and are
+            still frozen.
 
     Returns:
         The rewritten SQL, or the original SQL when nothing can be replaced or
@@ -150,7 +160,7 @@ def freeze_current_time(
         tokens = Dialect.get_or_raise(dialect).tokenize(sql)
     except SqlglotError:
         return sql
-    if not _is_single_query(tokens):
+    if not _is_single_query(tokens) or not _is_query_statement(sql, dialect):
         return sql
 
     if now is None:
@@ -167,6 +177,9 @@ def freeze_current_time(
             index += 1
             continue
         kind, call_end = call
+        if kind == "date" and not freeze_dates:
+            index = call_end + 1
+            continue
         value = _Value("date", today) if kind == "date" else _Value("timestamptz", now)
         value, span_end = _fold_arithmetic(tokens, index, call_end, value)
         replacements.append((tokens[index].start, tokens[span_end].end + 1, value.sql(dialect)))
@@ -183,6 +196,20 @@ def _is_single_query(tokens: list[Token]) -> bool:
         return False
     semicolons = [i for i, token in enumerate(tokens) if token.token_type == TokenType.SEMICOLON]
     return not semicolons or semicolons == [len(tokens) - 1]
+
+
+def uses_current_date(sql: str) -> bool:
+    """Whether ``sql`` may reference ``CURRENT_DATE``/``today()``, which depend on the session timezone."""
+    return bool(_DATE_CANDIDATE_PATTERN.search(sql))
+
+
+def _is_query_statement(sql: str, dialect: str) -> bool:
+    """Whether the parsed root statement is a query, so CTE-prefixed DML such as ``WITH ... INSERT`` is excluded."""
+    try:
+        statements = sqlglot.parse(sql, read=dialect)
+    except SqlglotError:
+        return False
+    return len(statements) == 1 and isinstance(statements[0], exp.Query)
 
 
 def _match_call(tokens: list[Token], index: int) -> tuple[str, int] | None:

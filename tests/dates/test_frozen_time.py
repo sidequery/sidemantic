@@ -77,6 +77,7 @@ def test_sql_without_time_functions_is_unchanged():
         "SELECT CURRENT_TIMESTAMP(3)",
         "CREATE VIEW v AS SELECT * FROM t WHERE d >= CURRENT_DATE",
         "SELECT 1; SELECT now()",
+        "WITH x AS (SELECT 1 AS a) INSERT INTO history SELECT CURRENT_DATE FROM x",
     ],
 )
 def test_non_calls_non_queries_and_arguments_are_left_alone(sql):
@@ -220,3 +221,25 @@ def test_rust_engine_output_is_frozen():
     assert layer.last_engine_selection == {"engine": "rust", "reason": None}
     assert _local_date_literal(30) in sql
     assert "CURRENT_DATE" not in sql.upper()
+
+
+def test_current_date_uses_the_duckdb_session_timezone():
+    layer = _events_layer()
+    layer.adapter.execute("SET TimeZone = 'Pacific/Kiritimati'")
+    # 18:30 UTC on Oct 11 is already Oct 12 in UTC+14.
+    sql = layer.compile(metrics=["events.event_count"], filters=["events.timestamp >= current_date"])
+
+    assert "timestamp >= CAST('2026-10-12' AS DATE)" in sql
+
+
+def test_current_date_is_left_alone_when_session_timezone_is_unknown():
+    layer = _events_layer()
+    layer._duckdb_session_timezone = lambda: None
+
+    sql = layer.compile(
+        metrics=["events.event_count"],
+        filters=["events.timestamp >= current_date - interval 30 day", "events.timestamp < current_timestamp"],
+    )
+
+    assert "CURRENT_DATE - INTERVAL '30' DAY" in sql
+    assert f"timestamp < {NOW_TZ}" in sql

@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from contextvars import ContextVar, Token
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sidemantic.core.consumption import (
     Explore,
@@ -141,9 +142,11 @@ class SemanticLayer:
                 ``CURRENT_TIMESTAMP`` in compiled query SQL with literals taken from one
                 compile-time instant (``self.clock``) so storage planners such as DuckDB's
                 Iceberg scan can prune on time filters. ``None`` (default) enables it only
-                for the DuckDB dialect, where ``CURRENT_DATE`` uses the process's local
-                timezone like DuckDB's default ``TimeZone`` setting; remote engines evaluate
+                for the DuckDB dialect, and freezes ``CURRENT_DATE`` only when the
+                connection's ``TimeZone`` setting can be read; remote engines evaluate
                 ``CURRENT_DATE`` in a server/session timezone the client cannot know.
+                ``True`` also freezes other dialects, using the DuckDB session timezone when
+                available and the process timezone otherwise.
                 See ``sidemantic.sql.frozen_time`` for the exact rewrite rules.
         """
         from sidemantic.db.base import BaseDatabaseAdapter
@@ -1374,9 +1377,33 @@ class SemanticLayer:
         enabled = self.freeze_current_time if self.freeze_current_time is not None else dialect == "duckdb"
         if not enabled:
             return sql
-        from sidemantic.sql.frozen_time import freeze_current_time
+        from sidemantic.sql.frozen_time import freeze_current_time, uses_current_date
 
-        return freeze_current_time(sql, dialect, now=self.clock())
+        # CURRENT_DATE depends on the connection's TimeZone setting, which init_sql or SET can
+        # change, so read it from the live DuckDB session. When it is unknown, only an explicit
+        # opt-in falls back to the process timezone; otherwise CURRENT_DATE stays unchanged.
+        timezone = self._duckdb_session_timezone() if uses_current_date(sql) else None
+        return freeze_current_time(
+            sql,
+            dialect,
+            now=self.clock(),
+            timezone=timezone,
+            freeze_dates=timezone is not None or self.freeze_current_time is True,
+        )
+
+    def _duckdb_session_timezone(self) -> tzinfo | None:
+        """Return the ``TimeZone`` of this layer's DuckDB connection, or None if it cannot be read.
+
+        The setting is session-scoped, so it must be read on the layer's own connection rather
+        than a cursor.
+        """
+        if getattr(self.adapter, "dialect", None) != "duckdb":
+            return None
+        try:
+            row = self.adapter.raw_connection.execute("SELECT current_setting('TimeZone')").fetchone()
+            return ZoneInfo(row[0])
+        except Exception:
+            return None
 
     def _validate_query(
         self,

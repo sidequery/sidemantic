@@ -5453,6 +5453,22 @@
             "title": "Relationships",
             "type": "array"
           },
+          "required_filters": {
+            "description": "Fields callers must filter",
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Filters",
+            "type": "array"
+          },
+          "required_filters_or_groups": {
+            "description": "Fields callers must filter or group by, independently for each field",
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Filters Or Groups",
+            "type": "array"
+          },
           "schema_exposure": {
             "anyOf": [
               {

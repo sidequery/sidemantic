@@ -136,7 +136,9 @@ function Shell() {
     () => (dashboard ? initialStateFromCatalog(catalog, dashboard, state.dashboardTab) : initial),
     [catalog, dashboard, initial, state.dashboardTab],
   );
-  const dirty = state.dateRange != null || Object.keys(state.filters).length > 0;
+  const dirty = state.datePreset !== resetInitial.datePreset
+    || (state.datePreset === undefined && state.dateRange != null)
+    || Object.keys(state.filters).length > 0;
   const activeTimeDimension = configured?.timeDimension ?? model?.timeDimension;
   const hasTime = Boolean(activeTimeDimension);
   const grains = grainOptions(activeTimeDimension?.supportedGranularities, state.grain);
@@ -212,9 +214,9 @@ function Shell() {
         <ViewSwitcher view={state.view} onChange={(view) => dispatch({ type: "setView", view })} />
       )}
       <DateRangeControl
-        range={state.dateRange}
+        range={hasTime ? state.dateRange : undefined}
         disabled={!hasTime}
-        onChange={(range) => dispatch({ type: "setDateRange", range })}
+        onChange={(range, preset) => dispatch({ type: "setDateRange", range, preset })}
         comparison={state.comparison}
         comparisonRange={state.comparisonRange}
         onComparisonChange={(comparison, range) => dispatch({ type: "setComparison", comparison, range })}

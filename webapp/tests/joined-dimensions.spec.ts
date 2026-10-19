@@ -87,3 +87,32 @@ test("reopening a joined filter pill keeps the primary model date range", async 
   expect(distinct?.filters?.some((filter) => filter.includes("activity.created_at"))).toBe(true);
   expect(distinct?.filters?.some((filter) => filter.includes("assignment.assigned_at"))).toBe(false);
 });
+
+test("Reset clears a joined-only leaderboard selection and stops its queries", async ({ page }) => {
+  const queries = await mockCatalog(page);
+  await page.goto("/?view=explore&model=activity&metric=activity.revenue");
+  const reset = page.getByRole("button", { name: "Reset", exact: true });
+  const joined = page.locator('[data-catalog-dimension="assignment.arm"]');
+  await expect(joined).toBeVisible();
+  await expect(reset).toHaveCount(0);
+  await joined.click();
+  await expect(page.locator('button[data-dimension="assignment.arm"][data-value="2"]')).toBeVisible();
+  await expect(reset).toBeVisible();
+  await expect.poll(() => new URL(page.url()).searchParams.get("jdims")).toBe('["assignment.arm"]');
+  const selectedParams = new URL(page.url()).searchParams;
+  expect(selectedParams.has("filters")).toBe(false);
+  expect(selectedParams.has("from")).toBe(false);
+
+  await reset.click();
+  await expect(reset).toHaveCount(0);
+  await expect(joined).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator('button[data-dimension="assignment.arm"]')).toHaveCount(0);
+  await expect.poll(() => new URL(page.url()).searchParams.get("jdims")).toBeNull();
+
+  queries.length = 0;
+  await page.reload();
+  await expect(page.locator('button[data-dimension="activity.arm"][data-value="local"]')).toBeVisible();
+  await expect(reset).toHaveCount(0);
+  expect(queries.length).toBeGreaterThan(0);
+  expect(queries.some((query) => query.dimensions?.some((dim) => dim.startsWith("assignment.")))).toBe(false);
+});

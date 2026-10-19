@@ -81,25 +81,32 @@ function formatUiValue(value, options = {}) {
   const numeric = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(numeric))
     return String(value);
-  const format = String(options.format || "").toLowerCase();
-  const percent = options.style === "percent" || format.includes("%") || format.includes("percent") || format.includes("pct") || options.type === "ratio";
+  const format = String(options.format || "").trim().toLowerCase();
+  const percent = options.style === "percent" || format.includes("%") || format.includes("percent") || format.includes("pct") || !format && !options.style && !options.currency && options.type === "ratio";
+  const decimalPattern = format.match(/^[^0#]*[0#,]+(?:\.([0#]+))?%?$/);
+  const namedPrecision = format.match(/^(?:decimal|percent|usd)_(\d+)$/);
+  const precision = decimalPattern ? (decimalPattern[1] || "").length : namedPrecision ? Number(namedPrecision[1]) : undefined;
+  const maximumFractionDigits = options.maximumFractionDigits ?? (precision === undefined ? percent || options.compact ? 1 : 2 : Math.min(precision, 20));
+  const minimumFractionDigits = precision === undefined ? undefined : Math.min(decimalPattern ? (decimalPattern[1] || "").replaceAll("#", "").length : precision, maximumFractionDigits);
   if (percent) {
     const scaled = options.style === "percent" ? numeric : Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
     return scaled.toLocaleString(undefined, {
-      maximumFractionDigits: options.maximumFractionDigits ?? 1,
+      maximumFractionDigits,
+      minimumFractionDigits,
       style: options.style === "percent" ? "percent" : "decimal"
     }) + (options.style === "percent" ? "" : "%");
   }
   const currency = options.style === "currency" || options.currency || format.includes("$") || format.includes("usd") || format.includes("currency") || format.includes("dollar");
   return numeric.toLocaleString(undefined, {
     currency: currency ? options.currency || "USD" : undefined,
-    maximumFractionDigits: options.maximumFractionDigits ?? 2,
+    maximumFractionDigits,
+    minimumFractionDigits,
     notation: options.compact ? "compact" : "standard",
     style: currency ? "currency" : "decimal"
   });
 }
 function formatUiCompact(value, options = {}) {
-  return formatUiValue(value, { ...options, compact: true, maximumFractionDigits: options.maximumFractionDigits ?? 1 });
+  return formatUiValue(value, { ...options, compact: true });
 }
 function normalizeFilterValue(value) {
   return String(value ?? "");

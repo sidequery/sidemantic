@@ -110,6 +110,8 @@ def _describe_dimension(dimension: Any, warnings: list[dict[str, Any]], model: M
         info["label"] = dimension.label
     if dimension.format:
         info["format"] = dimension.format
+    if dimension.value_format_name:
+        info["value_format_name"] = dimension.value_format_name
     if dimension.meta:
         info["meta"] = dimension.meta
     return _drop_none(info)
@@ -142,6 +144,8 @@ def _describe_metric(
         info["label"] = metric.label
     if metric.format:
         info["format"] = metric.format
+    if metric.value_format_name:
+        info["value_format_name"] = metric.value_format_name
     if metric.meta:
         info["meta"] = metric.meta
     result = _drop_none(info)

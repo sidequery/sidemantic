@@ -63,6 +63,8 @@ MODEL_FIELDS = {
     "relationships",
     "segments",
     "invariant_filters",
+    "required_filters",
+    "required_filters_or_groups",
     "pre_aggregations",
     "security",
     "default_time_dimension",
@@ -778,6 +780,8 @@ class SidemanticAdapter(BaseAdapter):
             "auto_dimensions",
             "meta",
             "invariant_filters",
+            "required_filters",
+            "required_filters_or_groups",
         ]:
             if field in model_def:
                 model_kwargs[field] = model_def.get(field)
@@ -1002,6 +1006,9 @@ class SidemanticAdapter(BaseAdapter):
             result["meta"] = model.meta
         if model.invariant_filters:
             result["invariant_filters"] = model.invariant_filters
+        for policy in ("required_filters", "required_filters_or_groups"):
+            if getattr(model, policy):
+                result[policy] = getattr(model, policy)
         if model.auto_dimensions:
             result["auto_dimensions"] = True
         if model.schema_exposure is not None:

@@ -12,14 +12,16 @@ from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.semantic_handoff import (
     RustBackendUnavailableError,
     UnsupportedSemanticFeaturesError,
-    graph_to_semantic_json,
+    graph_to_semantic_input,
 )
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
-# Lambda-only PreAggregation fields absent from the sidemantic-rs YAML schema
-# (which uses deny_unknown_fields). Exclude them when dumping a model so Rust
-# deserialization does not reject a model carrying a lambda pre-aggregation.
+# Python-managed fields absent from the legacy sidemantic-rs YAML schema
+# (which uses deny_unknown_fields). Query entrypoints enforce caller obligations
+# before dispatch; public authoring exports retain the policy declarations.
 _RUST_MODEL_DUMP_EXCLUDE = {
+    "required_filters": True,
+    "required_filters_or_groups": True,
     "invariant_filters": True,
     "schema_exposure": True,
     "pre_aggregations": {"__all__": {"rollups", "union_with_source_data"}},
@@ -29,6 +31,19 @@ _RUST_MODEL_DUMP_EXCLUDE = {
 def _model_dump_for_rust(model_obj) -> dict:
     """Dump a Model for the Rust bridge, dropping fields the Rust schema rejects."""
     return model_obj.model_dump(exclude_none=True, exclude=_RUST_MODEL_DUMP_EXCLUDE)
+
+
+def _compiler_graph_json(graph, *, input_dialect):
+    """Omit caller obligations already checked by the Python query boundary.
+
+    Keep them in public semantic snapshots; standalone native consumers must
+    reject unsupported policies rather than silently forgetting them.
+    """
+    data = graph_to_semantic_input(graph, input_dialect=input_dialect)
+    for model in data["models"]:
+        model.pop("required_filters", None)
+        model.pop("required_filters_or_groups", None)
+    return json.dumps(data, allow_nan=False)
 
 
 def get_rust_module() -> object:
@@ -150,6 +165,19 @@ def compile_semantic_input(
     rust_module=None,
 ) -> str:
     """Compile through the versioned graph contract; Rust owns SQL generation."""
+    from sidemantic.core.required_filters import validate_required_filters
+
+    validate_required_filters(
+        graph,
+        metrics=query.get("metrics"),
+        dimensions=query.get("dimensions"),
+        filters=query.get("filters"),
+        segments=query.get("segments"),
+        parameters=query.get("parameter_values"),
+        ungrouped=query.get("ungrouped", False),
+        base_model=query.get("consumption_base_model"),
+        dialect=query_dialect or input_dialect,
+    )
     if query_dialect == "postgres":
         query = dict(query)
         query["filters"] = [_postgres_query_sql(filter_sql, clause="WHERE") for filter_sql in query.get("filters", [])]
@@ -163,7 +191,7 @@ def compile_semantic_input(
     sql = _call_semantic_entrypoint(
         module,
         "compile_with_semantic_input",
-        graph_to_semantic_json(graph, input_dialect=input_dialect),
+        _compiler_graph_json(graph, input_dialect=input_dialect),
         json.dumps(query, allow_nan=False),
     )
     if not isinstance(sql, str):
@@ -185,7 +213,7 @@ def validate_semantic_input(
     errors = _call_semantic_entrypoint(
         module,
         "validate_with_semantic_input",
-        graph_to_semantic_json(graph, input_dialect=input_dialect),
+        _compiler_graph_json(graph, input_dialect=input_dialect),
         json.dumps(
             {
                 "metrics": metrics,
@@ -214,6 +242,9 @@ def rewrite_semantic_input(
     rust_module=None,
 ) -> str:
     """Rewrite SQL with caller context through the versioned graph contract."""
+    from sidemantic.core.required_filters import validate_required_filters_sql
+
+    validate_required_filters_sql(graph, sql, dialect=sql_dialect or input_dialect)
     if sql_dialect == "postgres":
         sql = _postgres_query_sql(sql)
         sql_dialect = "duckdb"
@@ -229,7 +260,7 @@ def rewrite_semantic_input(
         or allow_non_additive_unsafe
         or any(model.security is not None or model.invariant_filters for model in graph.models.values())
     )
-    args = [graph_to_semantic_json(graph, input_dialect=input_dialect), sql]
+    args = [_compiler_graph_json(graph, input_dialect=input_dialect), sql]
     entrypoint = "rewrite_with_semantic_input"
     if context_required:
         entrypoint = (

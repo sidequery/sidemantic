@@ -128,6 +128,8 @@ At least one of `table`, `sql`, or `source_uri` should be present unless the mod
 | `metrics` | No | List of model-local metrics. |
 | `relationships` | No | List of relationships from this model to other models. |
 | `segments` | No | List of model-local named filters. |
+| `required_filters` | No | Fields that every query using the model must filter. Enforced by Python-hosted clients before Python or Rust compilation. |
+| `required_filters_or_groups` | No | Fields that every query using the model must filter or group by, independently for each listed field. |
 | `pre_aggregations` | No | List of pre-aggregation definitions. |
 | `default_time_dimension` | No | Time dimension to add by default when the query needs time grouping. |
 | `default_grain` | No | Default time grain for the default time dimension. |
@@ -139,6 +141,63 @@ Canonical CLI-authored files should use `metrics` and `sql`. The native loaders
 also accept compatibility input aliases: model-level `measures` for `metrics`,
 dimension/metric `expr` for `sql`, and metric `measure` for `sql`. Exports use
 canonical field names.
+
+### Required filters
+
+Use model-level caller obligations to reject queries that omit a date range or
+combine rows across a required grouping dimension:
+
+```yaml
+models:
+  - name: daily_activity
+    table: warehouse.daily_activity
+    required_filters: [event_date]
+    required_filters_or_groups: [test_name]
+    dimensions:
+      - name: event_date
+        type: time
+        granularity: day
+      - name: test_name
+        type: categorical
+    metrics:
+      - name: activity_count
+        agg: count
+```
+
+```sh
+sidemantic query --models ./models --metric daily_activity.activity_count \
+  --dimension daily_activity.test_name \
+  --filter "daily_activity.event_date >= '2026-01-01'"
+```
+
+Each listed field is mandatory, including on models reached through metric
+dependencies, filters, and intermediate joins. Declarations accept local names
+or names qualified with the declaring model. Inheritance accumulates parent and
+child requirements, rebinding inherited fields to the child. Empty lists are the
+default and impose no obligations.
+
+Matching uses SQL column references, not text or string literals. A time-grained
+reference such as `daily_activity.event_date__month` matches `event_date`.
+`required_filters` cannot be satisfied by grouping; `required_filters_or_groups`
+accepts either a filter or grouping for **each** field. Structured dimensions count
+as grouping unless `ungrouped` is set. SQL clients must use an explicit `GROUP BY`
+(field or selected alias). Filters on an outer query do not satisfy obligations
+inside a CTE or subquery. The check requires a field reference; it does not prove
+selectivity or impose a maximum date range.
+
+Selected segments and resolved Explore filters can satisfy the obligation.
+Explore `default_filters` still apply only when filters are omitted; replacing
+them with an unrelated filter fails the model requirement. Explore mandatory
+filters still always apply. Model `invariant_filters`, security policies, and
+metric-internal filters do not substitute for the caller obligation.
+
+The Python CLI, HTTP `/query`, MCP structured queries, and standard semantic SQL
+(including PostgreSQL wire queries) enforce these rules before engine dispatch.
+Missing requirements raise `ValueError` and HTTP 400. Raw SQL bypass endpoints are
+disabled while requirements are declared. Yardstick SQL is rejected for these
+graphs; use structured queries or standard semantic SQL. Standalone Rust and
+DuckDB extension runtimes do not yet support these model options; exported
+definitions retain them and unsupported native loaders reject them.
 
 Single-column primary key:
 

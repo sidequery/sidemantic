@@ -41,6 +41,8 @@ def merge_model(child: Model, parent: Model) -> Model:
         *merged_data.get("invariant_filters", []),
         *child_data.get("invariant_filters", []),
     ]
+    for policy in ("required_filters", "required_filters_or_groups"):
+        merged_data[policy] = list(dict.fromkeys([*merged_data.get(policy, []), *child_data.get(policy, [])]))
 
     # Merge lists (dimensions, metrics, relationships, segments)
     # Child's items are added to parent's items

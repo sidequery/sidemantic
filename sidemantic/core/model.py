@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.governance import GovernedObject
@@ -51,6 +51,11 @@ class Model(GovernedObject):
         default_factory=list,
         description="SQL predicates that always constrain this model before joins and aggregation",
     )
+    required_filters: list[str] = Field(default_factory=list, description="Fields callers must filter")
+    required_filters_or_groups: list[str] = Field(
+        default_factory=list, description="Fields callers must filter or group by, independently for each field"
+    )
+
     pre_aggregations: list[PreAggregation] = Field(
         default_factory=list, description="Pre-aggregation definitions for query optimization"
     )
@@ -80,6 +85,23 @@ class Model(GovernedObject):
     security: SecurityPolicy | None = Field(
         None, description="Model-level access control and row-level security policy"
     )
+
+    @model_validator(mode="after")
+    def normalize_required_fields(self) -> "Model":
+        """Store local field names so inherited obligations bind to the child model."""
+        import re
+
+        for policy in ("required_filters", "required_filters_or_groups"):
+            normalized = []
+            for reference in getattr(self, policy):
+                field = reference.removeprefix(f"{self.name}.")
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field):
+                    raise ValueError(f"{policy} must name fields on {self.name}: {reference!r}")
+                normalized.append(field)
+            normalized = list(dict.fromkeys(normalized))
+            if normalized != getattr(self, policy):
+                setattr(self, policy, normalized)
+        return self
 
     def __init__(self, **data):
         super().__init__(**data)

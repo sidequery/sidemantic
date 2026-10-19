@@ -182,6 +182,12 @@ class QueryRewriter:
 
     def _route_rust(self, sql: str, user_attributes: dict | None, strict: bool) -> str | None:
         """Attempt the complete Rust rewrite before any Python semantic expansion."""
+        from sidemantic.core.required_filters import has_required_filters, validate_required_filters_sql
+
+        if has_required_filters(self.graph):
+            if self.would_use_yardstick_rewrite(sql):
+                raise ValueError("Required model filters require standard semantic SQL; Yardstick SQL is unsupported")
+            validate_required_filters_sql(self.graph, sql, dialect=self.dialect)
         self.rust_fallback_reason = None
         self.last_engine_selection = {"engine": "python", "reason": None}
         if not self._use_rust_rewriter:

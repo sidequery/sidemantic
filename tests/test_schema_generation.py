@@ -120,3 +120,12 @@ def test_catalog_only_schema_validation(schema_validator, catalog, definition):
 )
 def test_invalid_catalog_schema_validation(schema_validator, document):
     assert list(schema_validator.iter_errors(document))
+
+
+@pytest.mark.parametrize("policy", ["required_filters", "required_filters_or_groups"])
+def test_required_filter_schema_validation(schema_validator, policy):
+    model = {"name": "events", "table": "events", policy: ["event_date"]}
+    schema_validator.validate({"models": [model]})
+    for invalid in ("event_date", [1]):
+        model[policy] = invalid
+        assert list(schema_validator.iter_errors({"models": [model]}))

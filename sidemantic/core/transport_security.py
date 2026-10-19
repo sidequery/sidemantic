@@ -27,7 +27,14 @@ def has_invariant_filters(layer: Any) -> bool:
 
 
 def controls_are_active(layer: Any) -> bool:
-    return has_declared_security(layer) or has_enforced_column_restrictions(layer) or has_invariant_filters(layer)
+    from sidemantic.core.required_filters import has_required_filters
+
+    return (
+        has_declared_security(layer)
+        or has_enforced_column_restrictions(layer)
+        or has_invariant_filters(layer)
+        or has_required_filters(layer.graph)
+    )
 
 
 def _reads_from_source(sql: str, dialect: str) -> bool:
@@ -224,6 +231,7 @@ def rewrite_transport_sql(
 
 def deny_raw_sql(layer: Any, *, transport: str) -> None:
     """Disable a raw database bypass whenever a declared control needs enforcement."""
+    from sidemantic.core.required_filters import has_required_filters
     from sidemantic.core.semantic_layer import SecurityError
 
     controls: list[str] = []
@@ -233,6 +241,8 @@ def deny_raw_sql(layer: Any, *, transport: str) -> None:
         controls.append("column visibility restrictions")
     if has_invariant_filters(layer):
         controls.append("model invariant filters")
+    if has_required_filters(layer.graph):
+        controls.append("model required filters")
     if controls:
         raise SecurityError(
             f"{transport} is disabled because {' and '.join(controls)} are active and raw SQL "

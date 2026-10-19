@@ -1229,6 +1229,20 @@ class SemanticLayer:
         metrics = metrics or []
         dimensions = dimensions or []
 
+        from sidemantic.core.required_filters import validate_required_filters
+
+        validate_required_filters(
+            self.graph,
+            metrics=metrics,
+            dimensions=dimensions,
+            filters=filters,
+            segments=segments,
+            ungrouped=ungrouped,
+            base_model=consumption_base_model,
+            parameters=parameters,
+            dialect=dialect or self.dialect,
+        )
+
         if with_totals and (limit is not None or offset is not None):
             raise ValueError(
                 "with_totals cannot be combined with limit/offset: the grand-total row shares "
@@ -2287,6 +2301,12 @@ class SemanticLayer:
         use_cache = user_attributes is None and not yardstick_warnings_may_apply(self.graph, query)
         cache_key = (
             getattr(self.graph, "_version", 0),
+            # Policy lists can be assigned or mutated without a graph version
+            # change. A cached rewrite must still satisfy the current obligations.
+            tuple(
+                (name, tuple(model.required_filters), tuple(model.required_filters_or_groups))
+                for name, model in self.graph.models.items()
+            ),
             self.dialect,
             self.use_preaggregations,
             self.enforce_visibility,

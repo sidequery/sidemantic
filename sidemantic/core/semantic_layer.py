@@ -1229,6 +1229,20 @@ class SemanticLayer:
         metrics = metrics or []
         dimensions = dimensions or []
 
+        from sidemantic.core.required_filters import validate_required_filters
+
+        validate_required_filters(
+            self.graph,
+            metrics=metrics,
+            dimensions=dimensions,
+            filters=filters,
+            segments=segments,
+            ungrouped=ungrouped,
+            base_model=consumption_base_model,
+            parameters=parameters,
+            dialect=dialect or self.dialect,
+        )
+
         if with_totals and (limit is not None or offset is not None):
             raise ValueError(
                 "with_totals cannot be combined with limit/offset: the grand-total row shares "

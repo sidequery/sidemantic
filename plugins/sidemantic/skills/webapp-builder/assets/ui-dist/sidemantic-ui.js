@@ -1271,10 +1271,11 @@ class ErrorBoundary extends Component {
   }
 }
 // webapp/src/components/FilterPill.tsx
-import { useState as useState9 } from "react";
+import { useRef as useRef8, useState as useState9 } from "react";
 
 // webapp/src/components/FilterEditor.tsx
 import { useEffect as useEffect8, useId, useMemo as useMemo3, useRef as useRef7, useState as useState8 } from "react";
+import { createPortal } from "react-dom";
 
 // webapp/src/lib/catalog.ts
 function graphMetricsForModel(catalog, modelName) {
@@ -1559,27 +1560,32 @@ function useQueryResult(backend, query) {
 
 // webapp/src/components/useFilterPopover.ts
 import { useLayoutEffect } from "react";
-function useFilterPopover(ref, open = true) {
+function useFilterPopover(ref, anchorRef, open = true) {
   useLayoutEffect(() => {
     const panel = ref.current;
-    const anchor = panel?.parentElement;
+    const anchor = anchorRef.current;
     if (!open || !panel || !anchor)
       return;
     function position() {
       if (!panel || !anchor)
         return;
       const bounds = anchor.getBoundingClientRect();
+      const strip2 = anchor.closest("[data-filter-strip]")?.getBoundingClientRect();
       const gutter = 8;
       const left = Math.max(gutter, Math.min(bounds.left, window.innerWidth - panel.offsetWidth - gutter));
-      panel.style.left = `${left - bounds.left}px`;
-      panel.style.setProperty("--filter-popover-height", `${Math.max(0, window.innerHeight - bounds.bottom - gutter - 4)}px`);
+      const bottom = strip2 ? Math.max(strip2.top, Math.min(bounds.bottom, strip2.bottom)) : bounds.bottom;
+      const top = Math.max(gutter, Math.min(bottom + 4, window.innerHeight - gutter));
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      panel.style.setProperty("--filter-popover-height", `${Math.max(0, window.innerHeight - top - gutter)}px`);
     }
     position();
     const observer = new ResizeObserver(position);
     observer.observe(panel);
     observer.observe(anchor);
-    if (anchor.parentElement)
-      observer.observe(anchor.parentElement);
+    const strip = anchor.closest("[data-filter-strip]");
+    if (strip)
+      observer.observe(strip);
     window.addEventListener("resize", position);
     window.addEventListener("scroll", position, true);
     return () => {
@@ -1610,6 +1616,7 @@ function useDebounced(value, delayMs) {
 function FilterEditor({
   dim,
   model,
+  anchorRef,
   onClose
 }) {
   const { state, dispatch, backend, catalog, dashboard } = useExplorer();
@@ -1618,7 +1625,7 @@ function FilterEditor({
   const [mode, setModeState] = useState8(filter?.mode ?? "include");
   const selected = useMemo3(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
   const panelRef = useRef7(null);
-  useFilterPopover(panelRef);
+  useFilterPopover(panelRef, anchorRef);
   const searchRef = useRef7(null);
   const labelId = useId();
   const [search, setSearch] = useState8("");
@@ -1627,10 +1634,10 @@ function FilterEditor({
   const [patternDraft, setPatternDraft] = useState8(pattern);
   const debouncedPattern = useDebounced(patternDraft, SEARCH_DEBOUNCE_MS);
   useEffect8(() => {
-    const opener = document.activeElement;
+    const opener = anchorRef.current;
     searchRef.current?.focus();
-    return () => opener?.focus?.();
-  }, []);
+    return () => opener?.focus({ preventScroll: true });
+  }, [anchorRef]);
   useEffect8(() => {
     function onKey(event) {
       if (event.key === "Escape") {
@@ -1705,13 +1712,13 @@ function FilterEditor({
       first.focus();
     }
   }
-  return /* @__PURE__ */ jsxs9("div", {
+  return createPortal(/* @__PURE__ */ jsxs9("div", {
     ref: panelRef,
     role: "dialog",
     "aria-modal": "true",
     "aria-labelledby": labelId,
     onKeyDown,
-    className: "absolute left-0 top-full z-50 mt-1 max-h-[var(--filter-popover-height)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto border border-line bg-surface p-2 text-2xs shadow-lg",
+    className: "fixed z-30 max-h-[var(--filter-popover-height)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto border border-line bg-surface p-2 text-2xs shadow-lg",
     children: [
       /* @__PURE__ */ jsxs9("div", {
         id: labelId,
@@ -1815,13 +1822,14 @@ function FilterEditor({
         ]
       })
     ]
-  });
+  }), document.body);
 }
 
 // webapp/src/components/FilterPill.tsx
 import { jsx as jsx11, jsxs as jsxs10 } from "react/jsx-runtime";
 function FilterPill(props) {
   const [open, setOpen] = useState9(false);
+  const buttonRef = useRef8(null);
   if (!("dim" in props)) {
     return /* @__PURE__ */ jsxs10("span", {
       "data-dimension": props.dimension,
@@ -1862,6 +1870,7 @@ function FilterPill(props) {
         className: "inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted",
         children: [
           /* @__PURE__ */ jsxs10("button", {
+            ref: buttonRef,
             type: "button",
             "aria-label": `Edit filter ${dim.label}`,
             "aria-haspopup": "dialog",
@@ -1889,13 +1898,14 @@ function FilterPill(props) {
       open ? /* @__PURE__ */ jsx11(FilterEditor, {
         dim,
         model,
+        anchorRef: buttonRef,
         onClose: () => setOpen(false)
       }) : null
     ]
   });
 }
 // webapp/src/components/HeatmapChart.tsx
-import { useEffect as useEffect9, useRef as useRef8, useState as useState10 } from "react";
+import { useEffect as useEffect9, useRef as useRef9, useState as useState10 } from "react";
 import { jsx as jsx12, jsxs as jsxs11, Fragment as Fragment4 } from "react/jsx-runtime";
 var MARGIN3 = { top: 8, right: 8, bottom: 26, left: 76 };
 function orderedLabels(cells, key, explicit) {
@@ -1908,7 +1918,7 @@ function orderedLabels(cells, key, explicit) {
   return seen;
 }
 function HeatmapChart({ cells, xLabels, yLabels, height = 240, format = formatValue, ariaLabel }) {
-  const ref = useRef8(null);
+  const ref = useRef9(null);
   const [width, setWidth] = useState10(640);
   const { tip, handlers } = useChartTooltip();
   useEffect9(() => observeWidth(ref.current, 240, setWidth), []);
@@ -1982,7 +1992,7 @@ function HeatmapChart({ cells, xLabels, yLabels, height = 240, format = formatVa
   });
 }
 // webapp/src/components/HistogramChart.tsx
-import { useEffect as useEffect10, useRef as useRef9, useState as useState11 } from "react";
+import { useEffect as useEffect10, useRef as useRef10, useState as useState11 } from "react";
 import { jsx as jsx13, jsxs as jsxs12, Fragment as Fragment5 } from "react/jsx-runtime";
 function binValues(values, bins) {
   const finite = values.filter(Number.isFinite);
@@ -2007,7 +2017,7 @@ function binValues(values, bins) {
 }
 var MARGIN4 = { top: 12, right: 14, bottom: 26, left: 44 };
 function HistogramChart({ values, bins, height = 200, format = formatCompact, ariaLabel }) {
-  const ref = useRef9(null);
+  const ref = useRef10(null);
   const [width, setWidth] = useState11(640);
   const { tip, handlers } = useChartTooltip();
   useEffect10(() => observeWidth(ref.current, 160, setWidth), []);
@@ -2227,7 +2237,7 @@ function Leaderboard({
 import { useState as useState13 } from "react";
 
 // webapp/src/components/Sparkline.tsx
-import { useEffect as useEffect11, useId as useId2, useRef as useRef10, useState as useState12 } from "react";
+import { useEffect as useEffect11, useId as useId2, useRef as useRef11, useState as useState12 } from "react";
 import { jsx as jsx15, jsxs as jsxs14, Fragment as Fragment6 } from "react/jsx-runtime";
 function Sparkline({
   values,
@@ -2238,10 +2248,10 @@ function Sparkline({
   onHover,
   onBrush
 }) {
-  const containerRef = useRef10(null);
+  const containerRef = useRef11(null);
   const gradientId = useId2();
-  const svgRef = useRef10(null);
-  const dragStart = useRef10(null);
+  const svgRef = useRef11(null);
+  const dragStart = useRef11(null);
   const [width, setWidth] = useState12(200);
   const [hover, setHover] = useState12(null);
   const [brush, setBrush] = useState12(null);
@@ -2534,7 +2544,7 @@ function MetricCard({
   });
 }
 // webapp/src/components/NetworkChart.tsx
-import { useEffect as useEffect12, useMemo as useMemo4, useRef as useRef11, useState as useState14 } from "react";
+import { useEffect as useEffect12, useMemo as useMemo4, useRef as useRef12, useState as useState14 } from "react";
 import { jsx as jsx17, jsxs as jsxs16, Fragment as Fragment8 } from "react/jsx-runtime";
 function hashSeed(text) {
   let hash = 2166136261;
@@ -2631,7 +2641,7 @@ function layoutNetwork(nodes, links, { width = 640, height = 320, iterations = 1
   }));
 }
 function NetworkChart({ nodes, links, height = 320, ariaLabel }) {
-  const ref = useRef11(null);
+  const ref = useRef12(null);
   const [width, setWidth] = useState14(640);
   const { tip, handlers } = useChartTooltip();
   useEffect12(() => observeWidth(ref.current, 240, setWidth), []);
@@ -2847,7 +2857,7 @@ ${sql}`).join(`
   });
 }
 // webapp/src/components/ScatterChart.tsx
-import { useEffect as useEffect13, useRef as useRef12, useState as useState15 } from "react";
+import { useEffect as useEffect13, useRef as useRef13, useState as useState15 } from "react";
 import { jsx as jsx19, jsxs as jsxs18, Fragment as Fragment9 } from "react/jsx-runtime";
 var MARGIN5 = { top: 12, right: 14, bottom: 30, left: 48 };
 function ScatterChart({
@@ -2859,7 +2869,7 @@ function ScatterChart({
   formatY = formatCompact,
   ariaLabel
 }) {
-  const ref = useRef12(null);
+  const ref = useRef13(null);
   const [width, setWidth] = useState15(640);
   const { tip, handlers } = useChartTooltip();
   useEffect13(() => observeWidth(ref.current, 200, setWidth), []);
@@ -2991,7 +3001,7 @@ function ScatterChart({
   });
 }
 // webapp/src/components/StackedAreaChart.tsx
-import { useEffect as useEffect14, useRef as useRef13, useState as useState16 } from "react";
+import { useEffect as useEffect14, useRef as useRef14, useState as useState16 } from "react";
 import { jsx as jsx20, jsxs as jsxs19 } from "react/jsx-runtime";
 var MARGIN6 = { top: 12, right: 14, bottom: 26, left: 48 };
 function clamp2(value, min, max) {
@@ -3005,7 +3015,7 @@ function StackedAreaChart({
   formatLabel = (label) => label,
   ariaLabel
 }) {
-  const container = useRef13(null);
+  const container = useRef14(null);
   const [width, setWidth] = useState16(640);
   const [hover, setHover] = useState16(null);
   useEffect14(() => observeWidth(container.current, 240, setWidth), []);
@@ -3212,7 +3222,7 @@ function StatusDot({ status }) {
   });
 }
 // webapp/src/components/WaterfallChart.tsx
-import { useEffect as useEffect15, useRef as useRef14, useState as useState17 } from "react";
+import { useEffect as useEffect15, useRef as useRef15, useState as useState17 } from "react";
 import { jsx as jsx22, jsxs as jsxs21, Fragment as Fragment10 } from "react/jsx-runtime";
 function waterfallSteps(data) {
   let running = 0;
@@ -3229,7 +3239,7 @@ function waterfallSteps(data) {
 }
 var MARGIN7 = { top: 12, right: 14, bottom: 26, left: 48 };
 function WaterfallChart({ data, height = 220, format = formatValue, ariaLabel }) {
-  const ref = useRef14(null);
+  const ref = useRef15(null);
   const [width, setWidth] = useState17(640);
   const { tip, handlers } = useChartTooltip();
   useEffect15(() => observeWidth(ref.current, 200, setWidth), []);
@@ -3359,7 +3369,7 @@ function Button({ variant = "secondary", size = "md", type = "button", className
   });
 }
 // webapp/src/components/Combobox.tsx
-import { useEffect as useEffect16, useId as useId3, useMemo as useMemo5, useRef as useRef15, useState as useState18 } from "react";
+import { useEffect as useEffect16, useId as useId3, useMemo as useMemo5, useRef as useRef16, useState as useState18 } from "react";
 import { jsx as jsx24, jsxs as jsxs22 } from "react/jsx-runtime";
 function filterOptions(options, query) {
   const needle = query.trim().toLowerCase();
@@ -3370,7 +3380,7 @@ function filterOptions(options, query) {
 function Combobox(props) {
   const { options, placeholder = "Search…", ariaLabel, disabled, maxVisible = 50 } = props;
   const listId = useId3();
-  const rootRef = useRef15(null);
+  const rootRef = useRef16(null);
   const [open, setOpen] = useState18(false);
   const [query, setQuery] = useState18("");
   const [activeIndex, setActiveIndex] = useState18(0);
@@ -3516,7 +3526,7 @@ function Combobox(props) {
   });
 }
 // webapp/src/components/DatePicker.tsx
-import { useRef as useRef16, useState as useState19 } from "react";
+import { useRef as useRef17, useState as useState19 } from "react";
 import { jsx as jsx25, jsxs as jsxs23 } from "react/jsx-runtime";
 var WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 var MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -3554,7 +3564,7 @@ function DatePicker(props) {
   const [year, setYear] = useState19(() => Number((anchor ?? todayIso()).slice(0, 4)));
   const [monthIndex, setMonthIndex] = useState19(() => Number((anchor ?? todayIso()).slice(5, 7)) - 1);
   const [pending, setPending] = useState19(null);
-  const details = useRef16(null);
+  const details = useRef17(null);
   function shiftMonth(delta) {
     const next = new Date(Date.UTC(year, monthIndex + delta, 1));
     setYear(next.getUTCFullYear());
@@ -3695,7 +3705,7 @@ function DatePicker(props) {
   });
 }
 // webapp/src/components/DateRangeControl.tsx
-import { useRef as useRef17, useState as useState20 } from "react";
+import { useRef as useRef18, useState as useState20 } from "react";
 import { jsx as jsx26, jsxs as jsxs24 } from "react/jsx-runtime";
 var COMPARISON_OPTIONS = [
   { key: "off", label: "Off" },
@@ -3711,7 +3721,7 @@ function DateRangeControl({
   comparisonRange,
   onComparisonChange
 }) {
-  const details = useRef17(null);
+  const details = useRef18(null);
   const [from, setFrom] = useState20(range?.from ?? "");
   const [to, setTo] = useState20(range?.to ?? "");
   const [cmpFrom, setCmpFrom] = useState20(comparisonRange?.from ?? "");
@@ -4158,14 +4168,14 @@ function Tooltip({ content, children, className }) {
   });
 }
 // webapp/src/components/ViewSwitcher.tsx
-import { useRef as useRef18 } from "react";
+import { useRef as useRef19 } from "react";
 import { jsx as jsx33 } from "react/jsx-runtime";
 var SEGMENTS = [
   { key: "explore", label: "Explore" },
   { key: "pivot", label: "Pivot" }
 ];
 function ViewSwitcher({ view, onChange }) {
-  const list = useRef18(null);
+  const list = useRef19(null);
   function move(direction) {
     const current = Math.max(0, SEGMENTS.findIndex((segment) => segment.key === view));
     const next = SEGMENTS[(current + direction + SEGMENTS.length) % SEGMENTS.length];

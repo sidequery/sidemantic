@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { aliasOf, NULL_TOKEN, type CatalogDimension, type CatalogModel } from "../data/types";
 import { displayDimValue } from "../lib/format";
 import { dashboardTabConfig } from "../lib/dashboard";
@@ -37,10 +38,12 @@ function useDebounced<T>(value: T, delayMs: number): T {
 export function FilterEditor({
   dim,
   model,
+  anchorRef,
   onClose,
 }: {
   dim: CatalogDimension;
   model: CatalogModel;
+  anchorRef: RefObject<HTMLButtonElement>;
   onClose: () => void;
 }) {
   const { state, dispatch, backend, catalog, dashboard } = useExplorer();
@@ -56,7 +59,7 @@ export function FilterEditor({
   const selected = useMemo(() => new Set(filter?.mode !== "contains" ? (filter?.values ?? []) : []), [filter]);
 
   const panelRef = useRef<HTMLDivElement>(null);
-  useFilterPopover(panelRef);
+  useFilterPopover(panelRef, anchorRef);
   const searchRef = useRef<HTMLInputElement>(null);
   const labelId = useId();
 
@@ -69,10 +72,10 @@ export function FilterEditor({
 
   // Focus the search box on open; restore focus to the opener when the popover unmounts.
   useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
+    const opener = anchorRef.current;
     searchRef.current?.focus();
-    return () => opener?.focus?.();
-  }, []);
+    return () => opener?.focus({ preventScroll: true });
+  }, [anchorRef]);
 
   // Escape closes; outside pointer/click closes. Focus is trapped to the panel via onKeyDown below.
   useEffect(() => {
@@ -164,14 +167,14 @@ export function FilterEditor({
     }
   }
 
-  return (
+  return createPortal(
     <div
       ref={panelRef}
       role="dialog"
       aria-modal="true"
       aria-labelledby={labelId}
       onKeyDown={onKeyDown}
-      className="absolute left-0 top-full z-50 mt-1 max-h-[var(--filter-popover-height)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto border border-line bg-surface p-2 text-2xs shadow-lg"
+      className="fixed z-30 max-h-[var(--filter-popover-height)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto border border-line bg-surface p-2 text-2xs shadow-lg"
     >
       <div id={labelId} className="mb-2 flex items-baseline justify-between gap-2">
         <span className="min-w-0 break-words font-semibold text-ink">{dim.label}</span>
@@ -273,6 +276,7 @@ export function FilterEditor({
           Done
         </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

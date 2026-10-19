@@ -7661,7 +7661,7 @@ var require_jsx_runtime = __commonJS(function(exports, module) {
 // webapp/src/static-api.tsx
 var import_react11 = __toESM(require_react(), 1);
 var import_client = __toESM(require_client(), 1);
-var import_react_dom = __toESM(require_react_dom(), 1);
+var import_react_dom2 = __toESM(require_react_dom(), 1);
 
 // webapp/src/components/DataTable.tsx
 var import_react = __toESM(require_react(), 1);
@@ -7991,6 +7991,7 @@ function filterSummary(filter) {
 
 // webapp/src/components/FilterEditor.tsx
 var import_react6 = __toESM(require_react(), 1);
+var import_react_dom = __toESM(require_react_dom(), 1);
 
 // webapp/src/lib/catalog.ts
 function graphMetricsForModel(catalog, modelName) {
@@ -8264,27 +8265,32 @@ function useQueryResult(backend, query) {
 
 // webapp/src/components/useFilterPopover.ts
 var import_react5 = __toESM(require_react(), 1);
-function useFilterPopover(ref, open = true) {
+function useFilterPopover(ref, anchorRef, open = true) {
   import_react5.useLayoutEffect(() => {
     const panel = ref.current;
-    const anchor = panel?.parentElement;
+    const anchor = anchorRef.current;
     if (!open || !panel || !anchor)
       return;
     function position() {
       if (!panel || !anchor)
         return;
       const bounds = anchor.getBoundingClientRect();
+      const strip2 = anchor.closest("[data-filter-strip]")?.getBoundingClientRect();
       const gutter = 8;
       const left = Math.max(gutter, Math.min(bounds.left, window.innerWidth - panel.offsetWidth - gutter));
-      panel.style.left = `${left - bounds.left}px`;
-      panel.style.setProperty("--filter-popover-height", `${Math.max(0, window.innerHeight - bounds.bottom - gutter - 4)}px`);
+      const bottom = strip2 ? Math.max(strip2.top, Math.min(bounds.bottom, strip2.bottom)) : bounds.bottom;
+      const top = Math.max(gutter, Math.min(bottom + 4, window.innerHeight - gutter));
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      panel.style.setProperty("--filter-popover-height", `${Math.max(0, window.innerHeight - top - gutter)}px`);
     }
     position();
     const observer = new ResizeObserver(position);
     observer.observe(panel);
     observer.observe(anchor);
-    if (anchor.parentElement)
-      observer.observe(anchor.parentElement);
+    const strip = anchor.closest("[data-filter-strip]");
+    if (strip)
+      observer.observe(strip);
     window.addEventListener("resize", position);
     window.addEventListener("scroll", position, true);
     return () => {
@@ -8315,6 +8321,7 @@ function useDebounced(value, delayMs) {
 function FilterEditor({
   dim,
   model,
+  anchorRef,
   onClose
 }) {
   const { state, dispatch, backend, catalog, dashboard } = useExplorer();
@@ -8323,7 +8330,7 @@ function FilterEditor({
   const [mode, setModeState] = import_react6.useState(filter?.mode ?? "include");
   const selected = import_react6.useMemo(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
   const panelRef = import_react6.useRef(null);
-  useFilterPopover(panelRef);
+  useFilterPopover(panelRef, anchorRef);
   const searchRef = import_react6.useRef(null);
   const labelId = import_react6.useId();
   const [search, setSearch] = import_react6.useState("");
@@ -8332,10 +8339,10 @@ function FilterEditor({
   const [patternDraft, setPatternDraft] = import_react6.useState(pattern);
   const debouncedPattern = useDebounced(patternDraft, SEARCH_DEBOUNCE_MS);
   import_react6.useEffect(() => {
-    const opener = document.activeElement;
+    const opener = anchorRef.current;
     searchRef.current?.focus();
-    return () => opener?.focus?.();
-  }, []);
+    return () => opener?.focus({ preventScroll: true });
+  }, [anchorRef]);
   import_react6.useEffect(() => {
     function onKey(event) {
       if (event.key === "Escape") {
@@ -8410,13 +8417,13 @@ function FilterEditor({
       first.focus();
     }
   }
-  return /* @__PURE__ */ jsx_runtime2.jsxs("div", {
+  return import_react_dom.createPortal(/* @__PURE__ */ jsx_runtime2.jsxs("div", {
     ref: panelRef,
     role: "dialog",
     "aria-modal": "true",
     "aria-labelledby": labelId,
     onKeyDown,
-    className: "absolute left-0 top-full z-50 mt-1 max-h-[var(--filter-popover-height)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto border border-line bg-surface p-2 text-2xs shadow-lg",
+    className: "fixed z-30 max-h-[var(--filter-popover-height)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto border border-line bg-surface p-2 text-2xs shadow-lg",
     children: [
       /* @__PURE__ */ jsx_runtime2.jsxs("div", {
         id: labelId,
@@ -8520,13 +8527,14 @@ function FilterEditor({
         ]
       })
     ]
-  });
+  }), document.body);
 }
 
 // webapp/src/components/FilterPill.tsx
 var jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
 function FilterPill(props) {
   const [open, setOpen] = import_react7.useState(false);
+  const buttonRef = import_react7.useRef(null);
   if (!("dim" in props)) {
     return /* @__PURE__ */ jsx_runtime3.jsxs("span", {
       "data-dimension": props.dimension,
@@ -8567,6 +8575,7 @@ function FilterPill(props) {
         className: "inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted",
         children: [
           /* @__PURE__ */ jsx_runtime3.jsxs("button", {
+            ref: buttonRef,
             type: "button",
             "aria-label": `Edit filter ${dim.label}`,
             "aria-haspopup": "dialog",
@@ -8594,6 +8603,7 @@ function FilterPill(props) {
       open ? /* @__PURE__ */ jsx_runtime3.jsx(FilterEditor, {
         dim,
         model,
+        anchorRef: buttonRef,
         onClose: () => setOpen(false)
       }) : null
     ]
@@ -9298,7 +9308,7 @@ function mount(container, node) {
     root = import_client.createRoot(container);
     roots.set(container, root);
   }
-  import_react_dom.flushSync(() => root.render(node));
+  import_react_dom2.flushSync(() => root.render(node));
 }
 function rowsOf(query) {
   return query.result?.sample_rows ?? query.result?.rows ?? [];

@@ -4,7 +4,7 @@ const dimensions = ["status", "country", "device", "platform", "campaign", "chan
 const prefix = "A shared campaign prefix with enough detail to span several lines ".repeat(3);
 const values = [`${prefix}first ending`, `${prefix}second ending`, "x".repeat(180)];
 
-async function mockCatalog(page: Page) {
+async function mockCatalog(page: Page, catalogDimensions = dimensions) {
   await page.route("**/*", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const json = (body: unknown, status = 200) => route.fulfill({ status, json: body });
@@ -12,7 +12,7 @@ async function mockCatalog(page: Page) {
     if (path === "/describe") return json({
       models: [{
         name: "activity",
-        dimensions: dimensions.map((name) => ({ name, type: "categorical" })),
+        dimensions: catalogDimensions.map((name) => ({ name, type: "categorical" })),
         metrics: [{ name: "revenue", agg: "sum" }],
       }],
     });
@@ -108,5 +108,49 @@ test("crowded pills wrap and right-edge popovers follow viewport resizing", asyn
   await page.getByRole("menuitem", { name: "Channel", exact: true }).click();
   await expectInsideViewport(editor);
   await editor.getByRole("button", { name: "Done", exact: true }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("many active filters scroll without displacing the stage or clipping popovers", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 480 });
+  const manyDimensions = Array.from({ length: 24 }, (_, index) => `dimension_${index}`);
+  await mockCatalog(page, manyDimensions);
+  const filters = Object.fromEntries(manyDimensions.map((dim) => [`activity.${dim}`, { mode: "include", values: ["Selected campaign value"] }]));
+  const params = new URLSearchParams({ view: "explore", model: "activity", metric: "activity.revenue", filters: JSON.stringify(filters) });
+  await page.goto(`/?${params}`);
+  const pills = page.getByRole("button", { name: /^Edit filter / });
+  await expect(pills).toHaveCount(24);
+  expect((await page.locator("main").boundingBox())!.height).toBeGreaterThan(150);
+  const lastPill = pills.last();
+  await lastPill.click();
+  const editor = page.getByRole("dialog");
+  await expectInsideViewport(editor);
+  await editor.getByRole("checkbox", { name: values[1], exact: true }).check();
+  const strip = page.getByRole("region", { name: "Active filters" });
+  expect(await strip.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  // Scrolling the chip out of view keeps the editor accessible at the visible strip edge.
+  await strip.evaluate((element) => { element.scrollTop = 0; });
+  await expectInsideViewport(editor);
+  await expect.poll(async () => (await editor.boundingBox())!.y).toBeLessThanOrEqual((await strip.boundingBox())!.y + (await strip.boundingBox())!.height + 4);
+  await editor.getByRole("button", { name: "Done", exact: true }).focus();
+  await page.keyboard.press("Tab");
+  await expect(editor.getByRole("button", { name: "Close filter editor", exact: true })).toBeFocused();
+  await expectHit(editor.getByRole("button", { name: "Done", exact: true }));
+  await editor.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(lastPill).toBeFocused();
+  expect(await strip.evaluate((element) => element.scrollTop)).toBe(0);
+  const add = page.getByRole("button", { name: "+ Filter" });
+  await add.click();
+  const menu = page.getByRole("menu");
+  await expectInsideViewport(menu);
+  await menu.getByRole("menuitem").last().click();
+  await expectInsideViewport(editor);
+  await editor.getByRole("button", { name: "Exclude", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await expect(editor).toHaveCount(0);
+  await expect(add).toBeFocused();
+  await add.click();
+  await page.getByRole("tab", { name: "Explore", exact: true }).click();
+  await expect(menu).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

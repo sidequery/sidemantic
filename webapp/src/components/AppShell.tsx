@@ -102,8 +102,8 @@ export function AppShell({ brand, toolbar, filters, rail, children, drawer, show
       </header>
 
       {filters ? (
-        // Wrap crowded filters and keep their popovers above the stage without clipping them.
-        <div className="relative z-30 flex min-h-9 shrink-0 flex-wrap items-center gap-2 border-b border-line bg-surface px-3 py-1">
+        // Keep the stage available with many filters; popovers render outside this scroll clip.
+        <div data-filter-strip role="region" aria-label="Active filters" className="relative z-30 flex max-h-[min(25dvh,8rem)] min-h-9 shrink-0 flex-wrap items-center gap-2 overflow-y-auto border-b border-line bg-surface px-3 py-1">
           {filters}
         </div>
       ) : null}

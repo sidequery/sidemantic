@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { CatalogDimension, CatalogModel } from "../data/types";
 import { joinedDimensionsForModel } from "../lib/catalog";
 import { useExplorer } from "../state/ExplorerContext";
@@ -14,17 +15,21 @@ export function AddFilter({ model }: { model: CatalogModel }) {
   const [picked, setPicked] = useState<CatalogDimension | null>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  useFilterPopover(menuRef, open && !picked);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  useFilterPopover(menuRef, buttonRef, open && !picked);
 
   useEffect(() => {
     if (!open) return;
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape") {
+        close();
+        buttonRef.current?.focus({ preventScroll: true });
+      }
     }
     function onPointer(event: MouseEvent) {
       // The editor's own outside-click handler covers the picked state; only the menu needs this.
       if (picked) return;
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) close();
+      if (!rootRef.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) close();
     }
     document.addEventListener("keydown", onKey, true);
     document.addEventListener("mousedown", onPointer, true);
@@ -44,6 +49,7 @@ export function AddFilter({ model }: { model: CatalogModel }) {
   return (
     <span ref={rootRef} className="relative inline-flex">
       <button
+        ref={buttonRef}
         type="button"
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -52,12 +58,12 @@ export function AddFilter({ model }: { model: CatalogModel }) {
       >
         + Filter
       </button>
-      {open && !picked ? (
+      {open && !picked ? createPortal(
         <div
           ref={menuRef}
           role="menu"
           aria-label="Add a filter for a dimension"
-          className="absolute left-0 top-full z-50 mt-1 max-h-[min(24rem,var(--filter-popover-height))] w-80 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border border-line bg-surface p-1.5 text-2xs shadow-[var(--shadow)]"
+          className="fixed z-30 max-h-[min(24rem,var(--filter-popover-height))] w-80 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border border-line bg-surface p-1.5 text-2xs shadow-[var(--shadow)]"
         >
           {dims.map((dim) => (
             <button
@@ -70,9 +76,10 @@ export function AddFilter({ model }: { model: CatalogModel }) {
               {dim.label}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       ) : null}
-      {open && picked ? <FilterEditor dim={picked} model={model} onClose={close} /> : null}
+      {open && picked ? <FilterEditor dim={picked} model={model} anchorRef={buttonRef} onClose={close} /> : null}
     </span>
   );
 }

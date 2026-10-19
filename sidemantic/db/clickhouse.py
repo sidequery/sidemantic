@@ -140,51 +140,39 @@ class ClickHouseAdapter(BaseDatabaseAdapter):
         self.database = database
 
     def execute(self, sql: str) -> ClickHouseResult:
-        """Execute SQL query.
-
-        Uses Parquet to preserve ClickHouse temporal types.
-        Falls back to standard row-based query if Parquet fetch fails.
-        """
-        try:
-            arrow_table = self._query_parquet(sql)
-            return ClickHouseResult(result=None, arrow_table=arrow_table)
-        except Exception:
-            # Fallback to standard row-based query
-            result = self.client.query(sql)
-            return ClickHouseResult(result)
+        """Execute once, using Parquet when the client and PyArrow support it."""
+        return self._execute(sql)
 
     def executemany(self, sql: str, params: list) -> ClickHouseResult:
-        """Execute SQL with multiple parameter sets.
-
-        Note: ClickHouse doesn't have native executemany, so we run queries sequentially.
-        Uses Parquet to preserve ClickHouse temporal types.
-        """
-        results = []
+        """Execute parameter sets sequentially and return the last result."""
+        if not params:
+            return self.execute("SELECT 1")
         for param_set in params:
-            try:
-                arrow_table = self._query_parquet(sql, parameters=param_set)
-                results.append(ClickHouseResult(result=None, arrow_table=arrow_table))
-            except Exception:
-                result = self.client.query(sql, parameters=param_set)
-                results.append(ClickHouseResult(result))
-        # Return last result for compatibility
-        if not results:
-            # Empty params list - return a dummy result
-            try:
-                arrow_table = self._query_parquet("SELECT 1")
-                return ClickHouseResult(result=None, arrow_table=arrow_table)
-            except Exception:
-                return ClickHouseResult(self.client.query("SELECT 1"))
-        return results[-1]
+            result = self._execute(sql, parameters=param_set)
+        return result
 
-    def _query_parquet(self, sql: str, parameters=None):
-        """Fetch typed columnar results without Arrow's DateTime-to-UInt32 loss."""
+    def _execute(self, sql: str, parameters=None) -> ClickHouseResult:
         from io import BytesIO
 
-        import pyarrow.parquet as pq
+        # Only fall back before submitting SQL: a request or decode failure can
+        # occur after a mutation has already committed on the server.
+        raw_query = getattr(self.client, "raw_query", None)
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+        except ImportError:
+            raw_query = None
 
-        data = self.client.raw_query(sql, parameters=parameters, fmt="Parquet")
-        return pq.read_table(BytesIO(data))
+        if raw_query is None:
+            if parameters is None:
+                return ClickHouseResult(self.client.query(sql))
+            return ClickHouseResult(self.client.query(sql, parameters=parameters))
+
+        data = raw_query(sql, parameters=parameters, fmt="Parquet")
+        # Successful commands such as CREATE TABLE AS and INSERT SELECT have
+        # no result body. They must not be decoded or submitted a second time.
+        table = pq.read_table(BytesIO(data)) if data else pa.table({})
+        return ClickHouseResult(result=None, arrow_table=table)
 
     def fetchone(self, result: ClickHouseResult) -> tuple | None:
         """Fetch one row from result."""

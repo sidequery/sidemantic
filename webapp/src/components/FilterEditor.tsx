@@ -1,8 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { aliasOf, NULL_TOKEN, type CatalogDimension, type CatalogModel } from "../data/types";
-import { displayDimValue, sqlLiteral } from "../lib/format";
+import { displayDimValue } from "../lib/format";
 import { dashboardTabConfig } from "../lib/dashboard";
-import { catalogDimTypes, composeFilters, distinctValues, likeEscape, type FilterMode } from "../lib/queries";
+import { catalogDimTypes, composeFilters, distinctValues, containsExpr, type FilterMode } from "../lib/queries";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
 
@@ -107,16 +107,13 @@ export function FilterEditor({
   const valueFilters = useMemo(() => {
     const base = [
       ...(configured?.filters ?? []),
-      ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types }),
+      ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types, dialect: catalog.dialect }),
     ];
     if (debouncedSearch.trim()) {
-      // Cast to text so the search works on numeric/boolean dimensions too: DuckDB and
-      // Postgres reject ILIKE on non-text operands.
-      const pat = sqlLiteral(`%${likeEscape(debouncedSearch.trim())}%`);
-      base.push(`CAST(${dim.ref} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
+      base.push(containsExpr(dim.ref, debouncedSearch.trim(), catalog.dialect));
     }
     return base;
-  }, [configured, state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch, types]);
+  }, [configured, state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch, types, catalog.dialect]);
 
   const listMode = mode !== "contains";
   const { result, loading, error } = useQueryResult(

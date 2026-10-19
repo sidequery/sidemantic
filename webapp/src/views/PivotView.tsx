@@ -33,8 +33,8 @@ export function PivotView() {
 
   const types = useMemo(() => dimTypes(dims), [dims]);
   const baseFilters = useMemo(
-    () => composeFilters(state.filters, { timeRef, range: state.dateRange, types }),
-    [state.filters, timeRef, state.dateRange, types],
+    () => composeFilters(state.filters, { timeRef, range: state.dateRange, types, dialect: catalog.dialect }),
+    [state.filters, timeRef, state.dateRange, types, catalog.dialect],
   );
 
   const effectiveSort = sort ?? (pivotMetrics[0] ? { ref: pivotMetrics[0], dir: "desc" as const } : null);

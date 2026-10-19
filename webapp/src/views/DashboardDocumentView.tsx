@@ -154,8 +154,8 @@ function DashboardChartPanel({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const types = useMemo(() => dimensionTypes(catalog), [catalog]);
   const request = useMemo(
-    () => dashboardStructuredQuery(document, chart, state.filters, types, state.ranges, state),
-    [chart, document, state, types],
+    () => dashboardStructuredQuery(document, chart, state.filters, types, state.ranges, state, catalog.dialect),
+    [chart, document, state, types, catalog.dialect],
   );
   const query = useQueryResult(backend, request);
   const rows = query.result?.rows ?? [];

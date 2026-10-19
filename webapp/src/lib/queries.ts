@@ -46,7 +46,7 @@ export function catalogDimTypes(catalog: Pick<Catalog, "models">): DimTypes {
 
 /** Render a single filter value as a SQL literal, honoring the dimension's type so numeric and
  *  boolean dimensions aren't quoted (which type-strict backends reject). */
-function filterLiteral(value: string, type?: string): string {
+function filterLiteral(value: string, type?: string, dialect?: string): string {
   if ((type === "numeric" || type === "number") && value.trim() !== "" && Number.isFinite(Number(value))) {
     return value;
   }
@@ -54,29 +54,38 @@ function filterLiteral(value: string, type?: string): string {
     const lower = value.toLowerCase();
     if (lower === "true" || lower === "false") return lower;
   }
-  return sqlLiteral(value);
+  return sqlLiteral(value, dialect);
 }
 
 /**
  * Escape a user-typed substring for a SQL LIKE/ILIKE pattern wrapped as `%…%`. The LIKE
- * metacharacters `%` and `_` are neutralized with a backslash (paired with `ESCAPE '\'` at the
- * call site) so a literal `%` in the pattern matches a literal `%` rather than "anything".
+ * metacharacters `%` and `_` are neutralized with a backslash (implicit in ClickHouse, explicit
+ * via ESCAPE elsewhere) so a literal `%` in the pattern matches a literal `%` rather than "anything".
  */
 export function likeEscape(pattern: string): string {
   return pattern.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }
 
+/** Shared substring predicate for the filter editor search and Contains mode. */
+export function containsExpr(dimRef: FieldRef, text: string, dialect?: string): string {
+  const pattern = sqlLiteral(`%${likeEscape(text)}%`, dialect);
+  // ClickHouse uses backslash escaping implicitly; its SQL literals also consume backslashes.
+  const escape = dialect === "clickhouse" ? "" : " ESCAPE '\\'";
+  // Cast so numeric and boolean dimensions can be searched too.
+  return `CAST(${dimRef} AS VARCHAR) ILIKE ${pattern}${escape}`;
+}
+
 /** SQL for one dimension's include/exclude selection (values only — the caller handles contains). */
-function membershipExpr(dimRef: FieldRef, filter: DimFilter, type?: string): string | null {
+function membershipExpr(dimRef: FieldRef, filter: DimFilter, type?: string, dialect?: string): string | null {
   const negate = filter.mode === "exclude";
   const hasNull = filter.values.includes(NULL_TOKEN);
   const present = filter.values.filter((value) => value !== NULL_TOKEN);
 
   let presentExpr: string | null = null;
   if (present.length === 1) {
-    presentExpr = `${dimRef} ${negate ? "!=" : "="} ${filterLiteral(present[0], type)}`;
+    presentExpr = `${dimRef} ${negate ? "!=" : "="} ${filterLiteral(present[0], type, dialect)}`;
   } else if (present.length > 1) {
-    const list = present.map((v) => filterLiteral(v, type)).join(", ");
+    const list = present.map((v) => filterLiteral(v, type, dialect)).join(", ");
     presentExpr = `${dimRef} ${negate ? "NOT IN" : "IN"} (${list})`;
   }
 
@@ -109,19 +118,19 @@ function membershipExpr(dimRef: FieldRef, filter: DimFilter, type?: string): str
  * type so values are quoted/cast correctly. include -> `=`/`IN` (+ `IS NULL`), exclude -> `!=`/`NOT
  * IN` (+ `IS NOT NULL`), contains -> `ILIKE '%<escaped>%'`.
  */
-export function filterExprs(filters: FilterState, opts: { types?: DimTypes; excludeDim?: FieldRef } = {}): string[] {
+export function filterExprs(
+  filters: FilterState,
+  opts: { types?: DimTypes; dialect?: string; excludeDim?: FieldRef } = {},
+): string[] {
   const out: string[] = [];
   for (const [dimRef, filter] of Object.entries(filters)) {
     if (dimRef === opts.excludeDim || isEmptyFilter(filter)) continue;
     const type = opts.types?.[dimRef];
     if (filter.mode === "contains") {
-      // Cast to text so contains works on numeric/boolean dimensions: DuckDB and Postgres
-      // reject ILIKE on non-text operands.
-      const pat = sqlLiteral(`%${likeEscape(filter.pattern ?? "")}%`);
-      out.push(`CAST(${dimRef} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
+      out.push(containsExpr(dimRef, filter.pattern ?? "", opts.dialect));
       continue;
     }
-    const expr = membershipExpr(dimRef, filter, type);
+    const expr = membershipExpr(dimRef, filter, type, opts.dialect);
     if (expr) out.push(expr);
   }
   return out;
@@ -133,9 +142,9 @@ export function filterExprs(filters: FilterState, opts: { types?: DimTypes; excl
  */
 export function composeFilters(
   filters: FilterState,
-  opts: { timeRef?: FieldRef; range?: DateRange; excludeDim?: FieldRef; types?: DimTypes } = {},
+  opts: { timeRef?: FieldRef; range?: DateRange; excludeDim?: FieldRef; types?: DimTypes; dialect?: string } = {},
 ): string[] {
-  const base = filterExprs(filters, { types: opts.types, excludeDim: opts.excludeDim });
+  const base = filterExprs(filters, { types: opts.types, excludeDim: opts.excludeDim, dialect: opts.dialect });
   if (opts.timeRef && opts.range) base.push(...timeFilters(opts.timeRef, opts.range));
   return base;
 }

@@ -95,8 +95,8 @@ export function ExplorerView() {
 
   const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   const baseFilters = useMemo(
-    () => [...(configured?.filters ?? []), ...composeFilters(state.filters, { timeRef, range: state.dateRange, types })],
-    [configured, state.filters, timeRef, state.dateRange, types],
+    () => [...(configured?.filters ?? []), ...composeFilters(state.filters, { timeRef, range: state.dateRange, types, dialect: catalog.dialect })],
+    [configured, state.filters, timeRef, state.dateRange, types, catalog.dialect],
   );
   // Resolve the chosen comparison mode into a concrete window. `off` (or no active date range, since
   // every comparison here is relative to one) means no comparison at all — the strip cards, chart
@@ -110,9 +110,9 @@ export function ExplorerView() {
   const prevFilters = useMemo(
     () =>
       prevRange && timeRef
-        ? [...(configured?.filters ?? []), ...composeFilters(state.filters, { timeRef, range: prevRange, types })]
+        ? [...(configured?.filters ?? []), ...composeFilters(state.filters, { timeRef, range: prevRange, types, dialect: catalog.dialect })]
         : null,
-    [configured, state.filters, timeRef, prevRange, types],
+    [configured, state.filters, timeRef, prevRange, types, catalog.dialect],
   );
 
   // Stamp the selected timezone onto every query so the backend truncates time buckets in-zone

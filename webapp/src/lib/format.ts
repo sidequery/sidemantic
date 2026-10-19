@@ -76,7 +76,8 @@ export function formatDelta(current: number, previous: number | null | undefined
 }
 
 /** Single-quote escape for SQL string literals used in filter expressions. */
-export function sqlLiteral(value: string): string {
+export function sqlLiteral(value: string, dialect?: string): string {
+  if (dialect === "clickhouse") value = value.replaceAll("\\", "\\\\");
   return `'${value.replaceAll("'", "''")}'`;
 }
 

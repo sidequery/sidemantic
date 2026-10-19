@@ -137,25 +137,25 @@ function nextBucketStart(value: string, grain: string): string | null {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? date.toISOString().slice(0, 10) : date.toISOString();
 }
 
-export function dashboardRangeFilter(dimension: string, range: DashboardRange): string {
+export function dashboardRangeFilter(dimension: string, range: DashboardRange, dialect?: string): string {
   const grained = timeGrain(dimension);
   if (grained) {
     const exclusiveEnd = nextBucketStart(range.to, grained.grain);
     if (exclusiveEnd) {
-      return `${grained.baseDimension} >= ${sqlLiteral(range.from)} AND ${grained.baseDimension} < ${sqlLiteral(exclusiveEnd)}`;
+      return `${grained.baseDimension} >= ${sqlLiteral(range.from, dialect)} AND ${grained.baseDimension} < ${sqlLiteral(exclusiveEnd, dialect)}`;
     }
-    return `${grained.baseDimension} >= ${sqlLiteral(range.from)} AND ${grained.baseDimension} <= ${sqlLiteral(range.to)}`;
+    return `${grained.baseDimension} >= ${sqlLiteral(range.from, dialect)} AND ${grained.baseDimension} <= ${sqlLiteral(range.to, dialect)}`;
   }
-  return `${dimension} >= ${sqlLiteral(range.from)} AND ${dimension} <= ${sqlLiteral(range.to)}`;
+  return `${dimension} >= ${sqlLiteral(range.from, dialect)} AND ${dimension} <= ${sqlLiteral(range.to, dialect)}`;
 }
 
-function dashboardSelectionFilter(dimension: string, value: string, types: DimTypes): string[] {
+function dashboardSelectionFilter(dimension: string, value: string, types: DimTypes, dialect?: string): string[] {
   const grained = timeGrain(dimension);
   if (grained) {
     if (value === NULL_TOKEN) return [`${grained.baseDimension} IS NULL`];
-    return [dashboardRangeFilter(dimension, { from: value, to: value })];
+    return [dashboardRangeFilter(dimension, { from: value, to: value }, dialect)];
   }
-  return filterExprs({ [dimension]: { mode: "include", values: [value] } }, { types });
+  return filterExprs({ [dimension]: { mode: "include", values: [value] } }, { types, dialect });
 }
 
 export function dashboardChartScopeKey(document: DashboardDocument, chart: DashboardChart): string {
@@ -201,6 +201,7 @@ export function dashboardStructuredQuery(
     filterSources: {},
     rangeSources: {},
   },
+  dialect?: string,
 ): StructuredQuery {
   const scoped = dashboardScopedInteractions(document, chart, { filters, ranges, ...sources });
   const x = chart.encoding?.x ?? chart.query.dimensions?.[0] ?? "";
@@ -212,9 +213,9 @@ export function dashboardStructuredQuery(
     filters: [
       ...(chart.query.filters ?? []),
       ...Object.entries(scoped.filters).flatMap(([dimension, value]) =>
-        dashboardSelectionFilter(dimension, value, types),
+        dashboardSelectionFilter(dimension, value, types, dialect),
       ),
-      ...Object.entries(scoped.ranges).map(([dimension, range]) => dashboardRangeFilter(dimension, range)),
+      ...Object.entries(scoped.ranges).map(([dimension, range]) => dashboardRangeFilter(dimension, range, dialect)),
     ],
     segments: chart.query.segments,
     orderBy: explicitOrder ?? defaultTimeOrder,

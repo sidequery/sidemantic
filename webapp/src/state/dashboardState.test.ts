@@ -518,3 +518,14 @@ describe("dashboard selections", () => {
     expect(Number.isNaN(series[1].points[1].y)).toBe(true);
   });
 });
+
+test("dashboard selections use the active SQL dialect", () => {
+  const chart: DashboardChart = { id: "revenue", query: { metrics: ["orders.revenue"] } };
+  const filters = { "orders.region": "c:\\path'" };
+  expect(dashboardStructuredQuery(document, chart, filters, {}, {}, undefined, "clickhouse").filters).toEqual([
+    String.raw`orders.region = 'c:\\path'''`,
+  ]);
+  expect(dashboardStructuredQuery(document, chart, filters, {}).filters).toEqual([
+    String.raw`orders.region = 'c:\path'''`,
+  ]);
+});

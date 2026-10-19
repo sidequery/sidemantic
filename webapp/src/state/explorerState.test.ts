@@ -21,6 +21,7 @@ const base: ExplorerState = {
   contextColumn: "none",
   comparison: "previous",
   comparisonRange: undefined,
+  joinedDims: [],
   pivotDims: [],
   pivotMetrics: [],
 };
@@ -163,6 +164,7 @@ describe("explorerReducer reset", () => {
     contextColumn: "none",
     comparison: "previous",
     comparisonRange: undefined,
+    joinedDims: [],
     pivotDims: [],
     pivotMetrics: [],
   };
@@ -256,4 +258,12 @@ describe("applyDashboardConfig", () => {
     expect(hydrated.selectedMetric).toBe("orders.revenue");
     expect(hydrated.grain).toBe("month");
   });
+});
+
+test("joined leaderboard opt-ins survive view changes and clear with model/tab/reset changes", () => {
+  const selected = explorerReducer(base, { type: "setJoinedDims", dims: ["assignment.arm"] });
+  expect(explorerReducer(selected, { type: "setView", view: "pivot" }).joinedDims).toEqual(["assignment.arm"]);
+  expect(explorerReducer(selected, { type: "setModel", model: "other", metric: "other.count", grain: "day" }).joinedDims).toEqual([]);
+  expect(explorerReducer(selected, { type: "setDashboardTab", tab: "other", model: "other", metric: "other.count", grain: "day" }).joinedDims).toEqual([]);
+  expect(explorerReducer(selected, { type: "reset", initial: base }).joinedDims).toEqual([]);
 });

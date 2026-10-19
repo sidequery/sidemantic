@@ -107,6 +107,7 @@ export function encodeState(state: ExplorerState): string {
     params.set("cto", state.comparisonRange.to);
   }
   if (Object.keys(state.filters).length) params.set("filters", JSON.stringify(serializeFilters(state.filters)));
+  if (state.joinedDims.length) params.set("jdims", JSON.stringify(state.joinedDims));
   if (state.pivotDims.length) params.set("pdims", JSON.stringify(state.pivotDims));
   if (state.pivotMetrics.length) params.set("pmetrics", JSON.stringify(state.pivotMetrics));
   return params.toString();
@@ -162,6 +163,8 @@ export function decodeState(search: string, base: ExplorerState): ExplorerState 
 
   const filters = parseFilterState(parseJson(params.get("filters")));
   if (filters) next.filters = filters;
+  const jdims = parseJson(params.get("jdims"));
+  if (isStringArray(jdims)) next.joinedDims = [...new Set(jdims)];
   const pdims = parseJson(params.get("pdims"));
   if (isStringArray(pdims)) next.pivotDims = pdims;
   const pmetrics = parseJson(params.get("pmetrics"));

@@ -28,6 +28,7 @@ export type ExplorerState = {
   contextColumn: ContextColumn; // leaderboard context column (E2)
   comparison: ComparisonMode; // comparison window for deltas/overlay (E3)
   comparisonRange?: DateRange; // explicit window when comparison === "custom"
+  joinedDims: string[]; // opt-in joined dimension leaderboards
   pivotDims: string[];
   pivotMetrics: string[];
 };
@@ -51,6 +52,7 @@ export type ExplorerAction =
   | { type: "setDateRange"; range?: DateRange; preset?: number }
   | { type: "setContextColumn"; column: ContextColumn }
   | { type: "setComparison"; comparison: ComparisonMode; range?: DateRange }
+  | { type: "setJoinedDims"; dims: string[] }
   | { type: "setPivotDims"; dims: string[] }
   | { type: "setPivotMetrics"; metrics: string[] }
   | { type: "reset"; initial: ExplorerState };
@@ -86,6 +88,7 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
         filters: {},
         dateRange: undefined,
         datePreset: undefined,
+        joinedDims: [],
         pivotDims: [],
         pivotMetrics: [],
       };
@@ -97,6 +100,7 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
         selectedMetric: action.metric,
         grain: action.grain,
         filters: {},
+        joinedDims: [],
         pivotDims: [],
         pivotMetrics: [],
       };
@@ -159,6 +163,8 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
         comparison: action.comparison,
         comparisonRange: action.comparison === "custom" ? action.range : undefined,
       };
+    case "setJoinedDims":
+      return { ...state, joinedDims: action.dims };
     case "setPivotDims":
       return { ...state, pivotDims: action.dims };
     case "setPivotMetrics":
@@ -215,6 +221,7 @@ export function initialStateFromCatalog(
     contextColumn: "none",
     comparison: "previous", // preserve the pre-E3 previous-period comparison as the default
     comparisonRange: undefined,
+    joinedDims: [],
     pivotDims: [],
     // Left empty so the pivot falls back to the active metric for whatever model is selected,
     // rather than pinning the primary model's first metric across model switches.

@@ -8,7 +8,7 @@ import { QueryDebugPanel } from "../components/QueryDebugPanel";
 import { EmptyState, ErrorState, LoadingState } from "../components/States";
 import type { BrushRange } from "../components/TimeSeriesChart";
 import { formatDelta, formatValue, labelize } from "../lib/format";
-import { graphMetricsForModel } from "../lib/catalog";
+import { graphMetricsForModel, joinedDimensionsForModel } from "../lib/catalog";
 import { dashboardTabConfig } from "../lib/dashboard";
 import { catalogDimTypes, composeFilters, metricSeries, metricTotals } from "../lib/queries";
 import {
@@ -190,7 +190,12 @@ export function ExplorerView() {
 
   if (!model) return <div className="p-4"><EmptyState message="No model available in this semantic layer." /></div>;
 
-  const leaderboardDims = (configured?.dimensions ?? model.dimensions).filter((dim) => dim.type !== "time");
+  const baseDims = configured?.dimensions ?? model.dimensions;
+  const baseRefs = new Set(baseDims.map((dim) => dim.ref));
+  const selectedJoinedDims = joinedDimensionsForModel(catalog, model.name).filter(
+    (dim) => state.joinedDims.includes(dim.ref) && !baseRefs.has(dim.ref),
+  );
+  const leaderboardDims = [...baseDims, ...selectedJoinedDims].filter((dim) => dim.type !== "time");
   const activeExpandedLeaderboard = resolveExpandedLeaderboard(expandedLeaderboard, leaderboardDims);
   const comparisonLabel = state.comparison === "year" ? "Prev year" : state.comparison === "custom" ? "Comparison" : "Prev period";
 

@@ -214,3 +214,18 @@ export function graphMetricsForModel(catalog: Catalog, modelName: string): Catal
     return metric.ownerModel === modelName || joinable.has(metric.ownerModel);
   });
 }
+
+/** Public dimensions reachable from the primary model. The catalog already owns visibility. */
+export function joinedDimensionsForModel(catalog: Catalog, modelName: string): CatalogDimension[] {
+  const joinable = new Set<string>();
+  for (const pair of catalog.joinablePairs ?? []) {
+    if (pair.from === modelName) joinable.add(pair.to);
+    if (pair.to === modelName) joinable.add(pair.from);
+  }
+  return catalog.models
+    .filter((model) => model.name !== modelName && joinable.has(model.name))
+    .flatMap((model) => model.dimensions.map((dimension) => ({
+      ...dimension,
+      label: `${dimension.label} · ${model.label}`,
+    })));
+}

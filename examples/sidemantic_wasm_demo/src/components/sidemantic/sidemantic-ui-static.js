@@ -8327,7 +8327,8 @@ function FilterEditor({
       return;
     dispatch({ type: "setFilterPattern", dim: dim.ref, pattern: debouncedPattern });
   }, [debouncedPattern, mode, dim.ref, dispatch]);
-  const timeRef = configured?.timeDimension?.ref ?? model.timeDimension?.ref;
+  const primaryModel = catalog.models.find((candidate) => candidate.name === state.model) ?? model;
+  const timeRef = configured?.timeDimension?.ref ?? primaryModel.timeDimension?.ref;
   const types = import_react5.useMemo(() => catalogDimTypes(catalog), [catalog]);
   const valueFilters = import_react5.useMemo(() => {
     const base = [

@@ -100,7 +100,8 @@ export function FilterEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedPattern, mode, dim.ref, dispatch]);
 
-  const timeRef = configured?.timeDimension?.ref ?? model.timeDimension?.ref;
+  const primaryModel = catalog.models.find((candidate) => candidate.name === state.model) ?? model;
+  const timeRef = configured?.timeDimension?.ref ?? primaryModel.timeDimension?.ref;
   const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   // Distinct values for this dimension, honoring the surrounding crossfilter (minus this dim's own
   // filter) and the active date range, then narrowed by the search text via a server-side ILIKE.

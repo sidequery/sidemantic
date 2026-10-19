@@ -2,6 +2,10 @@
 
 import builtins
 import sys
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from io import BytesIO
+from pathlib import Path
 
 import pytest
 
@@ -243,21 +247,22 @@ def test_clickhouse_get_columns_uses_parameterized_queries():
     assert "%(table)s" in calls[-1][0] or ":table" in calls[-1][0] or "table = " in calls[-1][0]
 
 
-def test_clickhouse_execute_native_arrow():
-    """Test that execute() uses native Arrow fetching when available."""
+def test_clickhouse_execute_parquet():
+    """Test that execute() uses Parquet fetching when available."""
     pa = pytest.importorskip("pyarrow")
 
     arrow_table = pa.table({"a": [1, 2], "b": ["x", "y"]})
     calls = []
 
     class FakeClient:
-        def query_arrow(self, sql):
-            calls.append(("arrow", sql))
-            return arrow_table
+        def raw_query(self, sql, parameters=None, fmt=None):
+            assert fmt == "Parquet"
+            calls.append(("parquet", sql))
+            return _parquet_bytes(arrow_table)
 
         def query(self, sql):
             calls.append(("row", sql))
-            raise AssertionError("Should not be called when query_arrow succeeds")
+            raise AssertionError("Should not be called when Parquet fetching succeeds")
 
     adapter = ClickHouseAdapter.__new__(ClickHouseAdapter)
     adapter.client = FakeClient()
@@ -265,9 +270,9 @@ def test_clickhouse_execute_native_arrow():
 
     result = adapter.execute("SELECT a, b FROM test")
 
-    # Should have used query_arrow
+    # Should have used Parquet
     assert len(calls) == 1
-    assert calls[0][0] == "arrow"
+    assert calls[0][0] == "parquet"
 
     # Result should contain Arrow data
     reader = result.fetch_record_batch()
@@ -277,7 +282,7 @@ def test_clickhouse_execute_native_arrow():
 
 
 def test_clickhouse_execute_fallback_to_query():
-    """Test that execute() falls back to query() when query_arrow fails."""
+    """Test that execute() falls back to query() when Parquet fetching fails."""
     calls = []
 
     class FakeQueryResult:
@@ -287,9 +292,10 @@ def test_clickhouse_execute_fallback_to_query():
             self.row_count = 1
 
     class FakeClient:
-        def query_arrow(self, sql):
-            calls.append(("arrow", sql))
-            raise Exception("Arrow not supported")
+        def raw_query(self, sql, parameters=None, fmt=None):
+            assert fmt == "Parquet"
+            calls.append(("parquet", sql))
+            raise Exception("Parquet not supported")
 
         def query(self, sql):
             calls.append(("row", sql))
@@ -301,9 +307,9 @@ def test_clickhouse_execute_fallback_to_query():
 
     result = adapter.execute("SELECT a, b FROM test")
 
-    # Should have tried arrow first, then fallen back to row
+    # Should have tried Parquet first, then fallen back to row
     assert len(calls) == 2
-    assert calls[0][0] == "arrow"
+    assert calls[0][0] == "parquet"
     assert calls[1][0] == "row"
 
     # Result should still work via fallback
@@ -366,8 +372,8 @@ def test_clickhouse_result_native_arrow_empty():
     assert result_table.num_rows == 0
 
 
-def test_clickhouse_executemany_native_arrow():
-    """Test that executemany() uses native Arrow fetching when available."""
+def test_clickhouse_executemany_parquet():
+    """Test that executemany() uses Parquet fetching when available."""
     pa = pytest.importorskip("pyarrow")
 
     arrow_tables = [
@@ -378,15 +384,16 @@ def test_clickhouse_executemany_native_arrow():
     calls = []
 
     class FakeClient:
-        def query_arrow(self, sql, parameters=None):
-            calls.append(("arrow", sql, parameters))
+        def raw_query(self, sql, parameters=None, fmt=None):
+            assert fmt == "Parquet"
+            calls.append(("parquet", sql, parameters))
             result = arrow_tables[call_idx[0]]
             call_idx[0] += 1
-            return result
+            return _parquet_bytes(result)
 
         def query(self, sql, parameters=None):
             calls.append(("row", sql, parameters))
-            raise AssertionError("Should not be called when query_arrow succeeds")
+            raise AssertionError("Should not be called when Parquet fetching succeeds")
 
     adapter = ClickHouseAdapter.__new__(ClickHouseAdapter)
     adapter.client = FakeClient()
@@ -394,9 +401,9 @@ def test_clickhouse_executemany_native_arrow():
 
     result = adapter.executemany("SELECT %(id)s", [{"id": 1}, {"id": 2}])
 
-    # Should have used query_arrow for both calls
+    # Should have used Parquet for both calls
     assert len(calls) == 2
-    assert all(c[0] == "arrow" for c in calls)
+    assert all(c[0] == "parquet" for c in calls)
     assert calls[0][2] == {"id": 1}
     assert calls[1][2] == {"id": 2}
 
@@ -405,3 +412,110 @@ def test_clickhouse_executemany_native_arrow():
     result_table = reader.read_all()
     assert result_table.num_rows == 1
     assert result_table.column("a").to_pylist() == [2]
+
+
+def _parquet_bytes(table):
+    pq = pytest.importorskip("pyarrow.parquet")
+    buffer = BytesIO()
+    pq.write_table(table, buffer)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("method", ["execute", "executemany"])
+def test_clickhouse_temporal_results(method):
+    """Decode actual ClickHouse output, including integer values resembling epochs."""
+    pa = pytest.importorskip("pyarrow")
+    payload = (Path(__file__).parents[1] / "fixtures/clickhouse/temporal_results.parquet").read_bytes()
+    calls = []
+
+    class FakeClient:
+        def raw_query(self, sql, parameters=None, fmt=None):
+            calls.append((sql, parameters, fmt))
+            return payload
+
+        def query(self, *args, **kwargs):
+            pytest.fail("Typed Parquet results must not use the row fallback")
+
+    adapter = ClickHouseAdapter.__new__(ClickHouseAdapter)
+    adapter.client = FakeClient()
+    sql = "SELECT temporal_columns"
+    result = adapter.execute(sql) if method == "execute" else adapter.executemany(sql, [{"id": 1}, {"id": 2}])
+    expected_parameters = [None] if method == "execute" else [{"id": 1}, {"id": 2}]
+    assert calls == [(sql, parameters, "Parquet") for parameters in expected_parameters]
+
+    table = result.fetch_record_batch().read_all()
+    assert table.schema.field("day").type == pa.timestamp("ms", tz="UTC")
+    assert table.schema.field("hour").type == pa.timestamp("ms", tz="UTC")
+    assert table.schema.field("precise").type == pa.timestamp("us", tz="UTC")
+    assert table.schema.field("week").type == pa.date32()
+    assert table.schema.field("integer32").type == pa.uint32()
+    assert table.schema.field("integer64").type == pa.uint64()
+    assert pa.types.is_decimal(table.schema.field("amount").type)
+    row = result.fetchone()
+    assert row == (
+        datetime(2026, 10, 12, tzinfo=UTC),
+        datetime(2026, 10, 12, 17, tzinfo=UTC),
+        datetime(2026, 10, 12, 13, 45, 56, 123456, tzinfo=UTC),
+        date(2026, 10, 12),
+        1791763200,
+        18446744073709551615,
+        Decimal("1234.56"),
+        None,
+        None,
+    )
+    assert row[0].isoformat() == "2026-10-12T00:00:00+00:00"
+    assert row[1].isoformat() == "2026-10-12T17:00:00+00:00"
+
+
+@pytest.mark.parametrize("method", ["execute", "executemany"])
+@pytest.mark.parametrize("failure", ["missing_pyarrow", "invalid_parquet"])
+def test_clickhouse_parquet_fallback(method, failure, monkeypatch):
+    calls = []
+    timestamp = datetime(2026, 10, 12, tzinfo=UTC)
+
+    class FakeClient:
+        def raw_query(self, sql, parameters=None, fmt=None):
+            return b"invalid parquet"
+
+        def query(self, sql, parameters=None):
+            calls.append((sql, parameters))
+            return type("R", (), {"result_rows": [(timestamp,)], "column_names": ["day"], "row_count": 1})()
+
+    if failure == "missing_pyarrow":
+        _block_import(monkeypatch, "pyarrow")
+    else:
+        pytest.importorskip("pyarrow")
+    adapter = ClickHouseAdapter.__new__(ClickHouseAdapter)
+    adapter.client = FakeClient()
+    sql = "SELECT day"
+    result = adapter.execute(sql) if method == "execute" else adapter.executemany(sql, [{"id": 1}])
+    assert result.fetchall() == [(timestamp,)]
+    assert calls == [(sql, None if method == "execute" else {"id": 1})]
+
+
+def test_clickhouse_temporal_results_json():
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("mcp")
+    from sidemantic.mcp_server import _convert_to_json_compatible
+
+    payload = (Path(__file__).parents[1] / "fixtures/clickhouse/temporal_results.parquet").read_bytes()
+
+    class FakeClient:
+        def raw_query(self, sql, parameters=None, fmt=None):
+            return payload
+
+    adapter = ClickHouseAdapter.__new__(ClickHouseAdapter)
+    adapter.client = FakeClient()
+    result = adapter.execute("SELECT temporal_columns")
+    values = [_convert_to_json_compatible(value) for value in result.fetchone()]
+    assert values == [
+        "2026-10-12T00:00:00+00:00",
+        "2026-10-12T17:00:00+00:00",
+        "2026-10-12T13:45:56.123456+00:00",
+        "2026-10-12",
+        1791763200,
+        18446744073709551615,
+        1234.56,
+        None,
+        None,
+    ]

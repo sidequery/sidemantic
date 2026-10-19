@@ -14,7 +14,7 @@ class ClickHouseResult:
 
         Args:
             result: ClickHouse query result from clickhouse-connect (can be None if arrow_table provided)
-            arrow_table: Pre-fetched Arrow table from query_arrow() (optional)
+            arrow_table: Pre-fetched Arrow table (optional)
         """
         self._result = result
         self._arrow_table = arrow_table
@@ -63,7 +63,7 @@ class ClickHouseResult:
         import pyarrow as pa
 
         if self._arrow_table is not None:
-            # Already have Arrow table from query_arrow()
+            # Already have an Arrow table decoded from Parquet
             if self._arrow_table.num_rows == 0:
                 return pa.RecordBatchReader.from_batches(self._arrow_table.schema, [])
             return pa.RecordBatchReader.from_batches(self._arrow_table.schema, self._arrow_table.to_batches())
@@ -142,12 +142,11 @@ class ClickHouseAdapter(BaseDatabaseAdapter):
     def execute(self, sql: str) -> ClickHouseResult:
         """Execute SQL query.
 
-        Uses native Arrow format when available for better performance.
-        Falls back to standard row-based query if Arrow fetch fails.
+        Uses Parquet to preserve ClickHouse temporal types.
+        Falls back to standard row-based query if Parquet fetch fails.
         """
-        # Try native Arrow fetching first (clickhouse-connect supports query_arrow)
         try:
-            arrow_table = self.client.query_arrow(sql)
+            arrow_table = self._query_parquet(sql)
             return ClickHouseResult(result=None, arrow_table=arrow_table)
         except Exception:
             # Fallback to standard row-based query
@@ -158,13 +157,12 @@ class ClickHouseAdapter(BaseDatabaseAdapter):
         """Execute SQL with multiple parameter sets.
 
         Note: ClickHouse doesn't have native executemany, so we run queries sequentially.
-        Uses native Arrow format when available for better performance.
+        Uses Parquet to preserve ClickHouse temporal types.
         """
         results = []
         for param_set in params:
-            # Try native Arrow fetching first
             try:
-                arrow_table = self.client.query_arrow(sql, parameters=param_set)
+                arrow_table = self._query_parquet(sql, parameters=param_set)
                 results.append(ClickHouseResult(result=None, arrow_table=arrow_table))
             except Exception:
                 result = self.client.query(sql, parameters=param_set)
@@ -173,11 +171,20 @@ class ClickHouseAdapter(BaseDatabaseAdapter):
         if not results:
             # Empty params list - return a dummy result
             try:
-                arrow_table = self.client.query_arrow("SELECT 1")
+                arrow_table = self._query_parquet("SELECT 1")
                 return ClickHouseResult(result=None, arrow_table=arrow_table)
             except Exception:
                 return ClickHouseResult(self.client.query("SELECT 1"))
         return results[-1]
+
+    def _query_parquet(self, sql: str, parameters=None):
+        """Fetch typed columnar results without Arrow's DateTime-to-UInt32 loss."""
+        from io import BytesIO
+
+        import pyarrow.parquet as pq
+
+        data = self.client.raw_query(sql, parameters=parameters, fmt="Parquet")
+        return pq.read_table(BytesIO(data))
 
     def fetchone(self, result: ClickHouseResult) -> tuple | None:
         """Fetch one row from result."""

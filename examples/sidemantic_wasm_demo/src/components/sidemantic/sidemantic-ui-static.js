@@ -7963,7 +7963,9 @@ function displayDimValue(value) {
 function formatValue(value, hint = {}) {
   return formatUiValue(value, hint);
 }
-function sqlLiteral(value) {
+function sqlLiteral(value, dialect) {
+  if (dialect === "clickhouse")
+    value = value.replaceAll("\\", "\\\\");
   return `'${value.replaceAll("'", "''")}'`;
 }
 function filterSummary(filter) {
@@ -8103,7 +8105,7 @@ function dimTypes(dimensions) {
 function catalogDimTypes(catalog) {
   return dimTypes(catalog.models.flatMap((model) => model.dimensions));
 }
-function filterLiteral(value, type) {
+function filterLiteral(value, type, dialect) {
   if ((type === "numeric" || type === "number") && value.trim() !== "" && Number.isFinite(Number(value))) {
     return value;
   }
@@ -8112,20 +8114,25 @@ function filterLiteral(value, type) {
     if (lower === "true" || lower === "false")
       return lower;
   }
-  return sqlLiteral(value);
+  return sqlLiteral(value, dialect);
 }
 function likeEscape(pattern) {
   return pattern.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }
-function membershipExpr(dimRef, filter, type) {
+function containsExpr(dimRef, text, dialect) {
+  const pattern = sqlLiteral(`%${likeEscape(text)}%`, dialect);
+  const escape2 = dialect === "clickhouse" ? "" : " ESCAPE '\\'";
+  return `CAST(${dimRef} AS VARCHAR) ILIKE ${pattern}${escape2}`;
+}
+function membershipExpr(dimRef, filter, type, dialect) {
   const negate = filter.mode === "exclude";
   const hasNull = filter.values.includes(NULL_TOKEN);
   const present = filter.values.filter((value) => value !== NULL_TOKEN);
   let presentExpr = null;
   if (present.length === 1) {
-    presentExpr = `${dimRef} ${negate ? "!=" : "="} ${filterLiteral(present[0], type)}`;
+    presentExpr = `${dimRef} ${negate ? "!=" : "="} ${filterLiteral(present[0], type, dialect)}`;
   } else if (present.length > 1) {
-    const list = present.map((v3) => filterLiteral(v3, type)).join(", ");
+    const list = present.map((v3) => filterLiteral(v3, type, dialect)).join(", ");
     presentExpr = `${dimRef} ${negate ? "NOT IN" : "IN"} (${list})`;
   }
   if (!negate) {
@@ -8156,18 +8163,17 @@ function filterExprs(filters, opts = {}) {
       continue;
     const type = opts.types?.[dimRef];
     if (filter.mode === "contains") {
-      const pat = sqlLiteral(`%${likeEscape(filter.pattern ?? "")}%`);
-      out.push(`CAST(${dimRef} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
+      out.push(containsExpr(dimRef, filter.pattern ?? "", opts.dialect));
       continue;
     }
-    const expr = membershipExpr(dimRef, filter, type);
+    const expr = membershipExpr(dimRef, filter, type, opts.dialect);
     if (expr)
       out.push(expr);
   }
   return out;
 }
 function composeFilters(filters, opts = {}) {
-  const base = filterExprs(filters, { types: opts.types, excludeDim: opts.excludeDim });
+  const base = filterExprs(filters, { types: opts.types, excludeDim: opts.excludeDim, dialect: opts.dialect });
   if (opts.timeRef && opts.range)
     base.push(...timeFilters(opts.timeRef, opts.range));
   return base;
@@ -8319,14 +8325,13 @@ function FilterEditor({
   const valueFilters = import_react5.useMemo(() => {
     const base = [
       ...configured?.filters ?? [],
-      ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types })
+      ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types, dialect: catalog.dialect })
     ];
     if (debouncedSearch.trim()) {
-      const pat = sqlLiteral(`%${likeEscape(debouncedSearch.trim())}%`);
-      base.push(`CAST(${dim.ref} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
+      base.push(containsExpr(dim.ref, debouncedSearch.trim(), catalog.dialect));
     }
     return base;
-  }, [configured, state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch, types]);
+  }, [configured, state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch, types, catalog.dialect]);
   const listMode = mode !== "contains";
   const { result, loading, error } = useQueryResult(backend, listMode ? distinctValues(dim.ref, valueFilters, VALUE_LIMIT, configured?.segments, configured?.usePreaggregations) : null);
   const dimAlias = aliasOf(dim.ref);

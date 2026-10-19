@@ -2,7 +2,7 @@ import type { Catalog, CatalogModel, DashboardSpec, Grain } from "../data/types"
 import { graphMetricsForModel } from "../lib/catalog";
 import { dashboardTabConfig, type DashboardTabConfig } from "../lib/dashboard";
 import { isEmptyFilter, type FilterMode, type FilterState } from "../lib/queries";
-import type { DateRange } from "../lib/time";
+import { presetRange, type DateRange } from "../lib/time";
 
 export type ViewKind = "home" | "explore" | "pivot";
 
@@ -24,6 +24,7 @@ export type ExplorerState = {
   grain: Grain;
   timezone: string; // IANA zone for time bucketing + label rendering; "UTC" default (E4)
   dateRange?: DateRange; // undefined = all time
+  datePreset?: number | "all"; // preserve rolling intent separately from resolved bounds
   contextColumn: ContextColumn; // leaderboard context column (E2)
   comparison: ComparisonMode; // comparison window for deltas/overlay (E3)
   comparisonRange?: DateRange; // explicit window when comparison === "custom"
@@ -47,7 +48,7 @@ export type ExplorerAction =
   | { type: "clearFilters" }
   | { type: "setGrain"; grain: Grain }
   | { type: "setTimezone"; timezone: string }
-  | { type: "setDateRange"; range?: DateRange }
+  | { type: "setDateRange"; range?: DateRange; preset?: number }
   | { type: "setContextColumn"; column: ContextColumn }
   | { type: "setComparison"; comparison: ComparisonMode; range?: DateRange }
   | { type: "setPivotDims"; dims: string[] }
@@ -84,6 +85,7 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
         grain: action.grain,
         filters: {},
         dateRange: undefined,
+        datePreset: undefined,
         pivotDims: [],
         pivotMetrics: [],
       };
@@ -142,7 +144,11 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
     case "setTimezone":
       return { ...state, timezone: action.timezone };
     case "setDateRange":
-      return { ...state, dateRange: action.range };
+      return {
+        ...state,
+        dateRange: action.preset ? presetRange(action.preset) : action.range,
+        datePreset: action.preset ?? (action.range ? undefined : "all"),
+      };
     case "setContextColumn":
       return { ...state, contextColumn: action.column };
     case "setComparison":
@@ -161,7 +167,13 @@ export function explorerReducer(state: ExplorerState, action: ExplorerAction): E
       // Reset clears the scoped controls (filters, date range, ...) but stays on the current view.
       // The catalog-derived `initial` lands on "home", which would otherwise eject Explore/Pivot
       // to the index on every Reset.
-      return { ...action.initial, view: state.view };
+      return {
+        ...action.initial,
+        view: state.view,
+        dateRange: typeof action.initial.datePreset === "number"
+          ? presetRange(action.initial.datePreset)
+          : action.initial.dateRange,
+      };
     default:
       return state;
   }
@@ -195,7 +207,11 @@ export function initialStateFromCatalog(
     filters: {},
     grain: configured?.grain ?? (model?.defaultGrain as Grain) ?? "month",
     timezone: "UTC",
-    dateRange: undefined,
+    // Configured dashboards own their static filters; do not intersect them with a new window.
+    // Keep the selection on no-time models too, so switching to a time model is already bounded.
+    // Query builders only apply the range when a time dimension exists.
+    dateRange: configured ? undefined : presetRange(28),
+    datePreset: configured ? undefined : 28,
     contextColumn: "none",
     comparison: "previous", // preserve the pre-E3 previous-period comparison as the default
     comparisonRange: undefined,

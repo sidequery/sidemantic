@@ -405,3 +405,128 @@ def test_clickhouse_executemany_native_arrow():
     result_table = reader.read_all()
     assert result_table.num_rows == 1
     assert result_table.column("a").to_pylist() == [2]
+
+
+@pytest.mark.parametrize(
+    "options, expected_autogenerate",
+    [
+        ({}, False),
+        ({"autogenerate_session_id": False}, False),
+        ({"autogenerate_session_id": True}, True),
+        ({"autogenerate_session_id": None}, None),
+        ({"session_id": "explicit"}, False),
+        ({"settings": {"session_id": "configured"}}, False),
+    ],
+)
+def test_clickhouse_session_configuration(monkeypatch, options, expected_autogenerate):
+    from types import SimpleNamespace
+
+    captured = {}
+
+    def get_client(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(params={})
+
+    monkeypatch.setitem(sys.modules, "clickhouse_connect", SimpleNamespace(get_client=get_client))
+    ClickHouseAdapter(**options)
+    assert captured["autogenerate_session_id"] is expected_autogenerate
+    for name, value in options.items():
+        assert captured[name] == value
+
+
+@pytest.mark.parametrize("arrow", [False, True])
+def test_clickhouse_server_requests_overlap_without_closing_client(monkeypatch, arrow):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from types import SimpleNamespace
+
+    import pyarrow as pa
+
+    from sidemantic.server.common import execute_bounded
+
+    slow_started = Event()
+    release_slow = Event()
+
+    class Client:
+        params = {}
+        close_calls = 0
+
+        def query_arrow(self, sql):
+            if "slow" in sql:
+                slow_started.set()
+                assert release_slow.wait(5)
+                return pa.table({"value": ["slow"]})
+            return pa.table({"value": ["fast"]})
+
+        def close(self):
+            self.close_calls += 1
+
+    client = Client()
+    monkeypatch.setitem(sys.modules, "clickhouse_connect", SimpleNamespace(get_client=lambda **kwargs: client))
+    adapter = ClickHouseAdapter()
+    layer = SimpleNamespace(adapter=adapter, dialect=adapter.dialect)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        slow = pool.submit(execute_bounded, layer, "select 'slow' as value", arrow=arrow)
+        try:
+            assert slow_started.wait(5)
+            fast = pool.submit(execute_bounded, layer, "select 'fast' as value", arrow=arrow)
+            fast_result = fast.result(timeout=2)
+            assert not slow.done()
+            assert (fast_result.to_pylist() if arrow else fast_result) == [{"value": "fast"}]
+            assert client.close_calls == 0
+        finally:
+            release_slow.set()
+        slow_result = slow.result(timeout=5)
+        assert (slow_result.to_pylist() if arrow else slow_result) == [{"value": "slow"}]
+    assert client.close_calls == 0
+    adapter.close()
+    assert client.close_calls == 1
+
+
+def test_clickhouse_session_requests_remain_serialized(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from threading import Event
+    from types import SimpleNamespace
+
+    import pyarrow as pa
+
+    from sidemantic.server.common import execute_bounded
+
+    slow_started = Event()
+    fast_submitted = Event()
+    release_slow = Event()
+
+    class Client:
+        params = {"session_id": "explicit"}
+
+        def query_arrow(self, sql):
+            if "slow" in sql:
+                slow_started.set()
+                assert release_slow.wait(5)
+            else:
+                assert release_slow.is_set(), "Session queries must not overlap"
+            return pa.table({"value": [sql]})
+
+        def close(self):
+            pytest.fail("Request must not close the shared client")
+
+    monkeypatch.setitem(sys.modules, "clickhouse_connect", SimpleNamespace(get_client=lambda **kwargs: Client()))
+    adapter = ClickHouseAdapter(session_id="explicit")
+    layer = SimpleNamespace(adapter=adapter, dialect=adapter.dialect)
+
+    def fast_query():
+        fast_submitted.set()
+        return execute_bounded(layer, "select 'fast' as value")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        slow = pool.submit(execute_bounded, layer, "select 'slow' as value")
+        try:
+            assert slow_started.wait(5)
+            fast = pool.submit(fast_query)
+            assert fast_submitted.wait(5)
+            with pytest.raises(TimeoutError):
+                fast.result(timeout=0.1)
+        finally:
+            release_slow.set()
+        assert "slow" in slow.result(timeout=5)[0]["value"]
+        assert "fast" in fast.result(timeout=5)[0]["value"]

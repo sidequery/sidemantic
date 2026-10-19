@@ -1363,6 +1363,9 @@ fn metric_json(metric: &Metric) -> JsonValue {
     if let Some(format) = &metric.format {
         entry.insert("format".to_string(), json!(format));
     }
+    if let Some(value_format_name) = &metric.value_format_name {
+        entry.insert("value_format_name".to_string(), json!(value_format_name));
+    }
     if let Some(description) = &metric.description {
         entry.insert("description".to_string(), json!(description));
     }
@@ -1551,5 +1554,24 @@ mod security_tests {
                 .expect_err("test has no configured ADBC driver");
             assert!(error.1.error.contains("ADBC"));
         }
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    #[test]
+    fn metric_metadata_preserves_explicit_and_named_formats() {
+        let mut metric = Metric::new("aov");
+        assert!(metric_json(&metric).get("value_format_name").is_none());
+        metric.value_format_name = Some("usd".into());
+        let named = metric_json(&metric);
+        assert_eq!(named["value_format_name"], "usd");
+        assert!(named.get("format").is_none());
+        metric.format = Some("#,##0.00".into());
+        let explicit = metric_json(&metric);
+        assert_eq!(explicit["format"], "#,##0.00");
+        assert_eq!(explicit["value_format_name"], "usd");
     }
 }

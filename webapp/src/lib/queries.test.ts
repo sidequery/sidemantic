@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { NULL_TOKEN, type Catalog } from "../data/types";
 import {
   catalogDimTypes,
+  composeFilters,
+  containsExpr,
   dimensionLeaderboard,
   distinctValues,
   filterExprs,
@@ -220,6 +222,43 @@ describe("dashboard query configuration", () => {
       expect(query.filters).toEqual(filters);
       expect(query.segments).toEqual(segments);
       expect(query.usePreaggregations).toBe(false);
+    }
+  });
+});
+
+describe("dialect-aware filter literals", () => {
+  test.each([
+    ["abc", "'%abc%'"],
+    ["100%", String.raw`'%100\\%%'`],
+    ["a_b", String.raw`'%a\\_b%'`],
+    ["c:\\path", String.raw`'%c:\\\\path%'`],
+    ["O'Brien", "'%O''Brien%'"],
+    ["\\'", String.raw`'%\\\\''%'`],
+  ])("ClickHouse search and contains escape %s", (text, literal) => {
+    const search = containsExpr("orders.status", text, "clickhouse");
+    expect(search).toBe(`CAST(orders.status AS VARCHAR) ILIKE ${literal}`);
+    expect(composeFilters({ "orders.status": has(text) }, { dialect: "clickhouse" })).toEqual([search]);
+  });
+
+  test("string memberships quote backslashes without changing numeric or null filters", () => {
+    expect(filterExprs({ "orders.status": inc(["c:\\path", "\\'", NULL_TOKEN]) }, { dialect: "clickhouse" })).toEqual([
+      String.raw`(orders.status IN ('c:\\path', '\\''') OR orders.status IS NULL)`,
+    ]);
+    expect(filterExprs({ "orders.status": exc(["c:\\path"]) }, { dialect: "clickhouse" })).toEqual([
+      String.raw`(orders.status != 'c:\\path' OR orders.status IS NULL)`,
+    ]);
+    expect(filterExprs({ "orders.amount": inc(["42"]) }, { dialect: "clickhouse", types: { "orders.amount": "numeric" } })).toEqual([
+      "orders.amount = 42",
+    ]);
+  });
+
+  test("interleaving dialects preserves default, DuckDB, and Postgres output", () => {
+    const pattern = "50%_\\'";
+    const standard = String.raw`CAST(orders.status AS VARCHAR) ILIKE '%50\%\_\\''%' ESCAPE '\'`;
+    for (const dialect of [undefined, "duckdb", "postgres"]) {
+      expect(containsExpr("orders.status", pattern, dialect)).toBe(standard);
+      expect(containsExpr("orders.status", pattern, "clickhouse")).not.toContain("ESCAPE");
+      expect(containsExpr("orders.status", pattern, dialect)).toBe(standard);
     }
   });
 });

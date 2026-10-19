@@ -1,5 +1,5 @@
 import type { CatalogDimension, CatalogMetric } from "../data/types";
-import { graphMetricsForModel } from "../lib/catalog";
+import { graphMetricsForModel, joinedDimensionsForModel } from "../lib/catalog";
 import { useExplorer } from "../state/ExplorerContext";
 
 function toggle(list: string[], ref: string) {
@@ -48,6 +48,7 @@ export function Catalog() {
   const { state, dispatch, catalog } = useExplorer();
   const model = catalog.models.find((m) => m.name === state.model);
   const graphMetrics = graphMetricsForModel(catalog, state.model);
+  const joinedDims = joinedDimensionsForModel(catalog, state.model);
   const pivot = state.view === "pivot";
   const pivotMetrics = state.pivotMetrics.length ? state.pivotMetrics : state.selectedMetric ? [state.selectedMetric] : [];
 
@@ -132,6 +133,21 @@ export function Catalog() {
           </ul>
         )}
       </section>
+      {joinedDims.length ? (
+        <section>
+          <h2 className="mb-1 px-3 text-xs font-medium text-muted">Joined dimensions</h2>
+          {joinedDims.filter((dim) => pivot || dim.type !== "time").map((dimension) => (
+            <DimensionRow
+              key={dimension.ref}
+              dimension={dimension}
+              selected={(pivot ? state.pivotDims : state.joinedDims).includes(dimension.ref)}
+              onSelect={() => pivot
+                ? dispatch({ type: "setPivotDims", dims: toggle(state.pivotDims, dimension.ref) })
+                : dispatch({ type: "setJoinedDims", dims: toggle(state.joinedDims, dimension.ref) })}
+            />
+          ))}
+        </section>
+      ) : null}
     </nav>
   );
 }

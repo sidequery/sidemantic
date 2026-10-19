@@ -14,6 +14,7 @@ const base: ExplorerState = {
   contextColumn: "none",
   comparison: "previous",
   comparisonRange: undefined,
+  joinedDims: [],
   pivotDims: [],
   pivotMetrics: [],
 };
@@ -177,4 +178,12 @@ describe("decodeState", () => {
     };
     expect(decodeState(encodeState(populated), base)).toEqual(populated);
   });
+});
+
+test("joined leaderboard opt-ins round-trip and malformed lists are ignored", () => {
+  const selected = { ...base, joinedDims: ["assignment.arm"] };
+  expect(decodeState(encodeState(selected), base)).toEqual(selected);
+  expect(new URLSearchParams(encodeState(base)).has("jdims")).toBe(false);
+  expect(decodeState('jdims=%5B42%5D', base).joinedDims).toEqual([]);
+  expect(decodeState(`jdims=${encodeURIComponent(JSON.stringify(["assignment.arm", "assignment.arm"]))}`, base).joinedDims).toEqual(["assignment.arm"]);
 });

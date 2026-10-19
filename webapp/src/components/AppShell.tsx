@@ -102,8 +102,8 @@ export function AppShell({ brand, toolbar, filters, rail, children, drawer, show
       </header>
 
       {filters ? (
-        // Fixed height so the bar doesn't jump when pills replace the "No filters" text.
-        <div className="flex min-h-9 shrink-0 flex-wrap items-center gap-2 overflow-x-auto border-b border-line bg-surface px-3 py-2 md:h-9 md:flex-nowrap md:py-0">
+        // Keep the stage available with many filters; popovers render outside this scroll clip.
+        <div data-filter-strip role="region" aria-label="Active filters" className="relative z-30 flex max-h-[min(25dvh,8rem)] min-h-9 shrink-0 flex-wrap items-center gap-2 overflow-y-auto border-b border-line bg-surface px-3 py-1">
           {filters}
         </div>
       ) : null}
@@ -156,7 +156,7 @@ export function AppShell({ brand, toolbar, filters, rail, children, drawer, show
             </aside>
           </>
         ) : null}
-        <main className="relative min-h-0 min-w-0 overflow-hidden">
+        <main className="relative z-0 min-h-0 min-w-0 overflow-hidden">
           <div className={`h-full overflow-y-auto ${drawer ? "pb-8" : ""}`}>{children}</div>
           {drawer}
         </main>

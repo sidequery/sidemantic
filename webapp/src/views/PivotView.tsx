@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
-import { aliasOf, type CatalogMetric } from "../data/types";
+import { queryAlias, type CatalogMetric } from "../data/types";
 import { DataTable, type Column } from "../components/DataTable";
 import { QueryDebugPanel } from "../components/QueryDebugPanel";
 import { EmptyState, ErrorState } from "../components/States";
 import { formatValue, labelize } from "../lib/format";
-import { graphMetricsForModel } from "../lib/catalog";
+import { graphMetricsForModel, joinedDimensionsForModel } from "../lib/catalog";
 import { composeFilters, dimTypes, pivotGroup } from "../lib/queries";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
@@ -12,7 +12,7 @@ import { useQueryResult } from "../state/useQueryResult";
 export function PivotView() {
   const { state, catalog, backend } = useExplorer();
   const model = catalog.models.find((m) => m.name === state.model);
-  const dims = model?.dimensions ?? [];
+  const dims = [...(model?.dimensions ?? []), ...joinedDimensionsForModel(catalog, state.model)];
   const graphMetrics = graphMetricsForModel(catalog, state.model);
   const allMetrics: CatalogMetric[] = useMemo(
     () => [...(model?.metrics ?? []), ...graphMetrics],
@@ -20,8 +20,7 @@ export function PivotView() {
   );
   const timeRef = model?.timeDimension?.ref;
 
-  // Sanitize selections against the current model so a deep-link from another model (or a stale
-  // default) never pins fields this model doesn't have.
+  // Retain reachable joined dimensions in deep links, but discard stale/unreachable fields.
   const validDim = (ref: string) => dims.some((d) => d.ref === ref);
   const validMetric = (ref: string) => allMetrics.some((m) => m.ref === ref);
   const pivotDims = state.pivotDims.filter(validDim);
@@ -33,8 +32,8 @@ export function PivotView() {
 
   const types = useMemo(() => dimTypes(dims), [dims]);
   const baseFilters = useMemo(
-    () => composeFilters(state.filters, { timeRef, range: state.dateRange, types }),
-    [state.filters, timeRef, state.dateRange, types],
+    () => composeFilters(state.filters, { timeRef, range: state.dateRange, types, dialect: catalog.dialect }),
+    [state.filters, timeRef, state.dateRange, types, catalog.dialect],
   );
 
   const effectiveSort = sort ?? (pivotMetrics[0] ? { ref: pivotMetrics[0], dir: "desc" as const } : null);
@@ -45,17 +44,18 @@ export function PivotView() {
   const tzQuery = query ? { ...query, timezone: state.timezone } : null;
   const { result, loading, error } = useQueryResult(backend, tzQuery);
 
+  const queryFields = [...pivotDims, ...pivotMetrics];
   const metricByRef = useMemo(() => new Map(allMetrics.map((m) => [m.ref, m])), [allMetrics]);
   const refByAlias = useMemo(() => {
     const map = new Map<string, string>();
-    for (const ref of [...pivotDims, ...pivotMetrics]) map.set(aliasOf(ref), ref);
+    for (const ref of queryFields) map.set(queryAlias(ref, queryFields), ref);
     return map;
-  }, [pivotDims, pivotMetrics]);
+  }, [queryFields]);
 
   const columns: Column[] = [
-    ...pivotDims.map((ref) => ({ key: aliasOf(ref), label: dims.find((d) => d.ref === ref)?.label ?? labelize(ref), numeric: false })),
+    ...pivotDims.map((ref) => ({ key: queryAlias(ref, queryFields), label: dims.find((d) => d.ref === ref)?.label ?? labelize(ref), numeric: false })),
     ...pivotMetrics.map((ref) => ({
-      key: aliasOf(ref),
+      key: queryAlias(ref, queryFields),
       label: metricByRef.get(ref)?.label ?? labelize(ref),
       numeric: true,
       sortable: true,
@@ -89,7 +89,7 @@ export function PivotView() {
           columns={columns}
           rows={result?.rows ?? []}
           loading={loading}
-          sortKey={effectiveSort ? aliasOf(effectiveSort.ref) : undefined}
+          sortKey={effectiveSort ? queryAlias(effectiveSort.ref, queryFields) : undefined}
           sortDir={effectiveSort?.dir}
           onSort={onSort}
           renderCell={renderCell}

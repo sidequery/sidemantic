@@ -10,6 +10,7 @@ type DescribeDimension = {
   supported_granularities?: string[];
   label?: string;
   format?: string;
+  value_format_name?: string;
   description?: string;
   public?: boolean;
 };
@@ -20,6 +21,7 @@ type DescribeMetric = {
   type?: string;
   label?: string;
   format?: string;
+  value_format_name?: string;
   description?: string;
   public?: boolean;
   sql?: string;
@@ -116,7 +118,7 @@ export function buildCatalogFromDescribe(payload: DescribeResponse): Catalog {
       type: dim.type || "categorical",
       granularity: dim.granularity,
       supportedGranularities: dim.supported_granularities,
-      format: dim.format,
+      format: dim.format ?? dim.value_format_name,
     }));
     const metrics: CatalogMetric[] = (model.metrics ?? []).filter(isPublic).map((metric) => ({
       ref: `${model.name}.${metric.name}`,
@@ -126,7 +128,7 @@ export function buildCatalogFromDescribe(payload: DescribeResponse): Catalog {
       description: metric.description,
       agg: metric.agg,
       type: metric.type,
-      format: metric.format,
+      format: metric.format ?? metric.value_format_name,
     }));
     const timeDimension = pickTimeDimension(dimensions, model.default_time_dimension);
     return {
@@ -149,7 +151,7 @@ export function buildCatalogFromDescribe(payload: DescribeResponse): Catalog {
     label: metric.label || labelize(metric.name),
     description: metric.description,
     type: metric.type,
-    format: metric.format,
+    format: metric.format ?? metric.value_format_name,
   }));
 
   return { models, graphMetrics, dialect: payload.dialect };
@@ -211,4 +213,19 @@ export function graphMetricsForModel(catalog: Catalog, modelName: string): Catal
     if (!metric.ownerModel) return true;
     return metric.ownerModel === modelName || joinable.has(metric.ownerModel);
   });
+}
+
+/** Public dimensions reachable from the primary model. The catalog already owns visibility. */
+export function joinedDimensionsForModel(catalog: Catalog, modelName: string): CatalogDimension[] {
+  const joinable = new Set<string>();
+  for (const pair of catalog.joinablePairs ?? []) {
+    if (pair.from === modelName) joinable.add(pair.to);
+    if (pair.to === modelName) joinable.add(pair.from);
+  }
+  return catalog.models
+    .filter((model) => model.name !== modelName && joinable.has(model.name))
+    .flatMap((model) => model.dimensions.map((dimension) => ({
+      ...dimension,
+      label: `${dimension.label} · ${model.label}`,
+    })));
 }

@@ -7659,9 +7659,9 @@ var require_jsx_runtime = __commonJS(function(exports, module) {
 });
 
 // webapp/src/static-api.tsx
-var import_react10 = __toESM(require_react(), 1);
+var import_react11 = __toESM(require_react(), 1);
 var import_client = __toESM(require_client(), 1);
-var import_react_dom = __toESM(require_react_dom(), 1);
+var import_react_dom2 = __toESM(require_react_dom(), 1);
 
 // webapp/src/components/DataTable.tsx
 var import_react = __toESM(require_react(), 1);
@@ -7679,25 +7679,32 @@ function formatUiValue(value, options = {}) {
   const numeric = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(numeric))
     return String(value);
-  const format = String(options.format || "").toLowerCase();
-  const percent = options.style === "percent" || format.includes("%") || format.includes("percent") || format.includes("pct") || options.type === "ratio";
+  const format = String(options.format || "").trim().toLowerCase();
+  const percent = options.style === "percent" || format.includes("%") || format.includes("percent") || format.includes("pct") || !format && !options.style && !options.currency && options.type === "ratio";
+  const decimalPattern = format.match(/^[^0#]*[0#,]+(?:\.([0#]+))?(?:\\?%)?$/);
+  const namedPrecision = format.match(/^(?:decimal|percent|usd)_(\d+)$/);
+  const precision = decimalPattern ? (decimalPattern[1] || "").length : namedPrecision ? Number(namedPrecision[1]) : undefined;
+  const maximumFractionDigits = options.maximumFractionDigits ?? (precision === undefined ? percent || options.compact ? 1 : 2 : Math.min(precision, 20));
+  const minimumFractionDigits = precision === undefined ? undefined : Math.min(decimalPattern ? (decimalPattern[1] || "").replaceAll("#", "").length : precision, maximumFractionDigits);
   if (percent) {
     const scaled = options.style === "percent" ? numeric : Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
     return scaled.toLocaleString(undefined, {
-      maximumFractionDigits: options.maximumFractionDigits ?? 1,
+      maximumFractionDigits,
+      minimumFractionDigits,
       style: options.style === "percent" ? "percent" : "decimal"
     }) + (options.style === "percent" ? "" : "%");
   }
   const currency = options.style === "currency" || options.currency || format.includes("$") || format.includes("usd") || format.includes("currency") || format.includes("dollar");
   return numeric.toLocaleString(undefined, {
     currency: currency ? options.currency || "USD" : undefined,
-    maximumFractionDigits: options.maximumFractionDigits ?? 2,
+    maximumFractionDigits,
+    minimumFractionDigits,
     notation: options.compact ? "compact" : "standard",
     style: currency ? "currency" : "decimal"
   });
 }
 function formatUiCompact(value, options = {}) {
-  return formatUiValue(value, { ...options, compact: true, maximumFractionDigits: options.maximumFractionDigits ?? 1 });
+  return formatUiValue(value, { ...options, compact: true });
 }
 function normalizeFilterValue(value) {
   return String(value ?? "");
@@ -7947,7 +7954,7 @@ function DataTable({
 }
 
 // webapp/src/components/FilterPill.tsx
-var import_react6 = __toESM(require_react(), 1);
+var import_react7 = __toESM(require_react(), 1);
 
 // webapp/src/data/types.ts
 function aliasOf(ref) {
@@ -7963,7 +7970,9 @@ function displayDimValue(value) {
 function formatValue(value, hint = {}) {
   return formatUiValue(value, hint);
 }
-function sqlLiteral(value) {
+function sqlLiteral(value, dialect) {
+  if (dialect === "clickhouse")
+    value = value.replaceAll("\\", "\\\\");
   return `'${value.replaceAll("'", "''")}'`;
 }
 function filterSummary(filter) {
@@ -7981,7 +7990,8 @@ function filterSummary(filter) {
 }
 
 // webapp/src/components/FilterEditor.tsx
-var import_react5 = __toESM(require_react(), 1);
+var import_react6 = __toESM(require_react(), 1);
+var import_react_dom = __toESM(require_react_dom(), 1);
 
 // webapp/src/lib/catalog.ts
 function graphMetricsForModel(catalog, modelName) {
@@ -8103,7 +8113,7 @@ function dimTypes(dimensions) {
 function catalogDimTypes(catalog) {
   return dimTypes(catalog.models.flatMap((model) => model.dimensions));
 }
-function filterLiteral(value, type) {
+function filterLiteral(value, type, dialect) {
   if ((type === "numeric" || type === "number") && value.trim() !== "" && Number.isFinite(Number(value))) {
     return value;
   }
@@ -8112,20 +8122,25 @@ function filterLiteral(value, type) {
     if (lower === "true" || lower === "false")
       return lower;
   }
-  return sqlLiteral(value);
+  return sqlLiteral(value, dialect);
 }
 function likeEscape(pattern) {
   return pattern.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }
-function membershipExpr(dimRef, filter, type) {
+function containsExpr(dimRef, text, dialect) {
+  const pattern = sqlLiteral(`%${likeEscape(text)}%`, dialect);
+  const escape2 = dialect === "clickhouse" ? "" : " ESCAPE '\\'";
+  return `CAST(${dimRef} AS VARCHAR) ILIKE ${pattern}${escape2}`;
+}
+function membershipExpr(dimRef, filter, type, dialect) {
   const negate = filter.mode === "exclude";
   const hasNull = filter.values.includes(NULL_TOKEN);
   const present = filter.values.filter((value) => value !== NULL_TOKEN);
   let presentExpr = null;
   if (present.length === 1) {
-    presentExpr = `${dimRef} ${negate ? "!=" : "="} ${filterLiteral(present[0], type)}`;
+    presentExpr = `${dimRef} ${negate ? "!=" : "="} ${filterLiteral(present[0], type, dialect)}`;
   } else if (present.length > 1) {
-    const list = present.map((v3) => filterLiteral(v3, type)).join(", ");
+    const list = present.map((v3) => filterLiteral(v3, type, dialect)).join(", ");
     presentExpr = `${dimRef} ${negate ? "NOT IN" : "IN"} (${list})`;
   }
   if (!negate) {
@@ -8156,18 +8171,17 @@ function filterExprs(filters, opts = {}) {
       continue;
     const type = opts.types?.[dimRef];
     if (filter.mode === "contains") {
-      const pat = sqlLiteral(`%${likeEscape(filter.pattern ?? "")}%`);
-      out.push(`CAST(${dimRef} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
+      out.push(containsExpr(dimRef, filter.pattern ?? "", opts.dialect));
       continue;
     }
-    const expr = membershipExpr(dimRef, filter, type);
+    const expr = membershipExpr(dimRef, filter, type, opts.dialect);
     if (expr)
       out.push(expr);
   }
   return out;
 }
 function composeFilters(filters, opts = {}) {
-  const base = filterExprs(filters, { types: opts.types, excludeDim: opts.excludeDim });
+  const base = filterExprs(filters, { types: opts.types, excludeDim: opts.excludeDim, dialect: opts.dialect });
   if (opts.timeRef && opts.range)
     base.push(...timeFilters(opts.timeRef, opts.range));
   return base;
@@ -8249,6 +8263,44 @@ function useQueryResult(backend, query) {
   return { ...state, queryKey: key ?? undefined };
 }
 
+// webapp/src/components/useFilterPopover.ts
+var import_react5 = __toESM(require_react(), 1);
+function useFilterPopover(ref, anchorRef, open = true) {
+  import_react5.useLayoutEffect(() => {
+    const panel = ref.current;
+    const anchor = anchorRef.current;
+    if (!open || !panel || !anchor)
+      return;
+    function position() {
+      if (!panel || !anchor)
+        return;
+      const bounds = anchor.getBoundingClientRect();
+      const strip2 = anchor.closest("[data-filter-strip]")?.getBoundingClientRect();
+      const gutter = 8;
+      const left = Math.max(gutter, Math.min(bounds.left, window.innerWidth - panel.offsetWidth - gutter));
+      const bottom = strip2 ? Math.max(strip2.top, Math.min(bounds.bottom, strip2.bottom)) : bounds.bottom;
+      const top = Math.max(gutter, Math.min(bottom + 4, window.innerHeight - gutter));
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      panel.style.setProperty("--filter-popover-height", `${Math.max(0, window.innerHeight - top - gutter)}px`);
+    }
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(panel);
+    observer.observe(anchor);
+    const strip = anchor.closest("[data-filter-strip]");
+    if (strip)
+      observer.observe(strip);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+    };
+  });
+}
+
 // webapp/src/components/FilterEditor.tsx
 var jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
 var MODES = [
@@ -8259,8 +8311,8 @@ var MODES = [
 var VALUE_LIMIT = 50;
 var SEARCH_DEBOUNCE_MS = 200;
 function useDebounced(value, delayMs) {
-  const [debounced, setDebounced] = import_react5.useState(value);
-  import_react5.useEffect(() => {
+  const [debounced, setDebounced] = import_react6.useState(value);
+  import_react6.useEffect(() => {
     const timer = setTimeout(() => setDebounced(value), delayMs);
     return () => clearTimeout(timer);
   }, [value, delayMs]);
@@ -8269,27 +8321,29 @@ function useDebounced(value, delayMs) {
 function FilterEditor({
   dim,
   model,
+  anchorRef,
   onClose
 }) {
   const { state, dispatch, backend, catalog, dashboard } = useExplorer();
-  const configured = import_react5.useMemo(() => dashboardTabConfig(catalog, dashboard, state.dashboardTab), [catalog, dashboard, state.dashboardTab]);
+  const configured = import_react6.useMemo(() => dashboardTabConfig(catalog, dashboard, state.dashboardTab), [catalog, dashboard, state.dashboardTab]);
   const filter = state.filters[dim.ref];
-  const [mode, setModeState] = import_react5.useState(filter?.mode ?? "include");
-  const selected = import_react5.useMemo(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
-  const panelRef = import_react5.useRef(null);
-  const searchRef = import_react5.useRef(null);
-  const labelId = import_react5.useId();
-  const [search, setSearch] = import_react5.useState("");
+  const [mode, setModeState] = import_react6.useState(filter?.mode ?? "include");
+  const selected = import_react6.useMemo(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
+  const panelRef = import_react6.useRef(null);
+  useFilterPopover(panelRef, anchorRef);
+  const searchRef = import_react6.useRef(null);
+  const labelId = import_react6.useId();
+  const [search, setSearch] = import_react6.useState("");
   const debouncedSearch = useDebounced(search, SEARCH_DEBOUNCE_MS);
   const pattern = filter?.mode === "contains" ? filter.pattern ?? "" : "";
-  const [patternDraft, setPatternDraft] = import_react5.useState(pattern);
+  const [patternDraft, setPatternDraft] = import_react6.useState(pattern);
   const debouncedPattern = useDebounced(patternDraft, SEARCH_DEBOUNCE_MS);
-  import_react5.useEffect(() => {
-    const opener = document.activeElement;
+  import_react6.useEffect(() => {
+    const opener = anchorRef.current;
     searchRef.current?.focus();
-    return () => opener?.focus?.();
-  }, []);
-  import_react5.useEffect(() => {
+    return () => opener?.focus({ preventScroll: true });
+  }, [anchorRef]);
+  import_react6.useEffect(() => {
     function onKey(event) {
       if (event.key === "Escape") {
         event.stopPropagation();
@@ -8307,30 +8361,30 @@ function FilterEditor({
       document.removeEventListener("mousedown", onPointer, true);
     };
   }, [onClose]);
-  import_react5.useEffect(() => {
+  import_react6.useEffect(() => {
     if (mode !== "contains")
       return;
     if (debouncedPattern === pattern)
       return;
     dispatch({ type: "setFilterPattern", dim: dim.ref, pattern: debouncedPattern });
   }, [debouncedPattern, mode, dim.ref, dispatch]);
-  const timeRef = configured?.timeDimension?.ref ?? model.timeDimension?.ref;
-  const types = import_react5.useMemo(() => catalogDimTypes(catalog), [catalog]);
-  const valueFilters = import_react5.useMemo(() => {
+  const primaryModel = catalog.models.find((candidate) => candidate.name === state.model) ?? model;
+  const timeRef = configured?.timeDimension?.ref ?? primaryModel.timeDimension?.ref;
+  const types = import_react6.useMemo(() => catalogDimTypes(catalog), [catalog]);
+  const valueFilters = import_react6.useMemo(() => {
     const base = [
       ...configured?.filters ?? [],
-      ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types })
+      ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types, dialect: catalog.dialect })
     ];
     if (debouncedSearch.trim()) {
-      const pat = sqlLiteral(`%${likeEscape(debouncedSearch.trim())}%`);
-      base.push(`CAST(${dim.ref} AS VARCHAR) ILIKE ${pat} ESCAPE '\\'`);
+      base.push(containsExpr(dim.ref, debouncedSearch.trim(), catalog.dialect));
     }
     return base;
-  }, [configured, state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch, types]);
+  }, [configured, state.filters, timeRef, state.dateRange, dim.ref, debouncedSearch, types, catalog.dialect]);
   const listMode = mode !== "contains";
   const { result, loading, error } = useQueryResult(backend, listMode ? distinctValues(dim.ref, valueFilters, VALUE_LIMIT, configured?.segments, configured?.usePreaggregations) : null);
   const dimAlias = aliasOf(dim.ref);
-  const values = import_react5.useMemo(() => {
+  const values = import_react6.useMemo(() => {
     if (!result)
       return [];
     return result.rows.map((row) => {
@@ -8363,27 +8417,27 @@ function FilterEditor({
       first.focus();
     }
   }
-  return /* @__PURE__ */ jsx_runtime2.jsxs("div", {
+  return import_react_dom.createPortal(/* @__PURE__ */ jsx_runtime2.jsxs("div", {
     ref: panelRef,
     role: "dialog",
     "aria-modal": "true",
     "aria-labelledby": labelId,
     onKeyDown,
-    className: "absolute left-0 z-50 mt-1 w-64 border border-line bg-surface p-2 text-2xs shadow-lg",
+    className: "fixed z-30 max-h-[var(--filter-popover-height)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto border border-line bg-surface p-2 text-2xs shadow-lg",
     children: [
       /* @__PURE__ */ jsx_runtime2.jsxs("div", {
         id: labelId,
         className: "mb-2 flex items-baseline justify-between gap-2",
         children: [
           /* @__PURE__ */ jsx_runtime2.jsx("span", {
-            className: "truncate font-semibold text-ink",
+            className: "min-w-0 break-words font-semibold text-ink",
             children: dim.label
           }),
           /* @__PURE__ */ jsx_runtime2.jsx("button", {
             type: "button",
             "aria-label": "Close filter editor",
             onClick: onClose,
-            className: "grid size-4 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+            className: "grid size-4 shrink-0 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
             children: "×"
           })
         ]
@@ -8443,10 +8497,10 @@ function FilterEditor({
                     type: "checkbox",
                     checked,
                     onChange: () => dispatch({ type: "toggleFilter", dim: dim.ref, value, mode }),
-                    className: "size-3 accent-[var(--accent)]"
+                    className: "size-3 shrink-0 accent-[var(--accent)]"
                   }),
                   /* @__PURE__ */ jsx_runtime2.jsx("span", {
-                    className: "min-w-0 truncate text-ink",
+                    className: "min-w-0 break-words text-ink",
                     children: displayDimValue(value)
                   })
                 ]
@@ -8473,13 +8527,14 @@ function FilterEditor({
         ]
       })
     ]
-  });
+  }), document.body);
 }
 
 // webapp/src/components/FilterPill.tsx
 var jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
 function FilterPill(props) {
-  const [open, setOpen] = import_react6.useState(false);
+  const [open, setOpen] = import_react7.useState(false);
+  const buttonRef = import_react7.useRef(null);
   if (!("dim" in props)) {
     return /* @__PURE__ */ jsx_runtime3.jsxs("span", {
       "data-dimension": props.dimension,
@@ -8520,6 +8575,7 @@ function FilterPill(props) {
         className: "inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted",
         children: [
           /* @__PURE__ */ jsx_runtime3.jsxs("button", {
+            ref: buttonRef,
             type: "button",
             "aria-label": `Edit filter ${dim.label}`,
             "aria-haspopup": "dialog",
@@ -8547,6 +8603,7 @@ function FilterPill(props) {
       open ? /* @__PURE__ */ jsx_runtime3.jsx(FilterEditor, {
         dim,
         model,
+        anchorRef: buttonRef,
         onClose: () => setOpen(false)
       }) : null
     ]
@@ -8688,13 +8745,13 @@ function Leaderboard({
 }
 
 // webapp/src/components/MetricCard.tsx
-var import_react9 = __toESM(require_react(), 1);
+var import_react10 = __toESM(require_react(), 1);
 
 // webapp/src/components/Sparkline.tsx
-var import_react8 = __toESM(require_react(), 1);
+var import_react9 = __toESM(require_react(), 1);
 
 // webapp/src/components/ChartTooltip.tsx
-var import_react7 = __toESM(require_react(), 1);
+var import_react8 = __toESM(require_react(), 1);
 var jsx_runtime5 = __toESM(require_jsx_runtime(), 1);
 function ChartTooltip({
   tip,
@@ -8724,15 +8781,15 @@ function Sparkline({
   onHover,
   onBrush
 }) {
-  const containerRef = import_react8.useRef(null);
-  const gradientId = import_react8.useId();
-  const svgRef = import_react8.useRef(null);
-  const dragStart = import_react8.useRef(null);
-  const [width, setWidth] = import_react8.useState(200);
-  const [hover, setHover] = import_react8.useState(null);
-  const [brush, setBrush] = import_react8.useState(null);
-  const [tip, setTip] = import_react8.useState(null);
-  import_react8.useEffect(() => {
+  const containerRef = import_react9.useRef(null);
+  const gradientId = import_react9.useId();
+  const svgRef = import_react9.useRef(null);
+  const dragStart = import_react9.useRef(null);
+  const [width, setWidth] = import_react9.useState(200);
+  const [hover, setHover] = import_react9.useState(null);
+  const [brush, setBrush] = import_react9.useState(null);
+  const [tip, setTip] = import_react9.useState(null);
+  import_react9.useEffect(() => {
     const node = containerRef.current;
     if (!node || typeof ResizeObserver === "undefined")
       return;
@@ -8932,7 +8989,7 @@ function MetricCard({
   onSparkHover,
   onSparkBrush
 }) {
-  const [sparkHover, setSparkHover] = import_react9.useState(null);
+  const [sparkHover, setSparkHover] = import_react10.useState(null);
   const summary = /* @__PURE__ */ jsx_runtime7.jsxs(jsx_runtime7.Fragment, {
     children: [
       /* @__PURE__ */ jsx_runtime7.jsxs("div", {
@@ -9251,7 +9308,7 @@ function mount(container, node) {
     root = import_client.createRoot(container);
     roots.set(container, root);
   }
-  import_react_dom.flushSync(() => root.render(node));
+  import_react_dom2.flushSync(() => root.render(node));
 }
 function rowsOf(query) {
   return query.result?.sample_rows ?? query.result?.rows ?? [];
@@ -9296,10 +9353,10 @@ function toComponentQuery({ dimensions = [], metrics = [], result, outputAliases
 }
 function renderMetricCards(container, query, options = {}) {
   const row = rowsOf(query)[0] ?? {};
-  mount(container, import_react10.createElement(import_react10.Fragment, null, ...(query.metrics ?? []).map((metric) => {
+  mount(container, import_react11.createElement(import_react11.Fragment, null, ...(query.metrics ?? []).map((metric) => {
     const key = aliasFor(query, metric);
     const format = typeof options.valueFormat === "function" ? options.valueFormat({ metric, key, value: row[key] }) : options.valueFormat;
-    return import_react10.createElement(MetricCard, {
+    return import_react11.createElement(MetricCard, {
       key: metric,
       metric,
       label: options.labels?.[metric] ?? aliasForSemanticRef(metric).replaceAll("_", " "),
@@ -9314,10 +9371,10 @@ function renderMetricCards(container, query, options = {}) {
 function renderMetricSummaryCards(container, config = {}) {
   const totals = config.totals?.rows?.[0] ?? {};
   const series = config.seriesRows ?? [];
-  mount(container, import_react10.createElement(import_react10.Fragment, null, ...(config.metrics ?? []).map((metric) => {
+  mount(container, import_react11.createElement(import_react11.Fragment, null, ...(config.metrics ?? []).map((metric) => {
     const key = metric.key;
     const alias = aliasForSemanticRef(key);
-    return import_react10.createElement(MetricCard, {
+    return import_react11.createElement(MetricCard, {
       key,
       metric: key,
       label: metric.label ?? alias.replaceAll("_", " "),
@@ -9338,7 +9395,7 @@ function renderLeaderboard(container, query, options = {}) {
   const metricKey = aliasFor(query, metric);
   const allRows = rowsOf(query);
   const expanded = options.expanded ?? container.__sdmExpanded ?? false;
-  mount(container, import_react10.createElement(Leaderboard, {
+  mount(container, import_react11.createElement(Leaderboard, {
     dimension,
     title: options.dimensionLabel ?? dimensionKey.replaceAll("_", " "),
     metricLabel: options.metricLabel ?? metricKey.replaceAll("_", " "),
@@ -9358,13 +9415,13 @@ function renderLeaderboard(container, query, options = {}) {
 function renderDimensionLeaderboardCards(container, dimensions, config = {}) {
   const expandedDimension = container.__sdmExpandedDim;
   const visible = expandedDimension ? dimensions.filter((item) => (item.key ?? item) === expandedDimension) : dimensions;
-  mount(container, import_react10.createElement(import_react10.Fragment, null, ...visible.map((item) => {
+  mount(container, import_react11.createElement(import_react11.Fragment, null, ...visible.map((item) => {
     const dimension = item.key ?? item;
     const result = config.resultForDimension?.(item) ?? { rows: [] };
     const query = toComponentQuery({ dimensions: [dimension], metrics: [config.metricRef], result });
     const rows = rowsOf(query);
     const expanded = expandedDimension === dimension;
-    return import_react10.createElement(Leaderboard, {
+    return import_react11.createElement(Leaderboard, {
       key: dimension,
       dimension,
       title: item.label ?? aliasForSemanticRef(dimension).replaceAll("_", " "),
@@ -9385,10 +9442,10 @@ function renderDimensionLeaderboardCards(container, dimensions, config = {}) {
 function renderFilterPills(container, filters, onRemove, options = {}) {
   const pills = Object.entries(filters ?? {}).flatMap(([dimension, values]) => (values ?? []).map((value) => {
     const normalized = normalizeFilterValue(value);
-    return import_react10.createElement(FilterPill, { key: `${dimension}:${normalized}`, dimension, value: normalized, onRemove: onRemove ? () => onRemove({ dimension, value: normalized }) : undefined });
+    return import_react11.createElement(FilterPill, { key: `${dimension}:${normalized}`, dimension, value: normalized, onRemove: onRemove ? () => onRemove({ dimension, value: normalized }) : undefined });
   }));
   for (const extra of options.extraPills ?? []) {
-    pills.push(import_react10.createElement(FilterPill, {
+    pills.push(import_react11.createElement(FilterPill, {
       key: extra.key ?? `${extra.dimension}:${extra.value}`,
       dimension: extra.dimension,
       dimensionLabel: extra.dimensionLabel,
@@ -9396,15 +9453,15 @@ function renderFilterPills(container, filters, onRemove, options = {}) {
       onRemove: extra.onRemove
     }));
   }
-  mount(container, pills.length ? import_react10.createElement(import_react10.Fragment, null, ...pills) : options.emptyLabel ? import_react10.createElement("span", { className: "text-faint" }, options.emptyLabel) : null);
+  mount(container, pills.length ? import_react11.createElement(import_react11.Fragment, null, ...pills) : options.emptyLabel ? import_react11.createElement("span", { className: "text-faint" }, options.emptyLabel) : null);
 }
 function renderHighlightedQueryDebug(container, queries) {
-  mount(container, import_react10.createElement(QueryDebugPanel, { queries: Object.fromEntries(Object.entries(queries ?? {}).map(([name, query]) => [name, typeof query === "string" ? query : query?.sql])) }));
+  mount(container, import_react11.createElement(QueryDebugPanel, { queries: Object.fromEntries(Object.entries(queries ?? {}).map(([name, query]) => [name, typeof query === "string" ? query : query?.sql])) }));
 }
 var renderQueryDebug = renderHighlightedQueryDebug;
 function renderDataPreview(container, result, options = {}) {
   const columns = result?.columns ?? [];
-  mount(container, import_react10.createElement(DataTable, {
+  mount(container, import_react11.createElement(DataTable, {
     columns: columns.map((key) => ({ key, label: key.replaceAll("_", " "), numeric: (result.sample_rows ?? result.rows ?? []).some((row) => typeof row[key] === "number") })),
     rows: result.sample_rows ?? result.rows ?? [],
     pageSize: options.pageSize || 50,
@@ -9413,7 +9470,7 @@ function renderDataPreview(container, result, options = {}) {
 }
 function renderState(container, state) {
   const Component = state.kind === "error" ? ErrorState : state.kind === "loading" ? LoadingState : EmptyState;
-  mount(container, import_react10.createElement(Component, { message: state.message }));
+  mount(container, import_react11.createElement(Component, { message: state.message }));
 }
 function renderValidationState(stateElement, listElement, errors = []) {
   stateElement.textContent = errors.length ? "Invalid" : "Valid";

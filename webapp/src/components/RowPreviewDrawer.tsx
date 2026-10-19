@@ -28,9 +28,9 @@ export function RowPreviewDrawer() {
   const filters = useMemo(
     () => [
       ...(configured?.filters ?? []),
-      ...composeFilters(state.filters, { timeRef, range: state.dateRange, types }),
+      ...composeFilters(state.filters, { timeRef, range: state.dateRange, types, dialect: catalog.dialect }),
     ],
-    [configured, state.filters, timeRef, state.dateRange, types],
+    [configured, state.filters, timeRef, state.dateRange, types, catalog.dialect],
   );
   // A row preview is raw detail, so aggregate/shared metrics are intentionally excluded. Mixing
   // them into an ungrouped query produces invalid SQL for aggregate metric expressions and makes

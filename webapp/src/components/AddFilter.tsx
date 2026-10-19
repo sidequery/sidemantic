@@ -1,24 +1,35 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { CatalogDimension, CatalogModel } from "../data/types";
+import { joinedDimensionsForModel } from "../lib/catalog";
+import { useExplorer } from "../state/ExplorerContext";
 import { FilterEditor } from "./FilterEditor";
+import { useFilterPopover } from "./useFilterPopover";
 
 /** "+ Filter" affordance: pick a dimension, then edit its filter in the same popover. Non-time
  *  dimensions only (time is filtered via the date-range control). */
 export function AddFilter({ model }: { model: CatalogModel }) {
-  const dims = model.dimensions.filter((dim) => dim.type !== "time");
+  const { catalog } = useExplorer();
+  const dims = [...model.dimensions, ...joinedDimensionsForModel(catalog, model.name)].filter((dim) => dim.type !== "time");
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<CatalogDimension | null>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  useFilterPopover(menuRef, buttonRef, open && !picked);
 
   useEffect(() => {
     if (!open) return;
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape") {
+        close();
+        buttonRef.current?.focus({ preventScroll: true });
+      }
     }
     function onPointer(event: MouseEvent) {
       // The editor's own outside-click handler covers the picked state; only the menu needs this.
       if (picked) return;
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) close();
+      if (!rootRef.current?.contains(event.target as Node) && !menuRef.current?.contains(event.target as Node)) close();
     }
     document.addEventListener("keydown", onKey, true);
     document.addEventListener("mousedown", onPointer, true);
@@ -38,6 +49,7 @@ export function AddFilter({ model }: { model: CatalogModel }) {
   return (
     <span ref={rootRef} className="relative inline-flex">
       <button
+        ref={buttonRef}
         type="button"
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -46,11 +58,12 @@ export function AddFilter({ model }: { model: CatalogModel }) {
       >
         + Filter
       </button>
-      {open && !picked ? (
+      {open && !picked ? createPortal(
         <div
+          ref={menuRef}
           role="menu"
           aria-label="Add a filter for a dimension"
-          className="absolute left-0 z-50 mt-1 max-h-64 w-48 overflow-y-auto rounded-xl border border-line bg-surface p-1.5 text-2xs shadow-[var(--shadow)]"
+          className="fixed z-30 max-h-[min(24rem,var(--filter-popover-height))] w-80 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border border-line bg-surface p-1.5 text-2xs shadow-[var(--shadow)]"
         >
           {dims.map((dim) => (
             <button
@@ -58,14 +71,15 @@ export function AddFilter({ model }: { model: CatalogModel }) {
               type="button"
               role="menuitem"
               onClick={() => setPicked(dim)}
-              className="block w-full truncate px-1.5 py-1 text-left text-muted hover:bg-surface-soft hover:text-ink"
+              className="block w-full break-words px-1.5 py-1 text-left text-muted hover:bg-surface-soft hover:text-ink"
             >
               {dim.label}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       ) : null}
-      {open && picked ? <FilterEditor dim={picked} model={model} onClose={close} /> : null}
+      {open && picked ? <FilterEditor dim={picked} model={model} anchorRef={buttonRef} onClose={close} /> : null}
     </span>
   );
 }

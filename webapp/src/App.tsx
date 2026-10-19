@@ -138,7 +138,8 @@ function Shell() {
   );
   const dirty = state.datePreset !== resetInitial.datePreset
     || (state.datePreset === undefined && state.dateRange != null)
-    || Object.keys(state.filters).length > 0;
+    || Object.keys(state.filters).length > 0
+    || state.joinedDims.length > 0;
   const activeTimeDimension = configured?.timeDimension ?? model?.timeDimension;
   const hasTime = Boolean(activeTimeDimension);
   const grains = grainOptions(activeTimeDimension?.supportedGranularities, state.grain);

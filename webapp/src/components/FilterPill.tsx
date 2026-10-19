@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { CatalogDimension, CatalogModel } from "../data/types";
 import { filterSummary } from "../lib/format";
 import type { DimFilter } from "../lib/queries";
@@ -24,6 +24,7 @@ type FilterPillProps = EditableFilterPillProps | PortableFilterPillProps;
  *  US", "name contains 'acme'"). Clicking the label opens the editor popover; the × clears it. */
 export function FilterPill(props: FilterPillProps) {
   const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
 
   if (!("dim" in props)) {
     return (
@@ -42,6 +43,7 @@ export function FilterPill(props: FilterPillProps) {
     <span className="relative inline-flex max-w-full items-center" data-dimension={dim.ref} data-mode={filter.mode}>
       <span className="inline-flex max-w-full items-center gap-1 rounded-full bg-surface-soft px-2 py-0.5 text-2xs leading-4 text-muted">
         <button
+          ref={buttonRef}
           type="button"
           aria-label={`Edit filter ${dim.label}`}
           aria-haspopup="dialog"
@@ -60,7 +62,7 @@ export function FilterPill(props: FilterPillProps) {
           ×
         </button>
       </span>
-      {open ? <FilterEditor dim={dim} model={model} onClose={() => setOpen(false)} /> : null}
+      {open ? <FilterEditor dim={dim} model={model} anchorRef={buttonRef} onClose={() => setOpen(false)} /> : null}
     </span>
   );
 }

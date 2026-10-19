@@ -74,8 +74,8 @@ export function LeaderboardPanel({
   const types = useMemo(() => catalogDimTypes(catalog), [catalog]);
   const filters = useMemo(
     // Exclude this dimension's own filter so its leaderboard keeps showing every value.
-    () => [...baseFilters, ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types })],
-    [baseFilters, state.filters, timeRef, state.dateRange, dim.ref, types],
+    () => [...baseFilters, ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types, dialect: catalog.dialect })],
+    [baseFilters, state.filters, timeRef, state.dateRange, dim.ref, types, catalog.dialect],
   );
   const { result, loading, error } = useQueryResult(
     backend,
@@ -104,11 +104,11 @@ export function LeaderboardPanel({
     }
     const parts: string[] = [];
     // Cast to text so the match works on numeric/boolean dimensions too.
-    if (nonNull.length) parts.push(`CAST(${dim.ref} AS VARCHAR) IN (${nonNull.map(sqlLiteral).join(", ")})`);
+    if (nonNull.length) parts.push(`CAST(${dim.ref} AS VARCHAR) IN (${nonNull.map((value) => sqlLiteral(value, catalog.dialect)).join(", ")})`);
     if (hasNull) parts.push(`${dim.ref} IS NULL`);
     if (!parts.length) return null;
     return parts.length === 1 ? parts[0] : `(${parts.join(" OR ")})`;
-  }, [result, dimAlias, dim.ref]);
+  }, [result, dimAlias, dim.ref, catalog.dialect]);
 
   // A second query over the comparison window, joined to the current rows by dimension value below.
   // Only issued when a delta column is active, there's a comparison window, and we know the current
@@ -118,11 +118,11 @@ export function LeaderboardPanel({
       wantsDelta && comparisonRange && timeRef && currentValueConstraint
         ? [
             ...baseFilters,
-            ...composeFilters(state.filters, { timeRef, range: comparisonRange, excludeDim: dim.ref, types }),
+            ...composeFilters(state.filters, { timeRef, range: comparisonRange, excludeDim: dim.ref, types, dialect: catalog.dialect }),
             currentValueConstraint,
           ]
         : null,
-    [wantsDelta, comparisonRange, timeRef, state.filters, dim.ref, types, currentValueConstraint, baseFilters],
+    [wantsDelta, comparisonRange, timeRef, state.filters, dim.ref, types, catalog.dialect, currentValueConstraint, baseFilters],
   );
   const prev = useQueryResult(
     backend,

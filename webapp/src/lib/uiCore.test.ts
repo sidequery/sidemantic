@@ -3,6 +3,16 @@ import { formatCompact, formatValue } from "./format";
 import { formatUiValue } from "./uiCore.js";
 
 describe("ratio formatting", () => {
+  test("escaped LookML percent markers preserve required and optional precision", () => {
+    for (const display of [formatValue, formatCompact]) {
+      expect(display(0.1234, { format: String.raw`0.00\%` })).toBe("12.34%");
+      expect(display(0.1, { format: String.raw`0.00\%`, type: "ratio" })).toBe("10.00%");
+      expect(display(0.1234, { format: String.raw`0.0#\%` })).toBe("12.34%");
+      expect(display(0.1, { format: String.raw`0.0#\%` })).toBe("10.0%");
+      expect(display(0.1234, { format: String.raw`0\%` })).toBe("12%");
+    }
+  });
+
   test("explicit numeric formats preserve ARPU, ARPPU, and AOV values", () => {
     const hint = { type: "ratio", format: "#,##0.00" };
     expect(formatValue(160907.2, hint)).toBe("160,907.20");

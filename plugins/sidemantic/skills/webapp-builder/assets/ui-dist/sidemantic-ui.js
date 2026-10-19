@@ -83,7 +83,7 @@ function formatUiValue(value, options = {}) {
     return String(value);
   const format = String(options.format || "").trim().toLowerCase();
   const percent = options.style === "percent" || format.includes("%") || format.includes("percent") || format.includes("pct") || !format && !options.style && !options.currency && options.type === "ratio";
-  const decimalPattern = format.match(/^[^0#]*[0#,]+(?:\.([0#]+))?%?$/);
+  const decimalPattern = format.match(/^[^0#]*[0#,]+(?:\.([0#]+))?(?:\\?%)?$/);
   const namedPrecision = format.match(/^(?:decimal|percent|usd)_(\d+)$/);
   const precision = decimalPattern ? (decimalPattern[1] || "").length : namedPrecision ? Number(namedPrecision[1]) : undefined;
   const maximumFractionDigits = options.maximumFractionDigits ?? (precision === undefined ? percent || options.compact ? 1 : 2 : Math.min(precision, 20));

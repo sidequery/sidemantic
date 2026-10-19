@@ -5,7 +5,7 @@ import type { ComparisonMode } from "../state/explorerState";
 type DateRangeControlProps = {
   range?: DateRange;
   disabled?: boolean;
-  onChange: (range?: DateRange) => void;
+  onChange: (range?: DateRange, preset?: number) => void;
   comparison: ComparisonMode;
   comparisonRange?: DateRange;
   onComparisonChange: (comparison: ComparisonMode, range?: DateRange) => void;
@@ -35,8 +35,8 @@ export function DateRangeControl({
   function close() {
     if (details.current) details.current.open = false;
   }
-  function apply(next?: DateRange) {
-    onChange(next);
+  function apply(next?: DateRange, preset?: number) {
+    onChange(next, preset);
     close();
   }
   // Comparison changes stay in the popover (don't close it) so the user can pick a mode and, for
@@ -88,7 +88,7 @@ export function DateRangeControl({
             <button
               key={preset.key}
               type="button"
-              onClick={() => apply(presetRange(preset.days))}
+              onClick={() => apply(presetRange(preset.days), preset.days)}
               className="rounded-lg px-2.5 py-1.5 text-left text-xs text-muted hover:bg-surface-soft hover:text-ink"
             >
               {preset.label}

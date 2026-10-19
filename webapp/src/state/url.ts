@@ -1,5 +1,5 @@
 import { isEmptyFilter, type DimFilter, type FilterMode, type FilterState } from "../lib/queries";
-import { ALL_GRAINS, type DateRange } from "../lib/time";
+import { ALL_GRAINS, DATE_PRESETS, presetRange, type DateRange } from "../lib/time";
 import type { ComparisonMode, ContextColumn, ExplorerState, ViewKind } from "./explorerState";
 
 // Only selections + filters live in the URL — never result rows. This keeps shared links small
@@ -92,7 +92,11 @@ export function encodeState(state: ExplorerState): string {
   if (state.selectedMetric) params.set("metric", state.selectedMetric);
   if (state.grain) params.set("grain", state.grain);
   if (state.timezone && state.timezone !== DEFAULT_TIMEZONE) params.set("tz", state.timezone);
-  if (state.dateRange) {
+  if (state.datePreset === "all") {
+    params.set("range", "all");
+  } else if (typeof state.datePreset === "number") {
+    if (state.datePreset !== 28 || state.dashboardTab) params.set("range", `${state.datePreset}d`);
+  } else if (state.dateRange) {
     params.set("from", state.dateRange.from);
     params.set("to", state.dateRange.to);
   }
@@ -129,8 +133,19 @@ export function decodeState(search: string, base: ExplorerState): ExplorerState 
 
   const from = params.get("from");
   const to = params.get("to");
+  // Resolve rolling defaults at hydration time, even if the provider's base predates midnight.
+  if (typeof base.datePreset === "number") next.dateRange = presetRange(base.datePreset);
+  const range = params.get("range");
+  const preset = DATE_PRESETS.find((candidate) => `${candidate.days}d` === range);
   if (isIsoTemporal(from) && isIsoTemporal(to) && Date.parse(from) <= Date.parse(to)) {
     next.dateRange = { from, to } satisfies DateRange;
+    next.datePreset = undefined;
+  } else if (range === "all") {
+    next.dateRange = undefined;
+    next.datePreset = "all";
+  } else if (preset) {
+    next.dateRange = presetRange(preset.days);
+    next.datePreset = preset.days;
   }
 
   const ctx = params.get("ctx");

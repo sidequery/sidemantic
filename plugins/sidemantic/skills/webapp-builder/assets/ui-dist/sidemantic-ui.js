@@ -3678,8 +3678,8 @@ function DateRangeControl({
     if (details.current)
       details.current.open = false;
   }
-  function apply(next) {
-    onChange(next);
+  function apply(next, preset) {
+    onChange(next, preset);
     close();
   }
   function applyComparison(mode) {
@@ -3736,7 +3736,7 @@ function DateRangeControl({
             className: "grid grid-cols-2",
             children: DATE_PRESETS.map((preset) => /* @__PURE__ */ jsx26("button", {
               type: "button",
-              onClick: () => apply(presetRange(preset.days)),
+              onClick: () => apply(presetRange(preset.days), preset.days),
               className: "rounded-lg px-2.5 py-1.5 text-left text-xs text-muted hover:bg-surface-soft hover:text-ink",
               children: preset.label
             }, preset.key))

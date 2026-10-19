@@ -84,6 +84,25 @@ class ClickHouseResult:
         return [(name, None) for name in self._column_names]
 
 
+class _ClickHouseCursor:
+    """Request handle borrowing the adapter's sessionless HTTP client."""
+
+    def __init__(self, adapter: "ClickHouseAdapter"):
+        self._adapter = adapter
+
+    def execute(self, sql: str) -> ClickHouseResult:
+        return self._adapter.execute(sql)
+
+    def fetchone(self, result: ClickHouseResult) -> tuple | None:
+        return result.fetchone()
+
+    def fetch_record_batch(self, result: ClickHouseResult) -> Any:
+        return result.fetch_record_batch()
+
+    def close(self) -> None:
+        """The shared client belongs to the adapter, not this request."""
+
+
 class ClickHouseAdapter(BaseDatabaseAdapter):
     """ClickHouse database adapter.
 
@@ -127,6 +146,10 @@ class ClickHouseAdapter(BaseDatabaseAdapter):
                 "Install with: pip install sidemantic[clickhouse] or pip install clickhouse-connect"
             ) from e
 
+        # A shared HTTP client supports concurrent queries only without a session.
+        # Preserve explicit session configuration for callers who need session state.
+        kwargs.setdefault("autogenerate_session_id", False)
+
         # Build connection params
         self.client = clickhouse_connect.get_client(
             host=host,
@@ -138,6 +161,12 @@ class ClickHouseAdapter(BaseDatabaseAdapter):
             **kwargs,
         )
         self.database = database
+
+    def cursor(self) -> Any:
+        """Borrow a concurrent handle, or serialize an explicitly configured session."""
+        if self.client.params.get("session_id"):
+            return super().cursor()
+        return _ClickHouseCursor(self)
 
     def execute(self, sql: str) -> ClickHouseResult:
         """Execute SQL query.

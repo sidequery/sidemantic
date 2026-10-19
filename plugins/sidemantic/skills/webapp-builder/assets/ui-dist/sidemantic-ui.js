@@ -1557,6 +1557,39 @@ function useQueryResult(backend, query) {
   return { ...state, queryKey: key ?? undefined };
 }
 
+// webapp/src/components/useFilterPopover.ts
+import { useLayoutEffect } from "react";
+function useFilterPopover(ref, open = true) {
+  useLayoutEffect(() => {
+    const panel = ref.current;
+    const anchor = panel?.parentElement;
+    if (!open || !panel || !anchor)
+      return;
+    function position() {
+      if (!panel || !anchor)
+        return;
+      const bounds = anchor.getBoundingClientRect();
+      const gutter = 8;
+      const left = Math.max(gutter, Math.min(bounds.left, window.innerWidth - panel.offsetWidth - gutter));
+      panel.style.left = `${left - bounds.left}px`;
+      panel.style.setProperty("--filter-popover-height", `${Math.max(0, window.innerHeight - bounds.bottom - gutter - 4)}px`);
+    }
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(panel);
+    observer.observe(anchor);
+    if (anchor.parentElement)
+      observer.observe(anchor.parentElement);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+    };
+  });
+}
+
 // webapp/src/components/FilterEditor.tsx
 import { jsx as jsx10, jsxs as jsxs9, Fragment as Fragment3 } from "react/jsx-runtime";
 var MODES = [
@@ -1585,6 +1618,7 @@ function FilterEditor({
   const [mode, setModeState] = useState8(filter?.mode ?? "include");
   const selected = useMemo3(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
   const panelRef = useRef7(null);
+  useFilterPopover(panelRef);
   const searchRef = useRef7(null);
   const labelId = useId();
   const [search, setSearch] = useState8("");
@@ -1677,21 +1711,21 @@ function FilterEditor({
     "aria-modal": "true",
     "aria-labelledby": labelId,
     onKeyDown,
-    className: "absolute left-0 z-50 mt-1 w-64 border border-line bg-surface p-2 text-2xs shadow-lg",
+    className: "absolute left-0 top-full z-50 mt-1 max-h-[var(--filter-popover-height)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto border border-line bg-surface p-2 text-2xs shadow-lg",
     children: [
       /* @__PURE__ */ jsxs9("div", {
         id: labelId,
         className: "mb-2 flex items-baseline justify-between gap-2",
         children: [
           /* @__PURE__ */ jsx10("span", {
-            className: "truncate font-semibold text-ink",
+            className: "min-w-0 break-words font-semibold text-ink",
             children: dim.label
           }),
           /* @__PURE__ */ jsx10("button", {
             type: "button",
             "aria-label": "Close filter editor",
             onClick: onClose,
-            className: "grid size-4 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+            className: "grid size-4 shrink-0 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
             children: "×"
           })
         ]
@@ -1751,10 +1785,10 @@ function FilterEditor({
                     type: "checkbox",
                     checked,
                     onChange: () => dispatch({ type: "toggleFilter", dim: dim.ref, value, mode }),
-                    className: "size-3 accent-[var(--accent)]"
+                    className: "size-3 shrink-0 accent-[var(--accent)]"
                   }),
                   /* @__PURE__ */ jsx10("span", {
-                    className: "min-w-0 truncate text-ink",
+                    className: "min-w-0 break-words text-ink",
                     children: displayDimValue(value)
                   })
                 ]

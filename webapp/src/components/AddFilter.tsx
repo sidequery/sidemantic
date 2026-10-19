@@ -3,6 +3,7 @@ import type { CatalogDimension, CatalogModel } from "../data/types";
 import { joinedDimensionsForModel } from "../lib/catalog";
 import { useExplorer } from "../state/ExplorerContext";
 import { FilterEditor } from "./FilterEditor";
+import { useFilterPopover } from "./useFilterPopover";
 
 /** "+ Filter" affordance: pick a dimension, then edit its filter in the same popover. Non-time
  *  dimensions only (time is filtered via the date-range control). */
@@ -12,6 +13,8 @@ export function AddFilter({ model }: { model: CatalogModel }) {
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<CatalogDimension | null>(null);
   const rootRef = useRef<HTMLSpanElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useFilterPopover(menuRef, open && !picked);
 
   useEffect(() => {
     if (!open) return;
@@ -51,9 +54,10 @@ export function AddFilter({ model }: { model: CatalogModel }) {
       </button>
       {open && !picked ? (
         <div
+          ref={menuRef}
           role="menu"
           aria-label="Add a filter for a dimension"
-          className="absolute left-0 z-50 mt-1 max-h-64 w-48 overflow-y-auto rounded-xl border border-line bg-surface p-1.5 text-2xs shadow-[var(--shadow)]"
+          className="absolute left-0 top-full z-50 mt-1 max-h-[min(24rem,var(--filter-popover-height))] w-80 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-xl border border-line bg-surface p-1.5 text-2xs shadow-[var(--shadow)]"
         >
           {dims.map((dim) => (
             <button
@@ -61,7 +65,7 @@ export function AddFilter({ model }: { model: CatalogModel }) {
               type="button"
               role="menuitem"
               onClick={() => setPicked(dim)}
-              className="block w-full truncate px-1.5 py-1 text-left text-muted hover:bg-surface-soft hover:text-ink"
+              className="block w-full break-words px-1.5 py-1 text-left text-muted hover:bg-surface-soft hover:text-ink"
             >
               {dim.label}
             </button>

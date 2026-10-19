@@ -5,6 +5,7 @@ import { dashboardTabConfig } from "../lib/dashboard";
 import { catalogDimTypes, composeFilters, distinctValues, containsExpr, type FilterMode } from "../lib/queries";
 import { useExplorer } from "../state/ExplorerContext";
 import { useQueryResult } from "../state/useQueryResult";
+import { useFilterPopover } from "./useFilterPopover";
 
 const MODES: { mode: FilterMode; label: string }[] = [
   { mode: "include", label: "Include" },
@@ -55,6 +56,7 @@ export function FilterEditor({
   const selected = useMemo(() => new Set(filter?.mode !== "contains" ? (filter?.values ?? []) : []), [filter]);
 
   const panelRef = useRef<HTMLDivElement>(null);
+  useFilterPopover(panelRef);
   const searchRef = useRef<HTMLInputElement>(null);
   const labelId = useId();
 
@@ -169,15 +171,15 @@ export function FilterEditor({
       aria-modal="true"
       aria-labelledby={labelId}
       onKeyDown={onKeyDown}
-      className="absolute left-0 z-50 mt-1 w-64 border border-line bg-surface p-2 text-2xs shadow-lg"
+      className="absolute left-0 top-full z-50 mt-1 max-h-[var(--filter-popover-height)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto border border-line bg-surface p-2 text-2xs shadow-lg"
     >
       <div id={labelId} className="mb-2 flex items-baseline justify-between gap-2">
-        <span className="truncate font-semibold text-ink">{dim.label}</span>
+        <span className="min-w-0 break-words font-semibold text-ink">{dim.label}</span>
         <button
           type="button"
           aria-label="Close filter editor"
           onClick={onClose}
-          className="grid size-4 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink"
+          className="grid size-4 shrink-0 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink"
         >
           ×
         </button>
@@ -244,9 +246,9 @@ export function FilterEditor({
                       type="checkbox"
                       checked={checked}
                       onChange={() => dispatch({ type: "toggleFilter", dim: dim.ref, value, mode })}
-                      className="size-3 accent-[var(--accent)]"
+                      className="size-3 shrink-0 accent-[var(--accent)]"
                     />
-                    <span className="min-w-0 truncate text-ink">{displayDimValue(value)}</span>
+                    <span className="min-w-0 break-words text-ink">{displayDimValue(value)}</span>
                   </label>
                 );
               })

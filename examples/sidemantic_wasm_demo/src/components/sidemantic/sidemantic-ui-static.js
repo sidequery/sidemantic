@@ -7659,7 +7659,7 @@ var require_jsx_runtime = __commonJS(function(exports, module) {
 });
 
 // webapp/src/static-api.tsx
-var import_react10 = __toESM(require_react(), 1);
+var import_react11 = __toESM(require_react(), 1);
 var import_client = __toESM(require_client(), 1);
 var import_react_dom = __toESM(require_react_dom(), 1);
 
@@ -7954,7 +7954,7 @@ function DataTable({
 }
 
 // webapp/src/components/FilterPill.tsx
-var import_react6 = __toESM(require_react(), 1);
+var import_react7 = __toESM(require_react(), 1);
 
 // webapp/src/data/types.ts
 function aliasOf(ref) {
@@ -7990,7 +7990,7 @@ function filterSummary(filter) {
 }
 
 // webapp/src/components/FilterEditor.tsx
-var import_react5 = __toESM(require_react(), 1);
+var import_react6 = __toESM(require_react(), 1);
 
 // webapp/src/lib/catalog.ts
 function graphMetricsForModel(catalog, modelName) {
@@ -8262,6 +8262,39 @@ function useQueryResult(backend, query) {
   return { ...state, queryKey: key ?? undefined };
 }
 
+// webapp/src/components/useFilterPopover.ts
+var import_react5 = __toESM(require_react(), 1);
+function useFilterPopover(ref, open = true) {
+  import_react5.useLayoutEffect(() => {
+    const panel = ref.current;
+    const anchor = panel?.parentElement;
+    if (!open || !panel || !anchor)
+      return;
+    function position() {
+      if (!panel || !anchor)
+        return;
+      const bounds = anchor.getBoundingClientRect();
+      const gutter = 8;
+      const left = Math.max(gutter, Math.min(bounds.left, window.innerWidth - panel.offsetWidth - gutter));
+      panel.style.left = `${left - bounds.left}px`;
+      panel.style.setProperty("--filter-popover-height", `${Math.max(0, window.innerHeight - bounds.bottom - gutter - 4)}px`);
+    }
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(panel);
+    observer.observe(anchor);
+    if (anchor.parentElement)
+      observer.observe(anchor.parentElement);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+    };
+  });
+}
+
 // webapp/src/components/FilterEditor.tsx
 var jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
 var MODES = [
@@ -8272,8 +8305,8 @@ var MODES = [
 var VALUE_LIMIT = 50;
 var SEARCH_DEBOUNCE_MS = 200;
 function useDebounced(value, delayMs) {
-  const [debounced, setDebounced] = import_react5.useState(value);
-  import_react5.useEffect(() => {
+  const [debounced, setDebounced] = import_react6.useState(value);
+  import_react6.useEffect(() => {
     const timer = setTimeout(() => setDebounced(value), delayMs);
     return () => clearTimeout(timer);
   }, [value, delayMs]);
@@ -8285,24 +8318,25 @@ function FilterEditor({
   onClose
 }) {
   const { state, dispatch, backend, catalog, dashboard } = useExplorer();
-  const configured = import_react5.useMemo(() => dashboardTabConfig(catalog, dashboard, state.dashboardTab), [catalog, dashboard, state.dashboardTab]);
+  const configured = import_react6.useMemo(() => dashboardTabConfig(catalog, dashboard, state.dashboardTab), [catalog, dashboard, state.dashboardTab]);
   const filter = state.filters[dim.ref];
-  const [mode, setModeState] = import_react5.useState(filter?.mode ?? "include");
-  const selected = import_react5.useMemo(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
-  const panelRef = import_react5.useRef(null);
-  const searchRef = import_react5.useRef(null);
-  const labelId = import_react5.useId();
-  const [search, setSearch] = import_react5.useState("");
+  const [mode, setModeState] = import_react6.useState(filter?.mode ?? "include");
+  const selected = import_react6.useMemo(() => new Set(filter?.mode !== "contains" ? filter?.values ?? [] : []), [filter]);
+  const panelRef = import_react6.useRef(null);
+  useFilterPopover(panelRef);
+  const searchRef = import_react6.useRef(null);
+  const labelId = import_react6.useId();
+  const [search, setSearch] = import_react6.useState("");
   const debouncedSearch = useDebounced(search, SEARCH_DEBOUNCE_MS);
   const pattern = filter?.mode === "contains" ? filter.pattern ?? "" : "";
-  const [patternDraft, setPatternDraft] = import_react5.useState(pattern);
+  const [patternDraft, setPatternDraft] = import_react6.useState(pattern);
   const debouncedPattern = useDebounced(patternDraft, SEARCH_DEBOUNCE_MS);
-  import_react5.useEffect(() => {
+  import_react6.useEffect(() => {
     const opener = document.activeElement;
     searchRef.current?.focus();
     return () => opener?.focus?.();
   }, []);
-  import_react5.useEffect(() => {
+  import_react6.useEffect(() => {
     function onKey(event) {
       if (event.key === "Escape") {
         event.stopPropagation();
@@ -8320,7 +8354,7 @@ function FilterEditor({
       document.removeEventListener("mousedown", onPointer, true);
     };
   }, [onClose]);
-  import_react5.useEffect(() => {
+  import_react6.useEffect(() => {
     if (mode !== "contains")
       return;
     if (debouncedPattern === pattern)
@@ -8329,8 +8363,8 @@ function FilterEditor({
   }, [debouncedPattern, mode, dim.ref, dispatch]);
   const primaryModel = catalog.models.find((candidate) => candidate.name === state.model) ?? model;
   const timeRef = configured?.timeDimension?.ref ?? primaryModel.timeDimension?.ref;
-  const types = import_react5.useMemo(() => catalogDimTypes(catalog), [catalog]);
-  const valueFilters = import_react5.useMemo(() => {
+  const types = import_react6.useMemo(() => catalogDimTypes(catalog), [catalog]);
+  const valueFilters = import_react6.useMemo(() => {
     const base = [
       ...configured?.filters ?? [],
       ...composeFilters(state.filters, { timeRef, range: state.dateRange, excludeDim: dim.ref, types, dialect: catalog.dialect })
@@ -8343,7 +8377,7 @@ function FilterEditor({
   const listMode = mode !== "contains";
   const { result, loading, error } = useQueryResult(backend, listMode ? distinctValues(dim.ref, valueFilters, VALUE_LIMIT, configured?.segments, configured?.usePreaggregations) : null);
   const dimAlias = aliasOf(dim.ref);
-  const values = import_react5.useMemo(() => {
+  const values = import_react6.useMemo(() => {
     if (!result)
       return [];
     return result.rows.map((row) => {
@@ -8382,21 +8416,21 @@ function FilterEditor({
     "aria-modal": "true",
     "aria-labelledby": labelId,
     onKeyDown,
-    className: "absolute left-0 z-50 mt-1 w-64 border border-line bg-surface p-2 text-2xs shadow-lg",
+    className: "absolute left-0 top-full z-50 mt-1 max-h-[var(--filter-popover-height)] w-96 max-w-[calc(100vw-1rem)] overflow-y-auto border border-line bg-surface p-2 text-2xs shadow-lg",
     children: [
       /* @__PURE__ */ jsx_runtime2.jsxs("div", {
         id: labelId,
         className: "mb-2 flex items-baseline justify-between gap-2",
         children: [
           /* @__PURE__ */ jsx_runtime2.jsx("span", {
-            className: "truncate font-semibold text-ink",
+            className: "min-w-0 break-words font-semibold text-ink",
             children: dim.label
           }),
           /* @__PURE__ */ jsx_runtime2.jsx("button", {
             type: "button",
             "aria-label": "Close filter editor",
             onClick: onClose,
-            className: "grid size-4 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
+            className: "grid size-4 shrink-0 place-items-center rounded-full bg-surface-soft text-faint hover:bg-line hover:text-ink",
             children: "×"
           })
         ]
@@ -8456,10 +8490,10 @@ function FilterEditor({
                     type: "checkbox",
                     checked,
                     onChange: () => dispatch({ type: "toggleFilter", dim: dim.ref, value, mode }),
-                    className: "size-3 accent-[var(--accent)]"
+                    className: "size-3 shrink-0 accent-[var(--accent)]"
                   }),
                   /* @__PURE__ */ jsx_runtime2.jsx("span", {
-                    className: "min-w-0 truncate text-ink",
+                    className: "min-w-0 break-words text-ink",
                     children: displayDimValue(value)
                   })
                 ]
@@ -8492,7 +8526,7 @@ function FilterEditor({
 // webapp/src/components/FilterPill.tsx
 var jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
 function FilterPill(props) {
-  const [open, setOpen] = import_react6.useState(false);
+  const [open, setOpen] = import_react7.useState(false);
   if (!("dim" in props)) {
     return /* @__PURE__ */ jsx_runtime3.jsxs("span", {
       "data-dimension": props.dimension,
@@ -8701,13 +8735,13 @@ function Leaderboard({
 }
 
 // webapp/src/components/MetricCard.tsx
-var import_react9 = __toESM(require_react(), 1);
+var import_react10 = __toESM(require_react(), 1);
 
 // webapp/src/components/Sparkline.tsx
-var import_react8 = __toESM(require_react(), 1);
+var import_react9 = __toESM(require_react(), 1);
 
 // webapp/src/components/ChartTooltip.tsx
-var import_react7 = __toESM(require_react(), 1);
+var import_react8 = __toESM(require_react(), 1);
 var jsx_runtime5 = __toESM(require_jsx_runtime(), 1);
 function ChartTooltip({
   tip,
@@ -8737,15 +8771,15 @@ function Sparkline({
   onHover,
   onBrush
 }) {
-  const containerRef = import_react8.useRef(null);
-  const gradientId = import_react8.useId();
-  const svgRef = import_react8.useRef(null);
-  const dragStart = import_react8.useRef(null);
-  const [width, setWidth] = import_react8.useState(200);
-  const [hover, setHover] = import_react8.useState(null);
-  const [brush, setBrush] = import_react8.useState(null);
-  const [tip, setTip] = import_react8.useState(null);
-  import_react8.useEffect(() => {
+  const containerRef = import_react9.useRef(null);
+  const gradientId = import_react9.useId();
+  const svgRef = import_react9.useRef(null);
+  const dragStart = import_react9.useRef(null);
+  const [width, setWidth] = import_react9.useState(200);
+  const [hover, setHover] = import_react9.useState(null);
+  const [brush, setBrush] = import_react9.useState(null);
+  const [tip, setTip] = import_react9.useState(null);
+  import_react9.useEffect(() => {
     const node = containerRef.current;
     if (!node || typeof ResizeObserver === "undefined")
       return;
@@ -8945,7 +8979,7 @@ function MetricCard({
   onSparkHover,
   onSparkBrush
 }) {
-  const [sparkHover, setSparkHover] = import_react9.useState(null);
+  const [sparkHover, setSparkHover] = import_react10.useState(null);
   const summary = /* @__PURE__ */ jsx_runtime7.jsxs(jsx_runtime7.Fragment, {
     children: [
       /* @__PURE__ */ jsx_runtime7.jsxs("div", {
@@ -9309,10 +9343,10 @@ function toComponentQuery({ dimensions = [], metrics = [], result, outputAliases
 }
 function renderMetricCards(container, query, options = {}) {
   const row = rowsOf(query)[0] ?? {};
-  mount(container, import_react10.createElement(import_react10.Fragment, null, ...(query.metrics ?? []).map((metric) => {
+  mount(container, import_react11.createElement(import_react11.Fragment, null, ...(query.metrics ?? []).map((metric) => {
     const key = aliasFor(query, metric);
     const format = typeof options.valueFormat === "function" ? options.valueFormat({ metric, key, value: row[key] }) : options.valueFormat;
-    return import_react10.createElement(MetricCard, {
+    return import_react11.createElement(MetricCard, {
       key: metric,
       metric,
       label: options.labels?.[metric] ?? aliasForSemanticRef(metric).replaceAll("_", " "),
@@ -9327,10 +9361,10 @@ function renderMetricCards(container, query, options = {}) {
 function renderMetricSummaryCards(container, config = {}) {
   const totals = config.totals?.rows?.[0] ?? {};
   const series = config.seriesRows ?? [];
-  mount(container, import_react10.createElement(import_react10.Fragment, null, ...(config.metrics ?? []).map((metric) => {
+  mount(container, import_react11.createElement(import_react11.Fragment, null, ...(config.metrics ?? []).map((metric) => {
     const key = metric.key;
     const alias = aliasForSemanticRef(key);
-    return import_react10.createElement(MetricCard, {
+    return import_react11.createElement(MetricCard, {
       key,
       metric: key,
       label: metric.label ?? alias.replaceAll("_", " "),
@@ -9351,7 +9385,7 @@ function renderLeaderboard(container, query, options = {}) {
   const metricKey = aliasFor(query, metric);
   const allRows = rowsOf(query);
   const expanded = options.expanded ?? container.__sdmExpanded ?? false;
-  mount(container, import_react10.createElement(Leaderboard, {
+  mount(container, import_react11.createElement(Leaderboard, {
     dimension,
     title: options.dimensionLabel ?? dimensionKey.replaceAll("_", " "),
     metricLabel: options.metricLabel ?? metricKey.replaceAll("_", " "),
@@ -9371,13 +9405,13 @@ function renderLeaderboard(container, query, options = {}) {
 function renderDimensionLeaderboardCards(container, dimensions, config = {}) {
   const expandedDimension = container.__sdmExpandedDim;
   const visible = expandedDimension ? dimensions.filter((item) => (item.key ?? item) === expandedDimension) : dimensions;
-  mount(container, import_react10.createElement(import_react10.Fragment, null, ...visible.map((item) => {
+  mount(container, import_react11.createElement(import_react11.Fragment, null, ...visible.map((item) => {
     const dimension = item.key ?? item;
     const result = config.resultForDimension?.(item) ?? { rows: [] };
     const query = toComponentQuery({ dimensions: [dimension], metrics: [config.metricRef], result });
     const rows = rowsOf(query);
     const expanded = expandedDimension === dimension;
-    return import_react10.createElement(Leaderboard, {
+    return import_react11.createElement(Leaderboard, {
       key: dimension,
       dimension,
       title: item.label ?? aliasForSemanticRef(dimension).replaceAll("_", " "),
@@ -9398,10 +9432,10 @@ function renderDimensionLeaderboardCards(container, dimensions, config = {}) {
 function renderFilterPills(container, filters, onRemove, options = {}) {
   const pills = Object.entries(filters ?? {}).flatMap(([dimension, values]) => (values ?? []).map((value) => {
     const normalized = normalizeFilterValue(value);
-    return import_react10.createElement(FilterPill, { key: `${dimension}:${normalized}`, dimension, value: normalized, onRemove: onRemove ? () => onRemove({ dimension, value: normalized }) : undefined });
+    return import_react11.createElement(FilterPill, { key: `${dimension}:${normalized}`, dimension, value: normalized, onRemove: onRemove ? () => onRemove({ dimension, value: normalized }) : undefined });
   }));
   for (const extra of options.extraPills ?? []) {
-    pills.push(import_react10.createElement(FilterPill, {
+    pills.push(import_react11.createElement(FilterPill, {
       key: extra.key ?? `${extra.dimension}:${extra.value}`,
       dimension: extra.dimension,
       dimensionLabel: extra.dimensionLabel,
@@ -9409,15 +9443,15 @@ function renderFilterPills(container, filters, onRemove, options = {}) {
       onRemove: extra.onRemove
     }));
   }
-  mount(container, pills.length ? import_react10.createElement(import_react10.Fragment, null, ...pills) : options.emptyLabel ? import_react10.createElement("span", { className: "text-faint" }, options.emptyLabel) : null);
+  mount(container, pills.length ? import_react11.createElement(import_react11.Fragment, null, ...pills) : options.emptyLabel ? import_react11.createElement("span", { className: "text-faint" }, options.emptyLabel) : null);
 }
 function renderHighlightedQueryDebug(container, queries) {
-  mount(container, import_react10.createElement(QueryDebugPanel, { queries: Object.fromEntries(Object.entries(queries ?? {}).map(([name, query]) => [name, typeof query === "string" ? query : query?.sql])) }));
+  mount(container, import_react11.createElement(QueryDebugPanel, { queries: Object.fromEntries(Object.entries(queries ?? {}).map(([name, query]) => [name, typeof query === "string" ? query : query?.sql])) }));
 }
 var renderQueryDebug = renderHighlightedQueryDebug;
 function renderDataPreview(container, result, options = {}) {
   const columns = result?.columns ?? [];
-  mount(container, import_react10.createElement(DataTable, {
+  mount(container, import_react11.createElement(DataTable, {
     columns: columns.map((key) => ({ key, label: key.replaceAll("_", " "), numeric: (result.sample_rows ?? result.rows ?? []).some((row) => typeof row[key] === "number") })),
     rows: result.sample_rows ?? result.rows ?? [],
     pageSize: options.pageSize || 50,
@@ -9426,7 +9460,7 @@ function renderDataPreview(container, result, options = {}) {
 }
 function renderState(container, state) {
   const Component = state.kind === "error" ? ErrorState : state.kind === "loading" ? LoadingState : EmptyState;
-  mount(container, import_react10.createElement(Component, { message: state.message }));
+  mount(container, import_react11.createElement(Component, { message: state.message }));
 }
 function renderValidationState(stateElement, listElement, errors = []) {
   stateElement.textContent = errors.length ? "Invalid" : "Valid";

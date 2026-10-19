@@ -458,9 +458,10 @@ def test_clickhouse_server_requests_overlap_without_closing_client(monkeypatch, 
                 return pa.table({"value": ["slow"]})
             return pa.table({"value": ["fast"]})
 
-        def raw_query(self, sql, fmt):
+        def raw_query(self, sql, fmt, parameters=None):
             import pyarrow.parquet as pq
 
+            assert parameters is None
             assert fmt == "Parquet"
             output = pa.BufferOutputStream()
             pq.write_table(self.query_arrow(sql), output)
@@ -515,9 +516,10 @@ def test_clickhouse_session_requests_remain_serialized(monkeypatch):
                 assert release_slow.is_set(), "Session queries must not overlap"
             return pa.table({"value": [sql]})
 
-        def raw_query(self, sql, fmt):
+        def raw_query(self, sql, fmt, parameters=None):
             import pyarrow.parquet as pq
 
+            assert parameters is None
             assert fmt == "Parquet"
             output = pa.BufferOutputStream()
             pq.write_table(self.query_arrow(sql), output)

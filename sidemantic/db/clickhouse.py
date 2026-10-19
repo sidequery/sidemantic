@@ -14,7 +14,7 @@ class ClickHouseResult:
 
         Args:
             result: ClickHouse query result from clickhouse-connect (can be None if arrow_table provided)
-            arrow_table: Pre-fetched Arrow table from query_arrow() (optional)
+            arrow_table: Pre-fetched Arrow table (optional)
         """
         self._result = result
         self._arrow_table = arrow_table
@@ -63,7 +63,7 @@ class ClickHouseResult:
         import pyarrow as pa
 
         if self._arrow_table is not None:
-            # Already have Arrow table from query_arrow()
+            # Already have an Arrow table decoded from Parquet
             if self._arrow_table.num_rows == 0:
                 return pa.RecordBatchReader.from_batches(self._arrow_table.schema, [])
             return pa.RecordBatchReader.from_batches(self._arrow_table.schema, self._arrow_table.to_batches())
@@ -169,44 +169,39 @@ class ClickHouseAdapter(BaseDatabaseAdapter):
         return _ClickHouseCursor(self)
 
     def execute(self, sql: str) -> ClickHouseResult:
-        """Execute SQL query.
-
-        Uses native Arrow format when available for better performance.
-        Falls back to standard row-based query if Arrow fetch fails.
-        """
-        # Try native Arrow fetching first (clickhouse-connect supports query_arrow)
-        try:
-            arrow_table = self.client.query_arrow(sql)
-            return ClickHouseResult(result=None, arrow_table=arrow_table)
-        except Exception:
-            # Fallback to standard row-based query
-            result = self.client.query(sql)
-            return ClickHouseResult(result)
+        """Execute once, using Parquet when the client and PyArrow support it."""
+        return self._execute(sql)
 
     def executemany(self, sql: str, params: list) -> ClickHouseResult:
-        """Execute SQL with multiple parameter sets.
-
-        Note: ClickHouse doesn't have native executemany, so we run queries sequentially.
-        Uses native Arrow format when available for better performance.
-        """
-        results = []
+        """Execute parameter sets sequentially and return the last result."""
+        if not params:
+            return self.execute("SELECT 1")
         for param_set in params:
-            # Try native Arrow fetching first
-            try:
-                arrow_table = self.client.query_arrow(sql, parameters=param_set)
-                results.append(ClickHouseResult(result=None, arrow_table=arrow_table))
-            except Exception:
-                result = self.client.query(sql, parameters=param_set)
-                results.append(ClickHouseResult(result))
-        # Return last result for compatibility
-        if not results:
-            # Empty params list - return a dummy result
-            try:
-                arrow_table = self.client.query_arrow("SELECT 1")
-                return ClickHouseResult(result=None, arrow_table=arrow_table)
-            except Exception:
-                return ClickHouseResult(self.client.query("SELECT 1"))
-        return results[-1]
+            result = self._execute(sql, parameters=param_set)
+        return result
+
+    def _execute(self, sql: str, parameters=None) -> ClickHouseResult:
+        from io import BytesIO
+
+        # Only fall back before submitting SQL: a request or decode failure can
+        # occur after a mutation has already committed on the server.
+        raw_query = getattr(self.client, "raw_query", None)
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+        except ImportError:
+            raw_query = None
+
+        if raw_query is None:
+            if parameters is None:
+                return ClickHouseResult(self.client.query(sql))
+            return ClickHouseResult(self.client.query(sql, parameters=parameters))
+
+        data = raw_query(sql, parameters=parameters, fmt="Parquet")
+        # Successful commands such as CREATE TABLE AS and INSERT SELECT have
+        # no result body. They must not be decoded or submitted a second time.
+        table = pq.read_table(BytesIO(data)) if data else pa.table({})
+        return ClickHouseResult(result=None, arrow_table=table)
 
     def fetchone(self, result: ClickHouseResult) -> tuple | None:
         """Fetch one row from result."""

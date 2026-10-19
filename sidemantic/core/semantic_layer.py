@@ -2301,6 +2301,12 @@ class SemanticLayer:
         use_cache = user_attributes is None and not yardstick_warnings_may_apply(self.graph, query)
         cache_key = (
             getattr(self.graph, "_version", 0),
+            # Policy lists can be assigned or mutated without a graph version
+            # change. A cached rewrite must still satisfy the current obligations.
+            tuple(
+                (name, tuple(model.required_filters), tuple(model.required_filters_or_groups))
+                for name, model in self.graph.models.items()
+            ),
             self.dialect,
             self.use_preaggregations,
             self.enforce_visibility,

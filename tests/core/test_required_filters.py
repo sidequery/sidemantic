@@ -296,3 +296,27 @@ def test_yardstick_wrapper_cannot_bypass_requirements(required_layer, native_dis
 def test_output_alias_cannot_satisfy_required_filter(required_layer):
     with pytest.raises(ValueError, match="must filter events.event_date"):
         required_layer.compile(metrics=["events.count"], aliases={"events.count": "event_date"})
+
+
+@pytest.mark.parametrize("policy", ["required_filters", "required_filters_or_groups"])
+@pytest.mark.parametrize("mutation", ["assign", "append", "replace"])
+def test_cached_sql_observes_policy_mutations(required_layer, policy, mutation):
+    model = required_layer.graph.models["events"]
+    model.required_filters = []
+    if mutation == "replace":
+        setattr(model, policy, ["status"])
+    query = "select count from events where status = 'ok'"
+    assert required_layer.sql(query).fetchall() == [(2,)]
+
+    if mutation == "assign":
+        setattr(model, policy, ["event_date"])
+    elif mutation == "append":
+        getattr(model, policy).append("event_date")
+    else:
+        getattr(model, policy)[0] = "event_date"
+
+    with pytest.raises(ValueError, match="events.event_date"):
+        required_layer.sql(query)
+
+    getattr(model, policy).clear()
+    assert required_layer.sql(query).fetchall() == [(2,)]

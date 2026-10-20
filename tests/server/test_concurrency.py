@@ -1,16 +1,15 @@
 """Concurrency proof for the HTTP API server.
 
 Verifies that read-only query handlers no longer serialize on a single lock /
-connection: multiple slow queries fired concurrently complete in far less than
-the sum of their individual runtimes because each request executes on its own
-``adapter.cursor()`` (an independent DuckDB handle over the same database).
+connection: multiple queries fired concurrently are inside execute at the same
+time because each request executes on its own ``adapter.cursor()`` (an
+independent DuckDB handle over the same database).
 """
 
 # ruff: noqa: E402
 
 from __future__ import annotations
 
-import statistics
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -88,34 +87,49 @@ def _post_slow_sql(client: TestClient) -> float:
     return elapsed
 
 
-def test_concurrent_reads_do_not_serialize(tmp_path):
+class _RendezvousCursor:
+    """Cursor proxy whose ``execute`` waits until every concurrent read is executing."""
+
+    def __init__(self, cursor, barrier: threading.Barrier):
+        self._cursor = cursor
+        self._barrier = barrier
+
+    def execute(self, *args, **kwargs):
+        self._barrier.wait()
+        return self._cursor.execute(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+
+def test_concurrent_reads_do_not_serialize(tmp_path, monkeypatch):
     client = _build_client(tmp_path)
+    adapter = client.app.state.layer.adapter
+    _post_slow_sql(client)  # warm up before patching
 
-    # Warm up (first query pays DuckDB init cost) and measure single-request time.
-    _post_slow_sql(client)
-    single_times = [_post_slow_sql(client) for _ in range(2)]
-    single = statistics.median(single_times)
-
+    # Every read blocks in execute until all of them are executing at once. Reads
+    # serialized on a lock or shared connection can never all arrive, so the barrier
+    # times out; unlike a wall-clock ratio, this does not depend on runner load.
     concurrency = 4
-    start = time.perf_counter()
+    barrier = threading.Barrier(concurrency, timeout=30)
+    opened = []
+    open_cursor = adapter.cursor
+
+    def rendezvous_cursor():
+        cursor = open_cursor()
+        opened.append(cursor)
+        return _RendezvousCursor(cursor, barrier)
+
+    monkeypatch.setattr(adapter, "cursor", rendezvous_cursor)
+
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         futures = [pool.submit(_post_slow_sql, client) for _ in range(concurrency)]
-        per_request = [f.result() for f in futures]
-    concurrent_total = time.perf_counter() - start
+        for future in futures:
+            future.result()
 
-    print(
-        f"\nconcurrency proof: single={single * 1000:.0f}ms "
-        f"concurrent_total({concurrency})={concurrent_total * 1000:.0f}ms "
-        f"per_request={[f'{t * 1000:.0f}ms' for t in per_request]}"
-    )
-
-    # If reads serialized, concurrent_total would approach concurrency * single.
-    # With per-request cursors it should stay well under 2.5x single. The bound
-    # is generous to absorb CI runners with fewer cores than requests.
-    assert concurrent_total < 2.5 * single, (
-        f"concurrent total {concurrent_total * 1000:.0f}ms not < 2.5x single "
-        f"{single * 1000:.0f}ms -- reads appear serialized"
-    )
+    assert not barrier.broken, "reads did not execute concurrently"
+    # Each request executes on its own independent handle.
+    assert len({id(cursor) for cursor in opened}) == concurrency
 
 
 def test_mutation_style_endpoint_works_while_queries_run(tmp_path):

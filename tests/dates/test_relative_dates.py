@@ -105,7 +105,7 @@ def test_bigquery_dialect():
     """Test BigQuery dialect generates correct DATE_TRUNC syntax."""
     # BigQuery uses DATE_TRUNC(column, MONTH) not DATE_TRUNC('month', column)
     assert RelativeDateRange.parse("this month", dialect="bigquery") == "DATE_TRUNC(CURRENT_DATE, MONTH)"
-    assert RelativeDateRange.parse("this week", dialect="bigquery") == "DATE_TRUNC(CURRENT_DATE, WEEK)"
+    assert RelativeDateRange.parse("this week", dialect="bigquery") == "DATE_TRUNC(CURRENT_DATE, WEEK(MONDAY))"
     assert RelativeDateRange.parse("this year", dialect="bigquery") == "DATE_TRUNC(CURRENT_DATE, YEAR)"
     assert (
         RelativeDateRange.parse("last month", dialect="bigquery")

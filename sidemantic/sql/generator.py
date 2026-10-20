@@ -12,6 +12,7 @@ from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import SqlglotError
 
 from sidemantic.core.preagg_matcher import PreAggregationMatcher
+from sidemantic.core.relative_date import bigquery_trunc_part
 from sidemantic.core.semantic_graph import SemanticGraph, _relationship_local_key_columns
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
@@ -737,7 +738,7 @@ class SQLGenerator:
             column_expr = self._localize_to_timezone(column_expr)
 
         if self.dialect == "bigquery":
-            return f"DATE_TRUNC({column_expr}, {granularity.upper()})"
+            return f"DATE_TRUNC({column_expr}, {bigquery_trunc_part(granularity)})"
 
         if self.dialect in {"spark", "databricks"}:
             spark_granularity = granularity.upper()

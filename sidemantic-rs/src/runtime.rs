@@ -4611,7 +4611,10 @@ pub fn validate_table_formula_expression(expression: &str) -> Result<bool> {
 
 fn relative_date_trunc(granularity: &str, dialect: &str) -> String {
     if dialect.eq_ignore_ascii_case("bigquery") {
-        format!("DATE_TRUNC(CURRENT_DATE, {})", granularity.to_uppercase())
+        format!(
+            "DATE_TRUNC(CURRENT_DATE, {})",
+            crate::core::bigquery_trunc_part(granularity)
+        )
     } else {
         format!("DATE_TRUNC('{granularity}', CURRENT_DATE)")
     }
@@ -6703,6 +6706,10 @@ type: percent_of_total
         assert_eq!(
             parse_relative_date("this month", "bigquery"),
             Some("DATE_TRUNC(CURRENT_DATE, MONTH)".to_string())
+        );
+        assert_eq!(
+            parse_relative_date("this week", "bigquery"),
+            Some("DATE_TRUNC(CURRENT_DATE, WEEK(MONDAY))".to_string())
         );
 
         let range = relative_date_to_range("this month", "order_date", "duckdb").unwrap();

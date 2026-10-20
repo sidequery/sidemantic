@@ -131,7 +131,7 @@ def test_time_dimension_bigquery_week_starts_monday(layer):
 
     assert "DATE_TRUNC(created_at, WEEK(MONDAY))" in sql, f"Expected Monday-start BigQuery weeks. Got: {sql}"
     # Sunday 2023-12-31 belongs to the week starting Monday 2023-12-25, as in DuckDB.
-    bucket = sqlglot.parse_one("SELECT DATE_TRUNC(DATE '2023-12-31', WEEK(MONDAY))", read="bigquery").sql(
+    bucket = sqlglot.parse_one("SELECT CAST(DATE_TRUNC(DATE '2023-12-31', WEEK(MONDAY)) AS DATE)", read="bigquery").sql(
         dialect="duckdb"
     )
     assert duckdb.sql(bucket).fetchone()[0] == date(2023, 12, 25)

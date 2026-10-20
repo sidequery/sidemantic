@@ -169,6 +169,9 @@ jobs:
         run: |
           cargo generate-lockfile
           uv lock
+          # Re-lock can move packages that only extras install (e.g. sqlglotc); plain
+          # `uv run` would leave those stale and validate a mismatched environment.
+          uv sync --extra dev --extra dax
           uv run python scripts/generate_man_page.py
 
       - name: Validate release tree

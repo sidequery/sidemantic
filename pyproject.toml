@@ -1,13 +1,13 @@
 [project]
 name = "sidemantic"
-version = "0.12.0"
+version = "0.13.0"
 description = "Universal semantic layer - import from Cube, dbt, LookML, Hex, and more"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
     # PYODIDE: Native wheels are excluded from Emscripten installs.
-    "sidemantic-rs==0.12.0; sys_platform != 'emscripten'",
+    "sidemantic-rs==0.13.0; sys_platform != 'emscripten'",
     "antlr4-python3-runtime>=4.13.2",
     "sqlglot>=30.1.0",
     "pyyaml>=6.0",
@@ -112,7 +112,7 @@ lsp = [
     "pygls>=2.0.0",
 ]
 dax = [
-    "sidemantic-dax>=0.12.0",
+    "sidemantic-dax>=0.13.0",
 ]
 lookml = [
     "lkml>=1.3.7",

@@ -30,6 +30,11 @@ class ReplayStatement:
     has_aggregate: bool
 
 
+def _drop_target(drop: exp.Drop) -> exp.Table:
+    # sqlglot >= 30.23 parses DROP targets into `tables`; earlier versions use `this`.
+    return drop.this or drop.args["tables"][0]
+
+
 def split_replay_sql(sql: str, dialect: str) -> list[str]:
     """Split SQLLogicTest batches without splitting comments or quoted literals."""
     tokens = sqlglot.tokenize(sql, read=dialect)
@@ -187,12 +192,12 @@ class YardstickReplayRuntime:
                         self._install_models()
                         continue
                 if isinstance(parsed, exp.Drop) and str(parsed.args.get("kind", "")).upper() == "VIEW":
-                    table = parsed.this
+                    table = _drop_target(parsed)
                     name = table.name.lower()
                     if table.db.lower() == "main" and not table.catalog:
                         drop = parsed.copy()
                         catalog = self.layer.adapter.execute("SELECT current_database()").fetchone()[0]
-                        drop.this.set("catalog", exp.to_identifier(catalog, quoted=True))
+                        _drop_target(drop).set("catalog", exp.to_identifier(catalog, quoted=True))
                         self._execute(drop.sql(dialect=self.adapter.dialect))
                     else:
                         self._execute(statement.sql)
@@ -237,8 +242,8 @@ class YardstickReplayRuntime:
                 remaining_uses = used_temporary.copy()
                 for remaining in statements[statement_index:]:
                     remaining_uses.update(self._temporary_reads(remaining, pending_temporary))
-                    if isinstance(remaining.parsed, exp.Drop) and not remaining.parsed.this.db:
-                        remaining_uses.add(remaining.parsed.this.name.lower())
+                    if isinstance(remaining.parsed, exp.Drop) and not _drop_target(remaining.parsed).db:
+                        remaining_uses.add(_drop_target(remaining.parsed).name.lower())
                 if pending_temporary - remaining_uses:
                     raise RuntimeError(
                         "TEMPORARY AS MEASURE views must be used in the same statement batch as AGGREGATE()"

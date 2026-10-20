@@ -4178,7 +4178,7 @@ impl<'a> SqlGenerator<'a> {
             Ok(format!(
                 "DATE_TRUNC({}, {})",
                 column_expr,
-                granularity.to_ascii_uppercase()
+                crate::core::bigquery_trunc_part(granularity)
             ))
         } else if matches!(self.dialect, DialectType::Spark | DialectType::Databricks) {
             let grain = granularity.to_ascii_uppercase();

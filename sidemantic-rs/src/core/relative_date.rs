@@ -5,6 +5,17 @@
 use lazy_static::lazy_static;
 use regex::Regex;
 
+/// BigQuery date part for a grain; weeks start Monday as in the other dialects.
+pub(crate) fn bigquery_trunc_part(granularity: &str) -> String {
+    let part = granularity.to_ascii_uppercase();
+    // BigQuery's bare WEEK starts on Sunday.
+    if part == "WEEK" {
+        "WEEK(MONDAY)".to_string()
+    } else {
+        part
+    }
+}
+
 /// Relative date expression parser
 pub struct RelativeDate;
 

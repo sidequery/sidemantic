@@ -34,6 +34,7 @@ pub(crate) use preaggregation::{
     materialization_sql as preaggregation_materialization_sql, replace_model_placeholder,
     source_expression as preaggregation_source_expression,
 };
+pub(crate) use relative_date::bigquery_trunc_part;
 pub use relative_date::RelativeDate;
 pub use segment::Segment;
 pub use symmetric_agg::{

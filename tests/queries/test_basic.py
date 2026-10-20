@@ -116,6 +116,27 @@ def test_time_dimension_bigquery_dialect(layer):
     assert "DATE_TRUNC('month'" not in sql, f"Should not have PostgreSQL syntax. Got: {sql}"
 
 
+def test_time_dimension_bigquery_week_starts_monday(layer):
+    """BigQuery's bare WEEK starts Sunday; week buckets must match the Monday weeks of other dialects."""
+    orders = Model(
+        name="orders",
+        table="orders_table",
+        primary_key="order_id",
+        dimensions=[Dimension(name="created_at", type="time", sql="created_at", granularity="day")],
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+    )
+    layer.add_model(orders)
+
+    sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.created_at__week"], dialect="bigquery")
+
+    assert "DATE_TRUNC(created_at, WEEK(MONDAY))" in sql, f"Expected Monday-start BigQuery weeks. Got: {sql}"
+    # Sunday 2023-12-31 belongs to the week starting Monday 2023-12-25, as in DuckDB.
+    bucket = sqlglot.parse_one("SELECT CAST(DATE_TRUNC(DATE '2023-12-31', WEEK(MONDAY)) AS DATE)", read="bigquery").sql(
+        dialect="duckdb"
+    )
+    assert duckdb.sql(bucket).fetchone()[0] == date(2023, 12, 25)
+
+
 def test_time_dimension_duckdb_dialect(layer):
     """Test that time dimensions generate correct DuckDB DATE_TRUNC syntax."""
     orders = Model(

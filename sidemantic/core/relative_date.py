@@ -3,10 +3,17 @@
 import re
 
 
+def bigquery_trunc_part(granularity: str) -> str:
+    """BigQuery date part for a grain; weeks start Monday as in the other dialects."""
+    part = granularity.upper()
+    # BigQuery's bare WEEK starts on Sunday.
+    return "WEEK(MONDAY)" if part == "WEEK" else part
+
+
 def _date_trunc(granularity: str, column_expr: str, dialect: str) -> str:
     """Generate dialect-specific DATE_TRUNC expression."""
     if dialect == "bigquery":
-        return f"DATE_TRUNC({column_expr}, {granularity.upper()})"
+        return f"DATE_TRUNC({column_expr}, {bigquery_trunc_part(granularity)})"
     else:
         return f"DATE_TRUNC('{granularity}', {column_expr})"
 

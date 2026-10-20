@@ -87,49 +87,35 @@ def _post_slow_sql(client: TestClient) -> float:
     return elapsed
 
 
-class _RendezvousCursor:
-    """Cursor proxy whose ``execute`` waits until every concurrent read is executing."""
-
-    def __init__(self, cursor, barrier: threading.Barrier):
-        self._cursor = cursor
-        self._barrier = barrier
-
-    def execute(self, *args, **kwargs):
-        self._barrier.wait()
-        return self._cursor.execute(*args, **kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._cursor, name)
-
-
-def test_concurrent_reads_do_not_serialize(tmp_path, monkeypatch):
+def test_concurrent_reads_do_not_serialize(tmp_path):
     client = _build_client(tmp_path)
     adapter = client.app.state.layer.adapter
-    _post_slow_sql(client)  # warm up before patching
 
-    # Every read blocks in execute until all of them are executing at once. Reads
-    # serialized on a lock or shared connection can never all arrive, so the barrier
-    # times out; unlike a wall-clock ratio, this does not depend on runner load.
+    # Each query calls a UDF that blocks inside DuckDB execution until every
+    # concurrent query is executing too. Reads serialized anywhere (an app lock,
+    # a lock-wrapped cursor, or one shared connection) can never all arrive, so
+    # the barrier times out; unlike a wall-clock ratio, this ignores runner load.
     concurrency = 4
     barrier = threading.Barrier(concurrency, timeout=30)
-    opened = []
-    open_cursor = adapter.cursor
 
-    def rendezvous_cursor():
-        cursor = open_cursor()
-        opened.append(cursor)
-        return _RendezvousCursor(cursor, barrier)
+    def rendezvous(value: int) -> int:
+        barrier.wait()
+        return value
 
-    monkeypatch.setattr(adapter, "cursor", rendezvous_cursor)
+    # Python UDFs registered on the connection are visible to its cursors.
+    adapter.conn.create_function("rendezvous", rendezvous)
+
+    def post_rendezvous() -> None:
+        response = client.post("/raw", json={"query": "select rendezvous(1) as c"}, headers=_AUTH)
+        assert response.status_code == 200, response.text
+        assert response.json()["rows"][0]["c"] == 1
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = [pool.submit(_post_slow_sql, client) for _ in range(concurrency)]
+        futures = [pool.submit(post_rendezvous) for _ in range(concurrency)]
         for future in futures:
             future.result()
 
     assert not barrier.broken, "reads did not execute concurrently"
-    # Each request executes on its own independent handle.
-    assert len({id(cursor) for cursor in opened}) == concurrency
 
 
 def test_mutation_style_endpoint_works_while_queries_run(tmp_path):

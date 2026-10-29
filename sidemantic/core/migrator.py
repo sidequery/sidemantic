@@ -840,8 +840,9 @@ class Migrator:
             analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
 
             # PK table has one_to_many relationship to FK table
-            # For one_to_many, we don't store FK (it's on the other side)
-            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
+            # The reverse edge records the same FK on the related model and
+            # the same PK on this model; neither endpoint assumes default keys.
+            analysis.relationships.append((pk_table, fk_table, "one_to_many", fk_column, pk_column))
 
         # Extract from JOIN ON conditions
         for join in parsed.find_all(exp.Join):
@@ -872,7 +873,7 @@ class Migrator:
                             pk_column = "id" if right.name.endswith("_id") else right.name
 
                             analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
-                            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
+                            analysis.relationships.append((pk_table, fk_table, "one_to_many", fk_column, pk_column))
                             continue
                         elif left_table == to_table:
                             # Left table is being joined, so it has the FK
@@ -882,7 +883,7 @@ class Migrator:
                             pk_column = "id" if left.name.endswith("_id") else left.name
 
                             analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
-                            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
+                            analysis.relationships.append((pk_table, fk_table, "one_to_many", fk_column, pk_column))
                             continue
 
                 extract_relationship_from_eq(on_clause)
@@ -1722,8 +1723,9 @@ class Migrator:
                         "type": rel_type,
                     }
 
-                    # Add foreign_key for many_to_one relationships
-                    if rel_type == "many_to_one" and fk_col:
+                    # Both directions need the foreign key: local for
+                    # many_to_one, on the related model for one_to_many.
+                    if fk_col:
                         rel_def["foreign_key"] = fk_col
 
                     # Generated models do not assume an id primary key. Keep

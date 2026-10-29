@@ -106,18 +106,27 @@ def test_alias_collision_with_canonical_name_does_not_drop_aggregate(layer):
     )
 
 
-def test_filtered_parameterized_aggregates_with_generated_join(layer):
+@pytest.mark.parametrize("target_key", ["id", "code"])
+@pytest.mark.parametrize("reverse_join", [False, True])
+def test_filtered_parameterized_aggregates_with_generated_join(layer, target_key, reverse_join):
     layer.conn.execute("ALTER TABLE sales ADD COLUMN category_id INTEGER")
     layer.conn.execute("UPDATE sales SET category_id = CASE category WHEN 'a' THEN 1 ELSE 2 END")
-    layer.conn.execute("CREATE TABLE categories(id INTEGER PRIMARY KEY, weight INTEGER)")
+    layer.conn.execute(f"CREATE TABLE categories({target_key} INTEGER PRIMARY KEY, weight INTEGER)")
     layer.conn.execute("INSERT INTO categories VALUES (1, 1), (2, 2)")
-    assert_migration_executes(
+    source = "categories c JOIN sales s" if reverse_join else "sales s JOIN categories c"
+    _, _, models = assert_migration_executes(
         layer,
         [
             "SELECT c.weight, APPROX_QUANTILE(s.amount, 0.9) FILTER (WHERE s.status = 'pending') AS p90 "
-            "FROM sales s JOIN categories c ON s.category_id = c.id GROUP BY c.weight ORDER BY c.weight",
+            f"FROM {source} ON s.category_id = c.{target_key} GROUP BY c.weight ORDER BY c.weight",
         ],
     )
+    assert models["categories"]["relationships"] == [
+        {"name": "sales", "type": "one_to_many", "foreign_key": "category_id", "primary_key": target_key}
+    ]
+    assert models["sales"]["relationships"] == [
+        {"name": "categories", "type": "many_to_one", "foreign_key": "category_id", "primary_key": target_key}
+    ]
 
 
 def test_filtered_parameterized_aggregates_resolve_graph_references(layer):

@@ -5,6 +5,7 @@ from typing import Any
 import duckdb
 
 from sidemantic.db.base import BaseDatabaseAdapter
+from sidemantic.db.duckdb import fetch_arrow_reader
 
 
 class MotherDuckAdapter(BaseDatabaseAdapter):
@@ -51,7 +52,7 @@ class MotherDuckAdapter(BaseDatabaseAdapter):
 
     def fetch_record_batch(self, result: Any) -> Any:
         """Fetch result as Arrow RecordBatch."""
-        return result.fetch_record_batch()
+        return fetch_arrow_reader(result)
 
     def get_tables(self) -> list[dict]:
         """Get list of tables in database."""

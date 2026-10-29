@@ -134,7 +134,7 @@ def test_time_dimension_bigquery_week_starts_monday(layer):
     bucket = sqlglot.parse_one("SELECT CAST(DATE_TRUNC(DATE '2023-12-31', WEEK(MONDAY)) AS DATE)", read="bigquery").sql(
         dialect="duckdb"
     )
-    assert duckdb.sql(bucket).fetchone()[0] == date(2023, 12, 25)
+    assert duckdb.sql(bucket).fetchall()[0][0] == date(2023, 12, 25)
 
 
 def test_time_dimension_duckdb_dialect(layer):

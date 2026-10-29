@@ -805,19 +805,15 @@ class MetricsExplorer(anywidget.AnyWidget):
     def _execute_arrow(self, sql: str):
         """Execute SQL and return result as PyArrow Table.
 
-        Uses adapter.execute().fetch_record_batch() in Semantic Layer mode for
-        cross-adapter compatibility (works with Snowflake, Databricks, ClickHouse, etc.).
-        Falls back to raw DuckDB .arrow() in DataFrame mode.
+        Uses the adapter's Arrow conversion in Semantic Layer mode and the
+        version-compatible DuckDB reader in DataFrame mode.
         """
         if self._layer is not None:
             result = self._layer.adapter.execute(sql)
-            reader = result.fetch_record_batch()
-            return reader.read_all()
-        # DuckDB's .arrow() may return RecordBatchReader in some environments
-        reader = self._conn.execute(sql).arrow()
-        if hasattr(reader, "read_all"):
-            return reader.read_all()
-        return reader
+            return self._layer.adapter.fetch_record_batch(result).read_all()
+        from sidemantic.db.duckdb import fetch_arrow_reader
+
+        return fetch_arrow_reader(self._conn.execute(sql)).read_all()
 
     def _sync_status(self) -> None:
         error = self._metric_error or self._dimension_error

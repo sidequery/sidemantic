@@ -373,34 +373,46 @@ impl<'a, 'g> Plan<'a, 'g> {
                 {
                     return Err(unsupported("inline_aggregate"));
                 }
-                // A leaf is source-local. Qualified raw inputs from another
-                // source need a separate row-grain plan, not this aggregate split.
-                if let Some(sql) = &metric.sql {
-                    if sql != "*"
-                        && semantic_column_references(&sql.replace("{model}", &model))?
-                            .iter()
-                            .any(|column| {
-                                column.model.as_deref().is_some_and(|owner| {
-                                    owner != model
-                                        && !(metric.sql_is_complete
-                                            && owner == format!("{model}_cte"))
-                                })
-                            })
-                    {
-                        return Err(unsupported("cross_source_raw_input"));
+                // Complete expressions may own a joined tuple of physical rows.
+                // Resolve actual model names before generated CTE aliases so a
+                // real `facts_cte` source cannot collapse into `facts`.
+                let mut sources = HashSet::from([model.clone()]);
+                if let Some(sql) = metric.sql.as_deref().filter(|sql| *sql != "*") {
+                    let sql = crate::core::replace_model_placeholder(sql, Some(&model))?;
+                    for column in semantic_column_references(&sql)? {
+                        let Some(owner) = column.model.as_deref() else {
+                            continue;
+                        };
+                        let owner = if self.generator.graph.get_model(owner).is_some() {
+                            owner
+                        } else if metric.sql_is_complete && owner == format!("{model}_cte") {
+                            &model
+                        } else {
+                            return Err(unsupported("cross_source_raw_input"));
+                        };
+                        if owner != model && !metric.sql_is_complete {
+                            return Err(unsupported("cross_source_raw_input"));
+                        }
+                        sources.insert(owner.to_string());
                     }
                 }
-                let population = self.population(vec![model.clone()]);
+                if sources.len() > 1 && !metric.filters.is_empty() {
+                    return Err(unsupported("cross_source_raw_input"));
+                }
+                let mut sources: Vec<_> = sources.into_iter().collect();
+                sources.sort();
+                let population = self.population(sources);
                 let alias = format!("__sidemantic_metric_{}", self.leaves.len());
                 self.leaves.push(Leaf {
                     reference: resolved.reference.clone(),
                     metric: metric.clone(),
                     alias: alias.clone(),
-                    population,
+                    population: population.clone(),
                 });
                 let output = format!(
                     "{}.{}",
-                    self.generator.quote_identifier(&format!("{model}_preagg")),
+                    self.generator
+                        .quote_identifier(&format!("{population}_preagg")),
                     self.generator.quote_identifier(&alias)
                 );
                 // A restored outer-join group has no source rows: COUNT is

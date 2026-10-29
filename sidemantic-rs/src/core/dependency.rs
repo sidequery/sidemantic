@@ -187,11 +187,14 @@ pub(crate) fn is_aggregate_ast_node(node: &serde_json::Value) -> bool {
     };
     let (kind, value) = fields.iter().next().unwrap();
     is_aggregate_ast_kind(kind)
-        // polyglot 0.1.15 leaves bare DuckDB LIST as a generic function,
-        // while LIST with DISTINCT/ORDER/FILTER is an AggregateFunction.
+        // polyglot 0.1.15 leaves some bare DuckDB aggregates as generic
+        // functions; their modified forms can instead be AggregateFunction.
         || (kind == "function"
             && value["quoted"].as_bool() != Some(true)
-            && value["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case("LIST")))
+            && value["name"].as_str().is_some_and(|name| {
+                ["LIST", "APPROX_QUANTILE", "APPROX_QUANTILES", "APPROX_PERCENTILE"]
+                    .iter().any(|aggregate| name.eq_ignore_ascii_case(aggregate))
+            }))
 }
 
 fn lambda_parameter_names(lambda: &serde_json::Value) -> Vec<String> {

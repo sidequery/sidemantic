@@ -4,7 +4,6 @@
 //! rewriting SQL, and validating query references without requiring the Python
 //! bridge.
 
-use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -832,10 +831,6 @@ pub fn is_sql_template(sql: &str) -> bool {
     sql.contains("{{") || sql.contains("{%") || sql.contains("{#")
 }
 
-fn has_jinja_control_markers(sql: &str) -> bool {
-    sql.contains("{%") || sql.contains("{#")
-}
-
 fn yaml_to_json_value(value: &serde_yaml::Value) -> serde_json::Value {
     match value {
         serde_yaml::Value::Null => serde_json::Value::Null,
@@ -944,72 +939,16 @@ fn render_template_with_context(
     }
 }
 
-fn interpolate_simple_filter(
-    filter: &str,
-    parameters_by_name: &HashMap<String, &Parameter>,
-    parameter_values: &HashMap<String, serde_yaml::Value>,
-    dialect: DialectType,
-) -> std::result::Result<String, String> {
-    let pattern = Regex::new(r"\{\{\s*(\w+)\s*\}\}").expect("valid parameter regex");
-    let mut interpolation_error: Option<String> = None;
-
-    let rendered = pattern
-        .replace_all(filter, |captures: &regex::Captures<'_>| {
-            let Some(param_name_match) = captures.get(1) else {
-                return Cow::Owned(
-                    captures
-                        .get(0)
-                        .map(|m| m.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                );
-            };
-            let param_name = param_name_match.as_str();
-            let Some(parameter) = parameters_by_name.get(param_name) else {
-                return Cow::Owned(
-                    captures
-                        .get(0)
-                        .map(|m| m.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                );
-            };
-
-            let value = parameter_runtime_value(parameter, parameter_values);
-            let formatted = format_parameter_value_in_dialect(parameter, &value, dialect);
-            match formatted {
-                Ok(formatted) => Cow::Owned(formatted),
-                Err(err) => {
-                    interpolation_error = Some(err);
-                    Cow::Owned(
-                        captures
-                            .get(0)
-                            .map(|m| m.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    )
-                }
-            }
-        })
-        .into_owned();
-
-    if let Some(err) = interpolation_error {
-        return Err(err);
-    }
-
-    Ok(rendered)
-}
-
 fn interpolate_sql_with_parameters_impl(
     sql: &str,
     parameters_by_name: &HashMap<String, &Parameter>,
     parameter_values: &HashMap<String, serde_yaml::Value>,
     dialect: DialectType,
 ) -> std::result::Result<String, String> {
-    if is_sql_template(sql) && has_jinja_control_markers(sql) {
+    if is_sql_template(sql) {
         return parameters::render(sql, parameters_by_name, parameter_values, dialect);
     }
-    interpolate_simple_filter(sql, parameters_by_name, parameter_values, dialect)
+    Ok(sql.to_owned())
 }
 
 pub fn interpolate_query_filters(
@@ -1100,6 +1039,7 @@ pub fn compile_with_yaml_query(yaml: &str, query_yaml: &str) -> Result<String> {
         .with_dimensions(payload.dimensions)
         .with_filters(filters)
         .with_segments(payload.segments)
+        .with_parameter_values(payload.parameter_values)
         .with_order_by(payload.order_by)
         .with_ungrouped(payload.ungrouped)
         .with_use_preaggregations(payload.use_preaggregations)
@@ -1137,6 +1077,7 @@ pub fn result_schema_with_yaml_query(yaml: &str, query_yaml: &str) -> Result<Str
         .with_dimensions(payload.dimensions)
         .with_filters(filters)
         .with_segments(payload.segments)
+        .with_parameter_values(payload.parameter_values)
         .with_skip_default_time_dimensions(payload.skip_default_time_dimensions);
     let columns = SqlGenerator::new(runtime.graph())
         .result_schema(&query)
@@ -6207,6 +6148,70 @@ skip_default_time_dimensions: true
         let schema: serde_json::Value = serde_json::from_str(&schema_json).unwrap();
         assert_eq!(schema.as_array().unwrap().len(), 1);
         assert_eq!(schema[0]["name"], "revenue");
+    }
+
+    #[test]
+    fn simple_parameter_templates_preserve_sql_literal_context() {
+        let parameters = "- name: chosen\n  type: string\n";
+        for value in ["b", "x' OR 1=1 --", "é😀'quoted"] {
+            let values = serde_yaml::to_string(&HashMap::from([("chosen", value)])).unwrap();
+            let expected = format!("status = '{}'", value.replace('\'', "''"));
+            for template in [
+                "status = {{ chosen }}",
+                "status = '{{ chosen }}'",
+                "status = '{{ chosen }}'{# same #}",
+            ] {
+                assert_eq!(
+                    interpolate_sql_with_parameters_with_yaml(template, parameters, &values)
+                        .unwrap(),
+                    expected
+                );
+            }
+        }
+        assert_eq!(
+            interpolate_sql_with_parameters_with_yaml(
+                "status LIKE '%{{ chosen }}%'",
+                parameters,
+                "chosen: b"
+            )
+            .unwrap(),
+            "status LIKE '%b%'"
+        );
+    }
+
+    #[test]
+    fn prepared_segment_values_are_not_rendered_twice() {
+        let input = serde_json::json!({
+            "version": 1, "input_dialect": "duckdb",
+            "parameters": [{"name": "chosen", "type": "string"}],
+            "models": [{
+                "name": "orders", "table": "orders",
+                "dimensions": [{"name": "status", "type": "categorical"}],
+                "metrics": [{"name": "count", "agg": "count"}],
+                "segments": [{"name": "selected", "sql": "{model}.status = '{{ chosen }}'"}]
+            }]
+        });
+        let query = serde_json::json!({
+            "metrics": ["orders.count"], "segments": ["orders.selected"],
+            "parameter_values": {"chosen": "{{ missing }}"}
+        });
+        let sql = crate::semantic_input::compile_with_semantic_input(
+            &input.to_string(),
+            &query.to_string(),
+        )
+        .unwrap();
+        assert!(sql.contains("'{{ missing }}'"), "{sql}");
+    }
+
+    #[test]
+    fn runtime_selected_segments_receive_query_parameter_values() {
+        let models = include_str!("../tests/fixtures/parameter_segments.yaml");
+        for segment in ["selected", "selected_quoted"] {
+            let query = format!("metrics: [orders.count]\nsegments: [orders.{segment}]\nparameter_values: {{chosen: b}}\n");
+            let sql = compile_with_yaml_query(models, &query).unwrap();
+            assert!(sql.contains("'b'"), "{sql}");
+            assert!(!sql.contains("{{"), "{sql}");
+        }
     }
 
     #[test]

@@ -203,7 +203,7 @@ impl SqlGenerator<'_> {
         for filter in query.filters.iter().chain(&metric.filters) {
             predicates.push(self.retention_source_expression(model, filter, true)?);
         }
-        for filter in self.resolve_segments(&query.segments)? {
+        for filter in self.resolve_segments(&query.segments, query.parameter_values.as_ref())? {
             predicates.push(self.retention_source_expression(model, &filter, true)?);
         }
         // Prepared policies are physical predicates. Expanding them as semantic

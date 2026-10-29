@@ -500,3 +500,49 @@ models:
     child.kill_and_wait();
     fs::remove_dir_all(&dir).expect("temp dir should be removed");
 }
+
+#[test]
+fn http_selected_segments_receive_parameter_values() {
+    let dir = unique_temp_dir("sidemantic_http_segment_parameters");
+    let models_path = dir.join("models.yaml");
+    fs::write(
+        &models_path,
+        include_str!("fixtures/parameter_segments.yaml"),
+    )
+    .unwrap();
+    let bind = free_loopback_addr();
+    let mut command = command_with_clean_sidemantic_env(env!("CARGO_BIN_EXE_sidemantic-server"));
+    let mut child = common::ChildGuard::new(
+        command
+            .arg("--models")
+            .arg(&models_path)
+            .arg("--bind")
+            .arg(&bind)
+            .spawn()
+            .unwrap(),
+    );
+    wait_for_server(&bind);
+    for segment in ["selected", "selected_quoted"] {
+        for chosen in ["b", "x' OR 1=1 --"] {
+            let (status, body, _) = http_request(
+                &bind,
+                "POST",
+                "/compile",
+                Some(json!({
+                    "metrics": ["orders.count"],
+                    "segments": [format!("orders.{segment}")],
+                    "parameters": {"chosen": chosen}
+                })),
+            );
+            assert_eq!(status, 200, "{body}");
+            let sql = body["sql"].as_str().unwrap();
+            assert!(
+                sql.contains(&format!("'{}'", chosen.replace('\'', "''"))),
+                "{sql}"
+            );
+            assert!(!sql.contains("{{"), "{sql}");
+        }
+    }
+    child.kill_and_wait();
+    fs::remove_dir_all(dir).unwrap();
+}

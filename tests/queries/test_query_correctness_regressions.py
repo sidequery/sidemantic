@@ -261,3 +261,32 @@ def test_filtered_cumulative_private_inputs_do_not_collide_with_caller_aliases(s
     expected_columns = [alias, "running"] if alias_reference == "sales.day" else ["day", alias]
     assert [column[0] for column in result.description] == expected_columns
     assert result.fetchall() == [(date(2024, 1, 1), 10), (date(2024, 1, 2), 30)]
+
+
+@pytest.mark.parametrize("order", ["revenue", "sales.revenue"])
+@pytest.mark.parametrize("expression", [False, True])
+def test_metric_order_keeps_progression_and_temporal_cohorts(sales, order, expression):
+    model = sales.graph.get_model("sales")
+    model.sql = model.sql.replace("'a', 10)", "'a', 30)")
+    metric = model.get_metric("running")
+    metric.window_order = order
+    if expression:
+        metric.window_expression = "SUM(base.revenue)"
+    result = sales.query(
+        metrics=["sales.running"],
+        dimensions=["sales.day", "sales.cohort_day"],
+        order_by=["sales.day", "sales.cohort_day"],
+    )
+    # Within cohort A the second day has lower revenue and is accumulated first.
+    # Cohort B remains independent even though its amounts sort after all of A.
+    assert [row[-1] for row in result.fetchall()] == [50, 100, 20, 300]
+
+
+def test_explicit_temporal_order_selects_its_own_progression_axis(sales):
+    sales.graph.get_model("sales").get_metric("running").window_order = "sales.cohort_day"
+    result = sales.query(
+        metrics=["sales.running"],
+        dimensions=["sales.day", "sales.cohort_day"],
+        order_by=["sales.day", "sales.cohort_day"],
+    )
+    assert [row[-1] for row in result.fetchall()] == [10, 110, 20, 220]

@@ -7053,8 +7053,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 continue
             metric_alias = self._quote_alias(metric.name)
 
-            # Find the time dimension to order by
-            time_dim = None
+            # The primary temporal dimension supplies the progression axis.
+            # Sorting periods by a metric changes their order, not their cohort.
+            time_dimensions = []
             for dim_ref, gran in parsed_dims:
                 dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
                 model_name = dim_ref.split(".")[0] if "." in dim_ref else None
@@ -7063,8 +7064,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     if model:
                         dim = model.get_dimension(dim_name)
                         if dim and dim.type == "time":
-                            time_dim = f"base.{sql_identifier(dimension_aliases[dim_ref, gran])}"
-                            break
+                            time_dimensions.append(f"base.{sql_identifier(dimension_aliases[dim_ref, gran])}")
+            time_dim = time_dimensions[0] if time_dimensions else None
+            progression_dim = time_dim
 
             # Allow window_order to override auto-detected time dimension
             if metric.window_order:
@@ -7085,6 +7087,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                         raise ValueError("window_order must name an unambiguous selected period output column")
                     order_alias = matches[0]
                 time_dim = f"base.{sql_identifier(order_alias)}"
+                if time_dim in time_dimensions:
+                    progression_dim = time_dim
 
             if not time_dim:
                 raise ValueError(f"Cumulative metric {m} requires a time dimension for ordering")
@@ -7095,7 +7099,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     continue
                 alias = dimension_aliases[dim_ref, gran]
                 column = f"base.{sql_identifier(alias)}"
-                if column != time_dim and column not in partition_cols:
+                if column not in (time_dim, progression_dim) and column not in partition_cols:
                     partition_cols.append(column)
             partition_clause = f"PARTITION BY {', '.join(partition_cols)} " if partition_cols else ""
 

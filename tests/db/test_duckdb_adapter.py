@@ -286,3 +286,34 @@ def test_configured_cursor_supports_context_manager_and_executemany():
         assert adapter.execute("SELECT count(*) FROM sales.source").fetchone() == (2,)
     finally:
         adapter.close()
+
+
+@pytest.mark.parametrize("populated", [False, True])
+def test_configured_cursor_restores_temp_table_generated_columns(populated):
+    setup = [
+        'CREATE TEMP TABLE "scratch table" ('
+        '"input value" INTEGER DEFAULT 7 CHECK ("input value" > 0), '
+        '"computed value" INTEGER GENERATED ALWAYS AS ("input value" * 2), '
+        '"label""value" VARCHAR DEFAULT \'initial\')',
+        'CREATE TEMP VIEW scratch_view AS SELECT * FROM "scratch table"',
+        "CREATE TABLE persistent_source AS SELECT 42 AS id",
+    ]
+    if populated:
+        setup.append('INSERT INTO "scratch table" ("input value") VALUES (3)')
+    adapter = DuckDBAdapter(init_sql=setup)
+    try:
+        expected = [(3, 6, "initial")] if populated else []
+        assert adapter.execute("SELECT * FROM scratch_view").fetchall() == expected
+        for _ in range(2):
+            with adapter.cursor() as cursor:
+                assert cursor.execute("SELECT * FROM persistent_source").fetchall() == [(42,)]
+                assert cursor.execute("SELECT * FROM scratch_view").fetchall() == expected
+                cursor.execute('INSERT INTO "scratch table" DEFAULT VALUES')
+                assert cursor.execute('SELECT * FROM "scratch table" WHERE "input value" = 7').fetchall() == [
+                    (7, 14, "initial")
+                ]
+                with pytest.raises(Exception, match="CHECK constraint"):
+                    cursor.execute('INSERT INTO "scratch table" ("input value") VALUES (-1)')
+        assert adapter.execute("SELECT * FROM scratch_view").fetchall() == expected
+    finally:
+        adapter.close()

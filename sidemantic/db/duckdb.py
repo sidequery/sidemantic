@@ -104,9 +104,26 @@ class DuckDBAdapter(BaseDatabaseAdapter):
             "SELECT table_name, sql FROM duckdb_tables() WHERE temporary ORDER BY table_oid"
         ).fetchall()
         for name, ddl in tables:
+            import sqlglot
+            from sqlglot import exp
+
             table = f"temp.main.{_quote_identifier(name)}"
-            rows = self.conn.execute(f"SELECT * FROM {table}").fetchall()
-            self._session_tables.append((table, ddl, rows))
+            # DuckDB's column catalogs expose generated expressions as defaults,
+            # without a generated-column flag. Inspect its canonical CREATE SQL
+            # to distinguish those columns from ordinary DEFAULT expressions.
+            definition = sqlglot.parse_one(ddl, dialect="duckdb")
+            columns = [
+                _quote_identifier(column.name)
+                for column in definition.this.expressions
+                if isinstance(column, exp.ColumnDef)
+                and not any(
+                    isinstance(constraint.kind, (exp.GeneratedAsIdentityColumnConstraint, exp.ComputedColumnConstraint))
+                    for constraint in column.constraints
+                )
+            ]
+            column_sql = ", ".join(columns)
+            rows = self.conn.execute(f"SELECT {column_sql} FROM {table}").fetchall()
+            self._session_tables.append((table, ddl, column_sql, rows))
         self._session_views = [
             row[0]
             for row in self.conn.execute(
@@ -119,11 +136,11 @@ class DuckDBAdapter(BaseDatabaseAdapter):
             cursor.execute(f"USE {_quote_identifier(self._session_database)}")
         for name, value in self._session_settings:
             cursor.execute(f"SET {_quote_identifier(name)} = ?", [value])
-        for table, ddl, rows in self._session_tables:
+        for table, ddl, column_sql, rows in self._session_tables:
             cursor.execute(ddl)
             if rows:
                 placeholders = ", ".join("?" for _ in rows[0])
-                cursor.executemany(f"INSERT INTO {table} VALUES ({placeholders})", rows)
+                cursor.executemany(f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})", rows)
         for ddl in self._session_views:
             cursor.execute(ddl)
 

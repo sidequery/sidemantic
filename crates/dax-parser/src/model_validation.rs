@@ -8,7 +8,77 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
-use crate::{Definition, Expr, Query, TableName, VisualShape};
+use crate::validation::{signature_argument, valid_type_name_shape};
+use crate::{lookup, ArgumentCategory, Definition, Expr, Query, TableName, VisualShape};
+
+#[derive(Clone, Copy)]
+enum RowScope<'a> {
+    None,
+    Table(&'a str, Option<&'a RowScope<'a>>),
+    // A row context exists, but its output columns have not been inferred.
+    Unknown,
+}
+
+fn unparenthesized(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Paren(inner) => unparenthesized(inner),
+        other => other,
+    }
+}
+
+fn table_row_scope<'a>(
+    expr: &'a Expr,
+    index: &ModelIndex,
+    lexical_scope: &HashSet<String>,
+) -> RowScope<'a> {
+    let name = match unparenthesized(expr) {
+        Expr::Identifier(name) if !lexical_scope.contains(&key(name)) => name,
+        Expr::TableRef(table) => &table.name,
+        Expr::FunctionCall { name, args }
+            if matches!(
+                name.to_ascii_uppercase().as_str(),
+                "FILTER" | "ALL" | "ALLNOBLANKROW" | "VALUES" | "DISTINCT"
+            ) && !args.is_empty() =>
+        {
+            return table_row_scope(&args[0], index, lexical_scope);
+        }
+        _ => return RowScope::Unknown,
+    };
+    if index.tables(name).len() == 1 && index.table_schema_is_known(name) {
+        RowScope::Table(name, None)
+    } else {
+        RowScope::Unknown
+    }
+}
+
+// Only arguments evaluated per row acquire the input table's scope. Parameters
+// such as RANKX's value and CONCATENATEX's delimiter keep the enclosing scope.
+fn row_table_argument(name: &str, argument: usize) -> Option<usize> {
+    match name.to_ascii_uppercase().as_str() {
+        "SUMX" | "AVERAGEX" | "MINX" | "MAXX" | "COUNTX" | "COUNTAX" | "MEDIANX" | "PRODUCTX"
+        | "STDEVX.S" | "STDEVX.P" | "VARX.S" | "VARX.P" | "PERCENTILEX.INC" | "PERCENTILEX.EXC"
+        | "RANKX" | "FILTER"
+            if argument == 1 =>
+        {
+            Some(0)
+        }
+        "CONCATENATEX" if argument == 1 || argument >= 3 => Some(0),
+        "ADDCOLUMNS" | "SELECTCOLUMNS" if argument >= 2 && argument.is_multiple_of(2) => Some(0),
+        "TOPN" | "SAMPLE" if argument >= 2 => Some(1),
+        "TOPNSKIP" if argument >= 3 => Some(2),
+        _ => None,
+    }
+}
+
+fn is_function_literal(category: Option<ArgumentCategory>, expr: &Expr) -> bool {
+    match category {
+        Some(ArgumentCategory::TypeName) => valid_type_name_shape(expr),
+        Some(ArgumentCategory::Enum) => matches!(unparenthesized(expr), Expr::Identifier(name)
+            if matches!(name.to_ascii_uppercase().as_str(),
+                "ASC" | "DESC" | "SECOND" | "MINUTE" | "HOUR" | "DAY" | "WEEK" | "MONTH" | "QUARTER" | "YEAR")),
+        _ => false,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct ModelMetadata {
@@ -313,21 +383,38 @@ fn resolve_qualified_member(
 
 fn resolve_bracket_ref(
     name: &str,
-    current_table: Option<&str>,
+    current_table: RowScope<'_>,
     path: &str,
     index: &ModelIndex,
     issues: &mut Vec<ModelValidationIssue>,
 ) {
     let mut match_count = index.measures(name).len();
-    if let Some(table) = current_table {
-        match_count += index.columns(table, name).len();
-    } else {
-        let mut table_keys = HashSet::new();
-        table_keys.extend(index.model_columns.keys().cloned());
-        table_keys.extend(index.query_columns.keys().cloned());
-        for table in table_keys {
-            match_count += index.columns(&table, name).len();
+    match current_table {
+        RowScope::None => {
+            let mut table_keys = HashSet::new();
+            table_keys.extend(index.model_columns.keys().cloned());
+            table_keys.extend(index.query_columns.keys().cloned());
+            for table in table_keys {
+                match_count += index.columns(&table, name).len();
+            }
         }
+        mut scope => loop {
+            match scope {
+                // Unknown computed schemas may introduce or shadow this name.
+                RowScope::Unknown => return,
+                RowScope::None => break,
+                RowScope::Table(table, outer) => {
+                    let columns = index.columns(table, name).len();
+                    if columns > 0 {
+                        match_count += columns;
+                        break;
+                    }
+                    // Nested iterators retain outer row contexts. An inner
+                    // column shadows an outer column with the same name.
+                    scope = outer.copied().unwrap_or(RowScope::None);
+                }
+            }
+        },
     }
 
     match match_count {
@@ -395,7 +482,7 @@ fn validate_expr(
     path: &str,
     index: &ModelIndex,
     lexical_scope: &HashSet<String>,
-    current_table: Option<&str>,
+    current_table: RowScope<'_>,
     issues: &mut Vec<ModelValidationIssue>,
 ) {
     match expr {
@@ -443,14 +530,28 @@ fn validate_expr(
             // level resolution needs hierarchy metadata from a future API.
             resolve_qualified_member(table, column, path, index, issues);
         }
-        Expr::FunctionCall { args, .. } => {
+        Expr::FunctionCall { name, args } => {
+            let signature = lookup(name);
             for (arg_index, arg) in args.iter().enumerate() {
+                let category = signature
+                    .and_then(|signature| signature_argument(signature, arg_index, args.len()));
+                if is_function_literal(category, arg) {
+                    continue;
+                }
+                let argument_scope = row_table_argument(name, arg_index)
+                    .and_then(|table_arg| args.get(table_arg))
+                    .map(|table| table_row_scope(table, index, lexical_scope))
+                    .map(|scope| match scope {
+                        RowScope::Table(table, _) => RowScope::Table(table, Some(&current_table)),
+                        other => other,
+                    })
+                    .unwrap_or(current_table);
                 validate_expr(
                     arg,
                     &format!("{path}.args[{arg_index}]"),
                     index,
                     lexical_scope,
-                    current_table,
+                    argument_scope,
                     issues,
                 );
             }
@@ -592,7 +693,14 @@ pub fn validate_expression_against_model(
 ) -> Vec<ModelValidationIssue> {
     let index = ModelIndex::from_model(model);
     let mut issues = Vec::new();
-    validate_expr(expr, "$", &index, &HashSet::new(), None, &mut issues);
+    validate_expr(
+        expr,
+        "$",
+        &index,
+        &HashSet::new(),
+        RowScope::None,
+        &mut issues,
+    );
     issues
 }
 
@@ -618,7 +726,9 @@ pub fn validate_query_against_model(
             match definition {
                 Definition::Measure { table, expr, .. }
                 | Definition::Column { table, expr, .. } => {
-                    let current_table = table.as_ref().map(|table| table.name.as_str());
+                    let current_table = table
+                        .as_ref()
+                        .map_or(RowScope::None, |table| RowScope::Table(&table.name, None));
                     if let Some(table) = table {
                         resolve_table(table, &format!("{path}.table"), &index, &mut issues);
                     }
@@ -638,7 +748,7 @@ pub fn validate_query_against_model(
                         &format!("{path}.expr"),
                         &index,
                         &definition_scope,
-                        None,
+                        RowScope::None,
                         &mut issues,
                     );
                     definition_scope.insert(key(name));
@@ -654,7 +764,7 @@ pub fn validate_query_against_model(
                         &format!("{path}.expr"),
                         &index,
                         &definition_scope,
-                        None,
+                        RowScope::None,
                         &mut issues,
                     );
                     if let Some(shape) = visual_shape {
@@ -676,7 +786,7 @@ pub fn validate_query_against_model(
                                 &format!("{path}.params[{parameter_index}].default"),
                                 &index,
                                 &parameter_scope,
-                                None,
+                                RowScope::None,
                                 &mut issues,
                             );
                         }
@@ -687,7 +797,7 @@ pub fn validate_query_against_model(
                         &format!("{path}.body"),
                         &index,
                         &parameter_scope,
-                        None,
+                        RowScope::None,
                         &mut issues,
                     );
                 }
@@ -702,7 +812,7 @@ pub fn validate_query_against_model(
             &format!("{path}.expr"),
             &index,
             &query_scope,
-            None,
+            RowScope::None,
             &mut issues,
         );
         for (key_index, order_key) in evaluate.order_by.iter().enumerate() {
@@ -711,7 +821,7 @@ pub fn validate_query_against_model(
                 &format!("{path}.order_by[{key_index}].expr"),
                 &index,
                 &query_scope,
-                None,
+                RowScope::None,
                 &mut issues,
             );
         }
@@ -722,7 +832,7 @@ pub fn validate_query_against_model(
                     &format!("{path}.start_at[{value_index}]"),
                     &index,
                     &query_scope,
-                    None,
+                    RowScope::None,
                     &mut issues,
                 );
             }
@@ -753,6 +863,80 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn function_literals_are_not_resolved_as_model_names() {
+        for source in [
+            "DATEADD(Sales[Amount], -1, YEAR)",
+            "DATEDIFF(Sales[Amount], Sales[Amount], month)",
+            "DATESINPERIOD(Sales[Amount], 1, -1, QUARTER)",
+            "CONVERT(1, INTEGER)",
+            "CONVERT(1, (string))",
+            "TOPN(1, Sales, [Amount], DESC)",
+        ] {
+            let expr = parse_expression(source).unwrap();
+            assert!(
+                validate_expression_against_model(&expr, &model()).is_empty(),
+                "{source}"
+            );
+        }
+        for source in [
+            "DATEADD(Sales[Missing], -1, YEAR)",
+            "CONVERT(Missing, INTEGER)",
+            "SUM(YEAR)",
+            "DATEADD(Sales[Amount], -1, MisspelledInterval)",
+            "CONVERT(1, MisspelledType)",
+        ] {
+            let expr = parse_expression(source).unwrap();
+            assert_eq!(
+                validate_expression_against_model(&expr, &model()).len(),
+                1,
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn iterators_resolve_columns_in_their_input_row_context() {
+        for source in [
+            "SUMX(Sales, [ProductKey])",
+            "FILTER('Sales', [ProductKey] > 1)",
+            "SUMX(FILTER(Sales, [ProductKey] > 1), [ProductKey])",
+            "SUMX(Sales, SUMX(Product, [ProductKey]) + [Amount])",
+            "SUMX(Sales, SUMX(Product, [Amount]))",
+            "ADDCOLUMNS(Sales, \"Key\", [ProductKey])",
+            "SELECTCOLUMNS(Sales, \"Key\", [ProductKey])",
+            "TOPN(1, Sales, [ProductKey], DESC)",
+        ] {
+            let expr = parse_expression(source).unwrap();
+            assert!(
+                validate_expression_against_model(&expr, &model()).is_empty(),
+                "{source}"
+            );
+        }
+        for source in ["SUMX(Sales, [Color])", "FILTER(Sales, [Missing] > 0)"] {
+            let expr = parse_expression(source).unwrap();
+            let issues = validate_expression_against_model(&expr, &model());
+            assert_eq!(issues.len(), 1, "{source}");
+            assert_eq!(issues[0].code, ModelValidationCode::UnknownMember);
+        }
+        // Computed/variable table schemas are unknown: do not guess from unrelated tables.
+        for source in [
+            "SUMX(SELECTCOLUMNS(Sales, \"ProductKey\", Sales[Amount]), [ProductKey])",
+            "VAR Rows = Sales RETURN SUMX(Rows, [ProductKey])",
+        ] {
+            let expr = parse_expression(source).unwrap();
+            assert!(
+                validate_expression_against_model(&expr, &model()).is_empty(),
+                "{source}"
+            );
+        }
+        let query = parse_query(
+            "DEFINE TABLE Rows = FILTER(Sales, TRUE()) EVALUATE FILTER(Rows, [ProductKey] > 0)",
+        )
+        .unwrap();
+        assert!(validate_query_against_model(&query, &model()).is_empty());
     }
 
     #[test]

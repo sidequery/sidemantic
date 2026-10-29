@@ -6586,7 +6586,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
             graph._relationship_instances = {}
             graph._relationship_path_cache = {}
             private_names = set()
-            occupied = set(graph.metrics)
+            occupied = set(graph.metrics) | set(aliases.values())
             for model in graph.models.values():
                 occupied.update(field.name for field in [*model.dimensions, *model.metrics])
                 occupied.update(model.primary_key_columns)

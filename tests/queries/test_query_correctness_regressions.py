@@ -245,3 +245,19 @@ def test_conversion_source_expressions_and_pagination(python_layer, multistep, t
     assert len(rows) == 1
     assert rows[0][0] == "B"
     assert rows[0][-1] == 0
+
+
+@pytest.mark.parametrize("alias_reference", ["sales.day", "sales.running"])
+@pytest.mark.parametrize("alias", ["__sidemantic_cumulative_0", "__sidemantic_cumulative_0_raw"])
+def test_filtered_cumulative_private_inputs_do_not_collide_with_caller_aliases(sales, alias_reference, alias):
+    sales.graph.get_model("sales").get_metric("running").filters = ["category = 'a'"]
+    sql = sales.compile(
+        metrics=["sales.running"],
+        dimensions=["sales.day"],
+        aliases={alias_reference: alias},
+        order_by=["sales.day"],
+    )
+    result = sales.conn.execute(sql)
+    expected_columns = [alias, "running"] if alias_reference == "sales.day" else ["day", alias]
+    assert [column[0] for column in result.description] == expected_columns
+    assert result.fetchall() == [(date(2024, 1, 1), 10), (date(2024, 1, 2), 30)]

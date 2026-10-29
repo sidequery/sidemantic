@@ -14,6 +14,7 @@ from sidemantic.adapters.malloy import MalloyAdapter
 from sidemantic.adapters.metricflow import MetricFlowAdapter
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.adapters.superset import SupersetAdapter
+from sidemantic.core.relationship import Relationship
 from sidemantic.loaders import load_from_directory
 
 
@@ -426,3 +427,48 @@ def test_metricflow_folded_filters_and_measure_name_collisions(tmp_path, layer):
     assert layer.graph.models["orders"].get_metric("revenue_measure") is not None
     assert layer.query(metrics=["revenue"]).fetchall() == [(20,)]
     assert layer.query(metrics=["orders.revenue_measure"]).fetchall() == [(60,)]
+
+
+def test_hex_one_to_one_nondefault_keys_roundtrip(tmp_path, layer):
+    layer.conn.execute("CREATE TABLE users(id INT, account_code INT); INSERT INTO users VALUES (1,20),(2,10)")
+    layer.conn.execute(
+        "CREATE TABLE accounts(id INT, code INT, amount INT); INSERT INTO accounts VALUES (1,10,30),(2,20,40)"
+    )
+    layer.add_model(
+        Model(
+            name="accounts",
+            table="accounts",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric"),
+                Dimension(name="code", type="numeric"),
+            ],
+            metrics=[Metric(name="total", agg="sum", sql="amount")],
+        )
+    )
+    layer.add_model(
+        Model(
+            name="users",
+            table="users",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="id", type="numeric"),
+                Dimension(name="account_code", type="numeric"),
+            ],
+            relationships=[
+                Relationship(name="accounts", type="one_to_one", foreign_key="code", primary_key="account_code")
+            ],
+        )
+    )
+    query = dict(metrics=["accounts.total"], dimensions=["users.id"], order_by=["users.id"])
+    assert layer.query(**query).fetchall() == [(1, 40), (2, 30)]
+    adapter = HexAdapter()
+    for index in range(2):
+        destination = tmp_path / f"roundtrip_{index}"
+        adapter.export(layer.graph, destination)
+        layer.graph = adapter.parse(destination)
+        relationship = layer.graph.models["users"].relationships[0]
+        assert relationship.type == "one_to_one"
+        assert relationship.foreign_key == "code"
+        assert relationship.primary_key == "account_code"
+        assert layer.query(**query).fetchall() == [(1, 40), (2, 30)]

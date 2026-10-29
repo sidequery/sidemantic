@@ -431,7 +431,7 @@ class HexAdapter(BaseAdapter):
         type_mapping = {
             "many_to_one": "many_to_one",
             "one_to_many": "one_to_many",
-            "one_to_one": "many_to_one",  # Treat as many_to_one
+            "one_to_one": "one_to_one",
         }
 
         sidemantic_type = type_mapping.get(rel_type, "many_to_one")
@@ -451,7 +451,7 @@ class HexAdapter(BaseAdapter):
                     left, right = right, left
                 if not left.table and right.table == "__hex_target":
                     local_key, target_key = left.name, right.name
-                    if sidemantic_type == "one_to_many":
+                    if sidemantic_type in ("one_to_many", "one_to_one"):
                         foreign_key, primary_key = target_key, local_key
                     else:
                         foreign_key, primary_key = local_key, target_key

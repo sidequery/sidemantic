@@ -4,8 +4,8 @@ from typing import Any
 
 import duckdb
 
+from sidemantic.db._duckdb_compat import fetch_arrow_reader
 from sidemantic.db.base import BaseDatabaseAdapter
-from sidemantic.db.duckdb import fetch_arrow_reader
 
 
 class MotherDuckAdapter(BaseDatabaseAdapter):

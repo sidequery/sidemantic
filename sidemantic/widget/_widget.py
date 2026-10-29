@@ -811,7 +811,7 @@ class MetricsExplorer(anywidget.AnyWidget):
         if self._layer is not None:
             result = self._layer.adapter.execute(sql)
             return self._layer.adapter.fetch_record_batch(result).read_all()
-        from sidemantic.db.duckdb import fetch_arrow_reader
+        from sidemantic.db._duckdb_compat import fetch_arrow_reader
 
         return fetch_arrow_reader(self._conn.execute(sql)).read_all()
 

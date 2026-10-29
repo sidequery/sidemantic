@@ -8,16 +8,6 @@ import duckdb
 from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
 
 
-def fetch_arrow_reader(result: Any) -> Any:
-    """Read Arrow results across DuckDB versions without importing PyArrow eagerly."""
-    # DuckDB 2 removed the connection's fetch_record_batch alias. Older
-    # supported versions and adapter result wrappers still expose that method.
-    fetch = getattr(result, "fetch_record_batch", None)
-    if fetch is not None:
-        return fetch()
-    return result.to_arrow_reader()
-
-
 class DuckDBAdapter(BaseDatabaseAdapter):
     """DuckDB database adapter.
 
@@ -58,8 +48,8 @@ class DuckDBAdapter(BaseDatabaseAdapter):
         the same underlying database. This is the sanctioned pattern for
         multithreaded reads: each thread gets its own handle, so concurrent
         ``execute`` calls do not serialize on a single connection. The returned
-        cursor exposes ``execute`` returning a connection result; use the
-        adapter's ``fetch_record_batch`` method for version-compatible Arrow reads.
+        cursor exposes ``execute`` returning a relation with ``fetch_record_batch``
+        and ``fetchone``, matching the result API used across the codebase.
         """
         return self.conn.cursor()
 
@@ -77,6 +67,8 @@ class DuckDBAdapter(BaseDatabaseAdapter):
 
     def fetch_record_batch(self, result: Any) -> Any:
         """Fetch result as Arrow RecordBatch."""
+        from sidemantic.db._duckdb_compat import fetch_arrow_reader
+
         return fetch_arrow_reader(result)
 
     def get_tables(self) -> list[dict]:

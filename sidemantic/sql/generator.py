@@ -11,7 +11,7 @@ from sqlglot import exp, select
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import SqlglotError
 
-from sidemantic.core.preagg_matcher import PreAggregationMatcher
+from sidemantic.core.preagg_matcher import FINALIZED_AGGREGATIONS, PreAggregationMatcher
 from sidemantic.core.relative_date import bigquery_trunc_part
 from sidemantic.core.semantic_graph import SemanticGraph, _relationship_local_key_columns
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
@@ -7312,6 +7312,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             return f"SUM({raw_col}) / NULLIF(SUM({count_measure}_raw), 0)"
         if metric.agg in {"min", "max"}:
             return f"{metric.agg.upper()}({raw_col})"
+        if metric.agg in FINALIZED_AGGREGATIONS:
+            # The matcher permits finalized states only at their exact grain.
+            return f"MAX({raw_col})"
         return f"SUM({raw_col})"
 
     def _preaggregation_derived_metric_expression(self, model, preagg, metric) -> str:
@@ -7503,6 +7506,8 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         )
         if not preagg:
             return None, "missing_join_key_preaggregation"
+        if any(metric_model.get_metric(name).agg in FINALIZED_AGGREGATIONS for name in metric_names):
+            return None, "nonadditive_join_key_preaggregation"
 
         return (
             {
@@ -7693,9 +7698,10 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
 
             dim_names.append(dim_name)
 
-            # Track time granularity for matching
-            if gran:
-                time_granularity = gran
+            # A bare time dimension uses its declared default grain.
+            dimension = model.get_dimension(dim_name)
+            if dimension and dimension.type == "time":
+                time_granularity = gran or dimension.granularity
 
         # Extract metric names (without model prefix)
         metric_names = []
@@ -7732,11 +7738,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
                 metric = model.get_metric(metric_name)
                 if metric is None:
                     return None
-                if metric.type in {"ratio", "derived"} or metric.agg in {
-                    "avg",
-                    "count_distinct",
-                    "approx_count_distinct",
-                }:
+                if metric.type in {"ratio", "derived"} or metric.agg in FINALIZED_AGGREGATIONS | {"avg"}:
                     return None
 
         matcher = PreAggregationMatcher(model)
@@ -7847,8 +7849,13 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             default_name = f"{dim_name}__{gran}" if gran else dim_name
             register_output_name(output_name, full_ref, canonical_ref, dim_name, default_name, output_name)
 
+            # Resolve the default grain after naming the output: bare references
+            # retain their public alias while reading the materialized bucket.
+            dimension = model.get_dimension(dim_name)
+            effective_gran = gran or (dimension.granularity if dimension and dimension.type == "time" else None)
             # Check if this is the time dimension and needs granularity conversion
-            if gran and preagg.time_dimension == dim_name:
+            if effective_gran and preagg.time_dimension == dim_name:
+                gran = effective_gran
                 # Need to convert from pre-agg granularity to query granularity
                 preagg_col = f"{dim_name}_{preagg.granularity}"
 
@@ -7938,19 +7945,13 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             # Need to rewrite filters to use pre-agg column names
             rewritten_filters = []
             for f in filters:
-                # Replace model_cte. with nothing (pre-agg table doesn't use CTEs)
-                # Also replace model. with nothing
-                rewritten_f = f.replace(f"{model.name}_cte.", "").replace(f"{model.name}.", "")
-
-                # If this filter references the time dimension, map it to the pre-agg time column
-                # e.g., created_at -> created_at_day for daily pre-agg
-                if preagg.time_dimension and preagg.granularity:
-                    time_col_name = f"{preagg.time_dimension}_{preagg.granularity}"
-                    # Replace time dimension name with time column name
-                    import re
-
-                    # Match time dimension as a whole word (not part of another word)
-                    rewritten_f = re.sub(r"\b" + re.escape(preagg.time_dimension) + r"\b", time_col_name, rewritten_f)
+                expression = _parse_fragment(f, self.dialect)
+                for column in expression.find_all(exp.Column):
+                    if column.table in {model.name, f"{model.name}_cte"}:
+                        column.set("table", None)
+                    if column.name == preagg.time_dimension and preagg.granularity:
+                        column.set("this", exp.to_identifier(f"{preagg.time_dimension}_{preagg.granularity}"))
+                rewritten_f = expression.sql(dialect=self.dialect)
 
                 rewritten_filters.append(rewritten_f)
 

@@ -1,0 +1,336 @@
+"""Execution regressions for materialization and Python rollup routing."""
+
+from datetime import date
+
+import duckdb
+import pytest
+from typer.testing import CliRunner
+
+from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sidemantic.cli import app
+from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey
+from sidemantic.core.preagg_matcher import PreAggregationMatcher
+
+
+def rollup_layer(aggregation="sum", grain="day"):
+    layer = SemanticLayer(auto_register=False, engine="python")
+    layer.conn.execute("CREATE TABLE orders (dt TIMESTAMP, region VARCHAR, amount DOUBLE)")
+    layer.conn.execute(
+        "INSERT INTO orders VALUES "
+        "('2026-10-01 10:00', 'A', 1), ('2026-10-01 15:00', 'A', 3), "
+        "('2026-10-02 10:00', 'B', 10), ('2026-10-02 15:00', 'B', 20), "
+        "('2026-10-02 20:00', 'B', 30)"
+    )
+    preagg = PreAggregation(
+        name="daily", measures=["value"], dimensions=["region"], time_dimension="dt", granularity=grain
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[Dimension(name="dt", type="time", granularity=grain), Dimension(name="region", type="categorical")],
+        metrics=[Metric(name="value", agg=aggregation, sql="amount")],
+        pre_aggregations=[preagg],
+    )
+    layer.add_model(model)
+    layer.conn.execute(f"CREATE TABLE orders_preagg_daily AS {preagg.generate_materialization_sql(model)}")
+    return layer, model, preagg
+
+
+def query_with_routing(layer, *, dimensions=None, filters=None):
+    kwargs = dict(metrics=["orders.value"], dimensions=dimensions or [], filters=filters or [])
+    layer.use_preaggregations = False
+    expected = layer.query(**kwargs).fetchall()
+    layer.use_preaggregations = True
+    sql = layer.compile(**kwargs)
+    actual = layer.query(**kwargs).fetchall()
+    assert sorted(actual) == sorted(expected)
+    return sql, actual
+
+
+@pytest.mark.parametrize("aggregation", ["median", "stddev", "stddev_pop", "variance", "variance_pop"])
+def test_finalized_statistics_require_exact_grain(aggregation):
+    layer, model, preagg = rollup_layer(aggregation)
+    sql, _ = query_with_routing(layer)
+    assert "orders_preagg_daily" not in sql
+    sql, _ = query_with_routing(layer, dimensions=["orders.dt__month", "orders.region"])
+    assert "orders_preagg_daily" not in sql
+    sql, _ = query_with_routing(layer, dimensions=["orders.dt", "orders.region"])
+    assert "orders_preagg_daily" in sql
+    matcher = PreAggregationMatcher(model)
+    assert not matcher.can_satisfy_query(preagg, ["value"], [])
+    assert not matcher.explain_query(preagg, ["value"], []).matched
+    assert matcher.explain_query(preagg, ["value"], ["dt", "region"], "day").matched
+    assert matcher.explain_query(preagg, ["value"], ["dt", "region"]).matched
+
+
+@pytest.mark.parametrize("reference", ["orders.dt", "orders.dt__day"])
+def test_default_grain_reads_bucket_and_preserves_alias(reference):
+    layer, _, _ = rollup_layer()
+    sql, rows = query_with_routing(layer, dimensions=[reference])
+    assert "orders_preagg_daily" in sql
+    assert sorted(rows) == [(date(2026, 10, 1), 4), (date(2026, 10, 2), 60)]
+    layer.use_preaggregations = False
+    expected_names = [column[0] for column in layer.query(metrics=["orders.value"], dimensions=[reference]).description]
+    layer.use_preaggregations = True
+    assert [
+        column[0] for column in layer.query(metrics=["orders.value"], dimensions=[reference]).description
+    ] == expected_names
+
+
+@pytest.mark.parametrize(
+    "predicate, safe",
+    [
+        ("orders.dt >= TIMESTAMP '2026-10-01 12:00:00'", False),
+        ("orders.dt < TIMESTAMP '2026-10-01 12:00:00'", False),
+        ("orders.dt > TIMESTAMP '2026-10-01 00:00:00'", False),
+        ("orders.dt <= TIMESTAMP '2026-10-01 00:00:00'", False),
+        ("orders.dt = TIMESTAMP '2026-10-01 00:00:00'", False),
+        ("orders.dt BETWEEN '2026-10-01' AND '2026-10-02'", False),
+        ("orders.dt >= TIMESTAMP '2026-10-02 00:00:00'", True),
+        ("orders.dt < DATE '2026-10-02'", True),
+        ("TIMESTAMP '2026-10-02 00:00:00' <= orders.dt", True),
+        ("TIMESTAMP '2026-10-02 00:00:00' > orders.dt", True),
+        ("orders.dt IS NOT NULL", True),
+        ("orders.dt >= '2026-10-01' AND orders.dt < '2026-10-03'", True),
+        ("orders.dt >= '2026-10-01' AND orders.dt < '2026-10-02 12:00:00'", False),
+    ],
+)
+def test_time_filters_only_route_complete_buckets(predicate, safe):
+    layer, model, preagg = rollup_layer()
+    sql, _ = query_with_routing(layer, filters=[predicate])
+    assert ("orders_preagg_daily" in sql) is safe
+    matcher = PreAggregationMatcher(model)
+    assert matcher.explain_query(preagg, ["value"], [], filters=[predicate]).matched is safe
+
+
+@pytest.mark.parametrize(
+    "grain,boundary,safe",
+    [
+        ("month", "2026-10-01", True),
+        ("month", "2026-10-02", False),
+        ("week", "2026-10-05", True),
+        ("week", "2026-10-01", False),
+        ("quarter", "2026-10-01", True),
+        ("quarter", "2026-11-01", False),
+        ("hour", "2026-10-01 10:00:00", True),
+        ("hour", "2026-10-01 10:30:00", False),
+    ],
+)
+def test_temporal_boundaries_match_materialized_grain(grain, boundary, safe):
+    layer, _, _ = rollup_layer(grain=grain)
+    sql, _ = query_with_routing(layer, filters=[f"orders.dt >= TIMESTAMP '{boundary}'"])
+    assert ("orders_preagg_daily" in sql) is safe
+
+
+@pytest.mark.parametrize("model_sql", [False, True])
+@pytest.mark.parametrize("partitioned", [False, True])
+def test_materialization_resolves_placeholders_in_all_inputs(model_sql, partitioned):
+    conn = duckdb.connect()
+    conn.execute("CREATE TABLE source (dt TIMESTAMP, label VARCHAR, amount INT, active BOOLEAN)")
+    conn.execute("INSERT INTO source VALUES ('2026-10-01', '{model}', 10, true), ('2026-10-01', 'other', 99, false)")
+    model = Model(
+        name="orders",
+        table=None if model_sql else "source",
+        sql="SELECT * FROM source" if model_sql else None,
+        invariant_filters=["{model}.active"],
+        dimensions=[
+            Dimension(name="dt", type="time", sql="{model}.dt"),
+            Dimension(name="label", type="categorical", sql="{model}.label"),
+        ],
+        metrics=[Metric(name="value", agg="sum", sql="{model}.amount", filters=["{model}.label = '{model}'"])],
+    )
+    preagg = PreAggregation(
+        name="daily",
+        measures=["value"],
+        dimensions=["label"],
+        time_dimension="dt",
+        granularity="day",
+        partition_granularity="day" if partitioned else None,
+    )
+    sql = preagg.generate_materialization_sql(model)
+    assert "= '{model}'" in sql
+    preagg.refresh(conn, sql, "orders_preagg_daily", mode="full", model=model)
+    assert conn.execute("SELECT label, value_raw FROM orders_preagg_daily").fetchall() == [("{model}", 10)]
+
+
+@pytest.mark.parametrize("lookback", [None, "7 days"])
+def test_incremental_partitions_remove_disappeared_recent_buckets(lookback):
+    conn = duckdb.connect()
+    conn.execute(
+        "CREATE TABLE orders AS SELECT CURRENT_DATE AS dt, 10 AS amount UNION ALL SELECT CURRENT_DATE - 30, 100"
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[Dimension(name="dt", type="time")],
+        metrics=[Metric(name="value", agg="sum", sql="amount")],
+    )
+    preagg = PreAggregation(
+        name="daily",
+        measures=["value"],
+        time_dimension="dt",
+        granularity="day",
+        partition_granularity="day",
+        refresh_key=RefreshKey(update_window="7 days"),
+    )
+    preagg.build_partitions(conn, model, full_rebuild=True)
+    conn.execute("DELETE FROM orders")
+    assert preagg.build_partitions(conn, model, lookback=lookback) == []
+    assert conn.execute("SELECT value_raw FROM orders_preagg_daily").fetchall() == [(100,)]
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name LIKE 'orders_preagg_daily_p%'"
+        ).fetchone()[0]
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "mode, window",
+    [
+        ("auto", None),
+        ("incremental", None),
+        ("merge", None),
+        ("auto", "1 day"),
+        ("incremental", "12 hours"),
+        ("merge", "1 day"),
+    ],
+)
+def test_cli_refresh_bounds_materialized_buckets(tmp_path, mode, window):
+    db = tmp_path / "data.duckdb"
+    with duckdb.connect(str(db)) as conn:
+        conn.execute("CREATE TABLE orders (dt TIMESTAMP, amount INT)")
+        conn.execute("INSERT INTO orders VALUES ('2026-10-01 10:00', 10), ('2026-10-02 15:00', 20)")
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "orders.yml").write_text(
+        """models:
+- name: orders
+  table: orders
+  dimensions:
+  - {name: dt, type: time, granularity: day}
+  metrics:
+  - {name: value, agg: sum, sql: amount}
+  pre_aggregations:
+  - name: daily
+    measures: [value]
+    time_dimension: dt
+    granularity: day
+    refresh_key:
+      incremental: true
+"""
+        + (f"      update_window: {window}\n" if window else "")
+    )
+    args = ["preagg", "refresh", str(models), "--db", str(db), "--mode", mode, "--json"]
+    for _ in range(3):
+        result = CliRunner().invoke(app, args)
+        assert result.exit_code == 0, result.stdout + result.stderr
+        with duckdb.connect(str(db)) as conn:
+            assert conn.execute("SELECT COUNT(*), SUM(value_raw) FROM orders_preagg_daily").fetchone() == (2, 30)
+    with duckdb.connect(str(db)) as conn:
+        conn.execute("INSERT INTO orders VALUES ('2026-10-03 12:00', 30)")
+        # Replacement modes also pick up changes in the current bucket.
+        if window or mode == "merge":
+            conn.execute("INSERT INTO orders VALUES ('2026-10-02 20:00', 5)")
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.stdout + result.stderr
+    with duckdb.connect(str(db)) as conn:
+        expected = 65 if window or mode == "merge" else 60
+        assert conn.execute("SELECT COUNT(*), SUM(value_raw) FROM orders_preagg_daily").fetchone() == (3, expected)
+
+
+def test_default_grain_can_roll_up_daily_buckets_to_month():
+    layer, model, _ = rollup_layer()
+    model.get_dimension("dt").granularity = "month"
+    sql, rows = query_with_routing(layer, dimensions=["orders.dt"])
+    assert "orders_preagg_daily" in sql
+    assert rows == [(date(2026, 10, 1), 64)]
+
+
+def test_bucket_filter_rewrite_preserves_literals():
+    layer, _, _ = rollup_layer()
+    # A categorical value equal to the temporal field name must not be rewritten.
+    layer.conn.execute("UPDATE orders SET region = 'dt'")
+    layer.conn.execute("UPDATE orders_preagg_daily SET region = 'dt'")
+    sql, rows = query_with_routing(layer, filters=["orders.region = 'dt'", "orders.dt >= '2026-10-01'"])
+    assert "orders_preagg_daily" in sql
+    assert rows == [(64,)]
+
+
+def test_incremental_partition_refresh_removes_empty_covering_view():
+    conn = duckdb.connect()
+    conn.execute("CREATE TABLE orders AS SELECT CURRENT_DATE AS dt, 10 AS amount")
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[Dimension(name="dt", type="time")],
+        metrics=[Metric(name="value", agg="sum", sql="amount")],
+    )
+    preagg = PreAggregation(
+        name="daily", measures=["value"], time_dimension="dt", granularity="day", partition_granularity="day"
+    )
+    preagg.build_partitions(conn, model)
+    conn.execute("DELETE FROM orders")
+    preagg.build_partitions(conn, model, lookback="7 days")
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name LIKE 'orders_preagg_daily%'"
+        ).fetchone()[0]
+        == 0
+    )
+
+
+def test_incremental_partition_refresh_preserves_buckets_outside_build_range():
+    conn = duckdb.connect()
+    conn.execute(
+        "CREATE TABLE orders AS SELECT DATE '2026-10-01' AS dt, 10 AS amount UNION ALL SELECT DATE '2026-10-02', 20 UNION ALL SELECT DATE '2026-10-03', 30"
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[Dimension(name="dt", type="time")],
+        metrics=[Metric(name="value", agg="sum", sql="amount")],
+    )
+    preagg = PreAggregation(
+        name="daily", measures=["value"], time_dimension="dt", granularity="day", partition_granularity="day"
+    )
+    preagg.build_partitions(conn, model)
+    conn.execute("DELETE FROM orders")
+    preagg.build_partitions(conn, model, build_range_start="2026-10-02", build_range_end="2026-10-03")
+    assert conn.execute("SELECT value_raw FROM orders_preagg_daily ORDER BY 1").fetchall() == [(10,), (30,)]
+
+
+@pytest.mark.parametrize("mode", ["incremental", "merge"])
+def test_cli_rejects_incremental_rollup_without_watermark(tmp_path, mode):
+    db = tmp_path / "data.duckdb"
+    with duckdb.connect(str(db)) as conn:
+        conn.execute("CREATE TABLE orders AS SELECT 10 AS amount")
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "orders.yml").write_text("""models:
+- name: orders
+  table: orders
+  metrics:
+  - {name: value, agg: sum, sql: amount}
+  pre_aggregations:
+  - {name: total, measures: [value]}
+""")
+    result = CliRunner().invoke(app, ["preagg", "refresh", str(models), "--db", str(db), "--mode", mode, "--json"])
+    assert result.exit_code != 0
+    assert "requires a rollup with time_dimension and granularity" in result.stdout + result.stderr
+    with duckdb.connect(str(db)) as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'orders_preagg_total'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_time_dimension_without_default_grain_falls_back_to_source():
+    layer, model, preagg = rollup_layer()
+    model.get_dimension("dt").granularity = None
+    sql, rows = query_with_routing(layer, dimensions=["orders.dt"])
+    assert "orders_preagg_daily" not in sql
+    assert len(rows) == 5
+    assert not PreAggregationMatcher(model).explain_query(preagg, ["value"], ["dt"]).matched

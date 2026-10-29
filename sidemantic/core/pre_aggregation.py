@@ -132,6 +132,20 @@ class PreAggregation(BaseModel):
 
         return table_name
 
+    @staticmethod
+    def _bind_source_expression(model: Any, expression: str) -> str:
+        """Resolve model placeholders without rewriting SQL literals or comments."""
+        from sidemantic.sql.fragment import replace_outside_sql_protected
+
+        # Placeholders are protected tokens, so resolve the token before removing
+        # its qualifier for table sources (the normal query compiler's convention).
+        marker = "__sidemantic_source"
+        while marker in expression:
+            marker += "_"
+        expression = replace_outside_sql_protected(expression, "{model}", marker)
+        expression = replace_outside_sql_protected(expression, marker + ".", "t." if model.sql else "")
+        return replace_outside_sql_protected(expression, marker, "t" if model.sql else model.table)
+
     def generate_materialization_sql(self, model: Any, partition_filter: str | None = None) -> str:
         """Generate SQL to materialize this pre-aggregation.
 
@@ -160,7 +174,7 @@ class PreAggregation(BaseModel):
             # GROUP BY 1, 2
         """
         invariant_filters = [
-            predicate.replace("{model}.", "").replace("{model}", "").strip()
+            self._bind_source_expression(model, predicate).strip()
             for predicate in getattr(model, "invariant_filters", [])
             if predicate.strip()
         ]
@@ -220,7 +234,8 @@ class PreAggregation(BaseModel):
                         f"with GROUP BY in rollup materialization"
                     )
                 col_name = f"{self.time_dimension}_{self.granularity}"
-                select_exprs.append(f"DATE_TRUNC('{self.granularity}', {time_dim.sql_expr}) as {col_name}")
+                time_expr = self._bind_source_expression(model, time_dim.sql_expr)
+                select_exprs.append(f"DATE_TRUNC('{self.granularity}', {time_expr}) as {col_name}")
                 group_by_positions.append(str(pos))
                 pos += 1
 
@@ -235,7 +250,8 @@ class PreAggregation(BaseModel):
                             f"'{self.name}': window functions are incompatible with "
                             f"GROUP BY in rollup materialization"
                         )
-                    select_exprs.append(f"{dim.sql_expr} as {dim_name}")
+                    dim_expr = self._bind_source_expression(model, dim.sql_expr)
+                    select_exprs.append(f"{dim_expr} as {dim_name}")
                     group_by_positions.append(str(pos))
                     pos += 1
 
@@ -255,12 +271,11 @@ class PreAggregation(BaseModel):
                     # the aggregate input, exactly as they do for live queries; a
                     # rollup must never materialize an unfiltered value for a
                     # filtered semantic metric.
-                    agg_type = measure.agg.upper()
+                    agg_type = {"variance_pop": "VAR_POP"}.get(measure.agg, measure.agg.upper())
                     filter_sql = " AND ".join(
-                        condition.replace("{model}.", "").replace("{model}", "")
-                        for condition in (measure.filters or [])
+                        self._bind_source_expression(model, condition) for condition in (measure.filters or [])
                     )
-                    measure_input = measure.sql_expr
+                    measure_input = self._bind_source_expression(model, measure.sql_expr)
                     if filter_sql:
                         if agg_type == "COUNT" and not measure.sql:
                             measure_input = f"CASE WHEN {filter_sql} THEN 1 ELSE NULL END"
@@ -306,7 +321,7 @@ class PreAggregation(BaseModel):
         group_by_str = ", ".join(group_by_positions)
         source_filters = [*invariant_filters]
         if partition_filter:
-            source_filters.append(partition_filter)
+            source_filters.append(self._bind_source_expression(model, partition_filter))
         where_clause = (
             "\nWHERE " + " AND ".join(f"({predicate})" for predicate in source_filters) if source_filters else ""
         )
@@ -356,7 +371,7 @@ FROM {from_clause}{where_clause}"""
         time_dim = model.get_dimension(self.time_dimension)
         if not time_dim:
             raise ValueError(f"Unknown time_dimension '{self.time_dimension}' on model '{model.name}'")
-        time_expr = time_dim.sql_expr
+        time_expr = self._bind_source_expression(model, time_dim.sql_expr)
         from_clause = f"({model.sql}) AS t" if model.sql else model.table
         pg = self.partition_granularity
 
@@ -381,7 +396,7 @@ FROM {from_clause}{where_clause}"""
             lookback = self.refresh_key.update_window
 
         range_preds = [
-            predicate.replace("{model}.", "").replace("{model}", "").strip()
+            self._bind_source_expression(model, predicate).strip()
             for predicate in getattr(model, "invariant_filters", [])
             if predicate.strip()
         ]
@@ -445,8 +460,30 @@ FROM {from_clause}{where_clause}"""
                 connection.execute(f"DROP TABLE IF EXISTS {stale_table}")
             partition_tables = sorted(built)
         else:
-            # Incremental: keep immutable older partitions alongside the rebuilt ones.
-            partition_tables = sorted(existing | set(built))
+            # Buckets absent from source inside the refreshed window must disappear.
+            # The suffix encodes the bucket, including for empty physical partitions.
+            # Preserve only history outside the requested window/range.
+            stale = set()
+            for table in existing - set(built):
+                key = table.rsplit(".", 1)[-1][len(prefix) :]
+                if not re.fullmatch(r"[0-9]{8}([0-9]{6})?", key):
+                    continue
+                try:
+                    bucket = datetime.strptime(key.ljust(14, "0"), "%Y%m%d%H%M%S")
+                except ValueError:
+                    continue
+                bounds = []
+                if cutoff is not None:
+                    bounds.append(f"TIMESTAMP '{bucket}' >= TIMESTAMP '{cutoff}'")
+                if build_range_start is not None:
+                    bounds.append(f"TIMESTAMP '{bucket}' >= DATE_TRUNC('{pg}', TIMESTAMP '{build_range_start}')")
+                if build_range_end is not None:
+                    bounds.append(f"TIMESTAMP '{bucket}' < TIMESTAMP '{build_range_end}'")
+                in_window = not bounds or connection.execute("SELECT " + " AND ".join(bounds)).fetchone()[0]
+                if in_window:
+                    connection.execute(f"DROP TABLE IF EXISTS {table}")
+                    stale.add(table)
+            partition_tables = sorted((existing - stale) | set(built))
 
         view_name = qualify(unqualified)
         # Always drop the prior covering view/table first: a full rebuild may have

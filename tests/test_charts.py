@@ -52,5 +52,41 @@ def test_missing_chart_dependencies_hint_names_charts_extra(monkeypatch):
     assert "optional serve" not in str(exc_info.value)
 
 
+@pytest.mark.parametrize("metric", ["total_revenue", "index"])
+def test_single_metric_chart_has_real_axis_without_mutating_records(metric):
+    pytest.importorskip("altair")
+    pytest.importorskip("vl_convert")
+    from sidemantic.charts import create_chart
+
+    data = [{metric: 450}, {metric: 600}]
+    spec = create_chart(data).to_dict()
+    x = spec["encoding"]["x"]["field"]
+    assert x != metric
+    assert [row[x] for row in spec["data"]["values"]] == [0, 1]
+    assert [row[metric] for row in spec["data"]["values"]] == [450, 600]
+    assert data == [{metric: 450}, {metric: 600}]
+
+
+def test_y_only_chart_keeps_requested_metric():
+    pytest.importorskip("altair")
+    pytest.importorskip("vl_convert")
+    from sidemantic.charts import create_chart
+
+    spec = create_chart([{"category": "a", "revenue": 10, "cost": 3}], y="cost").to_dict()
+    assert spec["encoding"]["y"]["field"] == "cost"
+    assert spec["encoding"]["x"]["field"] == "category"
+    assert "transform" not in spec
+
+
+def test_x_only_chart_keeps_requested_dimension():
+    pytest.importorskip("altair")
+    pytest.importorskip("vl_convert")
+    from sidemantic.charts import create_chart
+
+    spec = create_chart([{"region": "a", "month": "Jan", "revenue": 10}], x="month").to_dict()
+    assert spec["encoding"]["x"]["field"] == "month"
+    assert spec["encoding"]["y"]["field"] == "revenue"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

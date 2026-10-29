@@ -21,6 +21,7 @@ and ``tolerance`` for numeric comparisons.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from fractions import Fraction
 from numbers import Number
 from pathlib import Path
 
@@ -146,7 +147,12 @@ def load_test_cases(paths: list[Path]) -> list[TestCase]:
 
 def _values_match(actual, expected, tolerance: float) -> bool:
     if isinstance(actual, Number) and isinstance(expected, Number) and not isinstance(actual, bool):
-        return abs(float(actual) - float(expected)) <= max(tolerance, 1e-9)
+        try:
+            difference = abs(Fraction(actual) - Fraction(expected))
+        except (TypeError, ValueError, OverflowError):
+            # Non-finite values cannot be converted to a rational number.
+            return actual == expected
+        return difference <= max(tolerance, 1e-9)
     return actual == expected
 
 

@@ -4,6 +4,7 @@ import builtins
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -899,6 +900,36 @@ def test_docker_entrypoint_does_not_use_eval():
     content = entrypoint_path.read_text()
 
     assert "eval " not in content
+
+
+@pytest.mark.parametrize("mode", ["serve", "both"])
+def test_docker_pg_modes_launch_postgres_command(mode, tmp_path):
+    entrypoint = Path(__file__).resolve().parent.parent / "docker-entrypoint.sh"
+    log = tmp_path / "commands.jsonl"
+    executable = tmp_path / "sidemantic"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['COMMAND_LOG'], 'a') as stream:\n"
+        "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    executable.chmod(0o755)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("SIDEMANTIC_")}
+    env.update(
+        PATH=f"{tmp_path}{os.pathsep}{env['PATH']}",
+        COMMAND_LOG=str(log),
+        SIDEMANTIC_MODE=mode,
+        SIDEMANTIC_USERNAME="demo_user",
+        SIDEMANTIC_PASSWORD="demo_password",
+        SIDEMANTIC_PORT="5433",
+    )
+    subprocess.run(["sh", str(entrypoint), "--demo"], env=env, check=True, capture_output=True, timeout=10)
+    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    postgres = next(args for args in commands if args[:2] == ["server", "postgres"])
+    assert postgres[postgres.index("--username") + 1] == "demo_user"
+    assert postgres[postgres.index("--password") + 1] == "demo_password"
+    assert postgres[postgres.index("--port") + 1] == "5433"
+    assert len(commands) == (2 if mode == "both" else 1)
 
 
 def test_mcp_serve_applies_static_user_attributes_and_visibility(monkeypatch, tmp_path):

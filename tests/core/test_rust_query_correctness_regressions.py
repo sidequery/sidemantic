@@ -402,3 +402,90 @@ def test_cumulative_filter_preserves_placeholder_text_in_literals(column):
         )
         result = layer.query(metrics=["facts.running"], dimensions=["facts.day"]).fetchall()
         assert result[0][-1] == 5
+
+
+@pytest.mark.parametrize("quantile", ["0.9", "[0.5, 0.9]"])
+@pytest.mark.parametrize("filtered", [False, True])
+def test_complete_approximate_quantiles_keep_filters_and_entity_grain(quantile, filtered):
+    from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+
+    expression = f"APPROX_QUANTILE(amount, {quantile})"
+    if filtered:
+        expression += " FILTER (WHERE status = 'paid')"
+    with SemanticLayer(engine="rust", fallback=False, auto_register=False) as layer:
+        layer.adapter.execute("CREATE TABLE quantile_sales(id INT, amount INT, status VARCHAR)")
+        layer.adapter.execute(
+            "INSERT INTO quantile_sales SELECT i, i * 10, CASE WHEN i % 2 = 0 THEN 'paid' ELSE 'pending' END FROM range(10) t(i)"
+        )
+        layer.adapter.execute("CREATE TABLE quantile_tags(id INT, sale_id INT, label VARCHAR)")
+        layer.adapter.execute("INSERT INTO quantile_tags SELECT i, i, 'all' FROM range(10) t(i)")
+        # Unequal duplication makes a missing entity-grain restoration observable.
+        layer.adapter.execute("INSERT INTO quantile_tags SELECT 10 + i, 8, 'all' FROM range(20) t(i)")
+        layer.add_model(
+            Model(
+                name="sales",
+                table="quantile_sales",
+                primary_key="id",
+                metrics=[Metric(name="quantile", sql=expression, sql_is_complete=True)],
+                relationships=[Relationship(name="tags", type="one_to_many", foreign_key="sale_id")],
+            )
+        )
+        layer.add_model(
+            Model(
+                name="tags",
+                table="quantile_tags",
+                primary_key="id",
+                dimensions=[Dimension(name="label", type="categorical")],
+            )
+        )
+        expected = layer.adapter.execute(f"SELECT {expression} FROM quantile_sales").fetchall()[0][0]
+        sql = layer.compile(metrics=["sales.quantile"], dimensions=["tags.label"])
+        assert layer.adapter.execute(sql).fetchall() == [("all", expected)]
+
+
+def test_complete_fanout_aggregate_preserves_literal_model_tokens():
+    from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+
+    with SemanticLayer(engine="rust", fallback=False, auto_register=False) as layer:
+        layer.add_model(
+            Model(
+                name="facts",
+                primary_key="id",
+                sql="SELECT 1 id, 10 amount, '{model}' AS category",
+                metrics=[
+                    Metric(
+                        name="value",
+                        sql="SUM(CASE WHEN {model}.category = '{model}' THEN {model}.amount ELSE 0 END)",
+                        sql_is_complete=True,
+                    )
+                ],
+                relationships=[Relationship(name="tags", type="one_to_many", foreign_key="fact_id")],
+            )
+        )
+        layer.add_model(
+            Model(
+                name="tags",
+                primary_key="id",
+                sql="SELECT * FROM (VALUES (1,1,'all'),(2,1,'all')) t(id,fact_id,label)",
+                dimensions=[Dimension(name="label", type="categorical")],
+            )
+        )
+        assert layer.query(metrics=["facts.value"], dimensions=["tags.label"]).fetchall() == [("all", 10)]
+
+
+def test_complete_joined_aggregate_prefers_real_model_name_over_cte_alias():
+    from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+
+    with SemanticLayer(engine="rust", fallback=False, auto_register=False) as layer:
+        layer.add_model(
+            Model(
+                name="facts",
+                primary_key="id",
+                sql="SELECT 1 id, 10 amount, 'all' AS category",
+                dimensions=[Dimension(name="category", type="categorical")],
+                relationships=[Relationship(name="facts_cte", type="many_to_one", foreign_key="id")],
+                metrics=[Metric(name="joined", sql="SUM(facts.amount + facts_cte.amount)", sql_is_complete=True)],
+            )
+        )
+        layer.add_model(Model(name="facts_cte", primary_key="id", sql="SELECT 1 id, 100 amount"))
+        assert layer.query(metrics=["facts.joined"], dimensions=["facts.category"]).fetchall() == [("all", 110)]

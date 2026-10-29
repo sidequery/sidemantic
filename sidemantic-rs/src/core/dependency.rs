@@ -169,6 +169,8 @@ pub(crate) fn is_aggregate_ast_kind(kind: &str) -> bool {
             | "approx_distinct"
             | "approx_count_distinct"
             | "approx_percentile"
+            | "approx_quantile"
+            | "approx_quantiles"
             | "percentile"
             | "logical_and"
             | "logical_or"
@@ -921,6 +923,22 @@ pub fn validate_row_expression(
 #[cfg(test)]
 mod row_expression_tests {
     use super::*;
+
+    #[test]
+    fn approximate_quantile_arguments_are_aggregate_inputs() {
+        for sql in [
+            "APPROX_QUANTILE(amount, 0.9)",
+            "APPROX_QUANTILES(amount, 100)",
+        ] {
+            let columns = semantic_column_references(sql).unwrap();
+            assert_eq!(columns.len(), 1);
+            assert!(columns[0].aggregate_input, "{sql}");
+            assert!(
+                validate_row_expression(&parse_semantic_expression(sql).unwrap(), "row_input")
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn row_scope_checks_constant_aggregates_and_nested_nodes() {

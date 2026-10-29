@@ -1095,7 +1095,7 @@ class AtScaleSMLAdapter(BaseAdapter):
         return Relationship(
             name=target_model_name,
             type=rel_type,
-            foreign_key=join_columns[0],
+            foreign_key=join_columns[0] if len(join_columns) == 1 else join_columns,
             primary_key=target_key,
         )
 
@@ -1104,7 +1104,7 @@ class AtScaleSMLAdapter(BaseAdapter):
         dimensions: dict[str, dict[str, Any]],
         dimension_name: str | None,
         level_name: str | None,
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | list[str] | None]:
         if not dimension_name:
             return None, None
 
@@ -1129,7 +1129,7 @@ class AtScaleSMLAdapter(BaseAdapter):
 
         dataset_name = target_attr.get("dataset")
         key_columns = target_attr.get("key_columns") or []
-        primary_key = key_columns[0] if key_columns else None
+        primary_key = (key_columns[0] if len(key_columns) == 1 else key_columns) if key_columns else None
 
         if not dataset_name:
             shared = target_attr.get("shared_degenerate_columns") or []
@@ -1137,7 +1137,7 @@ class AtScaleSMLAdapter(BaseAdapter):
                 dataset_name = shared[0].get("dataset")
                 shared_keys = shared[0].get("key_columns") or []
                 if not primary_key and shared_keys:
-                    primary_key = shared_keys[0]
+                    primary_key = shared_keys[0] if len(shared_keys) == 1 else shared_keys
         return dataset_name, primary_key
 
     def _apply_model_aggregates(self, model_def: dict[str, Any], model: Model) -> None:

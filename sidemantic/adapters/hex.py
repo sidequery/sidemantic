@@ -1,8 +1,10 @@
 """Hex adapter for importing/exporting Hex semantic models."""
 
+import re
 from pathlib import Path
 
 import yaml
+from sqlglot import exp
 
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
@@ -11,6 +13,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.paths import output_child
+from sidemantic.sql.fragment import parse_sql_fragment
 from sidemantic.yaml_compat import safe_load_all as _yaml_safe_load_all
 
 
@@ -433,21 +436,32 @@ class HexAdapter(BaseAdapter):
 
         sidemantic_type = type_mapping.get(rel_type, "many_to_one")
 
-        # Parse join_sql to extract foreign key
+        # Hex predicates orient keys by local/target operands, independently
+        # of equality operand order. Native one-to-many keys point back from
+        # the target child to the local parent.
         join_sql = relation_def.get("join_sql", "")
         foreign_key = None
-
-        # Try to extract foreign key from join_sql like "customer_id = ${customers}.id"
-        if "=" in join_sql:
-            parts = join_sql.split("=")
-            if len(parts) == 2:
-                foreign_key = parts[0].strip()
+        primary_key = None
+        normalized = re.sub(rf"\$\{{(?:{re.escape(relation_id)}|{re.escape(target)})\}}", "__hex_target", join_sql)
+        predicate = parse_sql_fragment(normalized) if normalized else None
+        if isinstance(predicate, exp.EQ):
+            left, right = predicate.left, predicate.right
+            if isinstance(left, exp.Column) and isinstance(right, exp.Column):
+                if left.table == "__hex_target":
+                    left, right = right, left
+                if not left.table and right.table == "__hex_target":
+                    local_key, target_key = left.name, right.name
+                    if sidemantic_type == "one_to_many":
+                        foreign_key, primary_key = target_key, local_key
+                    else:
+                        foreign_key, primary_key = local_key, target_key
 
         return Relationship(
             name=relation_id,
             target_model=target if target != relation_id else None,
             type=sidemantic_type,
             foreign_key=foreign_key,
+            primary_key=primary_key,
         )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
@@ -647,8 +661,14 @@ class HexAdapter(BaseAdapter):
 
             # Build join_sql
             if rel.foreign_key:
-                # Construct join condition
-                relation_def["join_sql"] = f"{rel.foreign_key} = ${{{rel.name}}}.{rel.primary_key or 'id'}"
+                if rel.type in ("one_to_many", "one_to_one"):
+                    local_key = rel.primary_key or model.primary_key
+                    target_key = rel.foreign_key
+                else:
+                    local_key = rel.foreign_key
+                    target_model = graph.models.get(rel.related_model)
+                    target_key = rel.primary_key or (target_model.primary_key if target_model else "id")
+                relation_def["join_sql"] = f"{local_key} = ${{{rel.name}}}.{target_key}"
 
             relations.append(relation_def)
 

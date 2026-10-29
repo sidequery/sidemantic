@@ -409,7 +409,7 @@ def load_from_directory(
         if not file_path.is_file():
             continue
 
-        if _try_load_python_file(file_path, directory, all_models, import_warnings, strict=strict):
+        if _try_load_python_file(file_path, directory, all_models, all_metrics, import_warnings, strict=strict):
             continue
 
         # Detect format and parse
@@ -1207,6 +1207,35 @@ def _extract_models_from_python_namespace(namespace: dict, fallback_models: dict
     return extracted
 
 
+def _extract_metrics_from_python_namespace(namespace: dict, fallback_metrics: dict) -> dict:
+    """Collect graph metrics without promoting model-local Metric variables."""
+    from sidemantic.core.semantic_graph import SemanticGraph
+    from sidemantic.core.semantic_layer import SemanticLayer
+
+    extracted = dict(fallback_metrics)
+    visited: set[int] = set()
+
+    def collect(candidate: object) -> None:
+        if id(candidate) in visited:
+            return
+        visited.add(id(candidate))
+        if isinstance(candidate, SemanticLayer):
+            extracted.update(candidate.graph.metrics)
+        elif isinstance(candidate, SemanticGraph):
+            extracted.update(candidate.metrics)
+        elif isinstance(candidate, dict):
+            for nested in candidate.values():
+                collect(nested)
+        elif isinstance(candidate, (list, tuple, set)):
+            for nested in candidate:
+                collect(nested)
+
+    for key, value in namespace.items():
+        if not key.startswith("__"):
+            collect(value)
+    return extracted
+
+
 def _merge_models(all_models: dict, new_models: dict) -> None:
     """Merge parsed models into ``all_models``, noting any name collision.
 
@@ -1445,6 +1474,7 @@ def _try_load_python_file(
     file_path: Path,
     directory: Path,
     all_models: dict,
+    all_metrics: dict,
     import_warnings: list[dict[str, object]],
     *,
     strict: bool,
@@ -1455,7 +1485,15 @@ def _try_load_python_file(
 
     from sidemantic.core.semantic_layer import SemanticLayer
 
-    captured_layer = SemanticLayer(auto_register=True)
+    class CapturingLayer(SemanticLayer):
+        def add_metric(self, metric) -> None:
+            # A Python file may reference models in another definition file.
+            # Defer validation to the normal registration pass after all files
+            # have contributed their models, as the other adapters do.
+            if metric.name not in self.graph.metrics:
+                self.graph.add_metric(metric)
+
+    captured_layer = CapturingLayer(auto_register=True)
     namespace: dict = {}
 
     script_dir = str(file_path.parent)
@@ -1478,16 +1516,18 @@ def _try_load_python_file(
             sys.path.pop(0)
 
     models = _extract_models_from_python_namespace(namespace, captured_layer.graph.models)
-    if not models:
+    metrics = _extract_metrics_from_python_namespace(namespace, captured_layer.graph.metrics)
+    if not models and not metrics:
         return False
 
-    for model in models.values():
-        if not hasattr(model, "_source_format"):
-            model._source_format = "Python"
-        if not hasattr(model, "_source_file"):
-            model._source_file = str(file_path.relative_to(directory))
+    for definition in (*models.values(), *metrics.values()):
+        if not hasattr(definition, "_source_format"):
+            definition._source_format = "Python"
+        if not hasattr(definition, "_source_file"):
+            definition._source_file = str(file_path.relative_to(directory))
 
-    all_models.update(models)
+    _merge_models(all_models, models)
+    all_metrics.update(metrics)
     return True
 
 

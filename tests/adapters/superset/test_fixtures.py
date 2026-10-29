@@ -329,9 +329,7 @@ class TestEcommerceProductsParsing:
         """COUNT(DISTINCT ...) metric is parsed."""
         unique_cats = model.get_metric("unique_categories")
         assert unique_cats.agg == "count_distinct"
-        # Adapter regex for count_distinct does not extract inner expression from COUNT(DISTINCT x)
-        assert unique_cats.sql is not None
-        assert "category" in unique_cats.sql
+        assert unique_cats.sql == "category"
 
     def test_derived_avg_margin(self, model):
         """Complex AVG with formula is derived."""

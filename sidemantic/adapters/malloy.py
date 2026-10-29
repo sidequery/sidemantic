@@ -4048,15 +4048,21 @@ class MalloyAdapter(BaseAdapter):
         """
         # Simple aggregation
         if metric.agg:
+            filters = [self._strip_model_prefix(f) for f in metric.filters or []]
             if metric.sql:
                 sql = self._strip_model_prefix(metric.sql)
-                expr = f"{metric.agg}({sql})"
+                if metric.agg == "count":
+                    # Malloy count(field) counts DISTINCT values. Count rows
+                    # after excluding null inputs to preserve SQL COUNT(expr).
+                    expr = "count()"
+                    if sql.strip() != "*":
+                        filters.append(f"({sql}) is not null")
+                else:
+                    expr = f"{metric.agg}({sql})"
             else:
                 expr = f"{metric.agg}()"
 
-            # Add filter if present
-            if metric.filters:
-                filters = [self._strip_model_prefix(f) for f in metric.filters]
+            if filters:
                 filter_str = ", ".join(filters)
                 expr = f"{expr} {{ where: {filter_str} }}"
 

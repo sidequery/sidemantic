@@ -663,7 +663,25 @@ impl MetricConfig {
         let explicit_metric_type = self.metric_type.as_deref().map(str::to_ascii_lowercase);
         let can_normalize_inline_aggregation =
             matches!(explicit_metric_type.as_deref(), None | Some("simple"));
-        let inline_aggregation = if self.agg.is_none() && can_normalize_inline_aggregation {
+        let complete_distinct_aggregation = self.agg.is_none()
+            && can_normalize_inline_aggregation
+            && self.sql.as_deref().is_some_and(|sql| {
+                matches!(crate::core::parse_semantic_expression(sql),
+                    Ok(polyglot_sql::Expression::Sum(aggregate)
+                        | polyglot_sql::Expression::Avg(aggregate)
+                        | polyglot_sql::Expression::Min(aggregate)
+                        | polyglot_sql::Expression::Max(aggregate)
+                        | polyglot_sql::Expression::Median(aggregate)
+                        | polyglot_sql::Expression::Stddev(aggregate)
+                        | polyglot_sql::Expression::StddevPop(aggregate)
+                        | polyglot_sql::Expression::StddevSamp(aggregate)
+                        | polyglot_sql::Expression::Variance(aggregate)
+                        | polyglot_sql::Expression::VarPop(aggregate)) if aggregate.distinct)
+            });
+        let inline_aggregation = if self.agg.is_none()
+            && can_normalize_inline_aggregation
+            && !complete_distinct_aggregation
+        {
             self.sql
                 .as_deref()
                 .and_then(parse_inline_metric_aggregation)
@@ -672,6 +690,7 @@ impl MetricConfig {
         };
 
         let metric_type = match explicit_metric_type.as_deref() {
+            _ if complete_distinct_aggregation => MetricType::Derived,
             Some("simple") => MetricType::Simple,
             Some("derived") => MetricType::Derived,
             Some("ratio") => MetricType::Ratio,
@@ -733,7 +752,7 @@ impl MetricConfig {
             r#type: metric_type,
             agg,
             sql,
-            sql_is_complete: false,
+            sql_is_complete: complete_distinct_aggregation,
             numerator: self.numerator,
             denominator: self.denominator,
             offset_window: self.offset_window,
@@ -1881,6 +1900,18 @@ models:
             rel.primary_key_columns.as_ref().unwrap(),
             &vec!["order_id".to_string(), "item_id".to_string()]
         );
+    }
+
+    #[test]
+    fn distinct_inline_aggregates_keep_the_complete_expression() {
+        for expression in ["SUM(DISTINCT amount)", "AVG(DISTINCT amount)"] {
+            let config: MetricConfig =
+                serde_yaml::from_str(&format!("name: value\nsql: {expression}\n")).unwrap();
+            let metric = config.into_metric();
+            assert!(metric.sql_is_complete);
+            assert_eq!(metric.agg, None);
+            assert_eq!(metric.sql.as_deref(), Some(expression));
+        }
     }
 
     #[test]

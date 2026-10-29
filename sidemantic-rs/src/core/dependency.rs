@@ -38,7 +38,12 @@ pub fn parse_semantic_expression(sql: &str) -> crate::error::Result<Expression> 
             "expected scalar expression".into(),
         ));
     };
-    if select.expressions.len() != 1 || select.from.is_some() || select.where_clause.is_some() {
+    if select.expressions.len() != 1
+        || select.from.is_some()
+        || select.where_clause.is_some()
+        || select.distinct
+        || select.distinct_on.is_some()
+    {
         return Err(crate::error::SidemanticError::SqlParse(
             "expected one scalar expression".into(),
         ));
@@ -940,5 +945,11 @@ mod row_expression_tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn scalar_expression_rejects_select_level_distinct() {
+        assert!(parse_semantic_expression("DISTINCT amount").is_err());
+        assert!(parse_semantic_expression("SUM(DISTINCT amount)").is_ok());
     }
 }

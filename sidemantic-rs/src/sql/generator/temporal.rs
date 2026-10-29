@@ -303,15 +303,26 @@ impl SqlGenerator<'_> {
         dimensions: &[DimensionRef],
         time_column: &str,
     ) -> Vec<String> {
+        // An explicit metric ordering still runs across the primary time axis.
+        // Other temporal dimensions remain cohorts, just like categorical ones.
+        let time_dimensions: Vec<_> = dimensions
+            .iter()
+            .filter(|dimension| {
+                self.graph
+                    .get_model(&dimension.model)
+                    .and_then(|model| model.get_dimension(&dimension.name))
+                    .is_some_and(|dimension| dimension.r#type == crate::core::DimensionType::Time)
+            })
+            .map(|dimension| format!("base.{}", self.quote_identifier(&dimension.alias)))
+            .collect();
+        let progression = time_dimensions
+            .iter()
+            .find(|column| column.as_str() == time_column)
+            .or_else(|| time_dimensions.first());
         let mut columns = Vec::new();
         for dimension in dimensions {
-            let is_time = self
-                .graph
-                .get_model(&dimension.model)
-                .and_then(|model| model.get_dimension(&dimension.name))
-                .is_some_and(|dimension| dimension.r#type == crate::core::DimensionType::Time);
             let column = format!("base.{}", self.quote_identifier(&dimension.alias));
-            if !is_time && column != time_column && !columns.contains(&column) {
+            if column != time_column && progression != Some(&column) && !columns.contains(&column) {
                 columns.push(column);
             }
         }

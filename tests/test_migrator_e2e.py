@@ -291,8 +291,8 @@ def test_coverage_analysis_join_query():
     assert "customers.customer_segment" in rewritten_sql
 
     # Verify metrics use resolved table names
-    assert "orders.order_id_count" in rewritten_sql
-    assert "orders.sum_total_amount" in rewritten_sql
+    assert "orders.order_count AS order_count" in rewritten_sql
+    assert "orders.total_spent AS total_spent" in rewritten_sql
 
     conn.close()
 
@@ -325,8 +325,8 @@ def test_coverage_analysis_date_trunc_query():
     assert "order_date >= '2024-01-01'" in rewritten_sql
 
     # Should have metrics
-    assert "orders.count" in rewritten_sql
-    assert "orders.sum_total_amount" in rewritten_sql
+    assert "orders.order_count AS order_count" in rewritten_sql
+    assert "orders.revenue AS revenue" in rewritten_sql
 
 
 def test_coverage_analysis_having_order_limit():

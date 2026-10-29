@@ -1726,8 +1726,9 @@ class Migrator:
                     if rel_type == "many_to_one" and fk_col:
                         rel_def["foreign_key"] = fk_col
 
-                    # Optionally add primary_key if it's not the default "id"
-                    if pk_col and pk_col != "id":
+                    # Generated models do not assume an id primary key. Keep
+                    # the observed join target even when it is named id.
+                    if pk_col:
                         rel_def["primary_key"] = pk_col
 
                     relationships.append(rel_def)

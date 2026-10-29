@@ -106,6 +106,20 @@ def test_alias_collision_with_canonical_name_does_not_drop_aggregate(layer):
     )
 
 
+def test_filtered_parameterized_aggregates_with_generated_join(layer):
+    layer.conn.execute("ALTER TABLE sales ADD COLUMN category_id INTEGER")
+    layer.conn.execute("UPDATE sales SET category_id = CASE category WHEN 'a' THEN 1 ELSE 2 END")
+    layer.conn.execute("CREATE TABLE categories(id INTEGER PRIMARY KEY, weight INTEGER)")
+    layer.conn.execute("INSERT INTO categories VALUES (1, 1), (2, 2)")
+    assert_migration_executes(
+        layer,
+        [
+            "SELECT c.weight, APPROX_QUANTILE(s.amount, 0.9) FILTER (WHERE s.status = 'pending') AS p90 "
+            "FROM sales s JOIN categories c ON s.category_id = c.id GROUP BY c.weight ORDER BY c.weight",
+        ],
+    )
+
+
 def test_filtered_parameterized_aggregates_resolve_graph_references(layer):
     migrator = Migrator(layer)
     report = migrator.analyze_queries(

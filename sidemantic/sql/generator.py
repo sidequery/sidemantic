@@ -888,7 +888,7 @@ class SQLGenerator:
         """Resolve a pushed semantic filter against the model's raw source."""
         model_name = model.name
         source_alias = "t" if model.sql else None
-        resolved_filter = filter_sql.replace("{model}.", f"{model_name}.").replace("{model}", model_name)
+        resolved_filter = replace_outside_sql_protected(filter_sql, "{model}", self._quote_identifier(model_name))
         try:
             parsed = _parse_fragment(resolved_filter, self.dialect)
         except SqlglotError:
@@ -6586,10 +6586,25 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
             graph._relationship_instances = {}
             graph._relationship_path_cache = {}
             private_names = set()
+            population_filters = dict(getattr(self, "_cumulative_population_filters", {}))
             occupied = set(graph.metrics) | set(aliases.values())
             for model in graph.models.values():
                 occupied.update(field.name for field in [*model.dimensions, *model.metrics])
                 occupied.update(model.primary_key_columns)
+
+            def qualify_predicates(predicates, owner):
+                if owner is None:
+                    return list(predicates)
+                qualified = []
+                for predicate in predicates:
+                    expression = _parse_fragment(
+                        replace_outside_sql_protected(predicate, "{model}", self._quote_identifier(owner)), self.dialect
+                    )
+                    for column in expression.find_all(exp.Column):
+                        if not column.table and not _column_is_bound_in_select(column, self.dialect):
+                            column.set("table", exp.to_identifier(owner))
+                    qualified.append(expression.sql(dialect=self.dialect))
+                return qualified
 
             def clone_filtered_input(reference, context, predicates, visiting):
                 reference = canonical_ref(reference, context)
@@ -6599,7 +6614,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 if source is None:
                     raise QueryValidationError(f"Unknown filtered cumulative input: {reference}")
                 visiting = visiting | {reference}
-                predicates = [f"({predicate})" for predicate in [*(source.filters or []), *predicates]]
+                filter_owner = self._infer_metric_filter_model(source, owner)
+                predicates = [
+                    f"({predicate})"
+                    for predicate in [*qualify_predicates(source.filters or [], filter_owner), *predicates]
+                ]
                 index = len(private_names)
                 name = f"__sidemantic_cumulative_{index}"
                 while name in occupied or f"{name}_raw" in occupied:
@@ -6609,7 +6628,12 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 occupied.add(name)
                 updates = {"name": name, "filters": predicates}
                 dependencies = source.get_dependencies(self.graph, owner)
-                if dependencies and not source.agg and not source.sql_is_complete:
+                complete_sql = source.sql_is_complete or (
+                    source.sql and not source.agg and not dependencies and sql_has_aggregate(source.sql, self.dialect)
+                )
+                if complete_sql:
+                    updates["sql_is_complete"] = True
+                if dependencies and not source.agg and not complete_sql:
                     replacements = {
                         canonical_ref(dependency, owner): clone_filtered_input(dependency, owner, predicates, visiting)
                         for dependency in sorted(dependencies)
@@ -6637,6 +6661,20 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 elif source.type == "cumulative" and source.sql:
                     updates["sql"] = clone_filtered_input(source.sql, owner, predicates, visiting)
                     updates["filters"] = []
+                if source.agg or complete_sql:
+                    # A foreign-model predicate cannot be evaluated inside this
+                    # aggregate's source CTE. Filter its joined grouped input
+                    # separately, then align it with the unfiltered period spine.
+                    predicate_models = {
+                        column.table
+                        for predicate in predicates
+                        for column in _parse_fragment(predicate, self.dialect).find_all(exp.Column)
+                        if column.table in self.graph.models
+                    }
+                    if predicate_models - {filter_owner}:
+                        private_reference = f"{owner}.{name}" if owner else name
+                        population_filters[private_reference] = predicates
+                        updates["filters"] = []
                 cloned = source.model_copy(update=updates)
                 if owner:
                     model = graph.get_model(owner)
@@ -6647,8 +6685,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
 
             for reference, metric, owner in filtered_cumulative:
                 updates = {"filters": []}
+                predicates = qualify_predicates(metric.filters, owner)
                 if metric.sql:
-                    updates["sql"] = clone_filtered_input(metric.sql, owner, metric.filters, set())
+                    updates["sql"] = clone_filtered_input(metric.sql, owner, predicates, set())
                 if metric.window_expression:
                     expression = _parse_fragment(metric.window_expression, self.dialect)
                     replacements = {}
@@ -6656,9 +6695,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                         if column.table.lower() == "base":
                             dependency = canonical_ref(column.name, owner)
                             if dependency not in replacements:
-                                replacements[dependency] = clone_filtered_input(
-                                    dependency, owner, metric.filters, set()
-                                )
+                                replacements[dependency] = clone_filtered_input(dependency, owner, predicates, set())
                             column.set("this", exp.to_identifier(replacements[dependency].rsplit(".", 1)[-1]))
                     updates["window_expression"] = expression.sql(dialect=self.dialect)
                 replacement = metric.model_copy(update=updates)
@@ -6673,6 +6710,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     )
             generator = copy(self)
             generator.graph = graph
+            generator._cumulative_population_filters = population_filters
             generator._generate_cache = {}
             query = generator._generate_with_window_functions(
                 metrics,
@@ -6911,6 +6949,38 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 )
                 (window_filters if uses_window else base_filters).append(conjunct.sql(dialect=self.dialect))
 
+        # Computed cumulative inputs need their filtered aggregate leaves
+        # materialized independently before recomputing the period expression.
+        population_filters = getattr(self, "_cumulative_population_filters", {})
+        population_computations = []
+
+        def has_population_input(reference, context=None, visited=frozenset()):
+            reference = canonical_ref(reference, context)
+            if reference in population_filters:
+                return True
+            if reference in visited:
+                return False
+            metric, owner = resolve_metric_ref(reference, context)
+            if metric is None or metric.agg or metric.sql_is_complete:
+                return False
+            return any(
+                has_population_input(dependency, owner, visited | {reference})
+                for dependency in metric.get_dependencies(self.graph, owner)
+            )
+
+        if population_filters:
+            for reference in list(base_metrics):
+                metric, owner = resolve_metric_ref(reference)
+                if (
+                    metric is not None
+                    and not metric.agg
+                    and not metric.sql_is_complete
+                    and metric.type in (None, "derived", "ratio")
+                    and has_population_input(reference)
+                ):
+                    population_computations.append(reference)
+                    collect_leaf_base_metrics(reference, owner)
+
         # Build inner query with base aggregations
         # Dedupe base_metrics to avoid duplicate column names
         base_metrics = list(dict.fromkeys(base_metrics))
@@ -6968,7 +7038,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
             return f"base.{sql_identifier(alias)}"
 
         def build_time_comparison_base_expression(
-            metric_ref: str, model_context: str | None = None, visited: set[str] | None = None
+            metric_ref: str,
+            model_context: str | None = None,
+            visited: set[str] | None = None,
+            *,
+            apply_fill_defaults: bool = False,
         ) -> str:
             import re
 
@@ -6996,7 +7070,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     # in the inner query (when needed), so reuse the alias.
                     return metric_column(canon_ref)
                 for dependency in dependencies:
-                    dep_expr = build_time_comparison_base_expression(dependency, resolved_context, visited.copy())
+                    dep_expr = build_time_comparison_base_expression(
+                        dependency, resolved_context, visited.copy(), apply_fill_defaults=apply_fill_defaults
+                    )
                     if "." in dependency:
                         model_name, dep_name = dependency.split(".", 1)
                         qualified_pattern = r"\b" + re.escape(f"{model_name}.{dep_name}") + r"\b"
@@ -7008,18 +7084,115 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     else:
                         dep_pattern = r"\b" + re.escape(dependency) + r"\b"
                         formula = re.sub(dep_pattern, f"({dep_expr})", formula)
-                return formula
+                return self._wrap_with_fill_nulls(formula, metric_obj) if apply_fill_defaults else formula
 
             if metric_obj.type == "ratio" and not metric_obj.offset_window:
                 if not metric_obj.numerator or not metric_obj.denominator:
                     raise ValueError(f"Ratio metric {metric_obj.name} requires numerator and denominator")
-                num_expr = build_time_comparison_base_expression(metric_obj.numerator, resolved_context, visited.copy())
-                denom_expr = build_time_comparison_base_expression(
-                    metric_obj.denominator, resolved_context, visited.copy()
+                num_expr = build_time_comparison_base_expression(
+                    metric_obj.numerator, resolved_context, visited.copy(), apply_fill_defaults=apply_fill_defaults
                 )
-                return f"({num_expr}) / NULLIF({denom_expr}, 0)"
+                denom_expr = build_time_comparison_base_expression(
+                    metric_obj.denominator, resolved_context, visited.copy(), apply_fill_defaults=apply_fill_defaults
+                )
+                formula = f"({num_expr}) / NULLIF({denom_expr}, 0)"
+                return self._wrap_with_fill_nulls(formula, metric_obj) if apply_fill_defaults else formula
 
             return metric_column(canon_ref)
+
+        # Restore cross-model filtered leaf populations without shrinking the
+        # unfiltered grouping domain or changing sibling aggregate populations.
+        population_filters = getattr(self, "_cumulative_population_filters", {})
+        filtered_inputs = [reference for reference in base_metrics if reference in population_filters]
+        if filtered_inputs:
+            spine_alias = "__sidemantic_window_spine"
+            joined = exp.select().from_(sqlglot.parse_one(inner_query, read=self.dialect).subquery(spine_alias))
+            replacements = {}
+            for index, reference in enumerate(filtered_inputs):
+                output_alias = metric_output_aliases[reference]
+                child_query = self.generate(
+                    metrics=[reference],
+                    dimensions=dimensions,
+                    _resolved_filters=tuple([*base_filters, *population_filters[reference]]),
+                    aliases={reference: output_alias},
+                    use_preaggregations=use_preaggregations,
+                    user_attributes=user_attributes,
+                )
+                child = sqlglot.parse_one(child_query, read=self.dialect)
+                child_alias = f"__sidemantic_window_input_{index}"
+                presence_alias = "__sidemantic_group_present"
+                while presence_alias in child.named_selects:
+                    presence_alias += "_"
+                child = child.select(exp.alias_(exp.Literal.number(1), presence_alias, quoted=True))
+                predicates = [
+                    exp.NullSafeEQ(
+                        this=exp.column(dimension_aliases[dim], table=spine_alias, quoted=True),
+                        expression=exp.column(alias, table=child_alias, quoted=True),
+                    )
+                    for dim, alias in zip(parsed_dims, child.named_selects[: len(parsed_dims)], strict=True)
+                ]
+                joined = joined.join(
+                    child.subquery(child_alias),
+                    on=exp.and_(*predicates) if predicates else exp.true(),
+                    join_type="LEFT",
+                )
+                value = exp.column(output_alias, table=child_alias, quoted=True)
+                metric, _ = resolve_metric_ref(reference)
+                empty_value = exp.convert(metric.fill_nulls_with)
+                if metric.agg in ("count", "count_distinct", "approx_count_distinct"):
+                    empty_value = exp.Literal.number(0)
+                elif metric.sql_is_complete:
+                    # Complete SQL can have nontrivial empty-input semantics
+                    # (COUNT(*) + 1, NULLIF(COUNT(*), 1), FILTER aggregates).
+                    # Evaluate the same aggregate over zero rows rather than
+                    # guessing from its root function. FALSE provides an empty input.
+                    empty_query = self.generate(
+                        metrics=[reference],
+                        _resolved_filters=("FALSE",),
+                        skip_default_time_dimensions=True,
+                        user_attributes=user_attributes,
+                    )
+                    empty_value = sqlglot.parse_one(empty_query, read=self.dialect).subquery()
+                # A present group may legitimately aggregate to NULL. Apply
+                # empty-input behavior only when the grouped child has no row.
+                replacements[output_alias] = exp.Case(
+                    ifs=[
+                        exp.If(
+                            this=exp.Is(
+                                this=exp.column(presence_alias, table=child_alias, quoted=True),
+                                expression=exp.Null(),
+                            ),
+                            true=empty_value,
+                        )
+                    ],
+                    default=value,
+                )
+            joined.set(
+                "expressions",
+                [
+                    exp.alias_(replacements[name], name, quoted=True)
+                    if name in replacements
+                    else exp.column(name, table=spine_alias, quoted=True)
+                    for name in inner_outputs
+                ],
+            )
+            inner_query = joined.sql(dialect=self.dialect)
+            if population_computations:
+                computations = {
+                    metric_output_aliases[reference]: _parse_fragment(
+                        build_time_comparison_base_expression(reference, apply_fill_defaults=True), self.dialect
+                    )
+                    for reference in population_computations
+                }
+                recomputed = exp.select(
+                    *[
+                        exp.alias_(computations[name], name, quoted=True)
+                        if name in computations
+                        else exp.column(name, table="base", quoted=True)
+                        for name in inner_outputs
+                    ]
+                ).from_(joined.subquery("base"))
+                inner_query = recomputed.sql(dialect=self.dialect)
 
         # Build outer SELECT with window functions
         select_exprs = []

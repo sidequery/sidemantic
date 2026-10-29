@@ -357,7 +357,8 @@ FROM {from_clause}{where_clause}"""
         partition table whose bucket is no longer in the source is dropped, so the
         covering view never returns stale data. Otherwise only partitions inside the
         ``lookback`` (or a declared ``refresh_key.update_window``) are rebuilt and
-        older partitions are preserved as immutable history.
+        older partitions are preserved as immutable history. Build-range bounds
+        select whole overlapping partitions, including partial boundary buckets.
 
         Returns the list of partition table names that were (re)built.
         """
@@ -395,20 +396,24 @@ FROM {from_clause}{where_clause}"""
         elif lookback is None and self.refresh_key and self.refresh_key.update_window:
             lookback = self.refresh_key.update_window
 
+        # Compare and name complete buckets in the connection's local timestamp
+        # domain. This also gives TIMESTAMPTZ buckets stable suffixes without
+        # timezone-offset digits and keeps lookback comparisons type-compatible.
+        bucket_expr = f"CAST(DATE_TRUNC('{pg}', {time_expr}) AS TIMESTAMP)"
         range_preds = [
             self._bind_source_expression(model, predicate).strip()
             for predicate in getattr(model, "invariant_filters", [])
             if predicate.strip()
         ]
         if build_range_start is not None:
-            range_preds.append(f"{time_expr} >= '{build_range_start}'")
+            range_preds.append(f"{bucket_expr} >= DATE_TRUNC('{pg}', TIMESTAMP '{build_range_start}')")
         if build_range_end is not None:
-            range_preds.append(f"{time_expr} < '{build_range_end}'")
+            range_preds.append(f"{bucket_expr} < TIMESTAMP '{build_range_end}'")
         range_where = (" WHERE " + " AND ".join(range_preds)) if range_preds else ""
 
         # Discover the buckets present in the source data.
         bucket_rows = connection.execute(
-            f"SELECT DISTINCT DATE_TRUNC('{pg}', {time_expr}) AS bucket FROM {from_clause}{range_where} ORDER BY 1"
+            f"SELECT DISTINCT {bucket_expr} AS bucket FROM {from_clause}{range_where} ORDER BY 1"
         ).fetchall()
         buckets = [row[0] for row in bucket_rows if row[0] is not None]
 
@@ -426,7 +431,7 @@ FROM {from_clause}{where_clause}"""
                 continue
             key = re.sub(r"[^0-9]", "", str(bucket)) or "0"
             part_name = qualify(f"{unqualified}_p{key}")
-            partition_filter = f"DATE_TRUNC('{pg}', {time_expr}) = TIMESTAMP '{bucket}'"
+            partition_filter = f"{bucket_expr} = TIMESTAMP '{bucket}'"
             source_sql = self.generate_materialization_sql(model, partition_filter=partition_filter)
             connection.execute(f"DROP TABLE IF EXISTS {part_name}")
             connection.execute(f"CREATE TABLE {part_name} AS {source_sql}")
@@ -466,10 +471,13 @@ FROM {from_clause}{where_clause}"""
             stale = set()
             for table in existing - set(built):
                 key = table.rsplit(".", 1)[-1][len(prefix) :]
-                if not re.fullmatch(r"[0-9]{8}([0-9]{6})?", key):
+                # Older timezone-aware names appended the offset's HHMM[SS] digits
+                # after the local bucket timestamp. Accept those during migration;
+                # newly built buckets always use the 14-digit local timestamp.
+                if not re.fullmatch(r"[0-9]{8}|[0-9]{14}|[0-9]{18}|[0-9]{20}", key):
                     continue
                 try:
-                    bucket = datetime.strptime(key.ljust(14, "0"), "%Y%m%d%H%M%S")
+                    bucket = datetime.strptime(key[:14].ljust(14, "0"), "%Y%m%d%H%M%S")
                 except ValueError:
                     continue
                 bounds = []
@@ -516,6 +524,7 @@ FROM {from_clause}{where_clause}"""
         model: Any | None = None,
         database: str | None = None,
         schema: str | None = None,
+        align_watermark_to_grain: bool = False,
     ) -> "RefreshResult":
         """Refresh pre-aggregation (STATELESS).
 
@@ -532,6 +541,9 @@ FROM {from_clause}{where_clause}"""
                 Defaults to refresh_key.update_window when omitted.
             from_watermark: Starting watermark (optional, derived from table if None)
             to_watermark: Ending watermark (optional, uses NOW() if None)
+            align_watermark_to_grain: Round lookback boundaries down to this
+                rollup's granularity for both source selection and replacement.
+                Enable when watermark_column stores complete rollup buckets.
 
         Returns:
             RefreshResult with refresh statistics
@@ -686,13 +698,27 @@ FROM {from_clause}{where_clause}"""
             if not watermark_column:
                 raise ValueError("watermark_column required for incremental refresh")
             rows_inserted, rows_updated, new_watermark = self._refresh_incremental(
-                connection, source_sql, table_name, watermark_column, lookback, from_watermark, to_watermark
+                connection,
+                source_sql,
+                table_name,
+                watermark_column,
+                lookback,
+                from_watermark,
+                to_watermark,
+                align_watermark_to_grain=align_watermark_to_grain,
             )
         elif mode == "merge":
             if not watermark_column:
                 raise ValueError("watermark_column required for merge refresh")
             rows_inserted, rows_updated, new_watermark = self._refresh_merge(
-                connection, source_sql, table_name, watermark_column, lookback, from_watermark, to_watermark
+                connection,
+                source_sql,
+                table_name,
+                watermark_column,
+                lookback,
+                from_watermark,
+                to_watermark,
+                align_watermark_to_grain=align_watermark_to_grain,
             )
         elif mode == "engine":
             if not dialect:
@@ -792,6 +818,8 @@ FROM {from_clause}{where_clause}"""
         lookback: str | None,
         from_watermark: Any | None,
         to_watermark: Any | None,
+        *,
+        align_watermark_to_grain: bool = False,
     ) -> tuple[int, int, Any | None]:
         """Execute incremental refresh (append new data).
 
@@ -824,6 +852,8 @@ FROM {from_clause}{where_clause}"""
         # Apply lookback if specified (cast to TIMESTAMP for interval arithmetic)
         if lookback:
             watermark_str = f"(CAST({watermark_str} AS TIMESTAMP) - INTERVAL '{lookback}')"
+            if align_watermark_to_grain and self.granularity:
+                watermark_str = f"DATE_TRUNC('{self.granularity}', {watermark_str})"
 
         # Substitute watermark in SQL
         incremental_sql = source_sql.replace("{WATERMARK}", watermark_str)
@@ -864,6 +894,8 @@ FROM {from_clause}{where_clause}"""
         lookback: str | None,
         from_watermark: Any | None,
         to_watermark: Any | None,
+        *,
+        align_watermark_to_grain: bool = False,
     ) -> tuple[int, int, Any | None]:
         """Execute merge refresh (upsert strategy for idempotent updates).
 
@@ -898,6 +930,8 @@ FROM {from_clause}{where_clause}"""
         delete_watermark_str = watermark_str
         if lookback:
             watermark_str = f"(CAST({watermark_str} AS TIMESTAMP) - INTERVAL '{lookback}')"
+            if align_watermark_to_grain and self.granularity:
+                watermark_str = f"DATE_TRUNC('{self.granularity}', {watermark_str})"
             # DELETE should also use the lookback watermark
             delete_watermark_str = watermark_str
 

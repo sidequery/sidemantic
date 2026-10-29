@@ -334,3 +334,137 @@ def test_time_dimension_without_default_grain_falls_back_to_source():
     assert "orders_preagg_daily" not in sql
     assert len(rows) == 5
     assert not PreAggregationMatcher(model).explain_query(preagg, ["value"], ["dt"]).matched
+
+
+@pytest.mark.parametrize("mode", ["auto", "incremental", "merge"])
+def test_cli_fractional_update_window_replaces_whole_overlapping_bucket(tmp_path, mode):
+    db = tmp_path / "data.duckdb"
+    with duckdb.connect(str(db)) as conn:
+        conn.execute("CREATE TABLE orders (dt TIMESTAMP, amount INT)")
+        conn.execute("INSERT INTO orders VALUES ('2026-10-01 18:00', 10), ('2026-10-02 15:00', 20)")
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "orders.yml").write_text("""models:
+- name: orders
+  table: orders
+  dimensions:
+  - {name: dt, type: time, granularity: day}
+  metrics:
+  - {name: value, agg: sum, sql: amount}
+  pre_aggregations:
+  - name: daily
+    measures: [value]
+    time_dimension: dt
+    granularity: day
+    refresh_key:
+      incremental: true
+      update_window: 12 hours
+""")
+    args = ["preagg", "refresh", str(models), "--db", str(db), "--mode", mode, "--json"]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.stdout + result.stderr
+    with duckdb.connect(str(db)) as conn:
+        conn.execute("INSERT INTO orders VALUES ('2026-10-01 19:00', 5)")
+    for _ in range(2):
+        result = CliRunner().invoke(app, args)
+        assert result.exit_code == 0, result.stdout + result.stderr
+        with duckdb.connect(str(db)) as conn:
+            assert conn.execute("SELECT value_raw FROM orders_preagg_daily ORDER BY dt_day").fetchall() == [
+                (15,),
+                (20,),
+            ]
+    with duckdb.connect(str(db)) as conn:
+        conn.execute("DELETE FROM orders WHERE dt < '2026-10-02'")
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.stdout + result.stderr
+    with duckdb.connect(str(db)) as conn:
+        assert conn.execute("SELECT value_raw FROM orders_preagg_daily").fetchall() == [(20,)]
+
+
+@pytest.mark.parametrize(
+    "row_time,start,end",
+    [
+        ("2026-10-01 09:00", "2026-10-01 12:00", "2026-10-02"),
+        ("2026-10-01 18:00", "2026-10-01", "2026-10-01 12:00"),
+    ],
+)
+def test_partial_partition_ranges_refresh_whole_overlapping_buckets(row_time, start, end):
+    conn = duckdb.connect()
+    conn.execute(f"CREATE TABLE orders AS SELECT TIMESTAMP '{row_time}' dt, 10 amount")
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[Dimension(name="dt", type="time")],
+        metrics=[Metric(name="value", agg="sum", sql="amount")],
+    )
+    preagg = PreAggregation(
+        name="daily", measures=["value"], time_dimension="dt", granularity="day", partition_granularity="day"
+    )
+    preagg.build_partitions(conn, model)
+    # The surviving source row is outside the requested subrange, but belongs to
+    # the bucket being replaced. Both discovery and materialization must see it.
+    conn.execute("UPDATE orders SET amount = 15")
+    preagg.build_partitions(conn, model, build_range_start=start, build_range_end=end)
+    assert conn.execute("SELECT value_raw FROM orders_preagg_daily").fetchall() == [(15,)]
+
+
+@pytest.mark.parametrize("timezone", ["UTC", "America/New_York"])
+@pytest.mark.parametrize("legacy_name", [False, True])
+def test_deleted_timezone_partitions_are_removed(timezone, legacy_name):
+    import re
+
+    conn = duckdb.connect()
+    conn.execute("SET TimeZone = ?", [timezone])
+    conn.execute("CREATE TABLE orders AS SELECT TIMESTAMPTZ '2026-10-01 09:00:00+00' dt, 10 amount")
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[Dimension(name="dt", type="time")],
+        metrics=[Metric(name="value", agg="sum", sql="amount")],
+    )
+    preagg = PreAggregation(
+        name="daily", measures=["value"], time_dimension="dt", granularity="day", partition_granularity="day"
+    )
+    [partition] = preagg.build_partitions(conn, model)
+    assert re.fullmatch(r"orders_preagg_daily_p\d{14}", partition)
+    if legacy_name:
+        # Previously the suffix accidentally included offset digits from str().
+        [bucket] = conn.execute("SELECT dt_day FROM orders_preagg_daily").fetchone()
+        legacy = "orders_preagg_daily_p" + re.sub(r"[^0-9]", "", str(bucket))
+        conn.execute("DROP VIEW orders_preagg_daily")
+        conn.execute(f"ALTER TABLE {partition} RENAME TO {legacy}")
+        conn.execute(f"CREATE VIEW orders_preagg_daily AS SELECT * FROM {legacy}")
+    conn.execute("DELETE FROM orders")
+    preagg.build_partitions(conn, model)
+    assert (
+        conn.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'orders_preagg_daily%'"
+        ).fetchall()
+        == []
+    )
+
+
+@pytest.mark.parametrize("timezone", ["UTC", "America/New_York"])
+def test_timezone_partition_lookback_preserves_only_older_history(timezone):
+    conn = duckdb.connect()
+    conn.execute("SET TimeZone = ?", [timezone])
+    conn.execute(
+        "CREATE TABLE orders AS SELECT CURRENT_TIMESTAMP dt, 10 amount "
+        "UNION ALL SELECT CURRENT_TIMESTAMP - INTERVAL '30 days', 100"
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[Dimension(name="dt", type="time")],
+        metrics=[Metric(name="value", agg="sum", sql="amount")],
+    )
+    preagg = PreAggregation(
+        name="daily", measures=["value"], time_dimension="dt", granularity="day", partition_granularity="day"
+    )
+    preagg.build_partitions(conn, model)
+    # Rebuilding populated timezone-aware buckets must not compare an aware
+    # Python datetime against the naive lookback cutoff.
+    preagg.build_partitions(conn, model, lookback="7 days")
+    conn.execute("DELETE FROM orders")
+    preagg.build_partitions(conn, model, lookback="7 days")
+    assert conn.execute("SELECT value_raw FROM orders_preagg_daily").fetchall() == [(100,)]

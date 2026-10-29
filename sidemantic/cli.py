@@ -3422,6 +3422,7 @@ def refresh(
                     model=model_obj,
                     database=database,
                     schema=schema,
+                    align_watermark_to_grain=True,
                 )
             refreshed.append(
                 {

@@ -678,7 +678,7 @@ def create_app(
 
         current_layer = app.state.layer
         user_attributes = resolve_user_attributes(request)
-        query = _normalize_sql_query(payload.query)
+        query = _normalize_sql_query(payload.query, current_layer.dialect)
         rewritten_sql = rewrite_transport_sql(
             current_layer,
             query,
@@ -699,7 +699,7 @@ def create_app(
 
         current_layer = app.state.layer
         user_attributes = resolve_user_attributes(request)
-        query = _normalize_sql_query(payload.query)
+        query = _normalize_sql_query(payload.query, current_layer.dialect)
         rewritten_sql = rewrite_transport_sql(
             current_layer,
             query,
@@ -744,8 +744,8 @@ def create_app(
         current_layer = app.state.layer
         user_attributes = resolve_user_attributes(request)
         deny_raw_sql(current_layer, transport="HTTP /raw")
-        query = _normalize_sql_query(payload.query)
-        _require_select_statement(query)
+        query = _normalize_sql_query(payload.query, current_layer.dialect)
+        _require_select_statement(query, current_layer.dialect)
         table = _query_table(app, current_layer, query, user_attributes=user_attributes)
         return _build_query_response(
             request,
@@ -876,7 +876,7 @@ def _build_query_response(
     return response
 
 
-def _normalize_sql_query(query: str) -> str:
+def _normalize_sql_query(query: str, dialect: str | None = None) -> str:
     normalized = query.strip()
     if not normalized:
         raise ValueError("Query cannot be empty")
@@ -888,7 +888,7 @@ def _normalize_sql_query(query: str) -> str:
     from sqlglot.errors import SqlglotError
 
     try:
-        statements = sqlglot.parse(normalized)
+        statements = sqlglot.parse(normalized, dialect=dialect)
     except SqlglotError as exc:
         raise ValueError(f"Failed to parse SQL: {exc}") from exc
     if len(statements) > 1:
@@ -908,7 +908,7 @@ def _get_dml_types() -> tuple[type, ...]:
     return _DML_TYPES
 
 
-def _require_select_statement(query: str) -> None:
+def _require_select_statement(query: str, dialect: str | None = None) -> None:
     """Reject non-SELECT statements to prevent mutations via /raw.
 
     Also inspects CTEs so that DML hidden inside a WITH clause
@@ -920,10 +920,9 @@ def _require_select_statement(query: str) -> None:
     from sqlglot.errors import SqlglotError
 
     try:
-        parsed = sqlglot.parse_one(query)
-    except SqlglotError:
-        # If parsing fails, let it through to get a proper DB error
-        return
+        parsed = sqlglot.parse_one(query, dialect=dialect)
+    except SqlglotError as exc:
+        raise ValueError(f"Failed to parse SQL: {exc}") from exc
     query_types = (exp.Select, exp.Union, exp.Intersect, exp.Except, exp.Subquery)
     if not isinstance(parsed, query_types):
         raise ValueError("Only SELECT statements are allowed on the /raw endpoint")

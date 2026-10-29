@@ -265,3 +265,24 @@ def test_duckdb_semantic_layer_init_sql():
     )
     result = layer.adapter.execute("SELECT COUNT(*) FROM layer_test")
     assert result.fetchone()[0] == 0
+
+
+def test_configured_cursor_supports_context_manager_and_executemany():
+    adapter = DuckDBAdapter(
+        init_sql=[
+            "CREATE TABLE source (id INT)",
+            "CREATE SCHEMA sales",
+            "CREATE TABLE sales.source (id INT)",
+            "SET schema=sales",
+        ]
+    )
+    try:
+        with adapter.cursor() as cursor:
+            cursor.executemany("INSERT INTO source VALUES (?)", [(1,), (2,)])
+            assert cursor.execute("SELECT sum(id) FROM source").fetchone() == (3,)
+        with pytest.raises(Exception, match="closed"):
+            cursor.execute("SELECT 1")
+        assert adapter.execute("SELECT count(*) FROM main.source").fetchone() == (0,)
+        assert adapter.execute("SELECT count(*) FROM sales.source").fetchone() == (2,)
+    finally:
+        adapter.close()

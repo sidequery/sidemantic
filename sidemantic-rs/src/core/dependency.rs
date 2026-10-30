@@ -38,7 +38,12 @@ pub fn parse_semantic_expression(sql: &str) -> crate::error::Result<Expression> 
             "expected scalar expression".into(),
         ));
     };
-    if select.expressions.len() != 1 || select.from.is_some() || select.where_clause.is_some() {
+    if select.expressions.len() != 1
+        || select.from.is_some()
+        || select.where_clause.is_some()
+        || select.distinct
+        || select.distinct_on.is_some()
+    {
         return Err(crate::error::SidemanticError::SqlParse(
             "expected one scalar expression".into(),
         ));
@@ -164,6 +169,8 @@ pub(crate) fn is_aggregate_ast_kind(kind: &str) -> bool {
             | "approx_distinct"
             | "approx_count_distinct"
             | "approx_percentile"
+            | "approx_quantile"
+            | "approx_quantiles"
             | "percentile"
             | "logical_and"
             | "logical_or"
@@ -180,11 +187,14 @@ pub(crate) fn is_aggregate_ast_node(node: &serde_json::Value) -> bool {
     };
     let (kind, value) = fields.iter().next().unwrap();
     is_aggregate_ast_kind(kind)
-        // polyglot 0.1.15 leaves bare DuckDB LIST as a generic function,
-        // while LIST with DISTINCT/ORDER/FILTER is an AggregateFunction.
+        // polyglot 0.1.15 leaves some bare DuckDB aggregates as generic
+        // functions; their modified forms can instead be AggregateFunction.
         || (kind == "function"
             && value["quoted"].as_bool() != Some(true)
-            && value["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case("LIST")))
+            && value["name"].as_str().is_some_and(|name| {
+                ["LIST", "APPROX_QUANTILE", "APPROX_QUANTILES", "APPROX_PERCENTILE"]
+                    .iter().any(|aggregate| name.eq_ignore_ascii_case(aggregate))
+            }))
 }
 
 fn lambda_parameter_names(lambda: &serde_json::Value) -> Vec<String> {
@@ -918,6 +928,22 @@ mod row_expression_tests {
     use super::*;
 
     #[test]
+    fn approximate_quantile_arguments_are_aggregate_inputs() {
+        for sql in [
+            "APPROX_QUANTILE(amount, 0.9)",
+            "APPROX_QUANTILES(amount, 100)",
+        ] {
+            let columns = semantic_column_references(sql).unwrap();
+            assert_eq!(columns.len(), 1);
+            assert!(columns[0].aggregate_input, "{sql}");
+            assert!(
+                validate_row_expression(&parse_semantic_expression(sql).unwrap(), "row_input")
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn row_scope_checks_constant_aggregates_and_nested_nodes() {
         crate::semantic_input::with_semantic_stack(|| {
             for expression in [
@@ -940,5 +966,11 @@ mod row_expression_tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn scalar_expression_rejects_select_level_distinct() {
+        assert!(parse_semantic_expression("DISTINCT amount").is_err());
+        assert!(parse_semantic_expression("SUM(DISTINCT amount)").is_ok());
     }
 }

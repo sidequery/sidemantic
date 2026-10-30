@@ -4,6 +4,7 @@ mod aggregate_plan;
 mod approximate;
 mod cohort;
 mod conversion;
+mod cumulative_filters;
 mod fanout_aggregate;
 mod fanout_complete;
 mod imported_totals;
@@ -11,6 +12,7 @@ mod join_kind;
 mod options;
 mod retention;
 mod snapshots;
+mod source_projection;
 mod temporal;
 mod timezone;
 
@@ -496,7 +498,7 @@ impl<'a> SqlGenerator<'a> {
                 raw_model_aliases
                     .entry(model_name.clone())
                     .or_default()
-                    .insert(dimension.name.clone());
+                    .insert(Self::window_dimension_alias(dimension));
             }
         }
         for (model_name, metric_name, graph_metric) in raw_metric_dependencies {
@@ -568,54 +570,6 @@ impl<'a> SqlGenerator<'a> {
         // Generate SQL
         let mut sql = String::new();
 
-        if !cte_models.is_empty() {
-            let mut cte_defs = Vec::with_capacity(cte_models.len());
-            for model_name in &cte_models {
-                let model = self.graph.get_model(model_name).ok_or_else(|| {
-                    let available: Vec<&str> =
-                        self.graph.models().map(|m| m.name.as_str()).collect();
-                    SidemanticError::model_not_found(model_name, &available)
-                })?;
-                let cte_source = if let Some(model_sql) = &model.sql {
-                    format!("({model_sql}) AS t")
-                } else {
-                    model.table_name().to_string()
-                };
-                let cte_select = if let Some(raw_cols) = raw_model_columns.get(model_name) {
-                    format!("SELECT *,\n    {}", raw_cols.join(",\n    "))
-                } else {
-                    "SELECT *".to_string()
-                };
-                let cte_where = {
-                    let mut filter_sql = self.expand_filters_for_cte(
-                        model_name,
-                        cte_where_filters
-                            .get(model_name)
-                            .map(Vec::as_slice)
-                            .unwrap_or_default(),
-                    )?;
-                    filter_sql.extend(
-                        query
-                            .prepared_policies
-                            .filters_for_model(model_name)
-                            .cloned(),
-                    );
-                    if filter_sql.is_empty() {
-                        String::new()
-                    } else {
-                        format!("\n  WHERE {}", filter_sql.join(" AND "))
-                    }
-                };
-                let cte_name = self.quote_identifier(&self.model_alias(model_name));
-                cte_defs.push(format!(
-                    "{cte_name} AS (\n  {cte_select}\n  FROM {cte_source}{cte_where}\n)"
-                ));
-            }
-            sql.push_str("WITH ");
-            sql.push_str(&cte_defs.join(",\n"));
-            sql.push('\n');
-        }
-
         // Note: fan_out_at_risk is used below to apply symmetric aggregates
 
         // SELECT clause
@@ -682,14 +636,8 @@ impl<'a> SqlGenerator<'a> {
                     .as_deref()
                     .or(dimension.granularity.as_deref())
                 {
-                    let source = dimension
-                        .sql
-                        .clone()
-                        .unwrap_or_else(|| self.quote_identifier(&dimension.name));
-                    self.normalize_select_expression(
-                        &self.date_trunc_sql(granularity, &source)?,
-                        &alias,
-                    )
+                    let source = self.dimension_select_expression(dimension, &alias)?;
+                    self.date_trunc_sql(granularity, &source)?
                 } else {
                     self.dimension_select_expression(dimension, &alias)?
                 }
@@ -1020,6 +968,72 @@ impl<'a> SqlGenerator<'a> {
         }
         if let Some(offset) = query.offset {
             sql.push_str(&format!("OFFSET {offset}\n"));
+        }
+
+        let source_columns = self.query_source_columns(&sql)?;
+        if !cte_models.is_empty() {
+            let mut cte_defs = Vec::with_capacity(cte_models.len());
+            for model_name in &cte_models {
+                let model = self.graph.get_model(model_name).ok_or_else(|| {
+                    let available: Vec<&str> =
+                        self.graph.models().map(|m| m.name.as_str()).collect();
+                    SidemanticError::model_not_found(model_name, &available)
+                })?;
+                let cte_source = if let Some(model_sql) = &model.sql {
+                    format!("({model_sql}) AS t")
+                } else {
+                    model.table_name().to_string()
+                };
+                // Project only columns consumed outside the source scope. SELECT *
+                // lets physical columns shadow generated measure inputs on engines
+                // that rename duplicate output columns (including DuckDB).
+                let alias = self.model_alias(model_name);
+                let generated = raw_model_aliases.get(model_name);
+                let mut columns: Vec<_> = source_columns
+                    .get(&alias)
+                    .into_iter()
+                    .flatten()
+                    .filter(|column| !generated.is_some_and(|names| names.contains(*column)))
+                    .map(|column| self.quote_identifier(column))
+                    .collect();
+                columns.sort();
+                columns.extend(
+                    raw_model_columns
+                        .get(model_name)
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
+                if columns.is_empty() {
+                    columns.push("1 AS __sidemantic_row".to_string());
+                }
+                let cte_select = format!("SELECT {}", columns.join(",\n    "));
+                let cte_where = {
+                    let mut filter_sql = self.expand_filters_for_cte(
+                        model_name,
+                        cte_where_filters
+                            .get(model_name)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
+                    )?;
+                    filter_sql.extend(
+                        query
+                            .prepared_policies
+                            .filters_for_model(model_name)
+                            .cloned(),
+                    );
+                    if filter_sql.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n  WHERE {}", filter_sql.join(" AND "))
+                    }
+                };
+                let cte_name = self.quote_identifier(&self.model_alias(model_name));
+                cte_defs.push(format!(
+                    "{cte_name} AS (\n  {cte_select}\n  FROM {cte_source}{cte_where}\n)"
+                ));
+            }
+            sql = format!("WITH {}\n{sql}", cte_defs.join(",\n"));
         }
 
         Ok(sql.trim_end().to_string())
@@ -1994,7 +2008,57 @@ impl<'a> SqlGenerator<'a> {
                 return column_name;
             }
         }
-        format!("{metric_name}_raw")
+        // Avoid semantic inputs that must coexist with this generated output.
+        // Unreferenced physical fields are excluded by the source projection.
+        let mut inputs: HashSet<String> = model.primary_keys().into_iter().collect();
+        for dimension in &model.dimensions {
+            inputs.insert(dimension.name.clone());
+            for column in semantic_column_references(&dimension.sql_expr().replace("{model}.", ""))
+                .unwrap_or_default()
+            {
+                inputs.insert(column.field);
+            }
+        }
+        for metric in model.metrics.iter().chain(self.graph.graph_metrics()) {
+            for sql in metric.sql.iter().chain(&metric.filters) {
+                for column in
+                    semantic_column_references(&sql.replace("{model}.", "")).unwrap_or_default()
+                {
+                    inputs.insert(column.field);
+                }
+            }
+        }
+        for relationship in &model.relationships {
+            inputs.extend(relationship.foreign_key_columns());
+            inputs.extend(relationship.primary_key_columns());
+        }
+        let mut inputs: HashSet<_> = inputs
+            .into_iter()
+            .map(|name| name.to_ascii_lowercase())
+            .collect();
+        // Allocate the complete namespace in a stable order on every call.
+        // Reserving only physical fields lets a prefixed alias collide with
+        // another metric's natural alias. Query order/subsets must not change
+        // the names used by projections and recursively expanded expressions.
+        let mut names: Vec<_> = model
+            .metrics
+            .iter()
+            .chain(self.graph.graph_metrics())
+            .map(|metric| metric.name.as_str())
+            .chain(std::iter::once(metric_name))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        for name in names {
+            let mut alias = format!("{name}_raw");
+            while !inputs.insert(alias.to_ascii_lowercase()) {
+                alias.insert(0, '_');
+            }
+            if name == metric_name {
+                return alias;
+            }
+        }
+        unreachable!("requested metric is included in the alias namespace")
     }
 
     fn simple_metric_source_column(&self, model: &Model, metric: &Metric) -> Option<String> {
@@ -2197,58 +2261,18 @@ impl<'a> SqlGenerator<'a> {
         default_model: &str,
         deps: &mut HashSet<(String, String)>,
     ) -> Result<()> {
-        if self.graph.has_strict_metric_scope() {
-            let expr = crate::core::replace_model_placeholder(expr, Some(default_model))?;
-            for column in semantic_column_references(&expr)? {
-                let model = column.model.unwrap_or_else(|| default_model.to_string());
-                if self.graph.get_model(&model).is_some() {
-                    deps.insert((model, column.field));
-                }
-            }
-            return Ok(());
-        }
-        let ref_re = regex::Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
-            .expect("valid model.field regex");
-        for cap in ref_re.captures_iter(expr) {
-            let Some(model_match) = cap.get(1) else {
-                continue;
+        let expr = crate::core::replace_model_placeholder(expr, Some(default_model))?;
+        for column in semantic_column_references(&expr)? {
+            let model = column.model.unwrap_or_else(|| default_model.to_string());
+            let model = if self.graph.get_model(&model).is_some() {
+                model.as_str()
+            } else {
+                model.strip_suffix("_cte").unwrap_or(&model)
             };
-            let Some(field_match) = cap.get(2) else {
-                continue;
-            };
-            let model_name = model_match.as_str();
-            let field_name = field_match.as_str();
-            let Some(model) = self.graph.get_model(model_name) else {
-                continue;
-            };
-            if model.get_metric(field_name).is_none() {
-                deps.insert((model_name.to_string(), field_name.to_string()));
+            if self.graph.get_model(model).is_some() {
+                deps.insert((model.to_string(), column.field));
             }
         }
-
-        if let Some(model) = self.graph.get_model(default_model) {
-            let quoted_re =
-                regex::Regex::new(r#""([^"]+)""#).expect("valid quoted identifier regex");
-            for cap in quoted_re.captures_iter(expr) {
-                let Some(name_match) = cap.get(1) else {
-                    continue;
-                };
-                let name = name_match.as_str();
-                if model.get_dimension(name).is_some() {
-                    deps.insert((default_model.to_string(), name.to_string()));
-                }
-            }
-
-            for token in Self::identifier_tokens(expr) {
-                if Self::is_sql_keyword_or_function(&token) || model.get_metric(&token).is_some() {
-                    continue;
-                }
-                if model.get_dimension(&token).is_some() {
-                    deps.insert((default_model.to_string(), token));
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -2751,6 +2775,9 @@ impl<'a> SqlGenerator<'a> {
         let mut retention_metrics: Vec<MetricRef> = Vec::new();
         let mut cohort_metrics: Vec<MetricRef> = Vec::new();
 
+        let mut filtered_graph = self.graph.clone();
+        let mut filtered_inputs = HashMap::new();
+        let mut grouped_window_inputs = Vec::new();
         let mut scoped_metrics = metric_refs.iter();
         let mut scalar_outputs = Vec::new();
         for reference in &query.metrics {
@@ -2777,6 +2804,29 @@ impl<'a> SqlGenerator<'a> {
                         for base_ref in
                             self.metric_refs_from_window_expression(window_expr, &metric_ref.model)?
                         {
+                            let base_ref = if metric.filters.is_empty() {
+                                base_ref
+                            } else {
+                                let scoped = self.prepare_filtered_window_input(
+                                    &base_ref,
+                                    &metric_ref.model,
+                                    &metric.filters,
+                                    &mut filtered_graph,
+                                    &mut grouped_window_inputs,
+                                )?;
+                                filtered_inputs.insert(
+                                    (
+                                        (
+                                            metric_ref.model.clone(),
+                                            metric_ref.name.clone(),
+                                            metric_ref.graph_metric,
+                                        ),
+                                        base_ref,
+                                    ),
+                                    scoped.clone(),
+                                );
+                                scoped
+                            };
                             if seen_metrics.insert(base_ref.clone()) {
                                 base_metrics.push(base_ref);
                             }
@@ -2796,6 +2846,29 @@ impl<'a> SqlGenerator<'a> {
                             ))
                         })?;
                     let qualified = self.metric_ref_for_inner_query(base_ref, &metric_ref.model);
+                    let qualified = if metric.filters.is_empty() {
+                        qualified
+                    } else {
+                        let scoped = self.prepare_filtered_window_input(
+                            &qualified,
+                            &metric_ref.model,
+                            &metric.filters,
+                            &mut filtered_graph,
+                            &mut grouped_window_inputs,
+                        )?;
+                        filtered_inputs.insert(
+                            (
+                                (
+                                    metric_ref.model.clone(),
+                                    metric_ref.name.clone(),
+                                    metric_ref.graph_metric,
+                                ),
+                                qualified,
+                            ),
+                            scoped.clone(),
+                        );
+                        scoped
+                    };
                     if seen_metrics.insert(qualified.clone()) {
                         base_metrics.push(qualified);
                     }
@@ -2955,10 +3028,19 @@ impl<'a> SqlGenerator<'a> {
         inner_query.consumption_base_model = query.consumption_base_model.clone();
         inner_query.required_population_models = query.required_population_models.clone();
 
-        let inner_sql = self.generate(&inner_query)?;
+        let inner_generator = SqlGenerator::new(&filtered_graph)
+            .with_dialect(self.dialect)
+            .with_timezone(self.timezone.clone());
+        let inner_sql = inner_generator.generate(&inner_query)?;
         // Keep one identity map for projections, window inputs and ordering.
         // A metric leaf can collide with another metric or a dimension.
-        let grouped_outputs = self.selected_output_names(&inner_query)?;
+        let grouped_outputs = inner_generator.selected_output_names(&inner_query)?;
+        let inner_sql = self.merge_grouped_window_inputs(
+            &inner_query,
+            inner_sql,
+            &grouped_outputs,
+            &grouped_window_inputs,
+        )?;
         let metric_output = |reference: &str, model: &str| -> Result<String> {
             let reference = self.metric_ref_for_inner_query(reference, model);
             grouped_outputs.get(&reference).cloned().ok_or_else(|| {
@@ -2979,6 +3061,12 @@ impl<'a> SqlGenerator<'a> {
         }
 
         for base_ref in &base_metrics {
+            if filtered_inputs
+                .values()
+                .any(|reference| reference == base_ref)
+            {
+                continue;
+            }
             let alias = metric_output(base_ref, "")?;
             select_exprs.push(format!("base.{}", self.quote_identifier(&alias)));
             lag_cte_columns.push(alias);
@@ -3033,7 +3121,17 @@ impl<'a> SqlGenerator<'a> {
                 let mut replacements = HashMap::new();
                 for name in temporal::window_output_references(window_expr)? {
                     let reference = self.metric_ref_for_inner_query(&name, &metric_ref.model);
-                    if let Some(alias) = grouped_outputs.get(&reference) {
+                    let reference = filtered_inputs
+                        .get(&(
+                            (
+                                metric_ref.model.clone(),
+                                metric_ref.name.clone(),
+                                metric_ref.graph_metric,
+                            ),
+                            reference.clone(),
+                        ))
+                        .unwrap_or(&reference);
+                    if let Some(alias) = grouped_outputs.get(reference) {
                         replacements.insert(
                             (Some("base".to_string()), name),
                             format!("base.\"{}\"", alias.replace('"', "\"\"")),
@@ -3080,6 +3178,17 @@ impl<'a> SqlGenerator<'a> {
                         metric_ref.alias
                     ))
                 })?;
+            let qualified = self.metric_ref_for_inner_query(base_ref, &metric_ref.model);
+            let base_ref = filtered_inputs
+                .get(&(
+                    (
+                        metric_ref.model.clone(),
+                        metric_ref.name.clone(),
+                        metric_ref.graph_metric,
+                    ),
+                    qualified.clone(),
+                ))
+                .unwrap_or(&qualified);
             let base_alias = self.quote_identifier(&metric_output(base_ref, &metric_ref.model)?);
             let base_col = if metric.agg == Some(Aggregation::CountDistinct) {
                 format!("DISTINCT base.{base_alias}")
@@ -5467,9 +5576,12 @@ impl<'a> SqlGenerator<'a> {
     ) -> Result<(Vec<String>, Vec<String>)> {
         let mut where_filters = Vec::new();
         let mut having_filters = Vec::new();
-        for filter in filters {
+        for filter in filters
+            .iter()
+            .flat_map(|filter| self.split_conjunctive_filter(filter))
+        {
             let mut replacements = HashMap::new();
-            for column in crate::core::outer_semantic_column_references(filter)? {
+            for column in crate::core::outer_semantic_column_references(&filter)? {
                 let reference = column.name();
                 let metric = if self.graph.get_metric(&reference).is_some() {
                     self.exact_metric_reference(&reference)?
@@ -5492,7 +5604,7 @@ impl<'a> SqlGenerator<'a> {
             if !replacements.is_empty() {
                 having_filters.push(self.emit_expression(
                     &crate::core::replace_outer_semantic_columns(
-                        parse_semantic_expression(filter)?,
+                        parse_semantic_expression(&filter)?,
                         &replacements,
                     )?,
                 )?);
@@ -5840,7 +5952,7 @@ impl<'a> SqlGenerator<'a> {
         }
         let mut rendered = Vec::with_capacity(filters.len());
         for filter in filters {
-            let filter = filter.replace("{model}.", "").replace("{model}", alias);
+            let filter = crate::core::replace_model_placeholder(filter, Some(alias))?;
             let expression = parse_semantic_expression(&filter)?;
             let mut value = serde_json::to_value(expression)
                 .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
@@ -5960,15 +6072,6 @@ impl<'a> SqlGenerator<'a> {
         }
     }
 
-    fn identifier_tokens(expr: &str) -> Vec<String> {
-        let ref_re =
-            regex::Regex::new(r"\b[A-Za-z_][A-Za-z0-9_]*\b").expect("valid identifier regex");
-        ref_re
-            .find_iter(expr)
-            .map(|token| token.as_str().to_string())
-            .collect()
-    }
-
     fn is_sql_keyword_or_function(token: &str) -> bool {
         matches!(
             token.to_ascii_uppercase().as_str(),
@@ -6040,7 +6143,12 @@ impl<'a> SqlGenerator<'a> {
         metric_name: &str,
         alias: &str,
     ) -> Result<String> {
-        let raw_alias = format!("{metric_name}_raw");
+        let model_name = alias.strip_suffix("_cte").unwrap_or(alias);
+        let model = self
+            .graph
+            .get_model(model_name)
+            .ok_or_else(|| SidemanticError::Validation(format!("Unknown model '{model_name}'")))?;
+        let raw_alias = self.metric_raw_alias(model, metric_name, metric);
         let raw_col = format!(
             "{}.{}",
             self.quote_identifier(alias),
@@ -6256,7 +6364,7 @@ impl<'a> SqlGenerator<'a> {
 
     fn is_inline_aggregate_expression(expr: &str) -> bool {
         let aggregate_re = regex::Regex::new(
-            r"(?i)\b(SUM|AVG|COUNT|APPROX_COUNT_DISTINCT|APPROX_DISTINCT|UNIQ|MIN|MAX|MEDIAN|MODE|PERCENTILE_CONT|PERCENTILE_DISC|QUANTILE_CONT|QUANTILE_DISC|STDDEV|STDDEV_SAMP|STDDEV_POP|VAR_SAMP|VARIANCE|VARIANCE_POP|VAR_POP)\s*\(",
+            r"(?i)\b(SUM|AVG|COUNT|APPROX_COUNT_DISTINCT|APPROX_DISTINCT|APPROX_PERCENTILE|APPROX_QUANTILES?|UNIQ|MIN|MAX|MEDIAN|MODE|PERCENTILE_CONT|PERCENTILE_DISC|QUANTILE_CONT|QUANTILE_DISC|STDDEV|STDDEV_SAMP|STDDEV_POP|VAR_SAMP|VARIANCE|VARIANCE_POP|VAR_POP)\s*\(",
         )
         .expect("valid aggregate regex");
         aggregate_re.is_match(expr)
@@ -6267,34 +6375,30 @@ impl<'a> SqlGenerator<'a> {
         expr: &str,
         default_model: &str,
     ) -> Result<String> {
-        let mut result = expr.to_string();
-        if self.graph.get_model(default_model).is_some() {
-            let default_alias = self.quote_identifier(&self.model_alias(default_model));
-            result = result.replace("{model}", &default_alias);
-        }
-
-        for model in self.graph.models() {
-            let alias = self.model_alias(&model.name);
-            let sql_alias = self.quote_identifier(&alias);
-            for dim in &model.dimensions {
-                let replacement = format!("{}.{}", sql_alias, self.quote_identifier(&dim.name));
-                for token in [
-                    format!("{}.{}", model.name, dim.name),
-                    format!("{}_cte.{}", model.name, dim.name),
-                    format!("{}.{}", alias, dim.name),
-                ] {
-                    let pattern = regex::Regex::new(&format!(r"\b{}\b", regex::escape(&token)))
-                        .expect("escaped dimension regex");
-                    result = pattern
-                        .replace_all(&result, replacement.as_str())
-                        .into_owned();
-                }
+        let expr = crate::core::replace_model_placeholder(expr, Some(default_model))?;
+        let mut replacements = HashMap::new();
+        for column in semantic_column_references(&expr)? {
+            let owner = column.model.as_deref().unwrap_or(default_model);
+            let owner = if self.graph.get_model(owner).is_some() {
+                owner
+            } else {
+                owner.strip_suffix("_cte").unwrap_or(owner)
+            };
+            if self.graph.get_model(owner).is_some() {
+                replacements.insert(
+                    (column.model.clone(), column.field.clone()),
+                    format!(
+                        "{}.{}",
+                        self.quote_identifier(&self.model_alias(owner)),
+                        self.quote_identifier(&column.field)
+                    ),
+                );
             }
-            result = result.replace(&format!("{}.", model.name), &format!("{sql_alias}."));
-            result = result.replace(&format!("{}_cte.", model.name), &format!("{sql_alias}."));
         }
-
-        Ok(result)
+        self.emit_expression(&crate::core::replace_semantic_columns(
+            parse_semantic_expression(&expr)?,
+            &replacements,
+        )?)
     }
 
     fn symmetric_agg_dialect(&self) -> SqlDialect {
@@ -7804,7 +7908,10 @@ models:
 
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("MODE(value) AS mode_value"), "{sql}");
+        assert!(
+            sql.contains("MODE(ordered_set_v_cte.value) AS mode_value"),
+            "{sql}"
+        );
     }
 
     #[test]

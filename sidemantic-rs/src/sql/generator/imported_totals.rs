@@ -19,6 +19,32 @@ impl SqlGenerator<'_> {
             calculation,
             Some("percent_of_total" | "percent_of_previous")
         ) {
+            // Native YAML retains DISTINCT aggregates as complete expressions.
+            // The legacy derived route does not project a filtered raw metric,
+            // so apply its population predicate to the aggregate itself. Strict
+            // queries already lower complete filters in the aggregate planner.
+            if metric.sql_is_complete
+                && !metric.filters.is_empty()
+                && !self.graph.has_strict_metric_scope()
+                && matches!(parse_semantic_expression(metric.sql_expr())?,
+                    Expression::Sum(aggregate)
+                        | Expression::Avg(aggregate)
+                        | Expression::Min(aggregate)
+                        | Expression::Max(aggregate)
+                        | Expression::Median(aggregate)
+                        | Expression::Stddev(aggregate)
+                        | Expression::StddevPop(aggregate)
+                        | Expression::StddevSamp(aggregate)
+                        | Expression::Variance(aggregate)
+                        | Expression::VarPop(aggregate) if aggregate.distinct)
+            {
+                let predicate = self.normalize_metric_filters(
+                    &metric.filters,
+                    model_name,
+                    &self.model_alias(model_name),
+                )?;
+                return Ok(format!("{} FILTER (WHERE {predicate})", metric.sql_expr()));
+            }
             return Ok(metric.sql_expr().to_string());
         }
         let sql = crate::core::replace_model_placeholder(metric.sql_expr(), Some(model_name))?;

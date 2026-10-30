@@ -106,6 +106,22 @@ def test_alias_collision_with_canonical_name_does_not_drop_aggregate(layer):
     )
 
 
+def test_aliased_count_distinct_stays_a_base_metric(layer):
+    layer.conn.execute("INSERT INTO sales VALUES (4, 'paid', 'a')")
+    _, report, models = assert_migration_executes(
+        layer,
+        [
+            "SELECT COUNT(DISTINCT s.amount) AS unique_values FROM sales s",
+            "SELECT COUNT(DISTINCT amount) AS other_name FROM sales",
+            "SELECT COUNT(DISTINCT s.amount) AS first_count, COUNT(DISTINCT s.amount) AS second_count FROM sales s",
+            "SELECT category, COUNT(DISTINCT s.amount) AS unique_values "
+            "FROM sales s GROUP BY category ORDER BY category",
+        ],
+    )
+    assert models["sales"]["metrics"] == [{"name": "unique_values", "agg": "count_distinct", "sql": "amount"}]
+    assert all(not analysis.derived_metrics for analysis in report.query_analyses)
+
+
 @pytest.mark.parametrize("target_key", ["id", "code"])
 @pytest.mark.parametrize("reverse_join", [False, True])
 def test_filtered_parameterized_aggregates_with_generated_join(layer, target_key, reverse_join):

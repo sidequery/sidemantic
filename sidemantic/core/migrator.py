@@ -515,6 +515,12 @@ class Migrator:
                 for agg in aggs:
                     agg_name = _normalize_agg_name(agg)
                     col = agg.this
+                    simple_count_distinct = (
+                        isinstance(agg, exp.Count)
+                        and isinstance(col, exp.Distinct)
+                        and len(col.expressions) == 1
+                        and isinstance(col.expressions[0], exp.Column)
+                    )
 
                     # Determine table
                     table_name = None
@@ -594,7 +600,13 @@ class Migrator:
                         analysis.aggregations_in_derived.add(agg_tuple)
 
                     # If this is a complex expression with an alias (not part of derived), also add as derived metric
-                    if alias_name and not isinstance(col, (exp.Column, exp.Star)) and not is_derived and not complete:
+                    if (
+                        alias_name
+                        and not isinstance(col, (exp.Column, exp.Star))
+                        and not simple_count_distinct
+                        and not is_derived
+                        and not complete
+                    ):
                         # This is a complex aggregation with an alias - treat as derived metric
                         analysis.derived_metrics.append((alias_name, str(agg), table_name or ""))
                         # Mark this aggregation as part of a derived metric

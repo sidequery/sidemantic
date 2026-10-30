@@ -8,6 +8,41 @@ import duckdb
 from sidemantic.db.base import BaseDatabaseAdapter, validate_identifier
 
 
+def _quote_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+class _SessionCursor:
+    """Independent handle with lazy session setup covered by transport deadlines."""
+
+    def __init__(self, cursor, initialize):
+        self._cursor = cursor
+        self._initialize = initialize
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+    def __enter__(self):
+        self._cursor.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self._cursor.__exit__(*args)
+
+    def _ensure_initialized(self):
+        if self._initialize is not None:
+            self._initialize(self._cursor)
+            self._initialize = None
+
+    def execute(self, *args, **kwargs):
+        self._ensure_initialized()
+        return self._cursor.execute(*args, **kwargs)
+
+    def executemany(self, *args, **kwargs):
+        self._ensure_initialized()
+        return self._cursor.executemany(*args, **kwargs)
+
+
 class DuckDBAdapter(BaseDatabaseAdapter):
     """DuckDB database adapter.
 
@@ -37,9 +72,77 @@ class DuckDBAdapter(BaseDatabaseAdapter):
         else:
             self.conn = duckdb.connect(path, read_only=read_only, config=config)
 
+        self._session_settings = []
+        self._session_tables = []
+        self._session_views = []
+        self._session_database = None
         if init_sql:
             for stmt in init_sql:
                 self.conn.execute(stmt)
+
+        if init_sql or config:
+            self._capture_session()
+
+    def _capture_session(self) -> None:
+        """Snapshot configured settings, temporary tables and views.
+
+        DuckDB cursors share attached catalogs and persistent objects, but not
+        settings or temporary objects. Capture initialization once, before any
+        request can use the parent connection. Temporary data stays in memory
+        and requires no optional Arrow dependency. This captures initialization,
+        not later mutations or other session objects such as temporary macros.
+        """
+        with self.conn.cursor() as baseline:
+            defaults = dict(baseline.execute("SELECT name, value FROM duckdb_settings()").fetchall())
+        self._session_settings = [
+            (name, value)
+            for name, value in self.conn.execute("SELECT name, value FROM duckdb_settings()").fetchall()
+            if value != defaults.get(name) and name != "schema"
+        ]
+        self._session_database = self.conn.execute("SELECT current_database()").fetchone()[0]
+        tables = self.conn.execute(
+            "SELECT table_name, sql FROM duckdb_tables() WHERE temporary ORDER BY table_oid"
+        ).fetchall()
+        for name, ddl in tables:
+            import sqlglot
+            from sqlglot import exp
+
+            table = f"temp.main.{_quote_identifier(name)}"
+            # DuckDB's column catalogs expose generated expressions as defaults,
+            # without a generated-column flag. Inspect its canonical CREATE SQL
+            # to distinguish those columns from ordinary DEFAULT expressions.
+            definition = sqlglot.parse_one(ddl, dialect="duckdb")
+            columns = [
+                _quote_identifier(column.name)
+                for column in definition.this.expressions
+                if isinstance(column, exp.ColumnDef)
+                and not any(
+                    isinstance(constraint.kind, (exp.GeneratedAsIdentityColumnConstraint, exp.ComputedColumnConstraint))
+                    for constraint in column.constraints
+                )
+            ]
+            column_sql = ", ".join(columns)
+            rows = self.conn.execute(f"SELECT {column_sql} FROM {table}").fetchall()
+            self._session_tables.append((table, ddl, column_sql, rows))
+        self._session_views = [
+            row[0]
+            for row in self.conn.execute(
+                "SELECT sql FROM duckdb_views() WHERE temporary AND NOT internal ORDER BY view_oid"
+            ).fetchall()
+        ]
+
+    def _initialize_cursor(self, cursor) -> None:
+        if self._session_database is not None:
+            cursor.execute(f"USE {_quote_identifier(self._session_database)}")
+        for name, value in self._session_settings:
+            cursor.execute(f"SET {_quote_identifier(name)} = ?", [value])
+        for table, ddl, column_sql, rows in self._session_tables:
+            cursor.execute(ddl)
+            if rows:
+                placeholders = ", ".join("?" for _ in rows[0])
+                cursor.executemany(f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})", rows)
+        for ddl in self._session_views:
+            cursor.execute(ddl)
 
     def cursor(self) -> Any:
         """Return an independent DuckDB cursor for concurrent reads.
@@ -48,10 +151,15 @@ class DuckDBAdapter(BaseDatabaseAdapter):
         the same underlying database. This is the sanctioned pattern for
         multithreaded reads: each thread gets its own handle, so concurrent
         ``execute`` calls do not serialize on a single connection. The returned
-        cursor exposes ``execute`` returning a relation with ``fetch_record_batch``
+        cursor restores configured session settings and temporary data lazily,
+        so transport deadlines also cover setup. It exposes ``execute`` returning
+        a relation with ``fetch_record_batch``
         and ``fetchone``, matching the result API used across the codebase.
         """
-        return self.conn.cursor()
+        cursor = self.conn.cursor()
+        if self._session_database is not None:
+            return _SessionCursor(cursor, self._initialize_cursor)
+        return cursor
 
     def execute(self, sql: str) -> Any:
         """Execute SQL and return DuckDB relation."""

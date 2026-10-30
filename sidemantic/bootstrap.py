@@ -8,6 +8,7 @@ starting point the user edits, not a final model.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,6 +44,20 @@ class TableInfo:
     columns: list[ColumnInfo] = field(default_factory=list)
     row_count: int | None = None
     distinct_counts: dict[str, int] = field(default_factory=dict)
+    schema: str | None = None
+    catalog: str | None = None
+    dialect: str | None = None
+
+    @property
+    def source_sql(self) -> str:
+        """Quote each part independently so schema/catalog identity survives."""
+        from sqlglot import exp
+
+        return exp.Table(
+            this=exp.to_identifier(self.name, quoted=True),
+            db=exp.to_identifier(self.schema, quoted=True) if self.schema is not None else None,
+            catalog=exp.to_identifier(self.catalog, quoted=True) if self.catalog is not None else None,
+        ).sql(dialect=self.dialect)
 
 
 @dataclass
@@ -68,7 +83,7 @@ def introspect_connection(
         adapter = DuckDBAdapter.from_url(connection, init_sql=init_sql)
         con = adapter.raw_connection
         try:
-            tables = _introspect_information_schema(con)
+            tables = _introspect_information_schema(con, dialect="duckdb")
             if profile:
                 for table in tables:
                     _profile_table(con, table)
@@ -80,30 +95,31 @@ def introspect_connection(
 
     layer = SemanticLayer(connection=connection, auto_register=False)
     try:
-        return _introspect_information_schema(layer.adapter)
+        return _introspect_information_schema(layer.adapter, dialect=layer.dialect)
     finally:
         close = getattr(layer.adapter, "close", None)
         if close:
             close()
 
 
-def _introspect_information_schema(executor) -> list[TableInfo]:
+def _introspect_information_schema(executor, *, dialect: str | None = None) -> list[TableInfo]:
     excluded = ", ".join(f"'{schema}'" for schema in sorted(_EXCLUDED_SCHEMAS))
     rows = executor.execute(
-        "select table_name, column_name, data_type from information_schema.columns "
-        f"where lower(table_schema) not in ({excluded}) order by table_name, ordinal_position"
+        "select table_catalog, table_schema, table_name, column_name, data_type from information_schema.columns "
+        f"where lower(table_schema) not in ({excluded}) "
+        "order by table_catalog, table_schema, table_name, ordinal_position"
     ).fetchall()
-    tables: dict[str, TableInfo] = {}
-    for table_name, column_name, data_type in rows:
-        info = tables.setdefault(table_name, TableInfo(name=table_name))
+    tables: dict[tuple, TableInfo] = {}
+    for catalog, schema, table_name, column_name, data_type in rows:
+        identity = (catalog, schema, table_name)
+        info = tables.setdefault(identity, TableInfo(name=table_name, schema=schema, catalog=catalog, dialect=dialect))
         info.columns.append(ColumnInfo(name=column_name, data_type=str(data_type)))
     return list(tables.values())
 
 
 def _profile_table(con, table: TableInfo) -> None:
-    quoted = table.name.replace('"', '""')
     try:
-        table.row_count = con.execute(f'select count(*) from "{quoted}"').fetchone()[0]
+        table.row_count = con.execute(f"select count(*) from {table.source_sql}").fetchone()[0]
     except Exception:
         return
     candidates = [
@@ -113,9 +129,10 @@ def _profile_table(con, table: TableInfo) -> None:
     ]
     if not candidates:
         return
-    selects = ", ".join(f'approx_count_distinct("{name}")' for name in candidates)
+    quoted_columns = ['"' + name.replace('"', '""') + '"' for name in candidates]
+    selects = ", ".join(f"approx_count_distinct({name})" for name in quoted_columns)
     try:
-        counts = con.execute(f'select {selects} from "{quoted}"').fetchone()
+        counts = con.execute(f"select {selects} from {table.source_sql}").fetchone()
     except Exception:
         return
     table.distinct_counts = dict(zip(candidates, counts))
@@ -152,10 +169,10 @@ def _pick_primary_key(table: TableInfo) -> str | None:
     return None
 
 
-def generate_model_dict(table: TableInfo, all_model_names: set[str]) -> dict:
+def generate_model_dict(table: TableInfo, all_model_names: set[str], *, model_name: str | None = None) -> dict:
     """Infer one native model definition from an introspected table."""
 
-    model_name = _model_name(table.name)
+    model_name = model_name or _model_name(table.name)
     primary_key = _pick_primary_key(table)
     key_columns = {primary_key.lower()} if primary_key else set()
 
@@ -195,7 +212,7 @@ def generate_model_dict(table: TableInfo, all_model_names: set[str]) -> dict:
         elif category == "numeric":
             metrics.append({"name": f"total_{lowered}", "agg": "sum", "sql": column.name})
 
-    model: dict = {"name": model_name, "table": table.name}
+    model: dict = {"name": model_name, "table": table.source_sql if table.schema or table.catalog else table.name}
     if primary_key:
         model["primary_key"] = primary_key
     if relationships:
@@ -210,11 +227,25 @@ def bootstrap_models(connection: str, init_sql: list[str] | None = None, *, prof
     """Introspect a connection and infer a native model per table."""
 
     tables = [table for table in introspect_connection(connection, init_sql, profile=profile) if table.columns]
-    all_model_names = {_model_name(table.name) for table in tables}
+    base_counts = Counter(_model_name(table.name) for table in tables)
+    model_names = []
+    used_names: set[str] = set()
+    for table in tables:
+        base = _model_name(table.name)
+        if base_counts[base] > 1:
+            base = _model_name("_".join(part for part in (table.catalog, table.schema, table.name) if part))
+        name = base
+        suffix = 2
+        while name in used_names:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        used_names.add(name)
+        model_names.append(name)
+    all_model_names = set(model_names)
     model_dicts: dict[str, dict] = {}
     notes: list[str] = []
-    for table in sorted(tables, key=lambda item: item.name):
-        model = generate_model_dict(table, all_model_names)
+    for table, model_name in sorted(zip(tables, model_names), key=lambda item: item[1]):
+        model = generate_model_dict(table, all_model_names, model_name=model_name)
         model_dicts[model["name"]] = model
         summary = f"{model['name']}: {len(model.get('dimensions', []))} dimension(s), {len(model['metrics'])} metric(s)"
         if model.get("relationships"):

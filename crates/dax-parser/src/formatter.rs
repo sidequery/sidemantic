@@ -159,6 +159,8 @@ impl DaxFormatter {
                 let x = self.expr(expr, unary_precedence(op));
                 match op {
                     UnaryOp::Plus => format!("+{x}"),
+                    // Adjacent minus tokens form a DAX line comment.
+                    UnaryOp::Minus if x.starts_with('-') => format!("- {x}"),
                     UnaryOp::Minus => format!("-{x}"),
                     UnaryOp::Not => format!("NOT {x}"),
                 }
@@ -664,6 +666,18 @@ mod tests {
             assert_eq!(parse_expression(&f).unwrap(), x, "{f}");
         }
     }
+    #[test]
+    fn nested_unary_minus_round_trips_in_both_styles() {
+        for source in ["- -1", "- - -1", "IF(TRUE(), - -1, 0)", "- + - -1"] {
+            let expr = parse_expression(source).unwrap();
+            for style in [FormatStyle::Canonical, FormatStyle::Sqlbi] {
+                let formatted =
+                    format_expression_with_style(&expr, FormatOptions::canonical(), style);
+                assert_eq!(parse_expression(&formatted).unwrap(), expr, "{formatted}");
+            }
+        }
+    }
+
     #[test]
     fn escapes_names_and_strings() {
         assert_eq!(

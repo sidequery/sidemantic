@@ -419,7 +419,7 @@ fn datatable_value_compatible(value: &Expr, data_type: &DataTableType) -> bool {
     }
 }
 
-fn signature_argument(
+pub(crate) fn signature_argument(
     signature: &FunctionSignature,
     index: usize,
     arg_count: usize,
@@ -497,7 +497,7 @@ fn any_reference_shape(expr: &Expr) -> bool {
     column_reference_shape(expr) || measure_reference_shape(expr) || table_reference_shape(expr)
 }
 
-fn valid_type_name_shape(expr: &Expr) -> bool {
+pub(crate) fn valid_type_name_shape(expr: &Expr) -> bool {
     let Expr::Identifier(name) = unparenthesized(expr) else {
         return false;
     };

@@ -489,3 +489,64 @@ def test_complete_joined_aggregate_prefers_real_model_name_over_cte_alias():
         )
         layer.add_model(Model(name="facts_cte", primary_key="id", sql="SELECT 1 id, 100 amount"))
         assert layer.query(metrics=["facts.joined"], dimensions=["facts.category"]).fetchall() == [("all", 110)]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    "selection", [["revenue", "_revenue", "__revenue", "Revenue", "combined"], ["revenue"], ["combined"]]
+)
+def test_generated_measure_aliases_are_unique_and_stable(reverse, selection):
+    metrics = [
+        {"name": "revenue", "agg": "sum", "sql": "amount"},
+        {"name": "_revenue", "agg": "sum", "sql": "other"},
+        {"name": "__revenue", "agg": "sum", "sql": "third"},
+        {"name": "Revenue", "agg": "sum", "sql": "fourth"},
+        {"name": "combined", "type": "derived", "sql": "revenue + _revenue + __revenue + Revenue"},
+    ]
+    if reverse:
+        metrics.reverse()
+        selection = list(reversed(selection))
+    model = facts(
+        metrics,
+        [{"name": "revenue_raw", "type": "categorical"}],
+        "SELECT * FROM (VALUES (1, 10, 100, 1000, 10000, 999), (2, 20, 200, 2000, 20000, 999)) "
+        "t(id, amount, other, third, fourth, revenue_raw)",
+    )
+    expected = {"revenue": 30, "_revenue": 300, "__revenue": 3000, "Revenue": 30000, "combined": 33330}
+    assert execute([model], dimensions=["facts.revenue_raw"], metrics=[f"facts.{name}" for name in selection]) == [
+        (999, *(expected[name] for name in selection))
+    ]
+
+
+@pytest.mark.parametrize("aggregate", ["SUM", "AVG", "MIN", "MAX", "MEDIAN", "STDDEV_POP", "VAR_POP"])
+@pytest.mark.parametrize("grouped", [False, True])
+def test_native_distinct_metric_filters_preserve_sibling_and_derived_populations(aggregate, grouped):
+    source = (
+        "SELECT * FROM (VALUES (1, 'x', 'a', 10), (2, 'x', 'a', 10), (3, 'x', 'a', 20), "
+        "(4, 'x', 'b', 100), (5, 'y', 'b', 1000), (6, 'z', 'a', NULL)) t(id, cohort, category, amount)"
+    )
+    model = facts(
+        [
+            {"name": "filtered", "sql": f"{aggregate}(DISTINCT amount)", "filters": ["category = 'a'", "amount < 50"]},
+            {"name": "unfiltered", "sql": f"{aggregate}(DISTINCT amount)"},
+            {"name": "doubled", "type": "derived", "sql": "filtered * 2"},
+        ],
+        [{"name": "cohort", "type": "categorical"}],
+        source,
+    )
+    dimensions = ["facts.cohort"] if grouped else []
+    rows = execute(
+        [model],
+        metrics=["facts.filtered", "facts.unfiltered", "facts.doubled"],
+        dimensions=dimensions,
+        order_by=dimensions,
+    )
+    filtered = f"{aggregate}(DISTINCT amount) FILTER (WHERE category = 'a' AND amount < 50)"
+    control = f"SELECT {'cohort, ' if grouped else ''}{filtered}, {aggregate}(DISTINCT amount), {filtered} * 2 FROM ({source})"
+    if grouped:
+        control += " GROUP BY cohort ORDER BY cohort"
+    with duckdb.connect() as conn:
+        expected = conn.execute(control).fetchall()
+    for actual_row, expected_row in zip(rows, expected, strict=True):
+        # Parallel aggregate input order can change the last floating-point bit.
+        assert actual_row == pytest.approx(expected_row, rel=1e-12, abs=1e-12)

@@ -2009,8 +2009,8 @@ impl<'a> SqlGenerator<'a> {
                 inputs.insert(column.field);
             }
         }
-        for metric in &model.metrics {
-            if let Some(sql) = &metric.sql {
+        for metric in model.metrics.iter().chain(self.graph.graph_metrics()) {
+            for sql in metric.sql.iter().chain(&metric.filters) {
                 for column in
                     semantic_column_references(&sql.replace("{model}.", "")).unwrap_or_default()
                 {
@@ -2022,15 +2022,33 @@ impl<'a> SqlGenerator<'a> {
             inputs.extend(relationship.foreign_key_columns());
             inputs.extend(relationship.primary_key_columns());
         }
-        let inputs: HashSet<_> = inputs
+        let mut inputs: HashSet<_> = inputs
             .into_iter()
             .map(|name| name.to_ascii_lowercase())
             .collect();
-        let mut alias = format!("{metric_name}_raw");
-        while inputs.contains(&alias.to_ascii_lowercase()) {
-            alias.insert(0, '_');
+        // Allocate the complete namespace in a stable order on every call.
+        // Reserving only physical fields lets a prefixed alias collide with
+        // another metric's natural alias. Query order/subsets must not change
+        // the names used by projections and recursively expanded expressions.
+        let mut names: Vec<_> = model
+            .metrics
+            .iter()
+            .chain(self.graph.graph_metrics())
+            .map(|metric| metric.name.as_str())
+            .chain(std::iter::once(metric_name))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        for name in names {
+            let mut alias = format!("{name}_raw");
+            while !inputs.insert(alias.to_ascii_lowercase()) {
+                alias.insert(0, '_');
+            }
+            if name == metric_name {
+                return alias;
+            }
         }
-        alias
+        unreachable!("requested metric is included in the alias namespace")
     }
 
     fn simple_metric_source_column(&self, model: &Model, metric: &Metric) -> Option<String> {

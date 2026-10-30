@@ -102,6 +102,17 @@ def enforce_field_visibility(
             continue
         model_name, field_name = ref.split(".", 1)
         check_field_visibility(model_name, field_name)
+        # Projection parsing treats the final __ suffix as a granularity even
+        # when a field with that exact name exists. Check the actual input too:
+        # a public created__day must not expose a private created timestamp.
+        # Keep the exact-name check above, since a declared private field must
+        # not become selectable merely because its base dimension is public.
+        if "__" in field_name:
+            base_name = field_name.rsplit("__", 1)[0]
+            model = graph.models.get(model_name)
+            dimension = model.get_dimension(base_name) if model is not None else None
+            if dimension is not None and not dimension.public:
+                raise SecurityError(f"Field '{model_name}.{base_name}' is not public")
 
     for metric_ref in metrics or []:
         if "." not in metric_ref:

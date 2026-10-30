@@ -106,6 +106,54 @@ def test_http_rejects_exact_private_names_in_filters(field, reference):
     layer.adapter.close()
 
 
+@pytest.mark.parametrize("base_name", ["created", "created__internal"])
+@pytest.mark.parametrize("private_field", ["base", "exact", None])
+def test_visibility_checks_the_dimension_actually_projected(base_name, private_field):
+    from sidemantic.core.semantic_layer import SecurityError
+
+    field_name = f"{base_name}__day"
+    layer = SemanticLayer(auto_register=False, enforce_visibility=True)
+    layer.add_model(
+        Model(
+            name="orders",
+            sql="SELECT 'public' AS label, DATE '2024-01-01' AS timestamp",
+            dimensions=[
+                Dimension(
+                    name=base_name, type="time", granularity="day", sql="timestamp", public=private_field != "base"
+                ),
+                Dimension(name=field_name, type="categorical", sql="label", public=private_field != "exact"),
+            ],
+            metrics=[Metric(name="count", agg="count")],
+        )
+    )
+    query = {"metrics": ["orders.count"], "dimensions": [f"orders.{field_name}"]}
+    try:
+        with TestClient(create_app(layer)) as client:
+            response = client.post("/query", json=query)
+            if private_field is not None:
+                hidden_name = base_name if private_field == "base" else field_name
+                with pytest.raises(SecurityError, match=f"orders.{hidden_name}"):
+                    layer.query(**query)
+                assert response.status_code == 403, response.text
+                assert f"orders.{hidden_name}" in response.text
+            else:
+                assert layer.query(**query).fetchone()[1] == 1
+                assert response.status_code == 200, response.text
+                assert response.json()["rows"][0]["count"] == 1
+
+            if private_field == "base":
+                # Filters resolve the declared public field exactly, so this
+                # request reads label rather than the private timestamp.
+                response = client.post(
+                    "/query",
+                    json={"metrics": ["orders.count"], "filters": [f"orders.{field_name} = 'public'"]},
+                )
+                assert response.status_code == 200, response.text
+                assert response.json()["rows"] == [{"count": 1}]
+    finally:
+        layer.adapter.close()
+
+
 @pytest.mark.parametrize("endpoint", ["/sql/compile", "/sql", "/raw"])
 def test_http_sql_parsing_uses_backend_dialect(endpoint, monkeypatch):
     import pyarrow as pa

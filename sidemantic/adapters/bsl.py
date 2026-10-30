@@ -380,6 +380,11 @@ class BSLAdapter(BaseAdapter):
                 else:
                     foreign_key = with_expr
 
+        # Native one-to-many / one-to-one keys are oriented from the
+        # referenced parent to the child's FK, while BSL keys are left/right.
+        if rel_type in ("one_to_many", "one_to_one") and "left_on" in join_def:
+            foreign_key, primary_key = primary_key, foreign_key
+
         metadata = {
             "bsl_model": target_model,
             "bsl_alias": name,
@@ -754,9 +759,12 @@ class BSLAdapter(BaseAdapter):
         elif rel.foreign_key and not rel.primary_key and isinstance(rel.foreign_key, str):
             join_def["with"] = f"_.{rel.foreign_key}"
         else:
-            if rel.foreign_key:
-                join_def["left_on"] = rel.foreign_key
-            if rel.primary_key:
-                join_def["right_on"] = rel.primary_key
+            left_key, right_key = rel.foreign_key, rel.primary_key
+            if rel.type in ("one_to_many", "one_to_one"):
+                left_key, right_key = right_key, left_key
+            if left_key:
+                join_def["left_on"] = left_key
+            if right_key:
+                join_def["right_on"] = right_key
 
         return join_def

@@ -1355,6 +1355,10 @@ class SidemanticAdapter(BaseAdapter):
             result["agg"] = measure.agg
         if measure.window:
             result["window"] = measure.window
+        for option in ("grain_to_date", "window_expression", "window_frame", "window_order"):
+            value = getattr(measure, option)
+            if value is not None:
+                result[option] = value
         if measure.filters:
             result["filters"] = measure.filters
         if not measure.public:

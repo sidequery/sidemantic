@@ -957,7 +957,45 @@ class MetricFlowAdapter(BaseAdapter):
 
         # Export metrics if present
         if resolved_metrics:
-            data["metrics"] = [self._export_metric(metric, graph) for metric in resolved_metrics.values()]
+            data["metrics"] = []
+            measure_names = {measure["name"] for model in semantic_models for measure in model.get("measures", [])}
+            for metric in resolved_metrics.values():
+                exported = self._export_metric(metric, graph)
+                if not metric.type and metric.agg:
+                    # This exporter emits the legacy semantic_models schema.
+                    # Lower folded latest-spec aggregates into model measures
+                    # and a simple reference instead of mixing schema versions.
+                    import sqlglot
+                    from sqlglot import exp
+
+                    expression = sqlglot.parse_one(metric.sql or "1")
+                    owners = {column.table for column in expression.find_all(exp.Column) if column.table}
+                    if len(owners) != 1 or not owners.issubset(resolved_models):
+                        raise ValueError(f"Cannot determine owning model for MetricFlow metric {metric.name!r}")
+                    owner = owners.pop()
+                    for column in expression.find_all(exp.Column):
+                        if column.table == owner:
+                            column.set("table", None)
+                    # Use a distinct, globally unique measure name so resolving
+                    # the simple metric does not self-reference the graph metric.
+                    measure_name = f"{metric.name}_measure"
+                    suffix = 2
+                    while measure_name in measure_names or measure_name in resolved_metrics:
+                        measure_name = f"{metric.name}_measure_{suffix}"
+                        suffix += 1
+                    measure_names.add(measure_name)
+                    model_def = next(model for model in semantic_models if model["name"] == owner)
+                    measure_def = {"name": measure_name, "agg": metric.agg, "expr": expression.sql()}
+                    if metric.filters:
+                        # Simple-reference metrics are evaluated via their model
+                        # measure on reload. Preserve row filters there as well
+                        # as in the MetricFlow metric's standard filter field.
+                        measure_def["meta"] = {"filters": metric.filters}
+                    model_def.setdefault("measures", []).append(measure_def)
+                    exported.pop("agg", None)
+                    exported.pop("expr", None)
+                    exported["type_params"] = {"measure": {"name": measure_name}}
+                data["metrics"].append(exported)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1123,7 +1161,7 @@ class MetricFlowAdapter(BaseAdapter):
             Measure definition dictionary
         """
         # Determine export type - untyped metrics with sql should be exported as "simple"
-        export_type = measure.type or ("simple" if not measure.agg and measure.sql else None)
+        export_type = measure.type or ("simple" if measure.agg or measure.sql else None)
 
         result = {
             "name": measure.name,
@@ -1138,8 +1176,15 @@ class MetricFlowAdapter(BaseAdapter):
         # Type-specific params
         type_params = {}
 
-        # Untyped metrics with sql are treated as simple (measure references)
-        if not measure.type and not measure.agg and measure.sql:
+        # Folded simple metrics carry their aggregation and row expression in
+        # the latest spec; they are not references to a legacy model measure.
+        if not measure.type and measure.agg:
+            result["agg"] = measure.agg
+            if measure.sql is not None:
+                result["expr"] = measure.sql
+
+        # Untyped metrics without an aggregation are legacy measure references.
+        elif not measure.type and measure.sql:
             type_params["measure"] = {"name": measure.sql}
 
         elif measure.type == "ratio":
@@ -1163,7 +1208,11 @@ class MetricFlowAdapter(BaseAdapter):
             result["type_params"] = type_params
 
         if measure.filters:
-            result["filter"] = measure.filters[0]  # MetricFlow uses single filter string
+            result["filter"] = (
+                measure.filters[0]
+                if len(measure.filters) == 1
+                else " AND ".join(f"({predicate})" for predicate in measure.filters)
+            )
 
         # Add metadata fields for graph-level metrics
         if measure.format or measure.value_format_name or measure.drill_fields:

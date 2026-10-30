@@ -90,15 +90,23 @@ def create_chart(
         raise ValueError("No data provided")
 
     # Auto-detect columns if not specified
+    infer_x = x is None
     if x is None or y is None:
-        x, y = _auto_detect_columns(data)
+        x, y = _auto_detect_columns(data, x=x, y=y)
+    synthetic_x = infer_x and x not in data[0]
+    if synthetic_x:
+        # Scalar metric results need a real field for the synthetic axis.
+        # Copy the records so chart construction does not change caller data.
+        data = [{**row, x: index} for index, row in enumerate(data)]
 
     # Ensure y is a list
     y_cols = [y] if isinstance(y, str) else y
 
     # Auto-select chart type if needed
     if chart_type == "auto":
-        chart_type = _select_chart_type(data, x, y_cols)
+        # A generated row index is a category, not a second numeric measure.
+        # Use a multi-series chart so every selected metric remains visible.
+        chart_type = "bar" if synthetic_x and len(y_cols) > 1 else _select_chart_type(data, x, y_cols)
 
     # Create base chart
     base = alt.Chart(alt.Data(values=data))
@@ -117,7 +125,9 @@ def create_chart(
     return chart
 
 
-def _auto_detect_columns(data: list[dict[str, Any]]) -> tuple[str, list[str]]:
+def _auto_detect_columns(
+    data: list[dict[str, Any]], *, x: str | None = None, y: str | list[str] | None = None
+) -> tuple[str, list[str]]:
     """Auto-detect which columns to use for x and y axes.
 
     Logic:
@@ -129,15 +139,25 @@ def _auto_detect_columns(data: list[dict[str, Any]]) -> tuple[str, list[str]]:
 
     columns = list(data[0].keys())
 
-    if len(columns) == 1:
-        # Single column - use index for x
-        return "index", columns
+    if not columns:
+        raise ValueError("Cannot auto-detect columns from empty records")
+    selected_y = [y] if isinstance(y, str) else y
+    if x is None:
+        candidates = [column for column in columns if selected_y is None or column not in selected_y]
+        if len(columns) == 1 or not candidates:
+            x = "index"
+            while x in columns:
+                x = "_" + x
+        else:
+            x = candidates[0]
+    if selected_y is not None:
+        return x, selected_y
 
-    # First column is x, rest are y (filter to numeric)
-    x_col = columns[0]
+    # Infer only the missing axis, excluding the selected dimension.
+    candidates = [column for column in columns if column != x]
     y_cols = []
 
-    for col in columns[1:]:
+    for col in candidates:
         # Check if numeric by sampling first value
         value = data[0][col]
         if isinstance(value, (int, float)) and value is not None:
@@ -145,9 +165,9 @@ def _auto_detect_columns(data: list[dict[str, Any]]) -> tuple[str, list[str]]:
 
     if not y_cols:
         # No numeric columns found, use all remaining columns
-        y_cols = columns[1:]
+        y_cols = candidates or columns
 
-    return x_col, y_cols
+    return x, y_cols
 
 
 def _select_chart_type(

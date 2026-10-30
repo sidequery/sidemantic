@@ -54,7 +54,7 @@ class TestSemanticLayerAdapterInterface:
         assert count == 3
 
     def test_layer_adapter_fetch_record_batch(self):
-        """Test that adapter results support fetch_record_batch()."""
+        """Test that the adapter provides version-compatible Arrow conversion."""
         pytest.importorskip("pyarrow")
         layer = SemanticLayer(connection="duckdb:///:memory:")
 
@@ -62,7 +62,7 @@ class TestSemanticLayerAdapterInterface:
         layer.adapter.execute("INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')")
 
         result = layer.adapter.execute("SELECT * FROM test_table")
-        reader = result.fetch_record_batch()
+        reader = layer.adapter.fetch_record_batch(result)
 
         # Read all batches
         table = reader.read_all()
@@ -786,7 +786,7 @@ class TestWidgetAdapterIntegration:
 
             def fetch_record_batch(self):
                 fetch_record_batch_called.append(True)
-                return self._inner.fetch_record_batch()
+                return layer.adapter.fetch_record_batch(self._inner)
 
         def tracking_execute(sql):
             result = original_execute(sql)
@@ -813,3 +813,19 @@ class TestWidgetAdapterIntegration:
         # Should return a PyArrow Table
         assert isinstance(table, pa.Table)
         assert table.num_rows == 2
+
+
+def test_widget_dataframe_arrow_uses_supported_duckdb_reader():
+    """Raw DataFrame-mode queries work when the connection has no arrow() alias."""
+    from types import SimpleNamespace
+
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("anywidget")
+    import duckdb
+
+    from sidemantic.widget import MetricsExplorer
+
+    with duckdb.connect() as connection:
+        widget = SimpleNamespace(_layer=None, _conn=connection)
+        table = MetricsExplorer._execute_arrow(widget, "SELECT 42 AS value")
+        assert table.to_pydict() == {"value": [42]}

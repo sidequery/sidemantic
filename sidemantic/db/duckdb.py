@@ -67,7 +67,9 @@ class DuckDBAdapter(BaseDatabaseAdapter):
 
     def fetch_record_batch(self, result: Any) -> Any:
         """Fetch result as Arrow RecordBatch."""
-        return result.fetch_record_batch()
+        from sidemantic.db._duckdb_compat import fetch_arrow_reader
+
+        return fetch_arrow_reader(result)
 
     def get_tables(self) -> list[dict]:
         """Get list of tables in database."""

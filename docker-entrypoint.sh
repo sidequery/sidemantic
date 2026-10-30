@@ -9,7 +9,7 @@ trap 'rm -f "$ENTRYPOINT_ARGS_FILE"' EXIT
 printf '%s\n' "$@" > "$ENTRYPOINT_ARGS_FILE"
 
 run_serve() {
-    set -- sidemantic serve --host 0.0.0.0
+    set -- sidemantic server postgres --host 0.0.0.0
     if [ -n "$SIDEMANTIC_CONNECTION" ]; then
         set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
     fi
@@ -83,7 +83,7 @@ run_api() {
 }
 
 run_both() {
-    set -- sidemantic serve --host 0.0.0.0
+    set -- sidemantic server postgres --host 0.0.0.0
     if [ -n "$SIDEMANTIC_CONNECTION" ]; then
         set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
     fi

@@ -204,6 +204,7 @@ impl SidemanticMcpServer {
             .with_metrics(request.metrics.clone())
             .with_filters(filters)
             .with_segments(request.segments.clone())
+            .with_parameter_values(parameter_values)
             .with_ungrouped(request.ungrouped)
             .with_use_preaggregations(request.use_preaggregations);
 

@@ -156,7 +156,7 @@ impl SqlGenerator<'_> {
             .filters
             .iter()
             .cloned()
-            .chain(self.resolve_segments(&query.segments)?)
+            .chain(self.resolve_segments(&query.segments, query.parameter_values.as_ref())?)
             .chain(metric.filters.iter().cloned())
             .collect();
         let mut predicates = Vec::new();
@@ -307,7 +307,7 @@ impl SqlGenerator<'_> {
             .filters
             .iter()
             .cloned()
-            .chain(self.resolve_segments(&query.segments)?)
+            .chain(self.resolve_segments(&query.segments, query.parameter_values.as_ref())?)
             .collect();
         for filter in filters.iter().chain(&metric.filters) {
             for column in semantic_column_references(filter)? {

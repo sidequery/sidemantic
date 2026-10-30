@@ -652,7 +652,7 @@ pub(super) fn try_generate(
         .filters
         .iter()
         .cloned()
-        .chain(generator.resolve_segments(&query.segments)?)
+        .chain(generator.resolve_segments(&query.segments, query.parameter_values.as_ref())?)
         .collect();
     let mut filters = Vec::new();
     for filter in &all_filters {

@@ -336,6 +336,52 @@ def main():
         diagnostic = diagnostics["params"]["diagnostics"][0]
         assert diagnostic["message"].startswith("Parse error:"), diagnostic
 
+        # Formatting must keep quoted commas and valid UTF-16 ranges intact.
+        text = "MODEL (description 'é😀, sales', name orders, table orders);"
+        client.notify(
+            "textDocument/didChange", {"textDocument": {"uri": uri, "version": 50}, "contentChanges": [{"text": text}]}
+        )
+        assert client.wait_for_notification("textDocument/publishDiagnostics")["params"]["diagnostics"] == []
+
+        def utf16(prefix):
+            return len(prefix.encode("utf-16-le")) // 2
+
+        completion = client.request(
+            50,
+            "textDocument/completion",
+            {"textDocument": {"uri": uri}, "position": {"line": 0, "character": utf16(text[: text.index("😀") + 1])}},
+        )
+        assert "name" in completion_labels(completion), completion
+        symbols = client.request(51, "textDocument/documentSymbol", {"textDocument": {"uri": uri}})
+        assert symbols["result"][0]["selectionRange"]["start"]["character"] == utf16(text[: text.index("orders")]), (
+            symbols
+        )
+        formatted = client.request(
+            52,
+            "textDocument/formatting",
+            {"textDocument": {"uri": uri}, "options": {"tabSize": 4, "insertSpaces": True}},
+        )["result"][0]
+        assert formatted["range"]["end"]["character"] == utf16(text), formatted
+        assert "'é😀, sales'" in formatted["newText"], formatted
+        client.notify(
+            "textDocument/didChange",
+            {"textDocument": {"uri": uri, "version": 51}, "contentChanges": [{"text": formatted["newText"]}]},
+        )
+        assert client.wait_for_notification("textDocument/publishDiagnostics")["params"]["diagnostics"] == []
+
+        text = "MODEL (name orders, table orders);\nDIMENSION (name id);\nDIMENSION (name customer_id);"
+        client.notify(
+            "textDocument/didChange", {"textDocument": {"uri": uri, "version": 52}, "contentChanges": [{"text": text}]}
+        )
+        assert client.wait_for_notification("textDocument/publishDiagnostics")["params"]["diagnostics"] == []
+        rename = client.request(
+            53,
+            "textDocument/rename",
+            {"textDocument": {"uri": uri}, "position": {"line": 1, "character": 16}, "newName": "identifier"},
+        )
+        edits = rename["result"]["changes"][uri]
+        assert len(edits) == 1 and edits[0]["range"]["start"]["line"] == 1, rename
+
         invalid_method = client.request(7, "sidemantic/unsupported", {})
         assert invalid_method["error"]["code"] == -32601, invalid_method
 

@@ -479,3 +479,53 @@ fn mcp_server_exercises_tool_protocol_and_errors() {
     client.shutdown();
     fs::remove_dir_all(&dir).expect("temp dir should be removed");
 }
+
+#[test]
+fn mcp_selected_segments_receive_parameter_values() {
+    let dir = unique_temp_dir("sidemantic_mcp_segment_parameters");
+    let models_path = dir.join("models.yaml");
+    fs::write(
+        &models_path,
+        include_str!("fixtures/parameter_segments.yaml"),
+    )
+    .unwrap();
+    let mut client = McpClient::spawn(&models_path);
+    let init = client.request(
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": "2025-03-26", "capabilities": {},
+            "clientInfo": {"name": "sidemantic-test", "version": "0.0.0"}
+        }),
+    );
+    assert!(init.get("error").is_none(), "{init}");
+    client.notify("notifications/initialized", json!({}));
+    let mut id = 2;
+    for segment in ["selected", "selected_quoted"] {
+        for chosen in ["b", "x' OR 1=1 --"] {
+            let response = client.request(
+                id,
+                "tools/call",
+                json!({
+                    "name": "compile_query",
+                    "arguments": {
+                        "metrics": ["orders.count"],
+                        "segments": [format!("orders.{segment}")],
+                        "parameters": {"chosen": chosen}
+                    }
+                }),
+            );
+            id += 1;
+            assert!(response.get("error").is_none(), "{response}");
+            let body = structured_content(&response);
+            let sql = body["sql"].as_str().unwrap();
+            assert!(
+                sql.contains(&format!("'{}'", chosen.replace('\'', "''"))),
+                "{sql}"
+            );
+            assert!(!sql.contains("{{"), "{sql}");
+        }
+    }
+    client.shutdown();
+    fs::remove_dir_all(dir).unwrap();
+}

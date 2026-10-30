@@ -43,6 +43,9 @@ pub struct SemanticQuery {
     pub filters: Vec<String>,
     /// Segment references (e.g., "orders.completed")
     pub segments: Vec<String>,
+    /// Runtime values for unresolved segment templates. None preserves segments
+    /// already prepared by semantic-input compilation.
+    pub parameter_values: Option<HashMap<String, serde_yaml::Value>>,
     /// Table calculations (window functions)
     pub table_calculations: Vec<TableCalculation>,
     pub order_by: Vec<String>,
@@ -84,6 +87,11 @@ impl SemanticQuery {
 
     pub fn with_segments(mut self, segments: Vec<String>) -> Self {
         self.segments = segments;
+        self
+    }
+
+    pub fn with_parameter_values(mut self, values: HashMap<String, serde_yaml::Value>) -> Self {
+        self.parameter_values = Some(values);
         self
     }
 
@@ -314,7 +322,8 @@ impl<'a> SqlGenerator<'a> {
         required_models.extend(query.consumption_base_model.iter().cloned());
         required_models.extend(query.required_population_models.iter().cloned());
         required_models.extend(query.prepared_policies.model_names().cloned());
-        let segment_filters = self.resolve_segments(&query.segments)?;
+        let segment_filters =
+            self.resolve_segments(&query.segments, query.parameter_values.as_ref())?;
         let all_filters: Vec<String> = query
             .filters
             .iter()
@@ -1191,7 +1200,8 @@ impl<'a> SqlGenerator<'a> {
         required_models.extend(query.consumption_base_model.iter().cloned());
         required_models.extend(query.required_population_models.iter().cloned());
         required_models.extend(query.prepared_policies.model_names().cloned());
-        let segment_filters = self.resolve_segments(&query.segments)?;
+        let segment_filters =
+            self.resolve_segments(&query.segments, query.parameter_values.as_ref())?;
         let all_filters: Vec<String> = query
             .filters
             .iter()
@@ -2940,6 +2950,7 @@ impl<'a> SqlGenerator<'a> {
             .with_filters(query.filters.clone())
             .with_segments(query.segments.clone())
             .with_ungrouped(false);
+        inner_query.parameter_values = query.parameter_values.clone();
         inner_query.prepared_policies = query.prepared_policies.clone();
         inner_query.consumption_base_model = query.consumption_base_model.clone();
         inner_query.required_population_models = query.required_population_models.clone();
@@ -6563,7 +6574,11 @@ impl<'a> SqlGenerator<'a> {
     }
 
     /// Resolve segment references to SQL filter expressions
-    fn resolve_segments(&self, segments: &[String]) -> Result<Vec<String>> {
+    fn resolve_segments(
+        &self,
+        segments: &[String],
+        parameter_values: Option<&HashMap<String, serde_yaml::Value>>,
+    ) -> Result<Vec<String>> {
         let mut filters = Vec::new();
 
         for seg_ref in segments {
@@ -6586,7 +6601,17 @@ impl<'a> SqlGenerator<'a> {
             filters.push(filter_sql);
         }
 
-        Ok(filters)
+        if let Some(parameter_values) = parameter_values {
+            crate::runtime::interpolate_query_filters_with_dialect(
+                self.graph,
+                filters,
+                parameter_values,
+                self.dialect,
+            )
+            .map_err(SidemanticError::Validation)
+        } else {
+            Ok(filters)
+        }
     }
 }
 

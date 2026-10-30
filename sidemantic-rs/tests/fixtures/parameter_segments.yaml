@@ -1,0 +1,18 @@
+parameters:
+  - name: chosen
+    type: string
+    default_value: a
+models:
+  - name: orders
+    table: orders
+    dimensions:
+      - name: status
+        type: categorical
+    metrics:
+      - name: count
+        agg: count
+    segments:
+      - name: selected
+        sql: "{model}.status = {{ chosen }}"
+      - name: selected_quoted
+        sql: "{model}.status = '{{ chosen }}'"

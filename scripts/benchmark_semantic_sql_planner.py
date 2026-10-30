@@ -621,7 +621,7 @@ def _cases(layer: SemanticLayer) -> list[BenchmarkCase]:
             min_speedup=1.05,
         ),
         BenchmarkCase(
-            name="virtual_dataset_time_rls_preaggregation",
+            name="virtual_dataset_time_rls_source_fallback",
             wrapped_sql="""
                 SELECT *
                 FROM (
@@ -644,12 +644,11 @@ def _cases(layer: SemanticLayer) -> list[BenchmarkCase]:
             + " AND order_date__day < DATE '2024-02-01'"
             + " AND status = 'completed' ORDER BY order_date__day",
             use_preaggregations=True,
-            case_type="performance",
-            expected_plan="single_model_preaggregation",
-            expected_rules=("safe_filter_pushdown", "preaggregation_route_selection"),
-            expected_sql_contains=("orders_preagg_by_status_day", "WHERE"),
-            forbidden_sql_contains="FROM orders\n",
-            min_speedup=1.05,
+            # Time-grain alias filters conservatively retain source-row execution.
+            expected_plan="direct_semantic",
+            expected_rules=("safe_filter_pushdown",),
+            expected_sql_contains=("FROM orders WHERE", "DATE_TRUNC('DAY', order_date)", "status = 'completed'"),
+            forbidden_sql_contains="orders_preagg_",
         ),
         BenchmarkCase(
             name="conditional_pivot_preaggregation",

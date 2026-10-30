@@ -1782,16 +1782,17 @@ class SemanticLayer:
             bare_metrics.append(m.split(".", 1)[1] if "." in m else m)
 
         bare_dims = []
-        time_granularity = None
+        time_granularities = {}
         for d in dimensions:
             dim_name = d.split(".", 1)[1] if "." in d else d
             # Check for granularity suffix (e.g., "order_date__month")
             if "__" in dim_name:
                 base, gran = dim_name.rsplit("__", 1)
                 bare_dims.append(base)
-                time_granularity = gran
+                time_granularities.setdefault(base, []).append(gran)
             else:
                 bare_dims.append(dim_name)
+                time_granularities.setdefault(dim_name, []).append(None)
 
         bare_filters = []
         for f in all_filters:
@@ -1849,7 +1850,7 @@ class SemanticLayer:
         candidates = matcher.explain_matching(
             metrics=bare_metrics,
             dimensions=bare_dims,
-            time_granularity=time_granularity,
+            time_granularities=time_granularities,
             filters=bare_filters,
         )
 

@@ -7,6 +7,11 @@ from sidemantic.core.model import Model
 from sidemantic.core.pre_aggregation import PreAggregation
 from sidemantic.core.query_plan import PreaggCandidate, PreaggCheck
 
+# These materialize finalized values, not mergeable aggregate states.
+FINALIZED_AGGREGATIONS = frozenset(
+    {"count_distinct", "approx_count_distinct", "median", "stddev", "stddev_pop", "variance", "variance_pop"}
+)
+
 # Time granularity hierarchy (coarser to finer)
 GRANULARITY_HIERARCHY = {
     "year": 1,
@@ -44,6 +49,7 @@ class PreAggregationMatcher:
         dimensions: list[str] | None = None,
         time_granularity: str | None = None,
         filters: list[str] | None = None,
+        time_granularities: dict[str, list[str | None]] | None = None,
     ) -> PreAggregation | None:
         """Find the best matching pre-aggregation for a query.
 
@@ -52,6 +58,8 @@ class PreAggregationMatcher:
             dimensions: List of dimension names requested (without model prefix)
             time_granularity: Time granularity requested (e.g., 'day', 'month')
             filters: List of filter expressions (optional, for compatibility checking)
+            time_granularities: Requested grains by dimension; when supplied, each
+                candidate uses only the grain of its own time dimension.
 
         Returns:
             Best matching PreAggregation, or None if no match found
@@ -71,15 +79,24 @@ class PreAggregationMatcher:
         candidates = []
 
         for preagg in self.model.pre_aggregations:
-            if self.can_satisfy_query(
-                preagg=preagg,
-                query_metrics=metrics,
-                query_dimensions=dimensions,
-                query_granularity=time_granularity,
-                filters=filters,
+            candidate_granularities = (
+                time_granularities.get(preagg.time_dimension, [None])
+                if time_granularities is not None
+                else [time_granularity]
+            )
+            if all(
+                self.can_satisfy_query(
+                    preagg=preagg,
+                    query_metrics=metrics,
+                    query_dimensions=dimensions,
+                    query_granularity=grain,
+                    filters=filters,
+                    time_granularities=time_granularities,
+                )
+                for grain in candidate_granularities
             ):
-                # Score based on specificity (prefer smaller, more specific rollups)
-                score = self._score_match(preagg, dimensions, time_granularity)
+                # Every requested grain must be derivable from the stored buckets.
+                score = min(self._score_match(preagg, dimensions, grain) for grain in candidate_granularities)
                 candidates.append((preagg, score))
 
         if not candidates:
@@ -96,6 +113,7 @@ class PreAggregationMatcher:
         query_dimensions: list[str],
         query_granularity: str | None = None,
         filters: list[str] | None = None,
+        time_granularities: dict[str, list[str | None]] | None = None,
     ) -> bool:
         """Check if a pre-aggregation can satisfy a query.
 
@@ -109,6 +127,10 @@ class PreAggregationMatcher:
         Returns:
             True if pre-aggregation can satisfy the query
         """
+        query_granularity = self._effective_granularity(preagg, query_dimensions, query_granularity)
+        if preagg.time_dimension in query_dimensions and preagg.granularity and not query_granularity:
+            return False
+
         # original_sql pre-aggregations stage a base query, not an aggregation
         # rollup, so they never directly satisfy a metric query.
         if preagg.type == "original_sql":
@@ -133,10 +155,10 @@ class PreAggregationMatcher:
             if not metric:
                 return False
 
-            if metric.agg in ("count_distinct", "approx_count_distinct"):
+            if metric.agg in FINALIZED_AGGREGATIONS:
                 if metric.name not in (preagg.measures or []):
                     return False
-                if not self._is_exact_grain(preagg, query_dimensions, query_granularity):
+                if not self._is_exact_grain(preagg, query_dimensions, query_granularity, time_granularities):
                     return False
                 continue
 
@@ -159,7 +181,84 @@ class PreAggregationMatcher:
             for col in filter_columns:
                 if col not in available_columns:
                     return False
+            if not self._time_filters_preserve_buckets(preagg, filters):
+                return False
 
+        return True
+
+    def _time_filters_preserve_buckets(self, preagg: PreAggregation, filters: list[str]) -> bool:
+        """Only route time predicates whose truth value is constant within a bucket.
+
+        Inclusive lower/exclusive upper literal bounds aligned to the rollup grain
+        are safe. Other expressions conservatively use the source query.
+        """
+        from datetime import datetime
+
+        import sqlglot
+        from sqlglot import exp
+        from sqlglot.errors import SqlglotError
+
+        if not preagg.time_dimension or not preagg.granularity:
+            return True
+
+        def aligned(value):
+            if isinstance(value, exp.Cast):
+                if value.to.this not in {exp.DataType.Type.DATE, exp.DataType.Type.TIMESTAMP}:
+                    return False
+                value = value.this
+            if not isinstance(value, exp.Literal) or not value.is_string:
+                return False
+            try:
+                timestamp = datetime.fromisoformat(value.this)
+            except ValueError:
+                return False
+            if timestamp.tzinfo is not None or timestamp.microsecond:
+                return False
+            grain = preagg.granularity
+            if grain == "second":
+                return True
+            if timestamp.second:
+                return False
+            if grain == "minute":
+                return True
+            if timestamp.minute:
+                return False
+            if grain == "hour":
+                return True
+            if timestamp.hour:
+                return False
+            if grain == "day":
+                return True
+            if grain == "week":
+                return timestamp.weekday() == 0
+            if timestamp.day != 1:
+                return False
+            return (
+                grain == "month"
+                or (grain == "quarter" and timestamp.month in {1, 4, 7, 10})
+                or (grain == "year" and timestamp.month == 1)
+            )
+
+        for predicate in filters:
+            try:
+                expression = sqlglot.parse_one(predicate)
+            except SqlglotError:
+                return False
+            for column in expression.find_all(exp.Column):
+                if column.name.startswith(f"{preagg.time_dimension}__"):
+                    return False
+                if column.name != preagg.time_dimension:
+                    continue
+                parent = column.parent
+                if isinstance(parent, exp.Is) and isinstance(parent.expression, exp.Null):
+                    continue
+                if isinstance(parent, (exp.GTE, exp.LT)) and parent.this is column:
+                    if aligned(parent.expression):
+                        continue
+                if isinstance(parent, (exp.LTE, exp.GT)) and parent.expression is column:
+                    if aligned(parent.this):
+                        continue
+                return False
         return True
 
     def _extract_filter_columns(self, filters: list[str]) -> set[str]:
@@ -253,15 +352,14 @@ class PreAggregationMatcher:
             count_measure = self._find_count_measure_for_avg(query_metric, preagg_measures)
             return count_measure is not None
 
-        if agg_type in ("count_distinct", "approx_count_distinct"):
-            # COUNT DISTINCT is NOT derivable from re-aggregated pre-agg rows
-            # (would need HyperLogLog or storing exact values). approx_count_distinct
-            # would be additive if we stored HLL sketches, but sidemantic materializes a
-            # plain integer, so it is not safely rollup-derivable either.
+        if agg_type in FINALIZED_AGGREGATIONS:
+            # Counts, medians, and statistical estimates are finalized values;
+            # combining them requires distinct sets/sketches or additional states.
+            # Only the exact-grain path may read these stored values.
             return False
 
-        # Default: allow if present
-        return True
+        # Unknown/finalized aggregation states are not assumed additive.
+        return False
 
     def _complex_metric_derivable(self, query_metric: Metric, preagg: PreAggregation) -> bool:
         preagg_measures = set(preagg.measures or [])
@@ -366,12 +464,30 @@ class PreAggregationMatcher:
         except SqlglotError:
             return False
 
+    def _effective_granularity(
+        self, preagg: PreAggregation, query_dimensions: list[str], query_granularity: str | None
+    ) -> str | None:
+        if query_granularity is None and preagg.time_dimension in query_dimensions:
+            dimension = self.model.get_dimension(preagg.time_dimension)
+            if dimension:
+                return dimension.granularity
+        return query_granularity
+
     def _is_exact_grain(
         self,
         preagg: PreAggregation,
         query_dimensions: list[str],
         query_granularity: str | None,
+        time_granularities: dict[str, list[str | None]] | None = None,
     ) -> bool:
+        # Secondary time dimensions are materialized without truncation. Grouping
+        # them at a requested/default grain can combine multiple finalized states.
+        for name in query_dimensions:
+            dimension = self.model.get_dimension(name)
+            if name != preagg.time_dimension and dimension and dimension.type == "time":
+                grains = (time_granularities or {}).get(name, [None])
+                if any(grain or dimension.granularity for grain in grains):
+                    return False
         preagg_dims = set(preagg.dimensions or [])
         query_dims = set(query_dimensions)
         if preagg.time_dimension:
@@ -379,7 +495,11 @@ class PreAggregationMatcher:
         if query_dims != preagg_dims:
             return False
         if preagg.time_dimension or query_granularity:
-            return bool(preagg.time_dimension) and query_granularity == preagg.granularity
+            return (
+                bool(preagg.time_dimension)
+                and preagg.time_dimension in query_dimensions
+                and query_granularity == preagg.granularity
+            )
         return True
 
     def _is_granularity_compatible(
@@ -439,6 +559,7 @@ class PreAggregationMatcher:
         Returns:
             Score (higher is better)
         """
+        query_granularity = self._effective_granularity(preagg, query_dimensions, query_granularity)
         score = 0
 
         preagg_dims = set(preagg.dimensions or [])
@@ -479,12 +600,14 @@ class PreAggregationMatcher:
         query_dimensions: list[str],
         query_granularity: str | None = None,
         filters: list[str] | None = None,
+        time_granularities: dict[str, list[str | None]] | None = None,
     ) -> PreaggCandidate:
         """Evaluate a pre-aggregation with detailed check results.
 
         Same logic as can_satisfy_query but returns structured check details
         instead of a boolean.
         """
+        query_granularity = self._effective_granularity(preagg, query_dimensions, query_granularity)
         # original_sql pre-aggregations are staged base tables, not queryable rollups.
         if preagg.type == "original_sql":
             return PreaggCandidate(
@@ -533,15 +656,15 @@ class PreAggregationMatcher:
             if not metric:
                 measure_details.append(f"{metric_name} (not found)")
                 measures_ok = False
-            elif metric.agg in ("count_distinct", "approx_count_distinct") and metric.name in (preagg.measures or []):
-                if self._is_exact_grain(preagg, query_dimensions, query_granularity):
+            elif metric.agg in FINALIZED_AGGREGATIONS and metric.name in (preagg.measures or []):
+                if self._is_exact_grain(preagg, query_dimensions, query_granularity, time_granularities):
                     measure_details.append(f"{metric_name} ({metric.agg} exact grain)")
                 else:
                     measure_details.append(f"{metric_name} ({metric.agg}_not_rollup_safe)")
                     measures_ok = False
             elif not self._is_measure_derivable(metric, preagg):
                 agg = metric.agg or "complex"
-                if agg in ("count_distinct", "approx_count_distinct"):
+                if agg in FINALIZED_AGGREGATIONS:
                     measure_details.append(f"{metric_name} ({agg}_not_rollup_safe)")
                 elif agg == "avg":
                     measure_details.append(f"{metric_name} (avg needs companion count measure)")
@@ -566,7 +689,9 @@ class PreAggregationMatcher:
             checks.append(PreaggCheck("measures", True, "no metrics required"))
 
         # 3. Granularity compatibility check
-        if query_granularity and preagg.granularity:
+        if preagg.time_dimension in query_dimensions and preagg.granularity and not query_granularity:
+            checks.append(PreaggCheck("granularity", False, "raw timestamps cannot be reconstructed from buckets"))
+        elif query_granularity and preagg.granularity:
             gran_ok = self._is_granularity_compatible(query_granularity, preagg.granularity)
             if gran_ok:
                 if query_granularity == preagg.granularity:
@@ -587,7 +712,10 @@ class PreAggregationMatcher:
 
             missing_cols = {col for col in filter_columns if col not in available_columns}
             filters_ok = len(missing_cols) == 0
-            if filters_ok:
+            buckets_ok = self._time_filters_preserve_buckets(preagg, filters)
+            if filters_ok and not buckets_ok:
+                checks.append(PreaggCheck("filters", False, "time predicate may split materialized buckets"))
+            elif filters_ok:
                 checks.append(
                     PreaggCheck(
                         "filters",
@@ -623,6 +751,7 @@ class PreAggregationMatcher:
         dimensions: list[str] | None = None,
         time_granularity: str | None = None,
         filters: list[str] | None = None,
+        time_granularities: dict[str, list[str | None]] | None = None,
     ) -> list[PreaggCandidate]:
         """Evaluate all pre-aggregation candidates with detailed explanations.
 
@@ -635,13 +764,26 @@ class PreAggregationMatcher:
 
         candidates = []
         for preagg in self.model.pre_aggregations:
-            candidate = self.explain_query(
-                preagg=preagg,
-                query_metrics=metrics,
-                query_dimensions=dimensions,
-                query_granularity=time_granularity,
-                filters=filters,
+            candidate_granularities = (
+                time_granularities.get(preagg.time_dimension, [None])
+                if time_granularities is not None
+                else [time_granularity]
             )
+            grain_candidates = [
+                self.explain_query(
+                    preagg=preagg,
+                    query_metrics=metrics,
+                    query_dimensions=dimensions,
+                    query_granularity=grain,
+                    filters=filters,
+                    time_granularities=time_granularities,
+                )
+                for grain in candidate_granularities
+            ]
+            # Report an incompatible grain when any requested grain fails.
+            candidate = next((c for c in grain_candidates if not c.matched), None)
+            if candidate is None:
+                candidate = min(grain_candidates, key=lambda c: c.score or 0)
             candidates.append(candidate)
 
         # Mark the best match as selected

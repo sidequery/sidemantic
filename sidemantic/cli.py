@@ -3390,11 +3390,25 @@ def refresh(
 
             # Generate materialization SQL
             source_sql = preagg_obj.generate_materialization_sql(model_obj)
+            bootstrap_source_sql = source_sql
 
             # Determine watermark column
             watermark_column = None
             if resolved_mode in ["incremental", "merge"] and preagg_obj.time_dimension and preagg_obj.granularity:
                 watermark_column = f"{preagg_obj.time_dimension}_{preagg_obj.granularity}"
+
+            if resolved_mode in {"incremental", "merge"} and not preagg_obj.partition_granularity:
+                if not watermark_column or preagg_obj.type == "original_sql":
+                    raise ValueError("Incremental/merge refresh requires a rollup with time_dimension and granularity")
+                # Restrict complete materialized buckets using the same boundary as
+                # refresh's target deletion. Append excludes the current watermark;
+                # merge and lookback refresh replace the inclusive window.
+                lookback = preagg_obj.refresh_key and preagg_obj.refresh_key.update_window
+                comparison = ">=" if resolved_mode == "merge" or lookback else ">"
+                source_sql = (
+                    f"SELECT * FROM (\n{source_sql}\n) AS refresh_source "
+                    f"WHERE {watermark_column} {comparison} {{WATERMARK}}"
+                )
 
             # Refresh
             emit_diagnostic(f"Refreshing {model_name}.{preagg_obj.name} ({resolved_mode})...")
@@ -3409,6 +3423,8 @@ def refresh(
                     model=model_obj,
                     database=database,
                     schema=schema,
+                    align_watermark_to_grain=True,
+                    bootstrap_source_sql=bootstrap_source_sql,
                 )
             refreshed.append(
                 {

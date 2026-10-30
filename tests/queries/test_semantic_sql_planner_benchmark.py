@@ -17,7 +17,7 @@ def test_semantic_sql_planner_benchmark_proof_fields():
         "global_row_number_topn",
         "topn_pagination_preaggregation",
         "additive_total_union_preaggregation",
-        "virtual_dataset_time_rls_preaggregation",
+        "virtual_dataset_time_rls_source_fallback",
         "conditional_pivot_preaggregation",
         "time_expression_grain_rollup_preaggregation",
         "union_branch_semantic_islands_preaggregation",

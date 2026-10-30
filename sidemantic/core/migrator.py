@@ -1,5 +1,6 @@
 """Semantic layer coverage analyzer for raw SQL queries."""
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,7 +12,8 @@ from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.paths import output_child
 
 # Single source of truth: maps a sqlglot AggFunc class name (lowercased) to the
-# sidemantic agg name. Used by every migration path (base, derived, window) so the
+# normalized aggregate identity. Parameterized aggregates use complete SQL in
+# generated metrics rather than a bare Metric.agg. Used by every migration path so the
 # same aggregate normalizes identically everywhere and derived references resolve
 # against the generated base metrics.
 _AGG_NAME_MAP = {
@@ -28,10 +30,7 @@ _AGG_NAME_MAP = {
     "variancesamp": "variance",  # sample variance == the default VARIANCE agg
     "median": "median",
     "approxdistinct": "approx_count_distinct",
-    # approx_quantile takes a percentile arg sidemantic can't model as a bare agg;
-    # fall back to median (the 0.5 quantile). NOTE: a non-0.5 percentile (e.g. p90)
-    # is silently downgraded to the median here.
-    "approxquantile": "median",
+    "approxquantile": "approx_quantile",
 }
 
 # Time dimensions must declare their base granularity in native Sidemantic
@@ -135,6 +134,11 @@ class QueryAnalysis:
     aggregation_aliases: dict[tuple[str, str, str], str] = field(
         default_factory=dict
     )  # (agg_type, col, table) -> alias
+    # Complete SQL distinguishes populations and aggregate parameters that a
+    # bare agg/column pair cannot express.
+    aggregation_definitions: dict[tuple[str, str, str], dict] = field(default_factory=dict)
+    aggregation_keys: dict[str, tuple[str, str, str]] = field(default_factory=dict)
+    aggregation_projections: list[tuple[tuple[str, str, str], str | None]] = field(default_factory=list)
     derived_metrics: list[tuple[str, str, str]] = field(
         default_factory=list
     )  # (name/alias, sql_expression, table) for calculated metrics
@@ -215,6 +219,7 @@ class Migrator:
         self.connection = connection
         self.dialect = dialect
         self.analyses: list[QueryAnalysis] = []
+        self._generated_metric_names: dict[tuple[str, str, str], str] = {}
 
         # Build mapping from table names to model names
         self.table_to_model: dict[str, str] = {}
@@ -501,12 +506,21 @@ class Migrator:
 
                 # Check if this is a derived metric (has operators AND aggregations)
                 operators = (exp.Div, exp.Mul, exp.Add, exp.Sub)
-                is_derived = any(isinstance(node, operators) for node in inner_expr.walk()) and len(aggs) > 0
+                is_derived = bool(aggs) and any(
+                    isinstance(node, operators)
+                    for node in inner_expr.walk(prune=lambda node: isinstance(node, (exp.AggFunc, exp.Filter)))
+                )
 
                 # Handle aggregations (even if part of derived metrics - we need base metrics for model generation)
                 for agg in aggs:
                     agg_name = _normalize_agg_name(agg)
                     col = agg.this
+                    simple_count_distinct = (
+                        isinstance(agg, exp.Count)
+                        and isinstance(col, exp.Distinct)
+                        and len(col.expressions) == 1
+                        and isinstance(col.expressions[0], exp.Column)
+                    )
 
                     # Determine table
                     table_name = None
@@ -551,13 +565,34 @@ class Migrator:
                             if len(matches) == 1:
                                 table_name = matches[0]
 
+                    # FILTER and parameterized aggregates need their entire SQL
+                    # expression: neither their population nor extra arguments
+                    # are represented by a bare (agg, column) pair.
+                    complete = isinstance(agg.parent, exp.Filter) or isinstance(agg, exp.ApproxQuantile)
+                    definition = None
+                    if complete:
+                        aggregate_expr = agg.parent if isinstance(agg.parent, exp.Filter) else agg
+                        normalized = aggregate_expr.copy()
+                        for column in normalized.find_all(exp.Column):
+                            owner = analysis.table_aliases.get(column.table, column.table)
+                            if not owner or owner == table_name:
+                                column.set("table", None)
+                            else:
+                                column.set("table", exp.to_identifier(owner))
+                        col_name = normalized.sql(dialect=self.dialect)
+                        definition = {"sql": col_name, "sql_is_complete": True}
+
                     # Store aggregation
                     agg_tuple = (agg_name, col_name, table_name or "")
                     analysis.aggregations.append(agg_tuple)
+                    if definition is not None:
+                        analysis.aggregation_definitions[agg_tuple] = definition
+                    aggregate_expr = agg.parent if isinstance(agg.parent, exp.Filter) else agg
+                    analysis.aggregation_keys[str(aggregate_expr)] = agg_tuple
 
                     # Track alias if this SELECT expression has only one aggregation
                     # For derived metrics (multiple aggs with operators), the alias goes on the derived metric, not individual aggs
-                    if alias_name and len(aggs) == 1:
+                    if alias_name and len(aggs) == 1 and not is_derived:
                         analysis.aggregation_aliases[agg_tuple] = alias_name
 
                     # Mark if part of a derived metric
@@ -565,11 +600,19 @@ class Migrator:
                         analysis.aggregations_in_derived.add(agg_tuple)
 
                     # If this is a complex expression with an alias (not part of derived), also add as derived metric
-                    if alias_name and not isinstance(col, (exp.Column, exp.Star)) and not is_derived:
+                    if (
+                        alias_name
+                        and not isinstance(col, (exp.Column, exp.Star))
+                        and not simple_count_distinct
+                        and not is_derived
+                        and not complete
+                    ):
                         # This is a complex aggregation with an alias - treat as derived metric
                         analysis.derived_metrics.append((alias_name, str(agg), table_name or ""))
                         # Mark this aggregation as part of a derived metric
                         analysis.aggregations_in_derived.add((agg_name, col_name, table_name or ""))
+                    elif not is_derived and not isinstance(inner_expr, exp.Window):
+                        analysis.aggregation_projections.append((agg_tuple, alias_name))
 
     def _extract_derived_metrics(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
         """Extract derived metrics from SELECT clause - expressions with operators and aggregations.
@@ -611,34 +654,12 @@ class Migrator:
                     tables_in_expr = set()
                     agg_parts = []
                     for agg in aggs:
-                        agg_table = ""
-                        agg_col = "*"
-                        for col in agg.find_all(exp.Column):
-                            if col.table:
-                                agg_table = analysis.table_aliases.get(col.table, col.table)
-                            if col.name:
-                                agg_col = col.name
-
-                        # Determine agg type from the AST node
-                        if isinstance(agg, exp.Count):
-                            if isinstance(agg.this, exp.Distinct):
-                                agg_type_name = "count_distinct"
-                            else:
-                                agg_type_name = "count"
-                        elif isinstance(agg, exp.Sum):
-                            agg_type_name = "sum"
-                        elif isinstance(agg, exp.Avg):
-                            agg_type_name = "avg"
-                        elif isinstance(agg, exp.Min):
-                            agg_type_name = "min"
-                        elif isinstance(agg, exp.Max):
-                            agg_type_name = "max"
-                        else:
-                            agg_type_name = _normalize_agg_name(agg)
-
+                        aggregate_expr = agg.parent if isinstance(agg.parent, exp.Filter) else agg
+                        aggregate_sql = str(aggregate_expr)
+                        agg_type_name, agg_col, agg_table = analysis.aggregation_keys[aggregate_sql]
                         agg_parts.append(
                             {
-                                "sql": str(agg),
+                                "sql": aggregate_sql,
                                 "agg_type": agg_type_name,
                                 "col_name": agg_col,
                                 "table_name": agg_table,
@@ -831,8 +852,9 @@ class Migrator:
             analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
 
             # PK table has one_to_many relationship to FK table
-            # For one_to_many, we don't store FK (it's on the other side)
-            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
+            # The reverse edge records the same FK on the related model and
+            # the same PK on this model; neither endpoint assumes default keys.
+            analysis.relationships.append((pk_table, fk_table, "one_to_many", fk_column, pk_column))
 
         # Extract from JOIN ON conditions
         for join in parsed.find_all(exp.Join):
@@ -863,7 +885,7 @@ class Migrator:
                             pk_column = "id" if right.name.endswith("_id") else right.name
 
                             analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
-                            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
+                            analysis.relationships.append((pk_table, fk_table, "one_to_many", fk_column, pk_column))
                             continue
                         elif left_table == to_table:
                             # Left table is being joined, so it has the FK
@@ -873,7 +895,7 @@ class Migrator:
                             pk_column = "id" if left.name.endswith("_id") else left.name
 
                             analysis.relationships.append((fk_table, pk_table, "many_to_one", fk_column, pk_column))
-                            analysis.relationships.append((pk_table, fk_table, "one_to_many", None, None))
+                            analysis.relationships.append((pk_table, fk_table, "one_to_many", fk_column, pk_column))
                             continue
 
                 extract_relationship_from_eq(on_clause)
@@ -1209,6 +1231,12 @@ class Migrator:
             return metric.sql in (None, "", "*")
         return metric.sql == col_name
 
+    def _metric_matches_aggregation(self, metric, agg_type, col_name, table_name, analysis) -> bool:
+        definition = analysis.aggregation_definitions.get((agg_type, col_name, table_name))
+        if definition is not None:
+            return metric.sql_is_complete and metric.sql == definition["sql"]
+        return metric.agg == agg_type and self._metric_matches_column(metric, col_name)
+
     def _check_coverage(self, analysis: QueryAnalysis) -> None:
         """Check if query can be rewritten and identify gaps."""
         # Check if all tables are in the semantic layer as models
@@ -1229,7 +1257,7 @@ class Migrator:
                 # Check if metric exists
                 metric_found = False
                 for metric in model.metrics:
-                    if metric.agg == agg_type and self._metric_matches_column(metric, col_name):
+                    if self._metric_matches_aggregation(metric, agg_type, col_name, table_name, analysis):
                         metric_found = True
                         break
 
@@ -1298,7 +1326,7 @@ class Migrator:
             if model_name:
                 model = self.layer.graph.models[model_name]
                 for metric in model.metrics:
-                    if metric.agg == agg_type and self._metric_matches_column(metric, col_name):
+                    if self._metric_matches_aggregation(metric, agg_type, col_name, table_name, analysis):
                         metrics.append(f"{model_name}.{metric.name}")
                         break
 
@@ -1459,6 +1487,8 @@ class Migrator:
             Dictionary mapping model names to model definitions (YAML-ready)
         """
         models = {}
+        self._generated_metric_names = {}
+        aggregation_definitions = {}
 
         # Aggregate all discovered patterns
         all_tables = set()
@@ -1474,6 +1504,8 @@ class Migrator:
         for analysis in report.query_analyses:
             if analysis.parse_error:
                 continue
+
+            aggregation_definitions.update(analysis.aggregation_definitions)
 
             # Track tables
             all_tables.update(analysis.tables)
@@ -1592,7 +1624,11 @@ class Migrator:
 
             if has_metrics:
                 metrics = []
-                seen_metrics = set()
+                seen_metrics = {dim["name"] for dim in dims}
+                # Derived/cumulative names are authored projection names. Reserve
+                # them before assigning names to their supporting base metrics.
+                reserved_names = {name for name, _ in table_derived_metrics[table]}
+                reserved_names.update(m["name"] for m in table_cumulative_metrics[table])
 
                 # Add base metrics
                 if table in table_metrics:
@@ -1607,6 +1643,8 @@ class Migrator:
                         else:
                             generated_name = f"{agg_type}_{col_name}"
 
+                        generated_name = re.sub(r"[^a-zA-Z0-9_]+", "_", generated_name).strip("_")
+
                         # Prefer alias if available
                         alias_key = (table, agg_type, col_name)
                         if alias_key in metric_aliases:
@@ -1615,13 +1653,15 @@ class Migrator:
                             metric_name = generated_name
 
                         # If alias collides with another metric, fall back to generated name
-                        if metric_name in seen_metrics and metric_name != generated_name:
+                        if metric_name in seen_metrics or metric_name in reserved_names:
                             metric_name = generated_name
-
-                        # Avoid true duplicates (same aggregation seen from multiple queries)
-                        if metric_name in seen_metrics:
-                            continue
+                        base_name = metric_name
+                        suffix = 2
+                        while metric_name in seen_metrics or metric_name in reserved_names:
+                            metric_name = f"{base_name}_{suffix}"
+                            suffix += 1
                         seen_metrics.add(metric_name)
+                        self._generated_metric_names[(agg_type, col_name, table)] = metric_name
 
                         metric_def = {
                             "name": metric_name,
@@ -1633,6 +1673,9 @@ class Migrator:
                         else:
                             metric_def["sql"] = "*"
 
+                        definition = aggregation_definitions.get((agg_type, col_name, table))
+                        if definition is not None:
+                            metric_def = {"name": metric_name, **definition}
                         metrics.append(metric_def)
 
                 # Add derived metrics
@@ -1692,12 +1735,14 @@ class Migrator:
                         "type": rel_type,
                     }
 
-                    # Add foreign_key for many_to_one relationships
-                    if rel_type == "many_to_one" and fk_col:
+                    # Both directions need the foreign key: local for
+                    # many_to_one, on the related model for one_to_many.
+                    if fk_col:
                         rel_def["foreign_key"] = fk_col
 
-                    # Optionally add primary_key if it's not the default "id"
-                    if pk_col and pk_col != "id":
+                    # Generated models do not assume an id primary key. Keep
+                    # the observed join target even when it is named id.
+                    if pk_col:
                         rel_def["primary_key"] = pk_col
 
                     relationships.append(rel_def)
@@ -1766,7 +1811,14 @@ class Migrator:
             for m in model_def.get("metrics", []):
                 if m.get("type"):
                     continue  # skip derived/cumulative
-                metric_lookup[(model_name, m["agg"], m.get("sql", "*"))] = m["name"]
+                if m.get("sql_is_complete"):
+                    node = sqlglot.parse_one(m["sql"], read=self.dialect).find(exp.AggFunc)
+                    agg_type = _normalize_agg_name(node)
+                    if isinstance(node, exp.Count) and isinstance(node.this, exp.Distinct):
+                        agg_type = "count_distinct"
+                else:
+                    agg_type = m["agg"]
+                metric_lookup[(model_name, agg_type, m.get("sql", "*"))] = m["name"]
 
         seen: set[str] = set()
         graph_metrics: list[dict] = []
@@ -1863,6 +1915,9 @@ class Migrator:
         Returns:
             Dictionary mapping query names to rewritten SQL
         """
+        # Use exactly the same report-wide alias choices and collision resolution
+        # as model generation, including when queries are requested first.
+        self.generate_models(report)
         rewritten = {}
 
         for i, analysis in enumerate(report.query_analyses, 1):
@@ -1898,27 +1953,19 @@ class Migrator:
                 select_parts.append(f"{real_table}.{col_name}__{granularity}")
 
             # Add metrics (but skip those that are only part of derived metrics)
-            for agg_type, col_name, table_name in analysis.aggregations:
-                # Skip if this aggregation is only part of a derived metric
-                if (agg_type, col_name, table_name) in analysis.aggregations_in_derived:
-                    continue
-
+            for agg_key, output_alias in analysis.aggregation_projections:
+                agg_type, col_name, table_name = agg_key
                 real_table = resolve_table(table_name)
                 if not real_table and len(analysis.tables) == 1:
                     real_table = list(analysis.tables)[0]
 
-                # Generate metric name
-                if agg_type == "count" and col_name == "*":
-                    metric_name = "count"
-                elif agg_type == "count" and col_name != "*":
-                    # COUNT(column) - use column_count pattern
-                    metric_name = f"{col_name}_count"
-                elif agg_type == "count_distinct":
-                    metric_name = f"{col_name}_count_distinct"
-                else:
-                    metric_name = f"{agg_type}_{col_name}"
-
-                select_parts.append(f"{real_table}.{metric_name}")
+                metric_name = self._generated_metric_names.get((agg_type, col_name, real_table))
+                if metric_name is None:
+                    continue
+                reference = f"{real_table}.{exp.to_identifier(metric_name).sql()}"
+                if output_alias:
+                    reference += f" AS {exp.to_identifier(output_alias).sql()}"
+                select_parts.append(reference)
 
             # Add derived metrics
             for metric_name, _metric_sql, table_name in analysis.derived_metrics:

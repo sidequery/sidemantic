@@ -792,7 +792,8 @@ def test_generate_models_with_relationships():
     cust_rels = {r["name"]: r for r in customers["relationships"]}
     assert "orders" in cust_rels
     assert cust_rels["orders"]["type"] == "one_to_many"
-    assert "foreign_key" not in cust_rels["orders"]  # FK is on orders side
+    assert cust_rels["orders"]["foreign_key"] == "customer_id"  # FK is on orders side
+    assert cust_rels["orders"]["primary_key"] == "id"
 
     # Check orders model
     orders = models["orders"]

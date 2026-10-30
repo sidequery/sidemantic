@@ -468,3 +468,131 @@ def test_timezone_partition_lookback_preserves_only_older_history(timezone):
     conn.execute("DELETE FROM orders")
     preagg.build_partitions(conn, model, lookback="7 days")
     assert conn.execute("SELECT value_raw FROM orders_preagg_daily").fetchall() == [(100,)]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("other_grain", [None, "day", "month"])
+@pytest.mark.parametrize("requested_grain", ["day", "month"])
+def test_rollup_grain_is_bound_to_its_own_time_dimension(reverse, other_grain, requested_grain):
+    layer = SemanticLayer(auto_register=False, engine="python")
+    layer.conn.execute("CREATE TABLE orders (dt TIMESTAMP, shipped_at TIMESTAMP, amount INT)")
+    layer.conn.execute("INSERT INTO orders VALUES ('2026-10-01', '2026-11-01', 10), ('2026-10-02', '2026-11-01', 20)")
+    preagg = PreAggregation(
+        name="monthly", measures=["value"], dimensions=["shipped_at"], time_dimension="dt", granularity="month"
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[
+            Dimension(name="dt", type="time", granularity="month"),
+            Dimension(name="shipped_at", type="time", granularity="day"),
+        ],
+        metrics=[Metric(name="value", agg="sum", sql="amount")],
+        pre_aggregations=[preagg],
+    )
+    layer.add_model(model)
+    model.get_dimension("shipped_at").granularity = None
+    layer.conn.execute(f"CREATE TABLE orders_preagg_monthly AS {preagg.generate_materialization_sql(model)}")
+    dimensions = [f"orders.dt__{requested_grain}", "orders.shipped_at" + (f"__{other_grain}" if other_grain else "")]
+    if reverse:
+        dimensions.reverse()
+    sql, rows = query_with_routing(layer, dimensions=dimensions)
+    matches = requested_grain == "month"
+    assert len(rows) == (1 if matches else 2)
+    assert ("orders_preagg_monthly" in sql) is matches
+    plan = layer.explain(metrics=["orders.value"], dimensions=dimensions)
+    assert plan.used_preaggregation is matches
+    assert any(candidate.matched for candidate in plan.candidates) is matches
+
+
+@pytest.mark.parametrize("mode", ["incremental", "merge"])
+@pytest.mark.parametrize("initial_target", ["missing", "empty", "null_only"])
+@pytest.mark.parametrize("window", [None, "1 day"])
+def test_cli_bootstraps_incremental_rollups_without_epoch_cutoff(tmp_path, mode, initial_target, window):
+    db = tmp_path / "bootstrap.duckdb"
+    with duckdb.connect(str(db)) as conn:
+        conn.execute("CREATE TABLE orders (dt TIMESTAMP, amount INT)")
+        if initial_target == "null_only":
+            conn.execute("INSERT INTO orders VALUES (NULL, 3)")
+        else:
+            conn.execute("INSERT INTO orders VALUES (NULL, 3), ('1960-01-01', 7), ('1970-01-01', 11)")
+        if initial_target != "missing":
+            conn.execute("CREATE TABLE orders_preagg_daily (dt_day DATE, value_raw HUGEINT)")
+            if initial_target == "null_only":
+                conn.execute("INSERT INTO orders_preagg_daily VALUES (NULL, 999)")
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "orders.yml").write_text(
+        """models:
+- name: orders
+  table: orders
+  dimensions:
+  - {name: dt, type: time, granularity: day}
+  metrics:
+  - {name: value, agg: sum, sql: amount}
+  pre_aggregations:
+  - name: daily
+    measures: [value]
+    time_dimension: dt
+    granularity: day
+    refresh_key:
+      incremental: true
+"""
+        + (f"      update_window: {window}\n" if window else "")
+    )
+    args = ["preagg", "refresh", str(models), "--db", str(db), "--mode", mode, "--json"]
+    for _ in range(2):
+        result = CliRunner().invoke(app, args)
+        assert result.exit_code == 0, result.stdout + result.stderr
+        with duckdb.connect(str(db)) as conn:
+            actual = conn.execute("SELECT * FROM orders_preagg_daily ORDER BY dt_day NULLS FIRST").fetchall()
+            expected = conn.execute(
+                "SELECT DATE_TRUNC('day', dt), SUM(amount) FROM orders GROUP BY 1 ORDER BY 1 NULLS FIRST"
+            ).fetchall()
+            assert actual == expected
+
+
+@pytest.mark.parametrize("coarse_reference", ["orders.dt", "orders.dt__month"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_rollup_must_support_every_requested_grain_of_same_dimension(coarse_reference, reverse):
+    layer, _, _ = rollup_layer(grain="month")
+    dimensions = ["orders.dt__day", coarse_reference]
+    if reverse:
+        dimensions.reverse()
+    sql, rows = query_with_routing(layer, dimensions=dimensions)
+    assert len(rows) == 2
+    assert "orders_preagg_daily" not in sql
+    plan = layer.explain(metrics=["orders.value"], dimensions=dimensions)
+    assert not plan.used_preaggregation
+    assert not any(candidate.matched for candidate in plan.candidates)
+
+
+@pytest.mark.parametrize("default_grain", [False, True])
+def test_finalized_rollup_cannot_regroup_secondary_time_dimension(default_grain):
+    layer = SemanticLayer(auto_register=False, engine="python")
+    layer.conn.execute("CREATE TABLE orders (dt TIMESTAMP, shipped_at TIMESTAMP, amount INT)")
+    layer.conn.execute("INSERT INTO orders VALUES ('2026-10-01', '2026-11-01', 1), ('2026-10-01', '2026-11-02', 2)")
+    preagg = PreAggregation(
+        name="daily", measures=["value"], dimensions=["shipped_at"], time_dimension="dt", granularity="day"
+    )
+    model = Model(
+        name="orders",
+        table="orders",
+        dimensions=[
+            Dimension(name="dt", type="time", granularity="day"),
+            Dimension(name="shipped_at", type="time", granularity="month"),
+        ],
+        metrics=[Metric(name="value", agg="count_distinct", sql="amount")],
+        pre_aggregations=[preagg],
+    )
+    layer.add_model(model)
+    if not default_grain:
+        model.get_dimension("shipped_at").granularity = None
+    layer.conn.execute(f"CREATE TABLE orders_preagg_daily AS {preagg.generate_materialization_sql(model)}")
+    dimensions = ["orders.dt", "orders.shipped_at" + ("" if default_grain else "__month")]
+    sql, rows = query_with_routing(layer, dimensions=dimensions)
+    assert rows == [(date(2026, 10, 1), date(2026, 11, 1), 2)]
+    assert "orders_preagg_daily" not in sql
+    plan = layer.explain(metrics=["orders.value"], dimensions=dimensions)
+    assert not plan.used_preaggregation
+    assert not any(candidate.matched for candidate in plan.candidates)

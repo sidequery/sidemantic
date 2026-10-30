@@ -525,6 +525,7 @@ FROM {from_clause}{where_clause}"""
         database: str | None = None,
         schema: str | None = None,
         align_watermark_to_grain: bool = False,
+        bootstrap_source_sql: str | None = None,
     ) -> "RefreshResult":
         """Refresh pre-aggregation (STATELESS).
 
@@ -544,6 +545,9 @@ FROM {from_clause}{where_clause}"""
             align_watermark_to_grain: Round lookback boundaries down to this
                 rollup's granularity for both source selection and replacement.
                 Enable when watermark_column stores complete rollup buckets.
+            bootstrap_source_sql: Unbounded source used for incremental/merge
+                initialization when no target watermark exists. Explicit
+                from_watermark values still take precedence.
 
         Returns:
             RefreshResult with refresh statistics
@@ -692,7 +696,16 @@ FROM {from_clause}{where_clause}"""
             lookback = self.refresh_key.update_window
 
         # Execute appropriate refresh strategy
-        if mode == "full":
+        if (
+            mode in {"incremental", "merge"}
+            and bootstrap_source_sql is not None
+            and watermark_column
+            and from_watermark is None
+            and self._get_current_watermark(connection, table_name, watermark_column) is None
+        ):
+            rows_inserted, rows_updated, _ = self._refresh_full(connection, bootstrap_source_sql, table_name)
+            new_watermark = self._get_current_watermark(connection, table_name, watermark_column)
+        elif mode == "full":
             rows_inserted, rows_updated, new_watermark = self._refresh_full(connection, source_sql, table_name)
         elif mode == "incremental":
             if not watermark_column:

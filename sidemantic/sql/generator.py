@@ -7687,7 +7687,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
 
         # Extract dimension names (without model prefix) and find time granularity
         dim_names = []
-        time_granularity = None
+        time_granularities = {}
 
         for dim_ref, gran in parsed_dims:
             # Remove model prefix if present
@@ -7701,7 +7701,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
             # A bare time dimension uses its declared default grain.
             dimension = model.get_dimension(dim_name)
             if dimension and dimension.type == "time":
-                time_granularity = gran or dimension.granularity
+                time_granularities.setdefault(dim_name, []).append(gran or dimension.granularity)
 
         # Extract metric names (without model prefix)
         metric_names = []
@@ -7745,7 +7745,7 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
         preagg = matcher.find_matching_preagg(
             metrics=metric_names,
             dimensions=dim_names,
-            time_granularity=time_granularity,
+            time_granularities=time_granularities,
             filters=filter_exprs,
         )
 
@@ -7867,6 +7867,10 @@ LEFT JOIN {preagg_table} AS {rollup_alias}
                     # Roll up to coarser granularity
                     date_trunc_expr = self._date_trunc(gran, preagg_col)
                     select_exprs.append(f"{date_trunc_expr} AS {self._quote_alias(output_name)}")
+            elif effective_gran:
+                # Other time dimensions are stored at their raw precision.
+                date_trunc_expr = self._date_trunc(effective_gran, dim_name)
+                select_exprs.append(f"{date_trunc_expr} AS {self._quote_alias(output_name)}")
             else:
                 # Regular dimension - use as is
                 if output_name == dim_name:

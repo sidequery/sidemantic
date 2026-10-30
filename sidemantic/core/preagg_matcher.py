@@ -49,6 +49,7 @@ class PreAggregationMatcher:
         dimensions: list[str] | None = None,
         time_granularity: str | None = None,
         filters: list[str] | None = None,
+        time_granularities: dict[str, list[str | None]] | None = None,
     ) -> PreAggregation | None:
         """Find the best matching pre-aggregation for a query.
 
@@ -57,6 +58,8 @@ class PreAggregationMatcher:
             dimensions: List of dimension names requested (without model prefix)
             time_granularity: Time granularity requested (e.g., 'day', 'month')
             filters: List of filter expressions (optional, for compatibility checking)
+            time_granularities: Requested grains by dimension; when supplied, each
+                candidate uses only the grain of its own time dimension.
 
         Returns:
             Best matching PreAggregation, or None if no match found
@@ -76,15 +79,24 @@ class PreAggregationMatcher:
         candidates = []
 
         for preagg in self.model.pre_aggregations:
-            if self.can_satisfy_query(
-                preagg=preagg,
-                query_metrics=metrics,
-                query_dimensions=dimensions,
-                query_granularity=time_granularity,
-                filters=filters,
+            candidate_granularities = (
+                time_granularities.get(preagg.time_dimension, [None])
+                if time_granularities is not None
+                else [time_granularity]
+            )
+            if all(
+                self.can_satisfy_query(
+                    preagg=preagg,
+                    query_metrics=metrics,
+                    query_dimensions=dimensions,
+                    query_granularity=grain,
+                    filters=filters,
+                    time_granularities=time_granularities,
+                )
+                for grain in candidate_granularities
             ):
-                # Score based on specificity (prefer smaller, more specific rollups)
-                score = self._score_match(preagg, dimensions, time_granularity)
+                # Every requested grain must be derivable from the stored buckets.
+                score = min(self._score_match(preagg, dimensions, grain) for grain in candidate_granularities)
                 candidates.append((preagg, score))
 
         if not candidates:
@@ -101,6 +113,7 @@ class PreAggregationMatcher:
         query_dimensions: list[str],
         query_granularity: str | None = None,
         filters: list[str] | None = None,
+        time_granularities: dict[str, list[str | None]] | None = None,
     ) -> bool:
         """Check if a pre-aggregation can satisfy a query.
 
@@ -145,7 +158,7 @@ class PreAggregationMatcher:
             if metric.agg in FINALIZED_AGGREGATIONS:
                 if metric.name not in (preagg.measures or []):
                     return False
-                if not self._is_exact_grain(preagg, query_dimensions, query_granularity):
+                if not self._is_exact_grain(preagg, query_dimensions, query_granularity, time_granularities):
                     return False
                 continue
 
@@ -465,7 +478,16 @@ class PreAggregationMatcher:
         preagg: PreAggregation,
         query_dimensions: list[str],
         query_granularity: str | None,
+        time_granularities: dict[str, list[str | None]] | None = None,
     ) -> bool:
+        # Secondary time dimensions are materialized without truncation. Grouping
+        # them at a requested/default grain can combine multiple finalized states.
+        for name in query_dimensions:
+            dimension = self.model.get_dimension(name)
+            if name != preagg.time_dimension and dimension and dimension.type == "time":
+                grains = (time_granularities or {}).get(name, [None])
+                if any(grain or dimension.granularity for grain in grains):
+                    return False
         preagg_dims = set(preagg.dimensions or [])
         query_dims = set(query_dimensions)
         if preagg.time_dimension:
@@ -578,6 +600,7 @@ class PreAggregationMatcher:
         query_dimensions: list[str],
         query_granularity: str | None = None,
         filters: list[str] | None = None,
+        time_granularities: dict[str, list[str | None]] | None = None,
     ) -> PreaggCandidate:
         """Evaluate a pre-aggregation with detailed check results.
 
@@ -634,7 +657,7 @@ class PreAggregationMatcher:
                 measure_details.append(f"{metric_name} (not found)")
                 measures_ok = False
             elif metric.agg in FINALIZED_AGGREGATIONS and metric.name in (preagg.measures or []):
-                if self._is_exact_grain(preagg, query_dimensions, query_granularity):
+                if self._is_exact_grain(preagg, query_dimensions, query_granularity, time_granularities):
                     measure_details.append(f"{metric_name} ({metric.agg} exact grain)")
                 else:
                     measure_details.append(f"{metric_name} ({metric.agg}_not_rollup_safe)")
@@ -728,6 +751,7 @@ class PreAggregationMatcher:
         dimensions: list[str] | None = None,
         time_granularity: str | None = None,
         filters: list[str] | None = None,
+        time_granularities: dict[str, list[str | None]] | None = None,
     ) -> list[PreaggCandidate]:
         """Evaluate all pre-aggregation candidates with detailed explanations.
 
@@ -740,13 +764,26 @@ class PreAggregationMatcher:
 
         candidates = []
         for preagg in self.model.pre_aggregations:
-            candidate = self.explain_query(
-                preagg=preagg,
-                query_metrics=metrics,
-                query_dimensions=dimensions,
-                query_granularity=time_granularity,
-                filters=filters,
+            candidate_granularities = (
+                time_granularities.get(preagg.time_dimension, [None])
+                if time_granularities is not None
+                else [time_granularity]
             )
+            grain_candidates = [
+                self.explain_query(
+                    preagg=preagg,
+                    query_metrics=metrics,
+                    query_dimensions=dimensions,
+                    query_granularity=grain,
+                    filters=filters,
+                    time_granularities=time_granularities,
+                )
+                for grain in candidate_granularities
+            ]
+            # Report an incompatible grain when any requested grain fails.
+            candidate = next((c for c in grain_candidates if not c.matched), None)
+            if candidate is None:
+                candidate = min(grain_candidates, key=lambda c: c.score or 0)
             candidates.append(candidate)
 
         # Mark the best match as selected

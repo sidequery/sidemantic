@@ -3390,6 +3390,7 @@ def refresh(
 
             # Generate materialization SQL
             source_sql = preagg_obj.generate_materialization_sql(model_obj)
+            bootstrap_source_sql = source_sql
 
             # Determine watermark column
             watermark_column = None
@@ -3423,6 +3424,7 @@ def refresh(
                     database=database,
                     schema=schema,
                     align_watermark_to_grain=True,
+                    bootstrap_source_sql=bootstrap_source_sql,
                 )
             refreshed.append(
                 {

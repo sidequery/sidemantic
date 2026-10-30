@@ -100,7 +100,7 @@ const serve = createServeTransport({
 });
 await serve.run({ metrics: ["orders.revenue"], dimensions: ["orders.status"], filters: ["orders.status = 'completed'"], limit: 5 });
 assert(/^SELECT orders\.status, orders\.revenue FROM orders/.test(seen[0]), `serve.run builds semantic SQL, got: ${seen[0]}`);
-assert(/WHERE orders\.status = 'completed'/.test(seen[0]) && /LIMIT 5/.test(seen[0]), "serve.run adds WHERE + LIMIT");
+assert(/WHERE \(orders\.status = 'completed'\)/.test(seen[0]) && /LIMIT 5/.test(seen[0]), "serve.run adds WHERE + LIMIT");
 
 // serve.run is best-effort: the structured client always sets skip_default_time_dimensions,
 // which has no semantic-SQL equivalent, so serve ignores it rather than rejecting every query.
@@ -108,6 +108,15 @@ await serve.run({ metrics: ["orders.revenue"], dimensions: ["orders.status"], sk
 assert(
   /^SELECT orders\.status, orders\.revenue FROM orders/.test(seen[1]),
   `serve.run should ignore skip_default_time_dimensions and still build SQL, got: ${seen[1]}`,
+);
+
+await serve.run({
+  metrics: ["orders.revenue"],
+  filters: ["orders.region = 'US' OR orders.region = 'CA'", "orders.paid = TRUE"],
+});
+assert(
+  seen.at(-1) === "SELECT orders.revenue FROM orders WHERE (orders.region = 'US' OR orders.region = 'CA') AND (orders.paid = TRUE)",
+  "serve.run preserves conjunction of independent filters containing OR",
 );
 
 // serve.run fails fast on ungrouped — it would otherwise silently return grouped rows.

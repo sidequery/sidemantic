@@ -486,8 +486,10 @@ function render({ model, el }) {
   // -------------------------------------------------------------------------
 
   model.on("change:metric_series_data", renderMetrics);
+  model.on("change:metric_series_data_binary", renderMetrics);
   model.on("change:metric_totals", renderMetrics);
   model.on("change:dimension_data", renderDimensions);
+  model.on("change:dimension_data_binary", renderDimensions);
   model.on("change:filters", () => {
     renderFilters();
     renderDimensions(); // Update active states
@@ -496,6 +498,7 @@ function render({ model, el }) {
   model.on("change:selected_metric", () => {
     renderMetricSelect();
     renderMetrics();
+    renderDimensions();
   });
   model.on("change:time_grain", renderGrainSelect);
   model.on("change:status", renderStatus);
@@ -510,8 +513,10 @@ function render({ model, el }) {
   // Cleanup
   return () => {
     model.off("change:metric_series_data", renderMetrics);
+    model.off("change:metric_series_data_binary", renderMetrics);
     model.off("change:metric_totals", renderMetrics);
     model.off("change:dimension_data", renderDimensions);
+    model.off("change:dimension_data_binary", renderDimensions);
     model.off("change:filters");
     model.off("change:brush_selection", renderFilters);
     model.off("change:selected_metric");

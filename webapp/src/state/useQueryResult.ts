@@ -31,11 +31,11 @@ export function useQueryResult(backend: SidemanticBackend, query: StructuredQuer
   const key = query ? JSON.stringify(query) : null;
 
   useEffect(() => {
+    const current = ++token.current;
     if (!query) {
       setState({ loading: false });
       return;
     }
-    const current = ++token.current;
     setState((prev) => ({ result: prev.result, resultKey: prev.resultKey, loading: true }));
     const timer = setTimeout(() => {
       beginQuery();
@@ -52,7 +52,11 @@ export function useQueryResult(backend: SidemanticBackend, query: StructuredQuer
         .finally(() => endQuery());
     }, DEBOUNCE_MS);
     // Superseded queries are cancelled before they ever fire (and before begin/endQuery).
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      // Also invalidate promises already in flight when disabled, replaced, or unmounted.
+      ++token.current;
+    };
     // key captures the full query; backend is stable for the app's lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, backend]);

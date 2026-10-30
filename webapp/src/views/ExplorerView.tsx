@@ -18,6 +18,7 @@ import {
   formatBucketLabel,
   previousRange,
   previousYearRange,
+  startOfBucket,
   type DateRange,
 } from "../lib/time";
 import { useExplorer } from "../state/ExplorerContext";
@@ -55,6 +56,23 @@ export function brushDateRange(range: BrushRange, grain: Grain): DateRange {
     from: fineGrain ? range.from.replace(" ", "T") : dateOnly(range.from),
     to: endOfBucket(range.to, grain),
   };
+}
+
+/** Match buckets relative to the selected windows, including missing leading buckets. */
+export function alignComparisonSeries(
+  points: Array<{ x: string; y: number }>,
+  previous: Array<{ x: string; y: number }>,
+  range: DateRange,
+  comparisonRange: DateRange,
+  grain: Grain,
+): Array<{ x: string; y: number }> {
+  const currentStart = startOfBucket(range.from, grain);
+  const previousStart = startOfBucket(comparisonRange.from, grain);
+  const previousByOffset = new Map(previous.map((point) => [bucketOffset(previousStart, point.x, grain), point.y]));
+  return points.map((point) => ({
+    x: point.x,
+    y: previousByOffset.get(bucketOffset(currentStart, point.x, grain)) ?? NaN,
+  }));
 }
 
 export function ExplorerView() {
@@ -226,26 +244,17 @@ export function ExplorerView() {
   const chartPoints = seriesMetricAlias
     ? seriesRows.map((row) => ({ x: String(row[tAlias] ?? ""), y: Number(row[seriesMetricAlias]) }))
     : [];
-  // Align the previous-period series to the current buckets by position (bucketOffset), so a missing
-  // bucket in either period doesn't shift the dashed overlay or hover delta onto the wrong bucket.
+  // Anchor both series to the requested windows, including partial first buckets.
   const prevRows = prevTimeAlias ? chronologicalSeriesRows(prevSeries.result?.rows ?? [], prevTimeAlias) : [];
   const chartComparison =
-    prevSeriesMetricAlias && chartPoints.length > 0 && prevRows.length > 0
-      ? (() => {
-          const prevFirst = String(prevRows[0][prevTimeAlias] ?? "");
-          const curFirst = chartPoints[0].x;
-          const prevByOffset = new Map<number, number>();
-          for (const row of prevRows) {
-            prevByOffset.set(
-              bucketOffset(prevFirst, String(row[prevTimeAlias] ?? ""), state.grain),
-              Number(row[prevSeriesMetricAlias]),
-            );
-          }
-          return chartPoints.map((point) => ({
-            x: point.x,
-            y: prevByOffset.get(bucketOffset(curFirst, point.x, state.grain)) ?? NaN,
-          }));
-        })()
+    prevSeriesMetricAlias && state.dateRange && prevRange && prevRows.length > 0
+      ? alignComparisonSeries(
+          chartPoints,
+          prevRows.map((row) => ({ x: String(row[prevTimeAlias] ?? ""), y: Number(row[prevSeriesMetricAlias]) })),
+          state.dateRange,
+          prevRange,
+          state.grain,
+        )
       : [];
 
   // Unlike cards and charts, dedicated result shapes cannot safely retain the previous query's

@@ -888,7 +888,7 @@ class SQLGenerator:
         """Resolve a pushed semantic filter against the model's raw source."""
         model_name = model.name
         source_alias = "t" if model.sql else None
-        resolved_filter = filter_sql.replace("{model}.", f"{model_name}.").replace("{model}", model_name)
+        resolved_filter = replace_outside_sql_protected(filter_sql, "{model}", self._quote_identifier(model_name))
         try:
             parsed = _parse_fragment(resolved_filter, self.dialect)
         except SqlglotError:
@@ -2915,7 +2915,7 @@ class SQLGenerator:
         # later aggregate over that column is filtered). Aggregates ignore the NULLs.
         for measure in complete_sql_measures.values():
             filter_conditions = []
-            for filter_str in measure.filters or []:
+            for filter_str in self._strip_model_prefixes(measure.filters or [], model.name):
                 filter_conditions.append(filter_str.replace("{model}.", "").replace("{model}", ""))
             filter_sql = " AND ".join(filter_conditions) if filter_conditions else None
             for col_name, col_quoted in self._complete_sql_columns(measure):
@@ -5956,6 +5956,7 @@ JOIN cohort_sizes c USING (cohort_date){order_clause}{limit_clause}{offset_claus
         filters: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> str:
         """Generate SQL for conversion funnel metrics.
 
@@ -5969,6 +5970,7 @@ JOIN cohort_sizes c USING (cohort_date){order_clause}{limit_clause}{offset_claus
             filters: List of filter expressions
             order_by: List of fields to order by
             limit: Maximum number of rows to return
+            offset: Number of rows to skip
 
         Returns:
             SQL query string
@@ -5995,7 +5997,9 @@ JOIN cohort_sizes c USING (cohort_date){order_clause}{limit_clause}{offset_claus
 
         # Determine if this is a multi-step funnel or legacy 2-step
         if metric.steps:
-            return self._generate_multistep_conversion_query(metric, metric_name, dimensions, filters, order_by, limit)
+            return self._generate_multistep_conversion_query(
+                metric, metric_name, dimensions, filters, order_by, limit, offset
+            )
 
         if not metric.base_event or not metric.conversion_event:
             raise ValueError(f"Conversion metric {metric_name} missing required fields")
@@ -6060,6 +6064,15 @@ JOIN cohort_sizes c USING (cohort_date){order_clause}{limit_clause}{offset_claus
         # Build FROM clause - handle both SQL and table-backed models
         from_clause = self._model_from_clause(model)
 
+        def source_expression(expression: str) -> str:
+            expression = expression.replace("{model}.", "")
+            return self._strip_model_prefixes([expression], model.name)[0]
+
+        entity_dim = model.get_dimension(metric.entity.rsplit(".", 1)[-1])
+        entity_sql = source_expression(entity_dim.sql_expr if entity_dim else metric.entity)
+        timestamp_sql = source_expression(model.get_dimension(timestamp_dim).sql_expr)
+        event_type_sql = source_expression(model.get_dimension(event_type_dim).sql_expr)
+
         # Normalize filters: strip model name prefixes and resolve dimension names
         normalized_filters = self._strip_model_prefixes([*(filters or []), *(metric.filters or [])], model.name)
         normalized_filters = self._resolve_filter_dimensions(normalized_filters, model)
@@ -6081,7 +6094,7 @@ JOIN cohort_sizes c USING (cohort_date){order_clause}{limit_clause}{offset_claus
             dim_obj = model.get_dimension(base_dim)
             if not dim_obj:
                 continue
-            sql_col = dim_obj.sql_expr
+            sql_col = source_expression(dim_obj.sql_expr)
             if gran and dim_obj.type == "time":
                 sql_col = self._date_trunc(gran, sql_col)
                 alias = f"{base_dim}__{gran}"
@@ -6122,20 +6135,21 @@ JOIN cohort_sizes c USING (cohort_date){order_clause}{limit_clause}{offset_claus
         if limit is not None:
             limit_clause = f"\nLIMIT {limit}"
 
+        offset_clause = f"\nOFFSET {offset}" if offset is not None else ""
         sql = f"""
 WITH base_events AS (
   SELECT
-    {metric.entity} AS entity,
-    {timestamp_dim} AS event_time{extra_base_cols}
+    {entity_sql} AS entity,
+    {timestamp_sql} AS event_time{extra_base_cols}
   FROM {from_clause}
-  WHERE {event_type_dim} = '{metric.base_event.replace("'", "''")}'{filter_clause}
+  WHERE {event_type_sql} = '{metric.base_event.replace("'", "''")}'{filter_clause}
 ),
 conversion_events AS (
   SELECT
-    {metric.entity} AS entity,
-    {timestamp_dim} AS event_time{extra_conv_cols}
+    {entity_sql} AS entity,
+    {timestamp_sql} AS event_time{extra_conv_cols}
   FROM {from_clause}
-  WHERE {event_type_dim} = '{metric.conversion_event.replace("'", "''")}'{filter_clause}
+  WHERE {event_type_sql} = '{metric.conversion_event.replace("'", "''")}'{filter_clause}
 ),
 conversions AS (
   SELECT DISTINCT
@@ -6148,7 +6162,7 @@ conversions AS (
 SELECT
 {dim_select}  COUNT(DISTINCT conversions.entity)::FLOAT / NULLIF(COUNT(DISTINCT base_events.entity), 0) AS {self._quote_alias(metric.name)}
 FROM base_events
-LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
+LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}{offset_clause}
 """
 
         return sql.strip()
@@ -6161,6 +6175,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         filters: list[str] | None = None,
         order_by: list[str] | None = None,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> str:
         """Generate SQL for N-step conversion funnel metrics.
 
@@ -6177,6 +6192,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
             filters: List of filter expressions
             order_by: List of fields to order by
             limit: Maximum number of rows to return
+            offset: Number of rows to skip
 
         Returns:
             SQL query string
@@ -6424,11 +6440,12 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}
         # Assemble full query
         cte_str = ",\n".join(cte_parts)
         join_section = f"\n{join_str}" if join_parts else ""
+        offset_clause = f"\nOFFSET {offset}" if offset is not None else ""
         sql = f"""
 WITH {cte_str}
 SELECT
   {final_select}
-FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
+FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_clause}
 """
 
         return sql.strip()
@@ -6548,6 +6565,169 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 )
 
             return None, model_context
+
+        # A cumulative filter defines a private input population. Clone its
+        # dependency tree on a query-local graph so sibling metrics keep their
+        # original aggregates and the caller's graph never gains private fields.
+        filtered_cumulative = []
+        for reference in metrics:
+            metric, owner = resolve_metric_ref(reference)
+            if metric and metric.type == "cumulative" and metric.filters:
+                filtered_cumulative.append((reference, metric, owner))
+        if filtered_cumulative:
+            graph = copy(self.graph)
+            graph.models = self.graph.models.copy()
+            graph.metrics = self.graph.metrics.copy()
+            graph.metric_owners = self.graph.metric_owners.copy()
+            graph._adjacency_dirty = True
+            graph._adjacency = {}
+            graph._role_models = {}
+            graph._role_owners = {}
+            graph._relationship_instances = {}
+            graph._relationship_path_cache = {}
+            private_names = set()
+            population_filters = dict(getattr(self, "_cumulative_population_filters", {}))
+            occupied = set(graph.metrics) | set(aliases.values())
+            for model in graph.models.values():
+                occupied.update(field.name for field in [*model.dimensions, *model.metrics])
+                occupied.update(model.primary_key_columns)
+
+            def qualify_predicates(predicates, owner):
+                if owner is None:
+                    return list(predicates)
+                qualified = []
+                for predicate in predicates:
+                    expression = _parse_fragment(
+                        replace_outside_sql_protected(predicate, "{model}", self._quote_identifier(owner)), self.dialect
+                    )
+                    for column in expression.find_all(exp.Column):
+                        if not column.table and not _column_is_bound_in_select(column, self.dialect):
+                            column.set("table", exp.to_identifier(owner))
+                    qualified.append(expression.sql(dialect=self.dialect))
+                return qualified
+
+            def clone_filtered_input(reference, context, predicates, visiting):
+                reference = canonical_ref(reference, context)
+                if reference in visiting:
+                    raise QueryValidationError(f"Cyclic cumulative input dependency: {reference}")
+                source, owner = resolve_metric_ref(reference, context)
+                if source is None:
+                    raise QueryValidationError(f"Unknown filtered cumulative input: {reference}")
+                visiting = visiting | {reference}
+                filter_owner = self._infer_metric_filter_model(source, owner)
+                predicates = [
+                    f"({predicate})"
+                    for predicate in [*qualify_predicates(source.filters or [], filter_owner), *predicates]
+                ]
+                index = len(private_names)
+                name = f"__sidemantic_cumulative_{index}"
+                while name in occupied or f"{name}_raw" in occupied:
+                    index += 1
+                    name = f"__sidemantic_cumulative_{index}"
+                private_names.add(name)
+                occupied.add(name)
+                updates = {"name": name, "filters": predicates}
+                dependencies = source.get_dependencies(self.graph, owner)
+                complete_sql = source.sql_is_complete or (
+                    source.sql and not source.agg and not dependencies and sql_has_aggregate(source.sql, self.dialect)
+                )
+                if complete_sql:
+                    updates["sql_is_complete"] = True
+                if dependencies and not source.agg and not complete_sql:
+                    replacements = {
+                        canonical_ref(dependency, owner): clone_filtered_input(dependency, owner, predicates, visiting)
+                        for dependency in sorted(dependencies)
+                    }
+                    updates["filters"] = []
+                    if source.base_metric:
+                        updates["base_metric"] = replacements[canonical_ref(source.base_metric, owner)]
+                    if source.type == "ratio":
+                        updates["numerator"] = replacements[canonical_ref(source.numerator, owner)]
+                        updates["denominator"] = replacements[canonical_ref(source.denominator, owner)]
+                    elif source.sql:
+
+                        def bind_dependency(node):
+                            if isinstance(node, exp.Column):
+                                ref = f"{node.table}.{node.name}" if node.table else canonical_ref(node.name, owner)
+                                if ref in replacements:
+                                    return _parse_fragment(replacements[ref], self.dialect)
+                            return node
+
+                        updates["sql"] = (
+                            _parse_fragment(source.sql, self.dialect)
+                            .transform(bind_dependency)
+                            .sql(dialect=self.dialect)
+                        )
+                elif source.type == "cumulative" and source.sql:
+                    updates["sql"] = clone_filtered_input(source.sql, owner, predicates, visiting)
+                    updates["filters"] = []
+                if source.agg or complete_sql:
+                    # A foreign-model predicate cannot be evaluated inside this
+                    # aggregate's source CTE. Filter its joined grouped input
+                    # separately, then align it with the unfiltered period spine.
+                    predicate_models = {
+                        column.table
+                        for predicate in predicates
+                        for column in _parse_fragment(predicate, self.dialect).find_all(exp.Column)
+                        if column.table in self.graph.models
+                    }
+                    if predicate_models - {filter_owner}:
+                        private_reference = f"{owner}.{name}" if owner else name
+                        population_filters[private_reference] = predicates
+                        updates["filters"] = []
+                cloned = source.model_copy(update=updates)
+                if owner:
+                    model = graph.get_model(owner)
+                    graph.models[owner] = model.model_copy(update={"metrics": [*model.metrics, cloned]})
+                    return f"{owner}.{name}"
+                graph.metrics[name] = cloned
+                return name
+
+            for reference, metric, owner in filtered_cumulative:
+                updates = {"filters": []}
+                predicates = qualify_predicates(metric.filters, owner)
+                if metric.sql:
+                    updates["sql"] = clone_filtered_input(metric.sql, owner, predicates, set())
+                if metric.window_expression:
+                    expression = _parse_fragment(metric.window_expression, self.dialect)
+                    replacements = {}
+                    for column in expression.find_all(exp.Column):
+                        if column.table.lower() == "base":
+                            dependency = canonical_ref(column.name, owner)
+                            if dependency not in replacements:
+                                replacements[dependency] = clone_filtered_input(dependency, owner, predicates, set())
+                            column.set("this", exp.to_identifier(replacements[dependency].rsplit(".", 1)[-1]))
+                    updates["window_expression"] = expression.sql(dialect=self.dialect)
+                replacement = metric.model_copy(update=updates)
+                if reference in graph.metrics:
+                    graph.metrics[reference] = replacement
+                else:
+                    model = graph.get_model(owner)
+                    graph.models[owner] = model.model_copy(
+                        update={
+                            "metrics": [replacement if item.name == metric.name else item for item in model.metrics]
+                        }
+                    )
+            generator = copy(self)
+            generator.graph = graph
+            generator._cumulative_population_filters = population_filters
+            generator._generate_cache = {}
+            query = generator._generate_with_window_functions(
+                metrics,
+                dimensions,
+                filters,
+                order_by,
+                limit,
+                offset,
+                aliases,
+                use_preaggregations=use_preaggregations,
+                user_attributes=user_attributes,
+            )
+            expression = sqlglot.parse_one(query, read=self.dialect)
+            expression.set(
+                "expressions", [item for item in expression.expressions if item.alias_or_name not in private_names]
+            )
+            return expression.sql(dialect=self.dialect)
 
         def collect_leaf_base_metrics(
             metric_ref: str, model_context: str | None = None, visited: set[str] | None = None
@@ -6720,7 +6900,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             )
             if non_conversion:
                 raise ValueError("Conversion metrics cannot be combined with other metrics in a single query")
-            return self._generate_conversion_query(conversion_metrics[0], dimensions, filters, order_by, limit)
+            return self._generate_conversion_query(conversion_metrics[0], dimensions, filters, order_by, limit, offset)
 
         # Handle cohort metrics separately - two-level aggregation pattern
         if cohort_metrics:
@@ -6739,6 +6919,68 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 raise ValueError("Cohort metrics cannot be combined with other metrics in a single query")
             return self._generate_cohort_metric_query(cohort_metrics[0], dimensions, filters, order_by, limit, offset)
 
+        # Window-result predicates belong after the window, while independent
+        # row/aggregate conjuncts still constrain its input population.
+        window_references = set(cumulative_metrics + time_comparison_metrics + offset_ratio_metrics)
+        window_names = window_references | {reference.rsplit(".", 1)[-1] for reference in window_references}
+        window_names.update(aliases[reference] for reference in window_references if reference in aliases)
+        base_filters = []
+        window_filters = []
+
+        def split_conjuncts(expression):
+            expression = expression.unnest()
+            if isinstance(expression, exp.And):
+                yield from split_conjuncts(expression.this)
+                yield from split_conjuncts(expression.expression)
+            else:
+                yield expression
+
+        for predicate in filters or []:
+            expression = _parse_fragment(predicate, self.dialect)
+            for conjunct in split_conjuncts(expression):
+                uses_window = any(
+                    (
+                        f"{column.table}.{column.name}" in window_references
+                        if column.table
+                        else column.name in window_names
+                    )
+                    for column in conjunct.find_all(exp.Column)
+                    if not _column_is_bound_in_select(column, self.dialect)
+                )
+                (window_filters if uses_window else base_filters).append(conjunct.sql(dialect=self.dialect))
+
+        # Computed cumulative inputs need their filtered aggregate leaves
+        # materialized independently before recomputing the period expression.
+        population_filters = getattr(self, "_cumulative_population_filters", {})
+        population_computations = []
+
+        def has_population_input(reference, context=None, visited=frozenset()):
+            reference = canonical_ref(reference, context)
+            if reference in population_filters:
+                return True
+            if reference in visited:
+                return False
+            metric, owner = resolve_metric_ref(reference, context)
+            if metric is None or metric.agg or metric.sql_is_complete:
+                return False
+            return any(
+                has_population_input(dependency, owner, visited | {reference})
+                for dependency in metric.get_dependencies(self.graph, owner)
+            )
+
+        if population_filters:
+            for reference in list(base_metrics):
+                metric, owner = resolve_metric_ref(reference)
+                if (
+                    metric is not None
+                    and not metric.agg
+                    and not metric.sql_is_complete
+                    and metric.type in (None, "derived", "ratio")
+                    and has_population_input(reference)
+                ):
+                    population_computations.append(reference)
+                    collect_leaf_base_metrics(reference, owner)
+
         # Build inner query with base aggregations
         # Dedupe base_metrics to avoid duplicate column names
         base_metrics = list(dict.fromkeys(base_metrics))
@@ -6746,7 +6988,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
         inner_query = self.generate(
             metrics=base_metrics,
             dimensions=dimensions,
-            _resolved_filters=tuple(filters or []),
+            _resolved_filters=tuple(base_filters),
             order_by=None,  # Apply ordering in outer query
             limit=None,  # Apply limit in outer query
             use_preaggregations=use_preaggregations,
@@ -6796,7 +7038,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             return f"base.{sql_identifier(alias)}"
 
         def build_time_comparison_base_expression(
-            metric_ref: str, model_context: str | None = None, visited: set[str] | None = None
+            metric_ref: str,
+            model_context: str | None = None,
+            visited: set[str] | None = None,
+            *,
+            apply_fill_defaults: bool = False,
         ) -> str:
             import re
 
@@ -6824,7 +7070,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     # in the inner query (when needed), so reuse the alias.
                     return metric_column(canon_ref)
                 for dependency in dependencies:
-                    dep_expr = build_time_comparison_base_expression(dependency, resolved_context, visited.copy())
+                    dep_expr = build_time_comparison_base_expression(
+                        dependency, resolved_context, visited.copy(), apply_fill_defaults=apply_fill_defaults
+                    )
                     if "." in dependency:
                         model_name, dep_name = dependency.split(".", 1)
                         qualified_pattern = r"\b" + re.escape(f"{model_name}.{dep_name}") + r"\b"
@@ -6836,18 +7084,115 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     else:
                         dep_pattern = r"\b" + re.escape(dependency) + r"\b"
                         formula = re.sub(dep_pattern, f"({dep_expr})", formula)
-                return formula
+                return self._wrap_with_fill_nulls(formula, metric_obj) if apply_fill_defaults else formula
 
             if metric_obj.type == "ratio" and not metric_obj.offset_window:
                 if not metric_obj.numerator or not metric_obj.denominator:
                     raise ValueError(f"Ratio metric {metric_obj.name} requires numerator and denominator")
-                num_expr = build_time_comparison_base_expression(metric_obj.numerator, resolved_context, visited.copy())
-                denom_expr = build_time_comparison_base_expression(
-                    metric_obj.denominator, resolved_context, visited.copy()
+                num_expr = build_time_comparison_base_expression(
+                    metric_obj.numerator, resolved_context, visited.copy(), apply_fill_defaults=apply_fill_defaults
                 )
-                return f"({num_expr}) / NULLIF({denom_expr}, 0)"
+                denom_expr = build_time_comparison_base_expression(
+                    metric_obj.denominator, resolved_context, visited.copy(), apply_fill_defaults=apply_fill_defaults
+                )
+                formula = f"({num_expr}) / NULLIF({denom_expr}, 0)"
+                return self._wrap_with_fill_nulls(formula, metric_obj) if apply_fill_defaults else formula
 
             return metric_column(canon_ref)
+
+        # Restore cross-model filtered leaf populations without shrinking the
+        # unfiltered grouping domain or changing sibling aggregate populations.
+        population_filters = getattr(self, "_cumulative_population_filters", {})
+        filtered_inputs = [reference for reference in base_metrics if reference in population_filters]
+        if filtered_inputs:
+            spine_alias = "__sidemantic_window_spine"
+            joined = exp.select().from_(sqlglot.parse_one(inner_query, read=self.dialect).subquery(spine_alias))
+            replacements = {}
+            for index, reference in enumerate(filtered_inputs):
+                output_alias = metric_output_aliases[reference]
+                child_query = self.generate(
+                    metrics=[reference],
+                    dimensions=dimensions,
+                    _resolved_filters=tuple([*base_filters, *population_filters[reference]]),
+                    aliases={reference: output_alias},
+                    use_preaggregations=use_preaggregations,
+                    user_attributes=user_attributes,
+                )
+                child = sqlglot.parse_one(child_query, read=self.dialect)
+                child_alias = f"__sidemantic_window_input_{index}"
+                presence_alias = "__sidemantic_group_present"
+                while presence_alias in child.named_selects:
+                    presence_alias += "_"
+                child = child.select(exp.alias_(exp.Literal.number(1), presence_alias, quoted=True))
+                predicates = [
+                    exp.NullSafeEQ(
+                        this=exp.column(dimension_aliases[dim], table=spine_alias, quoted=True),
+                        expression=exp.column(alias, table=child_alias, quoted=True),
+                    )
+                    for dim, alias in zip(parsed_dims, child.named_selects[: len(parsed_dims)], strict=True)
+                ]
+                joined = joined.join(
+                    child.subquery(child_alias),
+                    on=exp.and_(*predicates) if predicates else exp.true(),
+                    join_type="LEFT",
+                )
+                value = exp.column(output_alias, table=child_alias, quoted=True)
+                metric, _ = resolve_metric_ref(reference)
+                empty_value = exp.convert(metric.fill_nulls_with)
+                if metric.agg in ("count", "count_distinct", "approx_count_distinct"):
+                    empty_value = exp.Literal.number(0)
+                elif metric.sql_is_complete:
+                    # Complete SQL can have nontrivial empty-input semantics
+                    # (COUNT(*) + 1, NULLIF(COUNT(*), 1), FILTER aggregates).
+                    # Evaluate the same aggregate over zero rows rather than
+                    # guessing from its root function. FALSE provides an empty input.
+                    empty_query = self.generate(
+                        metrics=[reference],
+                        _resolved_filters=("FALSE",),
+                        skip_default_time_dimensions=True,
+                        user_attributes=user_attributes,
+                    )
+                    empty_value = sqlglot.parse_one(empty_query, read=self.dialect).subquery()
+                # A present group may legitimately aggregate to NULL. Apply
+                # empty-input behavior only when the grouped child has no row.
+                replacements[output_alias] = exp.Case(
+                    ifs=[
+                        exp.If(
+                            this=exp.Is(
+                                this=exp.column(presence_alias, table=child_alias, quoted=True),
+                                expression=exp.Null(),
+                            ),
+                            true=empty_value,
+                        )
+                    ],
+                    default=value,
+                )
+            joined.set(
+                "expressions",
+                [
+                    exp.alias_(replacements[name], name, quoted=True)
+                    if name in replacements
+                    else exp.column(name, table=spine_alias, quoted=True)
+                    for name in inner_outputs
+                ],
+            )
+            inner_query = joined.sql(dialect=self.dialect)
+            if population_computations:
+                computations = {
+                    metric_output_aliases[reference]: _parse_fragment(
+                        build_time_comparison_base_expression(reference, apply_fill_defaults=True), self.dialect
+                    )
+                    for reference in population_computations
+                }
+                recomputed = exp.select(
+                    *[
+                        exp.alias_(computations[name], name, quoted=True)
+                        if name in computations
+                        else exp.column(name, table="base", quoted=True)
+                        for name in inner_outputs
+                    ]
+                ).from_(joined.subquery("base"))
+                inner_query = recomputed.sql(dialect=self.dialect)
 
         # Build outer SELECT with window functions
         select_exprs = []
@@ -6881,8 +7226,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                 continue
             metric_alias = self._quote_alias(metric.name)
 
-            # Find the time dimension to order by
-            time_dim = None
+            # The primary temporal dimension supplies the progression axis.
+            # Sorting periods by a metric changes their order, not their cohort.
+            time_dimensions = []
             for dim_ref, gran in parsed_dims:
                 dim_name = dim_ref.split(".")[1] if "." in dim_ref else dim_ref
                 model_name = dim_ref.split(".")[0] if "." in dim_ref else None
@@ -6891,8 +7237,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     if model:
                         dim = model.get_dimension(dim_name)
                         if dim and dim.type == "time":
-                            time_dim = f"base.{sql_identifier(dimension_aliases[dim_ref, gran])}"
-                            break
+                            time_dimensions.append(f"base.{sql_identifier(dimension_aliases[dim_ref, gran])}")
+            time_dim = time_dimensions[0] if time_dimensions else None
+            progression_dim = time_dim
 
             # Allow window_order to override auto-detected time dimension
             if metric.window_order:
@@ -6912,7 +7259,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
                     if len(matches) != 1:
                         raise ValueError("window_order must name an unambiguous selected period output column")
                     order_alias = matches[0]
-                time_dim = f"base.{self._quote_alias(order_alias)}"
+                time_dim = f"base.{sql_identifier(order_alias)}"
+                if time_dim in time_dimensions:
+                    progression_dim = time_dim
 
             if not time_dim:
                 raise ValueError(f"Cumulative metric {m} requires a time dimension for ordering")
@@ -6921,13 +7270,9 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             for dim_ref, gran in parsed_dims:
                 if "." not in dim_ref:
                     continue
-                partition_model, dim_name = dim_ref.split(".", 1)
-                dimension = self.graph.get_model(partition_model).get_dimension(dim_name)
-                if dimension and dimension.type == "time":
-                    continue
                 alias = dimension_aliases[dim_ref, gran]
-                column = f"base.{self._quote_alias(alias)}"
-                if column != time_dim and column not in partition_cols:
+                column = f"base.{sql_identifier(alias)}"
+                if column not in (time_dim, progression_dim) and column not in partition_cols:
                     partition_cols.append(column)
             partition_clause = f"PARTITION BY {', '.join(partition_cols)} " if partition_cols else ""
 
@@ -7239,14 +7584,60 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}
             select_expr_str = ",\n  ".join(select_exprs)
             outer_query = f"SELECT\n  {select_expr_str}\nFROM (\n{inner_query}\n) AS base"
 
+        output_names = sqlglot.parse_one(outer_query, read=self.dialect).named_selects
+        dimension_order_aliases = {
+            f"{reference}__{grain}" if grain else reference: alias
+            for (reference, grain), alias in dimension_aliases.items()
+        }
+        dimension_order_aliases.update(metric_output_aliases)
+        for reference in metrics:
+            name = reference if reference in output_names else reference.rsplit(".", 1)[-1]
+            if name in output_names:
+                dimension_order_aliases[reference] = name
+
+        if window_filters:
+
+            def bind_result_column(node):
+                if not isinstance(node, exp.Column) or _column_is_bound_in_select(node, self.dialect):
+                    return node
+                reference = f"{node.table}.{node.name}" if node.table else node.name
+                reference = next((key for key, value in aliases.items() if value == reference), reference)
+                name = dimension_order_aliases.get(reference, reference)
+                if name not in output_names:
+                    raise QueryValidationError("Window-result filters must reference selected output fields")
+                return exp.column(name, quoted=True)
+
+            predicates = [
+                _parse_fragment(predicate, self.dialect).transform(bind_result_column).sql(dialect=self.dialect)
+                for predicate in window_filters
+            ]
+            projection = ", ".join(self._quote_alias(name) for name in output_names)
+            outer_query = f"SELECT {projection} FROM (\n{outer_query}\n) AS window_results WHERE " + " AND ".join(
+                f"({predicate})" for predicate in predicates
+            )
+
+        # Keep private window inputs stable, then apply caller aliases only to
+        # the final projection. Ordering can bind either semantic or public names.
+        output_aliases = {
+            dimension_order_aliases[reference]: alias
+            for reference, alias in aliases.items()
+            if reference in dimension_order_aliases
+        }
+        if output_aliases:
+            projection = ", ".join(
+                f"{self._quote_alias(name)} AS {self._quote_alias(output_aliases.get(name, name))}"
+                for name in output_names
+            )
+            outer_query = f"SELECT {projection} FROM (\n{outer_query}\n) AS window_outputs"
+            dimension_order_aliases = {
+                reference: output_aliases.get(name, name) for reference, name in dimension_order_aliases.items()
+            }
+            for name, alias in output_aliases.items():
+                dimension_order_aliases.setdefault(name, alias)
+            output_names = [output_aliases.get(name, name) for name in output_names]
+
         # Add ORDER BY if specified
         if order_by:
-            output_names = sqlglot.parse_one(outer_query, read=self.dialect).named_selects
-            dimension_order_aliases = {
-                f"{reference}__{grain}" if grain else reference: alias
-                for (reference, grain), alias in dimension_aliases.items()
-            }
-            dimension_order_aliases.update(metric_output_aliases)
             resolved_order = []
             for field in order_by:
                 reference, suffix = split_order_field(field, [*dimension_order_aliases, *output_names])

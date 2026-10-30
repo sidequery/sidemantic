@@ -216,6 +216,17 @@ class Metric(GovernedObject):
                                 if arg_expr is not None:
                                     inner_expr = arg_expr.sql(dialect="duckdb")
 
+                    # DISTINCT is part of the aggregate, never a scalar input.
+                    # Keep non-COUNT distinct aggregates on the complete-expression
+                    # path, including exact entity-row fanout planning.
+                    if (
+                        isinstance(parsed, exp.AggFunc)
+                        and isinstance(parsed.this, exp.Distinct)
+                        and not isinstance(parsed, exp.Count)
+                    ):
+                        data["sql_is_complete"] = True
+                        return data
+
                     if agg_func:
                         data["agg"] = agg_func
                         if inner_expr is not None:

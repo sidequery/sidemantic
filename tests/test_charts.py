@@ -78,6 +78,28 @@ def test_y_only_chart_keeps_requested_metric():
     assert "transform" not in spec
 
 
+@pytest.mark.parametrize("metrics", [["revenue", "cost"], ["index", "cost"]])
+@pytest.mark.parametrize("row_count", [1, 2])
+def test_all_metrics_with_synthetic_axis_are_rendered(metrics, row_count):
+    pytest.importorskip("altair")
+    vl_convert = pytest.importorskip("vl_convert")
+    from sidemantic.charts import create_chart
+
+    data = [{metrics[0]: 10 + index, metrics[1]: 3 + index} for index in range(row_count)]
+    original = [row.copy() for row in data]
+    spec = create_chart(data, y=metrics).to_dict()
+
+    x = spec["encoding"]["x"]["field"]
+    assert x not in metrics
+    assert [row[x] for row in spec["data"]["values"]] == list(range(row_count))
+    assert spec["transform"][0]["fold"] == metrics
+    assert spec["encoding"]["color"]["field"] == "metric"
+    assert data == original
+    svg = vl_convert.vegalite_to_svg(spec)
+    for metric in metrics:
+        assert f">{metric}</text>" in svg
+
+
 def test_x_only_chart_keeps_requested_dimension():
     pytest.importorskip("altair")
     pytest.importorskip("vl_convert")

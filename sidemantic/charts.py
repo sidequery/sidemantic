@@ -93,7 +93,8 @@ def create_chart(
     infer_x = x is None
     if x is None or y is None:
         x, y = _auto_detect_columns(data, x=x, y=y)
-    if infer_x and x not in data[0]:
+    synthetic_x = infer_x and x not in data[0]
+    if synthetic_x:
         # Scalar metric results need a real field for the synthetic axis.
         # Copy the records so chart construction does not change caller data.
         data = [{**row, x: index} for index, row in enumerate(data)]
@@ -103,7 +104,9 @@ def create_chart(
 
     # Auto-select chart type if needed
     if chart_type == "auto":
-        chart_type = _select_chart_type(data, x, y_cols)
+        # A generated row index is a category, not a second numeric measure.
+        # Use a multi-series chart so every selected metric remains visible.
+        chart_type = "bar" if synthetic_x and len(y_cols) > 1 else _select_chart_type(data, x, y_cols)
 
     # Create base chart
     base = alt.Chart(alt.Data(values=data))

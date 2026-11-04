@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
+from time import monotonic
 from typing import Any
 
 from sidemantic.db.base import BaseDatabaseAdapter
@@ -149,6 +150,7 @@ class ServerLimits:
 
 _default_limits = ServerLimits()
 request_limits: ContextVar[ServerLimits | None] = ContextVar("server_limits", default=None)
+_query_queue_deadline: ContextVar[float | None] = ContextVar("query_queue_deadline", default=None)
 
 
 def current_limits() -> ServerLimits:
@@ -197,13 +199,52 @@ class QueryConcurrencyError(ValueError):
     """No query slot became available within the server's queue deadline."""
 
 
+async def run_query_in_worker(fn, *args, **kwargs):
+    """Share one admission deadline between the worker pool and query slots."""
+    from functools import partial
+
+    import anyio
+
+    timeout = current_limits().queue_timeout_seconds
+    deadline = monotonic() + timeout
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    try:
+        limiter.acquire_nowait()
+    except anyio.WouldBlock:
+        if not timeout:
+            raise QueryConcurrencyError("Server query concurrency limit reached") from None
+        try:
+            with anyio.fail_after(max(0, deadline - monotonic())):
+                await limiter.acquire()
+        except TimeoutError:
+            raise QueryConcurrencyError("Server query concurrency limit reached") from None
+
+    token = _query_queue_deadline.set(deadline if timeout else None)
+    try:
+        # The shared pool token is already reserved. A private dispatch limiter
+        # avoids acquiring it twice, while run_sync still shields active work.
+        return await anyio.to_thread.run_sync(partial(fn, *args, **kwargs), limiter=anyio.CapacityLimiter(1))
+    finally:
+        _query_queue_deadline.reset(token)
+        limiter.release()
+
+
 def _acquire_query_slot(limits: ServerLimits) -> bool:
     import asyncio
 
+    timeout = limits.queue_timeout_seconds
+    deadline = _query_queue_deadline.get()
+    if deadline is not None:
+        # Only initial admission includes the worker wait. A later fallback
+        # query gets its own queue budget, independent of prior execution time.
+        _query_queue_deadline.set(None)
+        timeout = deadline - monotonic()
+        if timeout <= 0:
+            return False
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return limits.slots.acquire(timeout=limits.queue_timeout_seconds)
+        return limits.slots.acquire(timeout=timeout)
     # Synchronous callers on an event loop must never wait there for a slot.
     return limits.slots.acquire(blocking=False)
 

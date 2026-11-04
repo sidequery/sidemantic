@@ -163,8 +163,9 @@ Defaults can be adjusted with `--max-result-rows`, `--max-response-bytes`,
 
 By default, query transports reject results above 10,000 rows or 16 MiB, admit at most four
 concurrent executions per server instance, and bound chart dimensions to 1–2,000 pixels
-on each axis. Queries wait up to 30 seconds for a free execution slot; set
-`--query-queue-timeout 0` to reject immediately when all slots are occupied. HTTP
+on each axis. HTTP queries wait up to 30 seconds in total for a worker and a free
+execution slot; set `--query-queue-timeout 0` to reject immediately when workers or
+execution slots are occupied. HTTP
 queue timeouts return 503 with `Retry-After: 1`. `/readyz` remains responsive when
 the query worker pool is full.
 The queue timeout is separate from the execution deadline. DuckDB execution and result draining have a 30-second deadline

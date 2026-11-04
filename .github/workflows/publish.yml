@@ -19,7 +19,8 @@ on:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # Match CI's browser-test runner; locked Playwright rejects Ubuntu 26.04.
+    runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       new_version: ${{ steps.version.outputs.new_version }}

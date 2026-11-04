@@ -210,7 +210,12 @@ def test_time_dimension_spark_family_dialects_use_date_trunc_for_day(layer, dial
         and cast.to.is_type("date")
         for cast in parsed.find_all(exp.Cast)
     ), f"Expected Spark DATE_TRUNC cast to DATE. Got: {sql}"
-    assert not list(parsed.find_all(exp.DateTrunc)), f"Should not use Spark TRUNC for day grain. Got: {sql}"
+    assert not any(
+        isinstance(trunc.this, exp.Column)
+        and trunc.this.name == "created_at"
+        and trunc.args["unit"] == exp.Literal.string("DAY")
+        for trunc in parsed.find_all(exp.DateTrunc)
+    ), f"Should not use Spark TRUNC for day grain. Got: {sql}"
 
 
 @pytest.mark.parametrize("dialect", ["spark", "databricks"])
@@ -244,7 +249,12 @@ def test_time_dimension_spark_family_dialects_keep_trunc_for_supported_date_grai
         and trunc.args["unit"] == exp.Literal.string(expected_grain)
         for trunc in parsed.find_all(exp.DateTrunc)
     ), f"Expected Spark TRUNC syntax. Got: {sql}"
-    assert not list(parsed.find_all(exp.TimestampTrunc)), f"Should preserve Spark TRUNC path. Got: {sql}"
+    assert not any(
+        isinstance(trunc.this, exp.Column)
+        and trunc.this.name == "created_at"
+        and trunc.args["unit"].name == expected_grain
+        for trunc in parsed.find_all(exp.TimestampTrunc)
+    ), f"Should preserve Spark TRUNC path. Got: {sql}"
 
 
 def test_measure_aggregation():

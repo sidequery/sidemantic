@@ -254,3 +254,22 @@ def test_server_api_help_shows_mcp_toggle():
     assert result.exit_code == 0, result.output
     assert "--mcp" in result.output
     assert "--no-mcp" in result.output
+
+
+def test_init_from_nondefault_schema_produces_runnable_query(tmp_path, monkeypatch):
+    import duckdb
+
+    database = tmp_path / "source.duckdb"
+    with duckdb.connect(str(database)) as con:
+        con.execute("CREATE SCHEMA sales")
+        con.execute("CREATE TABLE sales.orders AS SELECT 1 id, 10 amount")
+    project = tmp_path / "project"
+    result = runner.invoke(app, ["init", str(project), "--from", str(database)])
+    assert result.exit_code == 0, result.output
+    model = yaml.safe_load((project / "models/orders.yml").read_text())["models"][0]
+    assert '"sales"."orders"' in model["table"]
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(cli_module, "_loaded_config", None)
+    result = runner.invoke(app, ["query", "SELECT orders.record_count FROM orders"])
+    assert result.exit_code == 0, result.output
+    assert "1" in result.output

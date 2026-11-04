@@ -573,8 +573,9 @@ def test_tmdl_measure_aggregation_mapping():
         assert total_amount.sql == "amount"
 
         distinct_users = model.get_metric("distinct_users")
-        assert distinct_users.agg == "count_distinct"
-        assert distinct_users.sql == "user_id"
+        assert distinct_users.agg is None
+        assert distinct_users.sql_is_complete
+        assert "COUNT(DISTINCT user_id)" in distinct_users.sql
 
         row_count = model.get_metric("row_count")
         assert row_count.agg == "count"

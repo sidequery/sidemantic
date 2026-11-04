@@ -51,7 +51,7 @@ function buildSemanticSql(query, schema) {
   }
   const fromModel = qualified.split(".")[0];
   let sql = `SELECT ${refs.join(", ")} FROM ${fromModel}`;
-  if (query.filters && query.filters.length) sql += ` WHERE ${query.filters.join(" AND ")}`;
+  if (query.filters && query.filters.length) sql += ` WHERE ${query.filters.map((filter) => `(${filter})`).join(" AND ")}`;
   if (query.order_by && query.order_by.length) sql += ` ORDER BY ${query.order_by.join(", ")}`;
   if (query.limit != null) sql += ` LIMIT ${Number(query.limit)}`;
   return sql;

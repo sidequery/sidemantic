@@ -1,8 +1,16 @@
-import { tableFromIPC } from "apache-arrow";
+import { DataType, tableFromIPC } from "apache-arrow";
 import type { ResultRow } from "./types";
 
-function normalize(value: unknown): string | number | boolean | null {
+function normalize(value: unknown, type: DataType): string | number | boolean | null {
   if (value === null || value === undefined) return null;
+  // Arrow JS exposes dates/timestamps as epoch milliseconds and decimals as unscaled
+  // integers. Recover their logical values from the schema, matching the JSON transport.
+  if (DataType.isDate(type)) return new Date(Number(value)).toISOString().slice(0, 10);
+  if (DataType.isTimestamp(type)) {
+    const iso = new Date(Number(value)).toISOString().replace(".000Z", "Z");
+    return type.timezone ? iso : iso.slice(0, -1);
+  }
+  if (DataType.isDecimal(type)) return Number(`${String(value)}e${-type.scale}`);
   if (typeof value === "bigint") {
     const asNumber = Number(value);
     return Number.isSafeInteger(asNumber) ? asNumber : value.toString();
@@ -24,8 +32,8 @@ export function decodeArrow(bytes: Uint8Array): { columns: string[]; rows: Resul
   for (let i = 0; i < table.numRows; i++) {
     const proxy = table.get(i);
     const row: ResultRow = {};
-    for (const col of columns) {
-      row[col] = normalize(proxy ? (proxy as Record<string, unknown>)[col] : null);
+    for (const field of table.schema.fields) {
+      row[field.name] = normalize(proxy ? (proxy as Record<string, unknown>)[field.name] : null, field.type);
     }
     rows[i] = row;
   }

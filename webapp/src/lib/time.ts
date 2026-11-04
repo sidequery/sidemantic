@@ -159,6 +159,22 @@ export function timeFilters(ref: string, range: DateRange): string[] {
   return [`${ref} >= cast('${range.from}' as date)`, `${ref} < cast('${addDays(range.to, 1)}' as date)`];
 }
 
+/** Truncate a range boundary to its containing query bucket (weeks start Monday). */
+export function startOfBucket(value: string, grain: Grain): string {
+  const date = new Date(normalizeBucketLabel(value));
+  if (grain === "second") date.setUTCMilliseconds(0);
+  else if (grain === "minute") date.setUTCSeconds(0, 0);
+  else if (grain === "hour") date.setUTCMinutes(0, 0, 0);
+  else {
+    date.setUTCHours(0, 0, 0, 0);
+    if (grain === "week") date.setUTCDate(date.getUTCDate() - (date.getUTCDay() + 6) % 7);
+    if (grain === "month" || grain === "quarter" || grain === "year") date.setUTCDate(1);
+    if (grain === "quarter") date.setUTCMonth(Math.floor(date.getUTCMonth() / 3) * 3);
+    if (grain === "year") date.setUTCMonth(0);
+  }
+  return date.toISOString();
+}
+
 /** Whole-grain-unit offset of bucket `label` from bucket `first`. Used to align a previous-period
  *  series to the current one by bucket position rather than ordinal index, so missing (sparse)
  *  buckets in either period don't shift the overlay. */

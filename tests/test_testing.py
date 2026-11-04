@@ -2,16 +2,36 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
 from sidemantic.testing import (
+    _values_match,
     check_schema_drift,
     load_test_file,
     run_tests,
 )
+
+
+@pytest.mark.parametrize(
+    ("actual", "expected", "tolerance", "matches"),
+    [
+        (9007199254740993, 9007199254740992, 0, False),
+        (9007199254740993, 9007199254740992.0, 0, False),
+        (Decimal("9007199254740993.01"), Decimal("9007199254740993.02"), 0, False),
+        (Decimal("9007199254740993.01"), Decimal("9007199254740993.02"), 0.02, True),
+        (9007199254740993, 9007199254740992, 1, True),
+        (0.1 + 0.2, 0.3, 0, True),
+        (float("inf"), float("inf"), 0, True),
+        (float("nan"), float("nan"), 0, False),
+    ],
+)
+def test_numeric_expectations_preserve_precision(actual, expected, tolerance, matches):
+    assert _values_match(actual, expected, tolerance) is matches
+
 
 # --- load_test_file shape validation -----------------------------------------
 

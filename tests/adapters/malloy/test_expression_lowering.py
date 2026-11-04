@@ -410,7 +410,7 @@ def test_duckdb_canonical_expression_executes_after_parse_roundtrip() -> None:
 
     reparsed = parse_one(result.sql, read="duckdb")
     assert reparsed.sql(dialect="duckdb") == result.sql
-    assert duckdb.sql(f"select {result.sql}").fetchone() == (True,)
+    assert duckdb.sql(f"select {result.sql}").fetchall()[0] == (True,)
 
 
 def test_duckdb_duration_expression_executes_after_parse_roundtrip() -> None:
@@ -420,4 +420,4 @@ def test_duckdb_duration_expression_executes_after_parse_roundtrip() -> None:
     reparsed = parse_one(result.sql, read="duckdb")
     assert reparsed.sql(dialect="duckdb") == result.sql
     assert result.semantic_type == "timestamp"
-    assert duckdb.sql(f"select {result.sql}").fetchone() == (datetime(2026, 8, 23, 2),)
+    assert duckdb.sql(f"select {result.sql}").fetchall()[0] == (datetime(2026, 8, 23, 2),)

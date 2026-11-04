@@ -872,6 +872,16 @@ def test_yardstick_correlated_scalar_context_collapses_to_maximum(tmp_path, reve
 
 
 @pytest.mark.parametrize("expression", ["year - 1", "v.year - 1"])
+@pytest.mark.parametrize("override", ["ALL year", "ALL v.year", "ALL"])
+def test_yardstick_overridden_set_self_reference_is_ignored(yardstick_layer, expression, override):
+    rows = yardstick_layer.sql(
+        "SEMANTIC SELECT region, AGGREGATE(revenue) "
+        f"AT (SET year = {expression}) AT ({override}) FROM sales_v v ORDER BY region"
+    ).fetchall()
+    assert rows == ([("EU", 375.0), ("US", 375.0)] if override == "ALL" else [("EU", 125.0), ("US", 250.0)])
+
+
+@pytest.mark.parametrize("expression", ["year - 1", "v.year - 1"])
 def test_yardstick_ungrouped_set_self_reference_is_rejected(yardstick_layer, expression):
     with pytest.raises(ValueError, match="does not group by year"):
         yardstick_layer.sql(f"SEMANTIC SELECT AGGREGATE(revenue) AT (SET year = {expression}) FROM sales_v v")

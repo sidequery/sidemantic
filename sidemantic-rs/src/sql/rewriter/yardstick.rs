@@ -1003,8 +1003,11 @@ impl Lowerer<'_, '_> {
                     visible = false;
                     let direct = self.authored_expression(&self.current(body, &HashSet::new())?)?;
                     if let Expression::Eq(eq) = direct {
+                        let key = self.signature(eq.left.clone())?;
+                        if removed.contains(&key) {
+                            continue;
+                        }
                         if let Some((_, dimension)) = reference(&eq.left) {
-                            let key = self.signature(eq.left)?;
                             let mut self_reference = false;
                             map_columns(&mut encode(eq.right)?, &mut |node| {
                                 self_reference |= self.signature(node.clone())? == key;

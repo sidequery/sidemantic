@@ -5237,6 +5237,9 @@ class QueryRewriter:
                     continue
 
                 left_expr = parse_fragment(left_sql, self.dialect)
+                left_signature = self._expr_signature_without_tables(left_expr)
+                if left_signature in removed_signatures:
+                    continue
                 if isinstance(left_expr, exp.Column):
                     # CURRENT has its own missing-context semantics. Only direct
                     # self-references require the dimension in SELECT/GROUP BY.
@@ -5273,10 +5276,7 @@ class QueryRewriter:
                     left_expr = self._qualify_unaliased_columns(left_expr, default_alias)
                     right_expr = self._qualify_unaliased_columns(right_expr, default_alias)
 
-                left_signature = self._expr_signature_without_tables(left_expr)
                 active_dimensions = [d for d in active_dimensions if d["signature"] != left_signature]
-                if left_signature in removed_signatures:
-                    continue
 
                 left_inner = self._rewrite_tables(
                     left_expr,

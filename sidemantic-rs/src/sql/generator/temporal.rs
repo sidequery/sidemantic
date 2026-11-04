@@ -244,7 +244,10 @@ impl SqlGenerator<'_> {
         Ok((rows + u64::from(round_up)).max(1))
     }
 
-    pub(crate) fn window_output_dependency(metric: &Metric) -> Result<Option<String>> {
+    pub(crate) fn window_output_dependency(
+        metric: &Metric,
+        graph: &SemanticGraph,
+    ) -> Result<Option<String>> {
         metric
             .window_expression
             .as_deref()
@@ -253,8 +256,24 @@ impl SqlGenerator<'_> {
                 names
                     .into_iter()
                     .map(|name| {
+                        // Period output names can encode a qualified semantic
+                        // reference, e.g. base."other.revenue".
+                        let parts = if graph.get_metric(&name).is_some()
+                            || graph
+                                .models()
+                                .any(|model| model.get_metric(&name).is_some())
+                        {
+                            vec![name.as_str()]
+                        } else {
+                            name.splitn(2, '.').collect()
+                        };
+                        let reference = parts
+                            .into_iter()
+                            .map(|part| format!("\"{}\"", part.replace('"', "\"\"")))
+                            .collect::<Vec<_>>()
+                            .join(".");
                         polyglot_sql::generate(
-                            &Expression::Identifier(Identifier::quoted(name)),
+                            &parse_semantic_expression(&reference)?,
                             DialectType::DuckDB,
                         )
                         .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))

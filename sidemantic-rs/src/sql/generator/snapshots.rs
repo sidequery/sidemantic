@@ -106,7 +106,7 @@ pub(super) fn try_generate(
         .filters
         .iter()
         .cloned()
-        .chain(generator.resolve_segments(&query.segments)?)
+        .chain(generator.resolve_segments(&query.segments, query.parameter_values.as_ref())?)
         .collect();
     for filter in &filters {
         for column in semantic_column_references(filter)? {

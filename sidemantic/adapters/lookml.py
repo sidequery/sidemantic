@@ -4017,6 +4017,7 @@ class LookMLAdapter(BaseAdapter):
         # Extract foreign key from sql_on if possible
         # sql_on typically looks like: ${orders.customer_id} = ${customers.id}
         foreign_key = None
+        primary_key = None
         sql_on = join_def.get("sql_on", "")
 
         # Try to extract foreign key from sql_on
@@ -4047,6 +4048,7 @@ class LookMLAdapter(BaseAdapter):
                     if model in base_aliases:
                         foreign_key = column
                         break
+                primary_key = next((column for model, column in matches if model == join_name), None)
             elif relationship_type in ("one_to_many", "one_to_one"):
                 if join_name not in models_in_sql:
                     return None
@@ -4055,6 +4057,7 @@ class LookMLAdapter(BaseAdapter):
                     if model == join_name:
                         foreign_key = column
                         break
+                primary_key = next((column for model, column in matches if model in base_aliases), None)
 
         # Capture LookML join type (left_outer, inner, full_outer, cross)
         metadata = None
@@ -4066,6 +4069,7 @@ class LookMLAdapter(BaseAdapter):
             name=actual_model_name,
             type=relationship_type,
             foreign_key=foreign_key,
+            primary_key=primary_key,
             metadata=metadata,
         )
 
@@ -4988,8 +4992,16 @@ class LookMLAdapter(BaseAdapter):
                     # Output: filters__all format for lkml
                     sql_filter = strip_lookml_model_qualifiers(filter_str)
 
-                    # Parse "field = 'value'" or "field = value" format
-                    match = re.match(r"(\w+)\s*=\s*(.+)", sql_filter)
+                    # Encode simple comparisons; complex predicates are folded
+                    # into row SQL below instead of silently dropping the filter.
+                    comparison = re.fullmatch(r"(\w+)\s*(>=|<=|!=|<>|>|<)\s*([+-]?(?:\d+\.?\d*|\.\d+))", sql_filter)
+                    if comparison:
+                        field, operator, value = comparison.groups()
+                        filters_all.append([{field: operator + value}])
+                        continue
+                    match = re.fullmatch(
+                        r"(\w+)\s*=\s*('(?:[^']|'')*'|true|false|[+-]?(?:\d+\.?\d*|\.\d+))", sql_filter, re.IGNORECASE
+                    )
                     if match:
                         field = match.group(1)
                         value = match.group(2).strip()
@@ -5005,14 +5017,24 @@ class LookMLAdapter(BaseAdapter):
                     else:
                         # Fallback: keep as-is in case of complex filters
                         # Try to parse as "field: value" format (legacy)
-                        if ":" in filter_str:
-                            field, value = filter_str.split(":", 1)
-                            field = field.strip()
-                            value = value.strip().strip('"')
-                            filters_all.append([{field: value}])
+                        legacy_filter = re.fullmatch(r"(\w+)\s*:\s*(.+)", filter_str.strip())
+                        if legacy_filter:
+                            field, value = legacy_filter.groups()
+                            filters_all.append([{field: value.strip().strip('"')}])
 
-                if filters_all:
+                if len(filters_all) == len(metric.filters):
                     measure_def["filters__all"] = filters_all
+                elif metric.agg:
+                    predicate = self._fold_filter_conds(metric.filters, model)
+                    operand = measure_def.get("sql") or ("1" if metric.agg == "count" else metric.name)
+                    measure_def["sql"] = f"CASE WHEN {predicate} THEN {operand} END"
+                else:
+                    # This path is for complete aggregate SQL; use the same
+                    # folding logic as type:number measures above.
+                    folded = self._fold_filters_into_aggregate(measure_def.get("sql", ""), metric.filters, model)
+                    if folded is None:
+                        raise ValueError(f"Cannot preserve filters for LookML metric {metric.name!r}")
+                    measure_def["sql"] = folded
 
             if metric.description and metric.type != "time_comparison":
                 measure_def["description"] = metric.description

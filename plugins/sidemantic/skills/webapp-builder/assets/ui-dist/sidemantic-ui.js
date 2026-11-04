@@ -1536,11 +1536,11 @@ function useQueryResult(backend, query) {
   const token = useRef6(0);
   const key = query ? JSON.stringify(query) : null;
   useEffect7(() => {
+    const current = ++token.current;
     if (!query) {
       setState({ loading: false });
       return;
     }
-    const current = ++token.current;
     setState((prev) => ({ result: prev.result, resultKey: prev.resultKey, loading: true }));
     const timer = setTimeout(() => {
       beginQuery();
@@ -1553,7 +1553,10 @@ function useQueryResult(backend, query) {
         }
       }).finally(() => endQuery());
     }, DEBOUNCE_MS);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      ++token.current;
+    };
   }, [key, backend]);
   return { ...state, queryKey: key ?? undefined };
 }

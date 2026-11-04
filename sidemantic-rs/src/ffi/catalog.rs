@@ -113,23 +113,47 @@ impl Snapshot {
         Ok(graph)
     }
 
-    fn merge(&mut self, incoming: Self) {
+    fn merge(&mut self, incoming: Self) -> CatalogResult<()> {
         for model in incoming.models {
-            self.models.retain(|current| current.name != model.name);
+            check_import_name(
+                "model",
+                &model.name,
+                self.models.iter().map(|item| item.name.as_str()),
+            )?;
+            self.models
+                .retain(|current| !current.name.eq_ignore_ascii_case(&model.name));
             self.models.push(model);
         }
         for metric in incoming.metrics {
-            self.metrics.retain(|current| current.name != metric.name);
+            check_import_name(
+                "metric",
+                &metric.name,
+                self.metrics.iter().map(|item| item.name.as_str()),
+            )?;
+            self.metrics
+                .retain(|current| !current.name.eq_ignore_ascii_case(&metric.name));
             self.metrics.push(metric);
         }
         for parameter in incoming.parameters {
+            check_import_name(
+                "parameter",
+                &parameter.name,
+                self.parameters.iter().map(|item| item.name.as_str()),
+            )?;
             self.parameters
-                .retain(|current| current.name != parameter.name);
+                .retain(|current| !current.name.eq_ignore_ascii_case(&parameter.name));
             self.parameters.push(parameter);
         }
         for calculation in incoming.table_calculations {
+            check_import_name(
+                "calculation",
+                &calculation.name,
+                self.table_calculations
+                    .iter()
+                    .map(|item| item.name.as_str()),
+            )?;
             self.table_calculations
-                .retain(|current| current.name != calculation.name);
+                .retain(|current| !current.name.eq_ignore_ascii_case(&calculation.name));
             self.table_calculations.push(calculation);
         }
         if let Some(incoming) = incoming.metadata {
@@ -138,7 +162,26 @@ impl Snapshot {
                 incoming,
             );
         }
+        Ok(())
     }
+}
+
+// DDL resolves identifiers case-insensitively, while definitions may contain
+// references using their original spelling. Reject case-only replacements so
+// imports cannot create ambiguous names or silently invalidate those references.
+fn check_import_name<'a>(
+    kind: &str,
+    name: &str,
+    existing: impl Iterator<Item = &'a str>,
+) -> CatalogResult<()> {
+    for current in existing {
+        if current.eq_ignore_ascii_case(name) && current != name {
+            return Err(format!(
+                "{kind} '{name}' conflicts with existing '{current}'; use the existing spelling to replace it"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn merge_metadata(current: &mut serde_json::Value, incoming: serde_json::Value) {
@@ -188,7 +231,7 @@ pub struct SidemanticSnapshotResult {
 
 fn merge_loaded(snapshot: &str, loaded: LoadedGraphMetadata) -> CatalogResult<(String, String)> {
     let mut merged = Snapshot::parse(snapshot)?;
-    merged.merge(Snapshot::from_graph(&loaded.graph));
+    merged.merge(Snapshot::from_graph(&loaded.graph))?;
     let graph = merged.into_graph()?;
     let snapshot =
         serde_json::to_string(&Snapshot::from_graph(&graph)).map_err(|e| e.to_string())?;
@@ -954,7 +997,7 @@ fn apply_on_semantic_worker(
         };
         let incoming = Snapshot::from_graph(&incoming.into_graph()?);
         let mut merged = Snapshot::parse(snapshot)?;
-        merged.merge(incoming);
+        merged.merge(incoming)?;
         let graph = merged.into_graph()?;
         return Ok((
             serde_json::to_string(&Snapshot::from_graph(&graph)).map_err(|e| e.to_string())?,
@@ -1237,6 +1280,73 @@ mod tests {
             false,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn import_rejects_case_collisions_and_preserves_exact_name_replacement() {
+        let (snapshot, active) = apply_ffi(
+            "",
+            "",
+            "model",
+            "MODEL (name orders, table raw_orders, primary_key id); DIMENSION (name id);",
+            false,
+        )
+        .unwrap();
+        let incoming = "models:\n  - name: ORDERS\n    table: raw_new\n    primary_key: id\n    dimensions:\n      - name: id\n";
+        let error = apply_ffi(&snapshot, &active, "yaml", incoming, false).unwrap_err();
+        assert!(
+            error.contains("conflicts with existing 'orders'"),
+            "{error}"
+        );
+        let (incoming_snapshot, _) = apply_ffi("", "", "yaml", incoming, false).unwrap();
+        let error = apply_ffi(&snapshot, &active, "import", &incoming_snapshot, false).unwrap_err();
+        assert!(
+            error.contains("conflicts with existing 'orders'"),
+            "{error}"
+        );
+
+        assert!(rewrite(&snapshot, "SELECT id FROM orders")
+            .unwrap()
+            .contains("raw_orders"));
+        let incoming = incoming.replace("ORDERS", "orders");
+        let (snapshot, _) = apply_ffi(&snapshot, &active, "yaml", &incoming, false).unwrap();
+        assert_eq!(Snapshot::parse(&snapshot).unwrap().models.len(), 1);
+        let sql = rewrite(&snapshot, "SELECT id FROM orders").unwrap();
+        assert!(sql.contains("raw_new"), "{sql}");
+        assert!(!sql.contains("raw_orders"), "{sql}");
+        let (dropped, _) =
+            apply_ffi(&snapshot, "orders", "drop_model", r#"["ORDERS"]"#, false).unwrap();
+        assert!(Snapshot::parse(&dropped).unwrap().models.is_empty());
+    }
+
+    #[test]
+    fn imports_reject_case_colliding_global_definitions() {
+        for kind in ["metric", "parameter", "calculation"] {
+            let make_snapshot = |name: &str| {
+                let mut snapshot = Snapshot::default();
+                match kind {
+                    "metric" => snapshot.metrics.push(Metric::derived(name, "1")),
+                    "parameter" => snapshot.parameters.push(
+                        serde_yaml::from_str(&format!("name: {name}\ntype: string")).unwrap(),
+                    ),
+                    "calculation" => snapshot
+                        .table_calculations
+                        .push(TableCalculation::new(name, TableCalcType::Formula)),
+                    _ => unreachable!(),
+                }
+                snapshot
+            };
+            let mut snapshot = make_snapshot("item");
+            let error = snapshot.merge(make_snapshot("ITEM")).unwrap_err();
+            assert!(error.contains("conflicts with existing 'item'"), "{error}");
+            snapshot.merge(make_snapshot("item")).unwrap();
+            assert_eq!(
+                snapshot.metrics.len()
+                    + snapshot.parameters.len()
+                    + snapshot.table_calculations.len(),
+                1
+            );
+        }
     }
 
     #[test]

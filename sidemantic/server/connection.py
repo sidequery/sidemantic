@@ -6,6 +6,7 @@ import riffq
 
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.core.transport_security import controls_are_active, rewrite_transport_sql
+from sidemantic.server.common import result_to_record_batch_reader
 
 
 class SemanticLayerConnection(riffq.BaseConnection):
@@ -84,7 +85,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # These are often PostgreSQL session config and should just succeed
             if sql_lower.startswith(("set ", "update ", "insert ", "delete ")):
                 result = cursor.execute("SELECT 1 as ok WHERE FALSE")
-                reader = result.fetch_record_batch()
+                reader = result_to_record_batch_reader(result, self.layer.adapter)
                 self.send_reader(reader, callback)
                 return
 
@@ -104,7 +105,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
             result = cursor.execute(rendered_sql)
 
             # Convert to Arrow record batch
-            reader = result.fetch_record_batch()
+            reader = result_to_record_batch_reader(result, self.layer.adapter)
             self.send_reader(reader, callback)
 
         except Exception:
@@ -157,7 +158,7 @@ class SemanticLayerConnection(riffq.BaseConnection):
         controlled = controls_are_active(self.layer)
 
         def send(query: str) -> bool:
-            reader = cursor.execute(query).fetch_record_batch()
+            reader = result_to_record_batch_reader(cursor.execute(query), self.layer.adapter)
             self.send_reader(reader, callback)
             return True
 

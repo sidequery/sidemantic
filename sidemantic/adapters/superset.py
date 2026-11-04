@@ -241,7 +241,10 @@ class SupersetAdapter(BaseAdapter):
             import re
 
             # Pattern to match AGG_FUNC(...) and extract the inner part
-            pattern = rf"^\s*{agg.upper()}\s*\(\s*(.*)\s*\)\s*$"
+            if agg == "count_distinct":
+                pattern = r"^\s*(?:COUNT\s*\(\s*DISTINCT\s+|COUNT_DISTINCT\s*\(\s*)(.+)\)\s*$"
+            else:
+                pattern = rf"^\s*{agg.upper()}\s*\(\s*(.*)\s*\)\s*$"
             match = re.match(pattern, expression, re.IGNORECASE)
             if match:
                 sql = match.group(1).strip()
@@ -447,7 +450,9 @@ class SupersetAdapter(BaseAdapter):
             if metric.agg:
                 metric_def["metric_type"] = type_mapping.get(metric.agg, "count")
                 # Build expression
-                if metric.sql:
+                if metric.agg == "count_distinct" and metric.sql:
+                    metric_def["expression"] = f"COUNT(DISTINCT {metric.sql})"
+                elif metric.sql:
                     metric_def["expression"] = f"{metric.agg.upper()}({metric.sql})"
                 else:
                     metric_def["expression"] = f"{metric.agg.upper()}(*)"

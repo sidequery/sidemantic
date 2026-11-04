@@ -622,7 +622,8 @@ def _measure_to_metric(
         column_sql_by_table,
         measure_names_by_table,
     )
-    metric_type = None if agg else "derived"
+    complete_sql = agg is None and sql is not None
+    metric_type = None if agg or complete_sql else "derived"
     if agg is None and sql is None and dax_expr is not None:
         _append_import_warning(
             warnings,
@@ -641,6 +642,7 @@ def _measure_to_metric(
         sql=sql,
         dax=expression,
         expression_language="dax",
+        sql_is_complete=complete_sql,
         type=metric_type,
         description=node.description or _string_prop(_props(node).get("description")),
         label=_string_prop(_props(node).get("caption")),
@@ -1112,24 +1114,50 @@ def _append_export_warning(
     warnings.append(warning)
 
 
-def _is_known_column(
+def _resolve_aggregation_column(
     name: str,
     table_name: str,
     column_sql_by_table: dict[str, dict[str, str]] | None,
     measure_names_by_table: dict[str, set[str]] | None,
-) -> bool:
-    """Validate that ``name`` resolves to a real column (not a measure) of ``table_name``.
+) -> str | None:
+    """Resolve a DAX member to its physical SQL identifier, without treating it as SQL."""
+    from sqlglot import exp
+    from sqlglot.tokens import Tokenizer
 
-    When the metadata dicts are unavailable (e.g. the pre-pass that builds them), validation
-    is skipped and the candidate is accepted, preserving best-effort classification.
-    """
-    if column_sql_by_table is None:
-        return True
-    columns = column_sql_by_table.get(table_name) or {}
-    if name not in columns:
-        return False
-    measures = (measure_names_by_table or {}).get(table_name) or set()
-    return name not in measures
+    physical_name = name
+    if column_sql_by_table is not None:
+        columns = next(
+            (columns for table, columns in column_sql_by_table.items() if table.casefold() == table_name.casefold()),
+            {},
+        )
+        measures = next(
+            (
+                names
+                for table, names in (measure_names_by_table or {}).items()
+                if table.casefold() == table_name.casefold()
+            ),
+            set(),
+        )
+        if any(measure.casefold() == name.casefold() for measure in measures):
+            return None
+        physical_name = next((sql for column, sql in columns.items() if column.casefold() == name.casefold()), None)
+        if physical_name is None:
+            return None
+    # Quote punctuation, spaces, and SQL keywords; simple names retain their
+    # existing representation. sourceColumn is a name, never an SQL fragment.
+    quoted = physical_name.upper() in Tokenizer.KEYWORDS or not physical_name.isidentifier()
+    return exp.to_identifier(physical_name, quoted=quoted).sql()
+
+
+def _aggregation_sql(func: str, agg: str, column: str) -> tuple[str | None, str]:
+    if func == "distinctcount":
+        # DAX counts BLANK as one distinct value and returns BLANK when there
+        # are no input rows. SQL COUNT(DISTINCT) excludes NULL and returns zero.
+        return None, (
+            f"CASE WHEN COUNT(*) = 0 THEN NULL ELSE COUNT(DISTINCT {column}) "
+            f"+ CASE WHEN COUNT(*) > COUNT({column}) THEN 1 ELSE 0 END END"
+        )
+    return agg, column
 
 
 def _extract_dax_agg(
@@ -1186,13 +1214,12 @@ def _extract_dax_agg(
     if not column:
         return None, None
 
-    if table and table.lower() == table_name.lower():
-        return agg, column
-    if table:
+    if table and table.casefold() != table_name.casefold():
         return None, None
-    if not _is_known_column(column, table_name, column_sql_by_table, measure_names_by_table):
+    column_sql = _resolve_aggregation_column(column, table_name, column_sql_by_table, measure_names_by_table)
+    if column_sql is None:
         return None, None
-    return agg, column
+    return _aggregation_sql(func_lower, agg, column_sql)
 
 
 def _extract_dax_agg_from_ast(
@@ -1272,13 +1299,12 @@ def _extract_dax_agg_from_ast(
     else:
         return None
 
-    if table and table.lower() == table_name.lower():
-        return agg, column
-    if table:
+    if table and table.casefold() != table_name.casefold():
         return None
-    if not _is_known_column(column, table_name, column_sql_by_table, measure_names_by_table):
+    column_sql = _resolve_aggregation_column(column, table_name, column_sql_by_table, measure_names_by_table)
+    if column_sql is None:
         return None
-    return agg, column
+    return _aggregation_sql(func, agg, column_sql)
 
 
 def _match_single_function(expr: str) -> tuple[str, str] | None:

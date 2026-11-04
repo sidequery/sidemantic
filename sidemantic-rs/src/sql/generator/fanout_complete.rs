@@ -133,11 +133,13 @@ pub(super) fn generate_entity_aggregates(
     let mut selections = Vec::new();
     for (metric, alias) in metrics {
         let sql = if metric.sql_is_complete {
-            let sql = metric
-                .sql
-                .as_deref()
-                .ok_or_else(|| unsupported("complete_sql_missing"))?
-                .replace("{model}", owner);
+            let sql = crate::core::replace_model_placeholder(
+                metric
+                    .sql
+                    .as_deref()
+                    .ok_or_else(|| unsupported("complete_sql_missing"))?,
+                Some(owner),
+            )?;
             let columns = semantic_column_references(&sql)?;
             if columns.is_empty() && !metric.filters.is_empty() {
                 return Err(unsupported("filtered_constant_complete_sql"));
@@ -145,10 +147,14 @@ pub(super) fn generate_entity_aggregates(
             let mut replacements = HashMap::new();
             for column in columns {
                 let source = column.model.as_deref().unwrap_or(owner);
-                let source = source
-                    .strip_suffix("_cte")
-                    .filter(|source| sources.iter().any(|item| item == source))
-                    .unwrap_or(source);
+                let source = if sources.iter().any(|item| item == source) {
+                    source
+                } else {
+                    source
+                        .strip_suffix("_cte")
+                        .filter(|source| sources.iter().any(|item| item == source))
+                        .unwrap_or(source)
+                };
                 if !sources.iter().any(|item| item == source) {
                     return Err(unsupported("cross_source_raw_input"));
                 }

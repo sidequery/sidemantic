@@ -76,25 +76,43 @@ def enforce_field_visibility(
 
     from sidemantic.core.semantic_layer import SecurityError
 
-    def field_is_public(model_name: str, field_name: str) -> bool:
+    def check_field_visibility(model_name: str, field_name: str) -> None:
         model = graph.models.get(model_name)
         if model is None:
-            return True
-        dimension = model.get_dimension(field_name)
-        if dimension is not None:
-            return dimension.public
-        metric = model.get_metric(field_name)
-        if metric is not None:
-            return metric.public
-        return True
+            return
+        field = model.get_dimension(field_name) or model.get_metric(field_name)
+        if field is not None:
+            if not field.public:
+                raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+            return
+        # Declared names (including names containing __) take precedence over
+        # time-granularity notation, just as they do during filter compilation.
+        if "__" in field_name:
+            base_name, granularity = field_name.rsplit("__", 1)
+            dimension = model.get_dimension(base_name)
+            if dimension is not None and dimension.type == "time":
+                try:
+                    dimension.with_granularity(granularity)
+                except ValueError:
+                    return
+                check_field_visibility(model_name, base_name)
 
-    for dimension_ref in dimensions or []:
-        ref = dimension_ref.rsplit("__", 1)[0] if "__" in dimension_ref else dimension_ref
+    for ref in dimensions or []:
         if "." not in ref:
             continue
         model_name, field_name = ref.split(".", 1)
-        if not field_is_public(model_name, field_name):
-            raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+        check_field_visibility(model_name, field_name)
+        # Projection parsing treats the final __ suffix as a granularity even
+        # when a field with that exact name exists. Check the actual input too:
+        # a public created__day must not expose a private created timestamp.
+        # Keep the exact-name check above, since a declared private field must
+        # not become selectable merely because its base dimension is public.
+        if "__" in field_name:
+            base_name = field_name.rsplit("__", 1)[0]
+            model = graph.models.get(model_name)
+            dimension = model.get_dimension(base_name) if model is not None else None
+            if dimension is not None and not dimension.public:
+                raise SecurityError(f"Field '{model_name}.{base_name}' is not public")
 
     for metric_ref in metrics or []:
         if "." not in metric_ref:
@@ -103,8 +121,7 @@ def enforce_field_visibility(
                 raise SecurityError(f"Field '{metric_ref}' is not public")
             continue
         model_name, field_name = metric_ref.split(".", 1)
-        if not field_is_public(model_name, field_name):
-            raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+        check_field_visibility(model_name, field_name)
 
     for segment_ref in segments or []:
         if "." not in segment_ref:
@@ -135,20 +152,17 @@ def enforce_field_visibility(
 
     for raw in expression_refs:
         for model_name, field_name in ref_pattern.findall(raw):
-            field_name = field_name.rsplit("__", 1)[0] if "__" in field_name else field_name
-            if not field_is_public(model_name, field_name):
-                raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+            check_field_visibility(model_name, field_name)
 
         try:
             parsed = parse_one(raw)
         except Exception:
             continue
         for column in parsed.find_all(exp.Column):
-            field_name = column.name.rsplit("__", 1)[0] if "__" in column.name else column.name
+            field_name = column.name
             model_names = [column.table] if column.table in graph.models else candidate_models
             for model_name in model_names:
-                if not field_is_public(model_name, field_name):
-                    raise SecurityError(f"Field '{model_name}.{field_name}' is not public")
+                check_field_visibility(model_name, field_name)
 
 
 def _sql_literal(value, dialect: str | None = None) -> str:

@@ -333,7 +333,7 @@ impl SqlGenerator<'_> {
             .filters
             .iter()
             .cloned()
-            .chain(self.resolve_segments(&query.segments)?)
+            .chain(self.resolve_segments(&query.segments, query.parameter_values.as_ref())?)
         {
             references.extend(
                 semantic_column_references(&filter)?

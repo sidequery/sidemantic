@@ -683,3 +683,28 @@ def test_completed_static_validation_codes_are_exposed():
     }
     for source, expected in cases.items():
         assert expected in {issue.code for issue in dax_ast.validate_expression(source)}
+
+
+@pytest.mark.parametrize("sqlbi", [False, True])
+def test_native_formatter_preserves_consecutive_unary_minuses(sqlbi):
+    source = "IF(TRUE(), - -1, 0)"
+    formatted = dax_ast.format_expression(source, sqlbi=sqlbi)
+    assert dax_ast.parse_expression(formatted) == dax_ast.parse_expression(source)
+
+
+def test_native_model_validation_binds_literals_and_iterator_columns():
+    model = dax_ast.ModelMetadata(
+        tables=[
+            dax_ast.ModelTable(name="Sales", columns=["Date", "Amount"], measures=[]),
+            dax_ast.ModelTable(name="Other", columns=["Amount"], measures=[]),
+        ]
+    )
+    for source in [
+        "DATEADD(Sales[Date], -1, YEAR)",
+        "CONVERT(1, INTEGER)",
+        "SUMX(Sales, [Amount])",
+        "SUMX(FILTER(Sales, [Amount] > 0), [Amount])",
+    ]:
+        assert dax_ast.validate_expression_against_model(source, model) == []
+    issues = dax_ast.validate_expression_against_model("SUMX(Sales, [Missing])", model)
+    assert [issue.code for issue in issues] == [dax_ast.ModelValidationCode.unknown_member]

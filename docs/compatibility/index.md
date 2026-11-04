@@ -26,7 +26,7 @@ Detailed compatibility documents describe field-level limitations where they exi
 | `superset` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 5 | Registry summary only |
 | `tableau` | — | `file_or_directory` | `.tds`, `.twb`, `.tdsx`, `.twbx` | Registered | No | 4 | Registry summary only |
 | `thoughtspot` | `thought-spot`, `tml` | `file_or_directory` | `.tml`, `.yml`, `.yaml` | Registered | Yes | 3 | Registry summary only |
-| `tmdl` | `powerbi`, `power-bi` | `file_or_directory` | `.tmdl` | Registered | Yes | 3 | Registry summary only |
+| `tmdl` | `powerbi`, `power-bi` | `file_or_directory` | `.tmdl` | Registered | Yes | 4 | Registry summary only |
 | `yardstick` | `yardstick-sql` | `file_or_directory` | `.sql` | Registered | No | 1 | [Detailed guide](yardstick.md) |
 
 The native `sidemantic` adapter is included because it participates in the same conversion registry.

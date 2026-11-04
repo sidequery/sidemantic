@@ -115,6 +115,24 @@ fn symbol_kind_for_def(def_type: &str) -> SymbolKind {
     }
 }
 
+// LSP positions count UTF-16 code units, while Rust strings use UTF-8 bytes.
+// Clamp invalid positions to the preceding character boundary (or line end).
+fn utf16_column_to_byte(line: &str, column: u32) -> usize {
+    let mut units = 0;
+    for (offset, character) in line.char_indices() {
+        let next = units + character.len_utf16() as u32;
+        if next > column {
+            return offset;
+        }
+        units = next;
+    }
+    line.len()
+}
+
+fn is_identifier_char(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
 fn get_completion_context(text: &str, line: u32, character: u32) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut paren_depth: i32 = 0;
@@ -125,16 +143,9 @@ fn get_completion_context(text: &str, line: u32, character: u32) -> String {
     while i >= 0 {
         let idx = i as usize;
         let check_line = if idx == max_line {
-            let ch = character as usize;
             lines
                 .get(idx)
-                .map(|line_text| {
-                    if ch <= line_text.len() {
-                        &line_text[..ch]
-                    } else {
-                        *line_text
-                    }
-                })
+                .map(|line_text| &line_text[..utf16_column_to_byte(line_text, character)])
                 .unwrap_or("")
         } else {
             lines.get(idx).copied().unwrap_or("")
@@ -179,27 +190,23 @@ fn get_word_at_position(text: &str, line: u32, character: u32) -> Option<String>
     if line_text.is_empty() {
         return None;
     }
-    let mut ch = character as usize;
-    if ch >= line_text.len() {
-        ch = line_text.len().saturating_sub(1);
+    let mut offset = utf16_column_to_byte(line_text, character);
+    if offset == line_text.len() {
+        offset = line_text.char_indices().next_back()?.0;
     }
-
-    let bytes = line_text.as_bytes();
-    if !(bytes[ch].is_ascii_alphanumeric() || bytes[ch] == b'_') {
+    if !is_identifier_char(line_text[offset..].chars().next()?) {
         return None;
     }
-
-    let mut start = ch;
-    let mut end = ch;
-
-    while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
-        start -= 1;
-    }
-    while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
-        end += 1;
-    }
-
-    Some(line_text[start..end].to_string())
+    let start = line_text[..offset]
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !is_identifier_char(*ch))
+        .map_or(0, |(index, ch)| index + ch.len_utf8());
+    let end = line_text[offset..]
+        .char_indices()
+        .find(|(_, ch)| !is_identifier_char(*ch))
+        .map_or(line_text.len(), |(index, _)| offset + index);
+    Some(line_text[start..end].to_owned())
 }
 
 fn diagnostics_for_text(text: &str) -> Vec<Diagnostic> {
@@ -247,7 +254,7 @@ fn offset_to_position(text: &str, offset: usize) -> Position {
             line += 1;
             character = 0;
         } else {
-            character += 1;
+            character += ch.len_utf16() as u32;
         }
     }
     Position { line, character }
@@ -270,7 +277,11 @@ fn find_matching_definition_end(text: &str, open_offset: usize) -> usize {
                 if depth == 0 {
                     let after_close = open_offset + offset + ch.len_utf8();
                     let rest = &text[after_close..];
-                    let semicolon_len = rest.chars().take_while(|ch| ch.is_whitespace()).count()
+                    let semicolon_len = rest
+                        .chars()
+                        .take_while(|ch| ch.is_whitespace())
+                        .map(char::len_utf8)
+                        .sum::<usize>()
                         + usize::from(rest.trim_start().starts_with(';'));
                     return after_close + semicolon_len;
                 }
@@ -285,11 +296,12 @@ fn find_definition_name(block: &str, base_offset: usize) -> Option<(String, usiz
     let bytes = block.as_bytes();
     let mut idx = 0usize;
     while idx + 4 <= bytes.len() {
-        if !block[idx..].starts_with("name") {
+        if !bytes[idx..].starts_with(b"name") {
             idx += 1;
             continue;
         }
-        let before_ok = idx == 0 || !bytes[idx - 1].is_ascii_alphanumeric();
+        let before_ok =
+            idx == 0 || !(bytes[idx - 1].is_ascii_alphanumeric() || bytes[idx - 1] == b'_');
         let after = idx + 4;
         let after_ok = after < bytes.len() && bytes[after].is_ascii_whitespace();
         if !before_ok || !after_ok {
@@ -319,10 +331,11 @@ fn find_definition_name(block: &str, base_offset: usize) -> Option<(String, usiz
         } else {
             let name_start = start;
             let mut name_end = name_start;
-            while name_end < bytes.len()
-                && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
+            for ch in block[name_start..]
+                .chars()
+                .take_while(|ch| is_identifier_char(*ch))
             {
-                name_end += 1;
+                name_end += ch.len_utf8();
             }
             (
                 name_start,
@@ -384,6 +397,31 @@ fn extract_definitions(text: &str) -> Vec<DefinitionInfo> {
     definitions
 }
 
+// The statement payload contains decoded strings, including SQL expressions.
+// Select a spelling that the same grammar decodes to exactly the original value.
+fn format_property_value(keyword: &str, key: &str, value: &str) -> Option<String> {
+    for candidate in [
+        value.to_owned(),
+        format!("'{value}'"),
+        format!("\"{value}\""),
+    ] {
+        let source = format!("{keyword} ({key} {candidate});");
+        let Ok(payload) = parse_sql_statement_blocks_payload(&source) else {
+            continue;
+        };
+        let Ok(blocks) = serde_json::from_str::<JsonValue>(&payload) else {
+            continue;
+        };
+        let Some(properties) = blocks[0]["properties"].as_object() else {
+            continue;
+        };
+        if properties.len() == 1 && properties.get(key).and_then(JsonValue::as_str) == Some(value) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn format_sidemantic_document(text: &str) -> Option<String> {
     let payload = parse_sql_statement_blocks_payload(text).ok()?;
     let blocks: JsonValue = serde_json::from_str(&payload).ok()?;
@@ -401,7 +439,7 @@ fn format_sidemantic_document(text: &str) -> Option<String> {
         let mut lines = Vec::new();
         for (idx, (key, value)) in properties.iter().enumerate() {
             let value_text = match value {
-                JsonValue::String(value) => value.clone(),
+                JsonValue::String(value) => format_property_value(&keyword, key, value)?,
                 other => other.to_string(),
             };
             let comma = if idx + 1 == properties.len() { "" } else { "," };
@@ -467,8 +505,14 @@ fn reference_locations(
     {
         let start = cursor + relative;
         let end = start + word.len();
-        let before_ok = start == 0 || !text.as_bytes()[start - 1].is_ascii_alphanumeric();
-        let after_ok = end == text.len() || !text.as_bytes()[end].is_ascii_alphanumeric();
+        let before_ok = text[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|ch| !is_identifier_char(ch));
+        let after_ok = text[end..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !is_identifier_char(ch));
         if before_ok && after_ok {
             let range = range_for_offsets(text, start, end);
             let is_declaration = declaration_ranges.contains(&range);
@@ -838,7 +882,7 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{get_completion_context, get_word_at_position};
+    use super::*;
 
     #[test]
     fn completion_context_top_level() {
@@ -870,5 +914,55 @@ mod tests {
     fn word_at_position_none_for_whitespace() {
         let text = "MODEL (  )";
         assert_eq!(get_word_at_position(text, 0, 8), None);
+    }
+    #[test]
+    fn formatting_preserves_decoded_property_values() {
+        for source in [
+            "MODEL (name orders, table orders, description 'Sales, refunds');",
+            "MODEL (name orders, description \"Customer's sales, refunds\");",
+            "MODEL (name orders, description ''); DIMENSION (name status, sql COALESCE(status, 'new'));",
+            "MODEL (name orders, description 'é😀, sales'); METRIC (name revenue, sql SUM(amount));",
+        ] {
+            let formatted = format_sidemantic_document(source).unwrap();
+            let parse = |text| serde_json::from_str::<JsonValue>(&parse_sql_statement_blocks_payload(text).unwrap()).unwrap();
+            assert_eq!(parse(source), parse(&formatted), "{formatted}");
+            assert_eq!(format_sidemantic_document(&formatted).unwrap(), formatted);
+        }
+    }
+
+    #[test]
+    fn rename_matches_whole_identifiers() {
+        let text = "MODEL (name orders); DIMENSION (name id); DIMENSION (name customer_id); DIMENSION (name id_suffix); DIMENSION (name éid);";
+        let locations =
+            reference_locations(&Url::parse("file:///test.sql").unwrap(), text, "id", true);
+        assert_eq!(locations.len(), 1);
+        assert_eq!(
+            locations[0].range.start.character,
+            text.find("name id").unwrap() as u32 + 5
+        );
+    }
+
+    #[test]
+    fn utf16_positions_round_trip_with_multibyte_text() {
+        let text = "MODEL (description 'é😀', name orders);";
+        for (offset, _) in text.char_indices().chain([(text.len(), '\0')]) {
+            let position = offset_to_position(text, offset);
+            assert_eq!(utf16_column_to_byte(text, position.character), offset);
+        }
+        let cursor = text.find("', name").unwrap();
+        let position = offset_to_position(text, cursor);
+        assert_eq!(
+            get_completion_context(text, 0, position.character),
+            "inside_model"
+        );
+        let position = offset_to_position(text, text.find("orders").unwrap());
+        assert_eq!(
+            get_word_at_position(text, 0, position.character).as_deref(),
+            Some("orders")
+        );
+        let definitions = extract_definitions(text);
+        assert_eq!(definitions[0].selection_range.start, position);
+        assert_eq!(utf16_column_to_byte("😀", 1), 0);
+        assert_eq!(utf16_column_to_byte("é", 99), 2);
     }
 }

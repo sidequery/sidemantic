@@ -3699,6 +3699,7 @@ widget = [
     { name = "pyarrow" },
 ]
 workbench = [
+    { name = "lkml" },
     { name = "plotext" },
     { name = "textual", extra = ["syntax"] },
     { name = "textual-plotext" },
@@ -3752,6 +3753,7 @@ requires-dist = [
     { name = "jsonschema", marker = "extra == 'ossie'", specifier = ">=4.23,<5" },
     { name = "lkml", marker = "extra == 'dev'", specifier = ">=1.3.7" },
     { name = "lkml", marker = "extra == 'lookml'", specifier = ">=1.3.7" },
+    { name = "lkml", marker = "extra == 'workbench'", specifier = ">=1.3.7" },
     { name = "lsprotocol", marker = "extra == 'lsp'", specifier = ">=2025.0.0" },
     { name = "mcp", extras = ["cli"], marker = "extra == 'apps'", specifier = ">=1.25.0,<2" },
     { name = "mcp", extras = ["cli"], marker = "extra == 'mcp'", specifier = ">=1.25.0,<2" },

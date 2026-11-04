@@ -230,3 +230,45 @@ def test_resolve_paths_makes_password_file_absolute(tmp_path: Path):
     assert Path(resolved.connection.password_file) == secret.resolve()
     # And the resolved credential still reads correctly end-to-end.
     assert build_connection_string(resolved) == "postgres://u:s3cr3t@h:5432/db"
+
+
+@pytest.mark.parametrize("kind", ["postgres", "clickhouse", "snowflake", "spark"])
+@pytest.mark.parametrize("use_file", [False, True])
+def test_config_credentials_round_trip_reserved_characters(kind, use_file, tmp_path, monkeypatch):
+    from sidemantic.db.clickhouse import ClickHouseAdapter
+    from sidemantic.db.postgres import PostgreSQLAdapter
+    from sidemantic.db.snowflake import SnowflakeAdapter
+    from sidemantic.db.spark import SparkAdapter
+
+    username = "alice:/?#@%2F ü"
+    password = "secret:/?#@%25 ü"
+    secret = tmp_path / "secret"
+    secret.write_text(password + "\n")
+    fields = (
+        {"username": username, "password_file": str(secret)}
+        if use_file
+        else {"username": username, "password": password}
+    )
+    connection_type, adapter_type = {
+        "postgres": (PostgreSQLConnection, PostgreSQLAdapter),
+        "clickhouse": (ClickHouseConnection, ClickHouseAdapter),
+        "snowflake": (SnowflakeConnection, SnowflakeAdapter),
+        "spark": (SparkConnection, SparkAdapter),
+    }[kind]
+    if kind == "snowflake":
+        fields["account"] = "account"
+    else:
+        fields.update(host="db.example", database="analytics")
+    captured = {}
+
+    def capture(self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(adapter_type, "__init__", capture)
+    url = build_connection_string(SidemanticConfig(connection=connection_type(**fields)))
+    adapter_type.from_url(url)
+    assert captured["username" if kind == "spark" else "user"] == username
+    assert captured["password"] == password
+    if kind != "snowflake":
+        assert captured["host"] == "db.example"
+        assert captured["database"] == "analytics"

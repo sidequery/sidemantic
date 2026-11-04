@@ -844,7 +844,7 @@ pub static FUNCTIONS: &[FunctionSignature] = &[
         arguments: &[
             ArgumentCategory::ColumnOrTable,
             ArgumentCategory::Scalar,
-            ArgumentCategory::Scalar,
+            ArgumentCategory::Enum,
             ArgumentCategory::Scalar,
             ArgumentCategory::Unknown,
             ArgumentCategory::Scalar,
@@ -861,7 +861,7 @@ pub static FUNCTIONS: &[FunctionSignature] = &[
         arguments: &[
             ArgumentCategory::Scalar,
             ArgumentCategory::Scalar,
-            ArgumentCategory::Scalar,
+            ArgumentCategory::Enum,
         ],
         omittable_positions: &[],
         source: Some("https://learn.microsoft.com/en-us/dax/datediff-function-dax"),
@@ -890,7 +890,7 @@ pub static FUNCTIONS: &[FunctionSignature] = &[
             ArgumentCategory::ColumnOrTable,
             ArgumentCategory::Scalar,
             ArgumentCategory::Scalar,
-            ArgumentCategory::Scalar,
+            ArgumentCategory::Enum,
             ArgumentCategory::Scalar,
         ],
         omittable_positions: &[],

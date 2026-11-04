@@ -428,3 +428,30 @@ def test_build_code_actions_no_known_fix():
 def test_keywords_include_core_definitions():
     """Test keyword list stays aligned with core top-level definition types."""
     assert sorted(KEYWORDS) == sorted(DEF_TYPE_TO_MODEL.keys())
+
+
+def test_real_pygls_server_publishes_diagnostics_for_sql_and_python(monkeypatch):
+    from pygls.workspace import Workspace
+
+    from sidemantic.lsp.server import create_server, validate_document
+
+    server = create_server()
+    server.protocol._workspace = Workspace("file:///tmp")
+    notifications = []
+    monkeypatch.setattr(server.protocol, "notify", lambda method, params: notifications.append((method, params)))
+    documents = [
+        ("valid.sidemantic.sql", "MODEL (name orders, table orders);", False),
+        ("invalid.sidemantic.sql", "SELECT (", True),
+        ("valid.sidemantic.py", 'Model(name="orders", table="orders")', False),
+        ("invalid.sidemantic.py", 'Metric(name="count", agg="invalid")', True),
+        ("syntax.sidemantic.py", "Model(", True),
+    ]
+    for filename, source, has_error in documents:
+        uri = "file:///tmp/" + filename
+        server.workspace.put_text_document(lsp.TextDocumentItem(uri=uri, language_id="sql", version=1, text=source))
+        validate_document(server, uri)
+        method, params = notifications[-1]
+        assert method == "textDocument/publishDiagnostics"
+        assert isinstance(params, lsp.PublishDiagnosticsParams)
+        assert params.uri == uri
+        assert bool(params.diagnostics) == has_error

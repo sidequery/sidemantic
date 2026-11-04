@@ -1782,7 +1782,7 @@ class SemanticLayer:
             bare_metrics.append(m.split(".", 1)[1] if "." in m else m)
 
         bare_dims = []
-        time_granularities = {}
+        time_granularities: dict[str, list[str | None]] = {}
         for d in dimensions:
             dim_name = d.split(".", 1)[1] if "." in d else d
             # Check for granularity suffix (e.g., "order_date__month")

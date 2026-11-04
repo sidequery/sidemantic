@@ -111,7 +111,13 @@ def test_time_dimension_bigquery_dialect(layer):
     print(sql)
 
     # BigQuery syntax: DATE_TRUNC(column, MONTH) - no quotes around granularity
-    assert "DATE_TRUNC(created_at, MONTH)" in sql, f"Expected BigQuery DATE_TRUNC syntax. Got: {sql}"
+    truncations = list(sqlglot.parse_one(sql, read="bigquery").find_all(exp.DateTrunc))
+    assert any(
+        isinstance(trunc.this, exp.Column)
+        and trunc.this.name == "created_at"
+        and trunc.args["unit"] == exp.Literal.string("MONTH")
+        for trunc in truncations
+    ), f"Expected BigQuery DATE_TRUNC syntax. Got: {sql}"
     # Should NOT have PostgreSQL syntax
     assert "DATE_TRUNC('month'" not in sql, f"Should not have PostgreSQL syntax. Got: {sql}"
 
@@ -129,7 +135,13 @@ def test_time_dimension_bigquery_week_starts_monday(layer):
 
     sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.created_at__week"], dialect="bigquery")
 
-    assert "DATE_TRUNC(created_at, WEEK(MONDAY))" in sql, f"Expected Monday-start BigQuery weeks. Got: {sql}"
+    truncations = list(sqlglot.parse_one(sql, read="bigquery").find_all(exp.DateTrunc))
+    assert any(
+        isinstance(trunc.this, exp.Column)
+        and trunc.this.name == "created_at"
+        and trunc.args["unit"] == exp.WeekStart(this=exp.Var(this="MONDAY"))
+        for trunc in truncations
+    ), f"Expected Monday-start BigQuery weeks. Got: {sql}"
     # Sunday 2023-12-31 belongs to the week starting Monday 2023-12-25, as in DuckDB.
     bucket = sqlglot.parse_one("SELECT CAST(DATE_TRUNC(DATE '2023-12-31', WEEK(MONDAY)) AS DATE)", read="bigquery").sql(
         dialect="duckdb"

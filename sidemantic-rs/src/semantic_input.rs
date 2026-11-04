@@ -810,7 +810,7 @@ fn validate_semantic_dependencies(graph: &SemanticGraph, graph_metrics: &[Metric
         }
         // `base` is the generated period-output relation, not a model. Resolve
         // its metric name with the same ownership and cycle rules as other refs.
-        let window_dependency = SqlGenerator::window_output_dependency(metric)?;
+        let window_dependency = SqlGenerator::window_output_dependency(metric, graph)?;
         for expression in [
             // Cohort SQL consumes inner-result aliases; the cohort generator
             // validates that separate namespace instead of metric dependencies.

@@ -1325,6 +1325,13 @@ impl<'a> SqlGenerator<'a> {
 
     fn exact_metric_reference(&self, reference: &str) -> Result<Option<(String, String, bool)>> {
         if let Some(metric) = self.graph.get_metric(reference) {
+            // A cumulative metric's declared owner supplies its filters and
+            // time axis, even when its input belongs to another model.
+            if metric.r#type == MetricType::Cumulative {
+                if let Some(owner) = self.graph.metric_owner(reference) {
+                    return Ok(Some((owner.to_string(), reference.to_string(), true)));
+                }
+            }
             let graph_metric_owners = self.graph_metric_owner_models(reference, metric)?;
             return match graph_metric_owners.len() {
                 0 => Ok(None),
@@ -1488,7 +1495,7 @@ impl<'a> SqlGenerator<'a> {
                 .map(|owner| vec![owner]);
         }
         let mut owners = HashSet::new();
-        let window_dependency = Self::window_output_dependency(metric)?;
+        let window_dependency = Self::window_output_dependency(metric, self.graph)?;
         if let Some(owner) = self.graph.metric_owner(reference) {
             owners.insert(owner.to_string());
         }
@@ -3035,7 +3042,7 @@ impl<'a> SqlGenerator<'a> {
         // Keep one identity map for projections, window inputs and ordering.
         // A metric leaf can collide with another metric or a dimension.
         let grouped_outputs = inner_generator.selected_output_names(&inner_query)?;
-        let inner_sql = self.merge_grouped_window_inputs(
+        let inner_sql = inner_generator.merge_grouped_window_inputs(
             &inner_query,
             inner_sql,
             &grouped_outputs,
@@ -5857,7 +5864,10 @@ impl<'a> SqlGenerator<'a> {
                 let (field, grain) = column
                     .field
                     .rsplit_once("__")
-                    .filter(|(field, _)| model.get_dimension(field).is_some())
+                    .filter(|(field, _)| {
+                        model.get_dimension(&column.field).is_none()
+                            && model.get_dimension(field).is_some()
+                    })
                     .map_or((column.field.as_str(), None), |(field, grain)| {
                         (field, Some(grain))
                     });

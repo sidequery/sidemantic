@@ -13,7 +13,8 @@ concurrency:
 jobs:
   python:
     name: Python ${{ matrix.python-version }} (${{ matrix.engine }} engine)
-    runs-on: ubuntu-latest
+    # The locked Playwright release does not support Ubuntu 26.04 yet.
+    runs-on: ubuntu-24.04
     env:
       UV_PYTHON: ${{ matrix.python-version }}
       SIDEMANTIC_ENGINE: ${{ matrix.engine }}
@@ -169,6 +170,8 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Resolve ${{ matrix.name }} dependencies
+        # Early sqlglotc releases are sdist-only and fail to compile with
+        # current mypyc. Exercise the lowest available compiled wheel instead.
         run: >-
           uv sync
           --extra dev
@@ -179,6 +182,7 @@ jobs:
           --extra workbench
           --upgrade
           --resolution ${{ matrix.resolution }}
+          --no-build-package sqlglotc
 
       - name: Exercise maintained Python surfaces
         run: >-

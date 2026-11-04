@@ -821,6 +821,72 @@ def test_yardstick_scalar_aggregate_without_group_by(yardstick_layer):
     assert rows == [{"total": 375.0}]
 
 
+@pytest.mark.parametrize("source_empty", [False, True])
+@pytest.mark.parametrize("modifier", ["", " AT (ALL)"])
+def test_yardstick_scalar_aggregates_preserve_empty_input_row(tmp_path, source_empty, modifier):
+    model_file = tmp_path / "values.sql"
+    model_file.write_text(
+        "CREATE VIEW values_v AS SELECT category, SUM(amount) AS MEASURE total, "
+        "COUNT(*) AS MEASURE n, LIST(amount ORDER BY amount) AS MEASURE amounts, "
+        "n + 1 AS MEASURE next_n FROM facts;"
+    )
+    with SemanticLayer() as layer:
+        layer.adapter.execute("CREATE TABLE facts(category VARCHAR, amount INTEGER)")
+        if not source_empty:
+            layer.adapter.execute("INSERT INTO facts VALUES ('a', 10), ('b', 20)")
+        load_from_directory(layer, tmp_path)
+        sql = (
+            f"SEMANTIC SELECT 7 AS marker, AGGREGATE(total){modifier} AS total, "
+            f"AGGREGATE(n){modifier} AS n, AGGREGATE(amounts){modifier} AS amounts, "
+            f"AGGREGATE(next_n){modifier} AS next_n FROM values_v WHERE false"
+        )
+        expected = (7, 30, 2, [10, 20], 3) if modifier and not source_empty else (7, None, 0, None, 1)
+        assert layer.sql(sql).fetchall() == [expected]
+        assert layer.sql(sql + " LIMIT 0").fetchall() == []
+        assert layer.sql(sql + " HAVING n > 100").fetchall() == []
+        # A grouped query still has no groups when its input is empty.
+        assert layer.sql("SEMANTIC SELECT category, AGGREGATE(total) FROM values_v WHERE false").fetchall() == []
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_yardstick_correlated_scalar_context_collapses_to_maximum(tmp_path, reverse, empty):
+    (tmp_path / "sales.sql").write_text(
+        "CREATE VIEW sales_v AS SELECT year, year - 1 AS prior_year, "
+        "SUM(amount) AS MEASURE revenue, LIST(amount ORDER BY amount) AS MEASURE amounts FROM sales;"
+    )
+    with SemanticLayer() as layer:
+        direction = "DESC" if reverse else "ASC"
+        layer.adapter.execute(
+            f"CREATE TABLE sales AS SELECT * FROM (VALUES (2020, 10), (2021, 30), (2022, 20)) "
+            f"t(year, amount) ORDER BY year {direction}"
+        )
+        load_from_directory(layer, tmp_path)
+        sql = (
+            "SEMANTIC SELECT AGGREGATE(revenue) AT (SET year = v.prior_year), "
+            "AGGREGATE(amounts) AT (SET year = v.prior_year) FROM sales_v v"
+        )
+        if empty:
+            sql += " WHERE false"
+        assert layer.sql(sql).fetchall() == ([(None, None)] if empty else [(30, [30])])
+
+
+@pytest.mark.parametrize("expression", ["year - 1", "v.year - 1"])
+@pytest.mark.parametrize("override", ["ALL year", "ALL v.year", "ALL"])
+def test_yardstick_overridden_set_self_reference_is_ignored(yardstick_layer, expression, override):
+    rows = yardstick_layer.sql(
+        "SEMANTIC SELECT region, AGGREGATE(revenue) "
+        f"AT (SET year = {expression}) AT ({override}) FROM sales_v v ORDER BY region"
+    ).fetchall()
+    assert rows == ([("EU", 375.0), ("US", 375.0)] if override == "ALL" else [("EU", 125.0), ("US", 250.0)])
+
+
+@pytest.mark.parametrize("expression", ["year - 1", "v.year - 1"])
+def test_yardstick_ungrouped_set_self_reference_is_rejected(yardstick_layer, expression):
+    with pytest.raises(ValueError, match="does not group by year"):
+        yardstick_layer.sql(f"SEMANTIC SELECT AGGREGATE(revenue) AT (SET year = {expression}) FROM sales_v v")
+
+
 def test_yardstick_doubled_aggregate_expression(yardstick_layer):
     result = yardstick_layer.sql(
         """

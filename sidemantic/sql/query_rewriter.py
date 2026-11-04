@@ -3650,6 +3650,7 @@ class QueryRewriter:
             has_metric_projection = has_metric_projection or is_metric
 
         # Yardstick semantics: when AGGREGATE appears and GROUP BY is omitted, group by non-aggregate expressions.
+        scalar_aggregate = False
         if has_metric_projection and select_scope.args.get("group") is None:
             group_exprs = []
             for projection, is_metric, is_literal in zip(
@@ -3666,8 +3667,7 @@ class QueryRewriter:
             elif all(
                 is_metric or is_literal for is_metric, is_literal in zip(projection_is_metric, projection_is_literal)
             ):
-                # Scalar aggregate projections should collapse to one row.
-                select_scope.set("distinct", exp.Distinct())
+                scalar_aggregate = True
 
         group_clause = select_scope.args.get("group")
         if group_clause:
@@ -3714,6 +3714,20 @@ class QueryRewriter:
             )
 
         replacement_expr_cache = {key: parse_fragment(value, self.dialect) for key, value in replacement_sql.items()}
+        if scalar_aggregate:
+            from sqlglot.optimizer.scope import build_scope
+
+            for placeholder, expression in replacement_expr_cache.items():
+                scope = build_scope(exp.select(expression.copy()))
+                if scope and scope.external_columns:
+                    # Correlated SET/CURRENT contexts may yield different values
+                    # per row. Yardstick collapses them to their maximum. DuckDB
+                    # 2.0 cannot bind MAX on a LIST-valued scalar subquery.
+                    replacement_expr_cache[placeholder] = (
+                        exp.Anonymous(this="LIST_MAX", expressions=[exp.ArrayAgg(this=expression)])
+                        if self.dialect == "duckdb"
+                        else exp.Max(this=expression)
+                    )
 
         def replace_placeholder(node: exp.Expression) -> exp.Expression:
             if isinstance(node, exp.Column) and not node.table and node.name in replacement_expr_cache:
@@ -3721,6 +3735,11 @@ class QueryRewriter:
             return node
 
         rewritten = select_scope.transform(replace_placeholder)
+        if scalar_aggregate:
+            # A global aggregate has one row even when WHERE removes every
+            # source row. DISTINCT loses that row; grouping the empty tuple
+            # preserves it without ordering LIST/STRUCT-valued measures.
+            rewritten.set("group", exp.Group(expressions=[exp.Tuple()]))
         rewritten = self._inline_yardstick_order_by_subquery_aliases(rewritten)
         return self._rewrite_source_model_relations(rewritten)
 
@@ -4635,6 +4654,7 @@ class QueryRewriter:
         ) = self._apply_yardstick_modifiers(
             modifiers=modifiers,
             context_dimensions=context_dimensions,
+            source_models=source_models,
             model_alias=model_alias,
             model_name=model_name,
             default_alias=default_alias,
@@ -5100,6 +5120,7 @@ class QueryRewriter:
         self,
         modifiers: list[str],
         context_dimensions: list[dict[str, str]],
+        source_models: dict[str, str],
         model_alias: str,
         model_name: str,
         default_alias: str | None,
@@ -5216,6 +5237,23 @@ class QueryRewriter:
                     continue
 
                 left_expr = parse_fragment(left_sql, self.dialect)
+                left_signature = self._expr_signature_without_tables(left_expr)
+                if left_signature in removed_signatures:
+                    continue
+                if isinstance(left_expr, exp.Column):
+                    # CURRENT has its own missing-context semantics. Only direct
+                    # self-references require the dimension in SELECT/GROUP BY.
+                    direct_value = parse_fragment(self._rewrite_current_keyword(right_sql, []), self.dialect)
+                    target_signature = self._expr_signature_without_tables(left_expr)
+                    if any(
+                        self._expr_signature_without_tables(column) == target_signature
+                        for column in self._columns_without_nested_scopes(direct_value)
+                    ) and not any(dim["signature"] == target_signature for dim in context_dimensions):
+                        raise YardstickBindingError(
+                            f"AT (SET {left_sql} = {right_sql}) references {left_expr.name}, "
+                            f"but the query does not group by {left_expr.name}. "
+                            f"Add {left_expr.name} to SELECT/GROUP BY or use a constant SET value."
+                        )
                 right_expr = parse_fragment(
                     self._rewrite_current_keyword(
                         right_sql,
@@ -5224,15 +5262,21 @@ class QueryRewriter:
                     ),
                     self.dialect,
                 )
+                for column in self._columns_without_nested_scopes(right_expr):
+                    resolved = self._resolve_yardstick_dimension_expression(
+                        column, source_models, default_alias, placeholder_names=set()
+                    )
+                    if resolved:
+                        if column is right_expr:
+                            right_expr = resolved[0]
+                        else:
+                            column.replace(resolved[0])
 
                 if default_alias and single_model:
                     left_expr = self._qualify_unaliased_columns(left_expr, default_alias)
                     right_expr = self._qualify_unaliased_columns(right_expr, default_alias)
 
-                left_signature = self._expr_signature_without_tables(left_expr)
                 active_dimensions = [d for d in active_dimensions if d["signature"] != left_signature]
-                if left_signature in removed_signatures:
-                    continue
 
                 left_inner = self._rewrite_tables(
                     left_expr,

@@ -111,7 +111,13 @@ def test_time_dimension_bigquery_dialect(layer):
     print(sql)
 
     # BigQuery syntax: DATE_TRUNC(column, MONTH) - no quotes around granularity
-    assert "DATE_TRUNC(created_at, MONTH)" in sql, f"Expected BigQuery DATE_TRUNC syntax. Got: {sql}"
+    truncations = list(sqlglot.parse_one(sql, read="bigquery").find_all(exp.DateTrunc))
+    assert any(
+        isinstance(trunc.this, exp.Column)
+        and trunc.this.name == "created_at"
+        and trunc.args["unit"] == exp.Literal.string("MONTH")
+        for trunc in truncations
+    ), f"Expected BigQuery DATE_TRUNC syntax. Got: {sql}"
     # Should NOT have PostgreSQL syntax
     assert "DATE_TRUNC('month'" not in sql, f"Should not have PostgreSQL syntax. Got: {sql}"
 
@@ -129,7 +135,13 @@ def test_time_dimension_bigquery_week_starts_monday(layer):
 
     sql = layer.compile(metrics=["orders.revenue"], dimensions=["orders.created_at__week"], dialect="bigquery")
 
-    assert "DATE_TRUNC(created_at, WEEK(MONDAY))" in sql, f"Expected Monday-start BigQuery weeks. Got: {sql}"
+    truncations = list(sqlglot.parse_one(sql, read="bigquery").find_all(exp.DateTrunc))
+    assert any(
+        isinstance(trunc.this, exp.Column)
+        and trunc.this.name == "created_at"
+        and trunc.args["unit"] == exp.WeekStart(this=exp.Var(this="MONDAY"))
+        for trunc in truncations
+    ), f"Expected Monday-start BigQuery weeks. Got: {sql}"
     # Sunday 2023-12-31 belongs to the week starting Monday 2023-12-25, as in DuckDB.
     bucket = sqlglot.parse_one("SELECT CAST(DATE_TRUNC(DATE '2023-12-31', WEEK(MONDAY)) AS DATE)", read="bigquery").sql(
         dialect="duckdb"
@@ -189,8 +201,21 @@ def test_time_dimension_spark_family_dialects_use_date_trunc_for_day(layer, dial
         dialect=dialect,
     )
 
-    assert "CAST(DATE_TRUNC('DAY', created_at) AS DATE)" in sql, f"Expected Spark DATE_TRUNC syntax. Got: {sql}"
-    assert "TRUNC(created_at, 'DAY')" not in sql, f"Should not use Spark TRUNC for day grain. Got: {sql}"
+    parsed = sqlglot.parse_one(sql, read=dialect)
+    assert any(
+        isinstance(cast.this, exp.TimestampTrunc)
+        and isinstance(cast.this.this, exp.Column)
+        and cast.this.this.name == "created_at"
+        and cast.this.args["unit"].name == "DAY"
+        and cast.to.is_type("date")
+        for cast in parsed.find_all(exp.Cast)
+    ), f"Expected Spark DATE_TRUNC cast to DATE. Got: {sql}"
+    assert not any(
+        isinstance(trunc.this, exp.Column)
+        and trunc.this.name == "created_at"
+        and trunc.args["unit"] == exp.Literal.string("DAY")
+        for trunc in parsed.find_all(exp.DateTrunc)
+    ), f"Should not use Spark TRUNC for day grain. Got: {sql}"
 
 
 @pytest.mark.parametrize("dialect", ["spark", "databricks"])
@@ -217,8 +242,19 @@ def test_time_dimension_spark_family_dialects_keep_trunc_for_supported_date_grai
     )
 
     expected_grain = granularity.upper()
-    assert f"TRUNC(created_at, '{expected_grain}')" in sql, f"Expected Spark TRUNC syntax. Got: {sql}"
-    assert f"DATE_TRUNC('{expected_grain}', created_at)" not in sql, f"Should preserve Spark TRUNC path. Got: {sql}"
+    parsed = sqlglot.parse_one(sql, read=dialect)
+    assert any(
+        isinstance(trunc.this, exp.Column)
+        and trunc.this.name == "created_at"
+        and trunc.args["unit"] == exp.Literal.string(expected_grain)
+        for trunc in parsed.find_all(exp.DateTrunc)
+    ), f"Expected Spark TRUNC syntax. Got: {sql}"
+    assert not any(
+        isinstance(trunc.this, exp.Column)
+        and trunc.this.name == "created_at"
+        and trunc.args["unit"].name == expected_grain
+        for trunc in parsed.find_all(exp.TimestampTrunc)
+    ), f"Should preserve Spark TRUNC path. Got: {sql}"
 
 
 def test_measure_aggregation():

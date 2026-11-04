@@ -131,8 +131,7 @@ impl SqlGenerator<'_> {
         &self,
         sql: &str,
     ) -> Result<HashMap<String, HashSet<String>>> {
-        let expression = polyglot_sql::parse_one(sql, self.dialect)
-            .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+        let expression = crate::semantic_input::dialects::parse(sql, self.dialect)?;
         let value = serde_json::to_value(expression)
             .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
         let sources = self

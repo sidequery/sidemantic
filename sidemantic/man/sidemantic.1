@@ -359,6 +359,21 @@ Serve the embedded web UI at the root path
 .TP
 \fB\-\-mcp, \-\-no\-mcp\fR
 Serve the MCP endpoint at /mcp when the mcp extra is installed
+.TP
+\fB\-\-max\-result\-rows INTEGER RANGE\fR
+
+.TP
+\fB\-\-max\-response\-bytes INTEGER RANGE\fR
+
+.TP
+\fB\-\-query\-timeout FLOAT RANGE\fR
+
+.TP
+\fB\-\-max\-concurrent\-queries INTEGER RANGE\fR
+
+.TP
+\fB\-\-query\-queue\-timeout FLOAT RANGE\fR
+
 .SH "SIDEMANTIC VALIDATE"
 .SS SYNOPSIS
 .B
@@ -675,6 +690,9 @@ Port for HTTP server
 \fB\-\-max\-concurrent\-queries INTEGER RANGE\fR
 
 .TP
+\fB\-\-query\-queue\-timeout FLOAT RANGE\fR
+
+.TP
 \fB\-\-auth\-token\-file PATH\fR
 Bearer token file required for HTTP MCP
 .TP
@@ -778,6 +796,9 @@ Trust identity headers from an authenticated, header\-sanitizing proxy
 
 .TP
 \fB\-\-max\-concurrent\-queries INTEGER RANGE\fR
+
+.TP
+\fB\-\-query\-queue\-timeout FLOAT RANGE\fR
 
 .TP
 \fB\-\-require\-user\-attrs\fR

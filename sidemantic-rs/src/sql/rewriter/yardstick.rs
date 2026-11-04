@@ -529,6 +529,7 @@ impl Lowerer<'_, '_> {
             })?;
             Ok(found)
         };
+        let mut scalar_aggregate = false;
         if select.group_by.is_none()
             && select
                 .expressions
@@ -551,7 +552,7 @@ impl Lowerer<'_, '_> {
                 }
             }
             if groups.is_empty() {
-                select.distinct = true;
+                scalar_aggregate = true;
             } else {
                 select.group_by = Some(GroupBy {
                     expressions: groups,
@@ -626,7 +627,8 @@ impl Lowerer<'_, '_> {
                         self.sql(&call.argument).unwrap_or_default()
                     ))
                 })?;
-            let expression = self.measure(
+            let mut correlated = false;
+            let mut expression = self.measure(
                 &model,
                 &alias,
                 &measure,
@@ -636,7 +638,14 @@ impl Lowerer<'_, '_> {
                 single,
                 &context_aliases,
                 &mut HashSet::new(),
+                &mut correlated,
             )?;
+            if scalar_aggregate && correlated {
+                // Preserve Yardstick's maximum across correlated contexts,
+                // including LIST values that MAX(subquery) cannot bind in 2.0.
+                expression =
+                    self.expression(&format!("LIST_MAX(LIST({}))", self.sql(&expression)?))?;
+            }
             replacements.insert(name.clone(), expression);
         }
         let mut value = encode(&select)?;
@@ -649,6 +658,14 @@ impl Lowerer<'_, '_> {
             Ok(node)
         })?;
         select = decode(value)?;
+        if scalar_aggregate {
+            // DISTINCT drops the global aggregate row on an empty input.
+            let parsed = parse_sql_with_dialect("SELECT 1 GROUP BY ()", DialectType::DuckDB)?;
+            let Expression::Select(global) = &parsed[0] else {
+                unreachable!()
+            };
+            select.group_by = global.group_by.clone();
+        }
         let aliases = select
             .expressions
             .iter()
@@ -796,6 +813,7 @@ impl Lowerer<'_, '_> {
         single: bool,
         context_aliases: &HashMap<String, String>,
         visiting: &mut HashSet<String>,
+        correlated: &mut bool,
     ) -> Result<Expression> {
         let model = self.rewriter.graph.get_model(model_name).unwrap();
         let metric = model
@@ -830,6 +848,7 @@ impl Lowerer<'_, '_> {
                             single,
                             context_aliases,
                             visiting,
+                            correlated,
                         );
                     }
                 }
@@ -982,6 +1001,24 @@ impl Lowerer<'_, '_> {
                 }
                 "SET" => {
                     visible = false;
+                    let direct = self.authored_expression(&self.current(body, &HashSet::new())?)?;
+                    if let Expression::Eq(eq) = direct {
+                        if let Some((_, dimension)) = reference(&eq.left) {
+                            let key = self.signature(eq.left)?;
+                            let mut self_reference = false;
+                            map_columns(&mut encode(eq.right)?, &mut |node| {
+                                self_reference |= self.signature(node.clone())? == key;
+                                Ok(node)
+                            })?;
+                            if self_reference
+                                && !context.iter().any(|(signature, _, _)| signature == &key)
+                            {
+                                return Err(SidemanticError::YardstickBinding(format!(
+                                    "AT ({modifier}) references {dimension}, but the query does not group by {dimension}. Add {dimension} to SELECT/GROUP BY or use a constant SET value."
+                                )));
+                            }
+                        }
+                    }
                     let rewritten = self.current(body, &current)?;
                     let expression = self.authored_expression(&rewritten)?;
                     match expression {
@@ -993,7 +1030,28 @@ impl Lowerer<'_, '_> {
                             }
                             let left =
                                 self.remap(eq.left, &[model_name, alias], "_inner", single)?;
-                            let right = self.remap(eq.right, &[model_name], alias, single)?;
+                            let mut right = encode(eq.right)?;
+                            map_columns(&mut right, &mut |node| {
+                                if let Some((table, name)) = reference(&node) {
+                                    if table.as_deref().map_or(single, |table| {
+                                        table == alias || table == model_name
+                                    }) {
+                                        if let Some(dimension) = model.get_dimension(&name) {
+                                            let expression = self.expression(
+                                                &dimension.sql_expr().replace("{model}", alias),
+                                            )?;
+                                            return self.remap(
+                                                expression,
+                                                &[model_name, alias],
+                                                alias,
+                                                true,
+                                            );
+                                        }
+                                    }
+                                }
+                                Ok(node)
+                            })?;
+                            let right = self.remap(decode(right)?, &[model_name], alias, single)?;
                             set_predicates.insert(
                                 key,
                                 format!(
@@ -1064,6 +1122,16 @@ impl Lowerer<'_, '_> {
             .unwrap_or_else(|| model.table_name().to_owned());
         let mut predicates = base.clone();
         predicates.extend(post.clone());
+        for predicate in &predicates {
+            *correlated |= crate::core::outer_semantic_column_references(predicate)?
+                .iter()
+                .any(|column| {
+                    column
+                        .model
+                        .as_deref()
+                        .is_some_and(|table| table != "_inner")
+                });
+        }
         let sql = if contains_kind(&encode(&expression)?, "window")
             || contains_kind(&encode(&expression)?, "window_function")
         {

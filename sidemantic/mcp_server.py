@@ -5,6 +5,7 @@ import re
 from contextvars import ContextVar
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
+from functools import partial, wraps
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal
@@ -824,7 +825,25 @@ def get_models(model_names: list[str]) -> dict[str, Any]:
     return {"models": details}
 
 
-@mcp.tool(structured_output=False)
+def _worker_tool(**options):
+    """Register blocking tools as async while keeping direct Python calls synchronous."""
+
+    def register(fn):
+        @wraps(fn)
+        async def run_in_worker(*args, **kwargs):
+            import anyio
+
+            # FastMCP invokes synchronous tools on the event loop. AnyIO copies
+            # request-local identity and resource limits into the worker thread.
+            return await anyio.to_thread.run_sync(partial(fn, *args, **kwargs))
+
+        mcp.tool(**options)(run_in_worker)
+        return fn
+
+    return register
+
+
+@_worker_tool(structured_output=False)
 def run_query(
     dimensions: list[str] = [],
     metrics: list[str] = [],
@@ -928,7 +947,7 @@ def run_query(
     return response
 
 
-@mcp.tool(structured_output=False, meta={"ui": {"resourceUri": "ui://sidemantic/chart"}})
+@_worker_tool(structured_output=False, meta={"ui": {"resourceUri": "ui://sidemantic/chart"}})
 def create_chart(
     dimensions: list[str] = [],
     metrics: list[str] = [],
@@ -1079,7 +1098,7 @@ def _format_field_name(field: str) -> str:
     return field.replace("_", " ").title()
 
 
-@mcp.tool(structured_output=False)
+@_worker_tool(structured_output=False)
 def run_sql(query: str) -> dict[str, Any]:
     """Execute a SQL query rewritten through the semantic layer.
 

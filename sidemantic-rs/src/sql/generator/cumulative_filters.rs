@@ -83,16 +83,17 @@ impl SqlGenerator<'_> {
             MetricType::Ratio if metric.offset_window.is_none() => {
                 let mut combined_filters = metric.filters.clone();
                 combined_filters.extend_from_slice(filters);
-                for reference in [&mut metric.numerator, &mut metric.denominator] {
-                    if let Some(value) = reference {
-                        *value = self.filtered_window_input(
-                            value,
-                            &model_name,
-                            &combined_filters,
-                            graph,
-                            visiting,
-                        )?;
-                    }
+                for value in [&mut metric.numerator, &mut metric.denominator]
+                    .into_iter()
+                    .flatten()
+                {
+                    *value = self.filtered_window_input(
+                        value,
+                        &model_name,
+                        &combined_filters,
+                        graph,
+                        visiting,
+                    )?;
                 }
                 metric.filters.clear();
             }

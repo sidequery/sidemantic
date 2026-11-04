@@ -33,6 +33,7 @@ def test_real_duckdb_cancellation(monkeypatch):
 def test_concurrency_limit(monkeypatch):
     import threading
 
+    monkeypatch.setattr(common, "_default_limits", common.ServerLimits(queue_timeout_seconds=0.01))
     monkeypatch.setattr(common._default_limits, "slots", threading.BoundedSemaphore(0))
     with pytest.raises(ValueError, match="concurrency"):
         common.execute_bounded(SemanticLayer(), "select 1")
@@ -92,3 +93,98 @@ def test_deadline_retries_interrupt_that_races_before_execute(monkeypatch):
     with pytest.raises(ValueError, match="deadline"):
         common.execute_bounded(layer, "select 1")
     assert Cursor.cancelled.is_set()
+
+
+@pytest.mark.parametrize("timeout", [-1, float("inf"), float("nan")])
+def test_invalid_queue_timeout(timeout):
+    with pytest.raises(ValueError, match="queue timeout"):
+        common.ServerLimits(queue_timeout_seconds=timeout)
+
+
+def test_busy_event_loop_does_not_wait_for_query_slot():
+    import asyncio
+    from time import monotonic
+
+    limits = common.ServerLimits(max_concurrency=1, queue_timeout_seconds=1)
+    assert limits.slots.acquire(blocking=False)
+
+    async def run():
+        token = common.request_limits.set(limits)
+        try:
+            with SemanticLayer() as layer:
+                started = monotonic()
+                with pytest.raises(common.QueryConcurrencyError):
+                    common.execute_bounded(layer, "select 1")
+                assert monotonic() - started < 0.5
+        finally:
+            common.request_limits.reset(token)
+
+    asyncio.run(run())
+    # A rejected query must not release the active query's slot.
+    assert not limits.slots.acquire(blocking=False)
+    limits.slots.release()
+
+
+def test_http_queue_timeout_returns_retryable_status():
+    from fastapi.testclient import TestClient
+
+    from sidemantic.api_server import create_app
+
+    limits = common.ServerLimits(max_concurrency=1, queue_timeout_seconds=0.01)
+    with SemanticLayer() as layer, TestClient(create_app(layer, server_limits=limits)) as client:
+        assert limits.slots.acquire(blocking=False)
+        try:
+            response = client.post("/raw", json={"query": "select 1"})
+            assert response.status_code == 503
+            assert response.headers["Retry-After"] == "1"
+            assert not limits.slots.acquire(blocking=False)
+        finally:
+            limits.slots.release()
+        assert client.post("/raw", json={"query": "select 1"}).status_code == 200
+
+
+def test_query_burst_queues_and_readiness_survives_worker_saturation(monkeypatch):
+    import asyncio
+    import threading
+
+    import anyio
+    import httpx
+
+    from sidemantic.api_server import create_app
+
+    limits = common.ServerLimits(max_concurrency=1, queue_timeout_seconds=2)
+    waiting = threading.Event()
+    original_acquire = common._acquire_query_slot
+    arrivals = 0
+
+    def acquire(limits):
+        nonlocal arrivals
+        arrivals += 1
+        if arrivals == 2:
+            waiting.set()
+        return original_acquire(limits)
+
+    monkeypatch.setattr(common, "_acquire_query_slot", acquire)
+
+    async def run(layer):
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        old_tokens = limiter.total_tokens
+        limiter.total_tokens = 2
+        app = create_app(layer, server_limits=limits)
+        try:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                assert limits.slots.acquire(blocking=False)
+                queries = [asyncio.create_task(client.post("/raw", json={"query": "select 1 as n"})) for _ in range(12)]
+                try:
+                    assert await asyncio.to_thread(waiting.wait, 1), "Queries did not enter both worker threads"
+                    ready = await asyncio.wait_for(client.get("/readyz"), timeout=0.5)
+                    assert ready.status_code == 200
+                finally:
+                    limits.slots.release()
+                    responses = await asyncio.gather(*queries)
+                assert all(response.status_code == 200 for response in responses)
+        finally:
+            limiter.total_tokens = old_tokens
+
+    with SemanticLayer() as layer:
+        asyncio.run(run(layer))

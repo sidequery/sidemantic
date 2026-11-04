@@ -129,6 +129,7 @@ class ServerLimits:
     max_bytes: int = MAX_RESPONSE_BYTES
     timeout_seconds: float = QUERY_TIMEOUT_SECONDS
     max_concurrency: int = 4
+    queue_timeout_seconds: float = 30.0
     slots: Any = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -141,6 +142,8 @@ class ServerLimits:
             raise ValueError("Server row, byte and concurrency limits must be positive integers")
         if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError("Server timeout must be positive and finite")
+        if not math.isfinite(self.queue_timeout_seconds) or self.queue_timeout_seconds < 0:
+            raise ValueError("Server queue timeout must be nonnegative and finite")
         self.slots = threading.BoundedSemaphore(self.max_concurrency)
 
 
@@ -190,6 +193,21 @@ def bounded_table(reader: Any) -> Any:
     return pa.Table.from_batches(batches, schema=reader.schema)
 
 
+class QueryConcurrencyError(ValueError):
+    """No query slot became available within the server's queue deadline."""
+
+
+def _acquire_query_slot(limits: ServerLimits) -> bool:
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return limits.slots.acquire(timeout=limits.queue_timeout_seconds)
+    # Synchronous callers on an event loop must never wait there for a slot.
+    return limits.slots.acquire(blocking=False)
+
+
 def execute_bounded(layer: Any, sql: str, *, arrow: bool = False) -> Any:
     """Bound transport execution and drain within the cursor lifetime.
 
@@ -199,8 +217,8 @@ def execute_bounded(layer: Any, sql: str, *, arrow: bool = False) -> Any:
     import threading
 
     limits = current_limits()
-    if not limits.slots.acquire(blocking=False):
-        raise ValueError("Server query concurrency limit reached")
+    if not _acquire_query_slot(limits):
+        raise QueryConcurrencyError("Server query concurrency limit reached")
     cursor = None
     timer = None
     expired = threading.Event()

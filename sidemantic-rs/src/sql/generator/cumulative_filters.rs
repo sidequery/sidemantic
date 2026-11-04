@@ -1,6 +1,15 @@
 //! Query-local inputs for cumulative measures with their own row filters.
 use super::*;
 
+fn contains_aggregate(node: &serde_json::Value) -> bool {
+    crate::core::is_aggregate_ast_node(node)
+        || match node {
+            serde_json::Value::Object(fields) => fields.values().any(contains_aggregate),
+            serde_json::Value::Array(values) => values.iter().any(contains_aggregate),
+            _ => false,
+        }
+}
+
 impl SqlGenerator<'_> {
     pub(super) fn filtered_window_input(
         &self,
@@ -65,6 +74,15 @@ impl SqlGenerator<'_> {
                     }
                 }
                 if replacements.is_empty() {
+                    // Aggregate-only SQL is a complete source-row expression,
+                    // even when the author omitted sql_is_complete. Preserve
+                    // its entity grain before applying a foreign population.
+                    if metric.agg.is_none() {
+                        let expression = parse_semantic_expression(sql)?;
+                        let node = serde_json::to_value(expression)
+                            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                        metric.sql_is_complete |= contains_aggregate(&node);
+                    }
                     metric.filters = combined_filters;
                 } else {
                     metric.sql = Some(
@@ -128,7 +146,6 @@ impl SqlGenerator<'_> {
 
 pub(super) struct GroupedWindowInput {
     reference: String,
-    base_reference: String,
     filters: Vec<String>,
 }
 
@@ -189,7 +206,6 @@ impl SqlGenerator<'_> {
         if cross_source {
             grouped.push(GroupedWindowInput {
                 reference: scoped.clone(),
-                base_reference: reference.to_string(),
                 filters,
             });
         }
@@ -213,13 +229,13 @@ impl SqlGenerator<'_> {
         for (index, scoped) in grouped.iter().enumerate() {
             let alias = format!("__sidemantic_window_scope_{index}");
             let mut child = inner.clone();
-            child.metrics = vec![scoped.base_reference.clone()];
+            child.metrics = vec![scoped.reference.clone()];
             child.filters.extend(scoped.filters.clone());
             let mut sql = self.generate(&child)?;
             let child_outputs = self.selected_output_names(&child)?;
             let input = format!(
                 "{alias}.{}",
-                self.quote_identifier(&child_outputs[&scoped.base_reference])
+                self.quote_identifier(&child_outputs[&scoped.reference])
             );
             let metric_ref = self.parse_metric_refs(&child.metrics)?.remove(0);
             let metric = self.metric_for_ref(&metric_ref)?;
@@ -233,7 +249,7 @@ impl SqlGenerator<'_> {
                 empty.filters.push("FALSE".into());
                 let empty_sql = self.generate(&empty)?;
                 let empty_outputs = self.selected_output_names(&empty)?;
-                let empty_column = self.quote_identifier(&empty_outputs[&scoped.base_reference]);
+                let empty_column = self.quote_identifier(&empty_outputs[&scoped.reference]);
                 ctes.push(format!("{empty_alias} AS ({empty_sql})"));
                 let mut marker = "__sidemantic_present".to_string();
                 while child_outputs.values().any(|output| output == &marker) {
@@ -303,5 +319,85 @@ impl SqlGenerator<'_> {
             projections.join(", "),
             joins.join("\n")
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    fn input() -> serde_json::Value {
+        json!({
+            "version": 1, "input_dialect": "duckdb",
+            "models": [
+                {"name": "facts", "table": "facts", "primary_key": "id",
+                 "dimensions": [{"name": "day", "type": "time", "granularity": "day"},
+                                {"name": "category", "type": "categorical"}],
+                 "relationships": [{"name": "other", "type": "many_to_one", "foreign_key": "other_id"}],
+                 "metrics": [{"name": "running", "type": "cumulative", "sql": "other.custom",
+                              "filters": ["category = 'a'"]}]},
+                {"name": "other", "table": "other", "primary_key": "id",
+                 "metrics": [{"name": "custom", "sql": "COUNT(*) + 1"}]}
+            ]
+        })
+    }
+
+    fn compile(input: &serde_json::Value, reference: &str) -> String {
+        crate::semantic_input::compile_with_semantic_input(
+            &input.to_string(),
+            &json!({"metrics": [reference], "dimensions": ["facts.day"]}).to_string(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cross_model_cumulative_uses_declared_graph_owner() {
+        for predicate in [
+            "category = 'a'",
+            "facts.category = 'a'",
+            "{model}.category = 'a'",
+        ] {
+            let mut input = input();
+            let mut metric = input["models"][0]["metrics"][0].take();
+            metric["filters"] = json!([predicate]);
+            input["models"][0]["metrics"] = json!([]);
+            input["metrics"] = json!([metric]);
+            input["metric_owners"] = json!({"running": "facts"});
+            let sql = compile(&input, "running");
+            assert!(sql.contains("SUM(base.__sidemantic_filtered_"), "{sql}");
+            assert!(sql.contains("ORDER BY base.day"), "{sql}");
+            assert!(sql.contains("WHERE category = 'a'"), "{sql}");
+        }
+    }
+
+    #[test]
+    fn cross_model_cumulative_window_expression_resolves_qualified_output() {
+        let mut input = input();
+        let metric = &mut input["models"][0]["metrics"][0];
+        metric.as_object_mut().unwrap().remove("sql");
+        metric["window_expression"] = json!("SUM(base.\"other.custom\")");
+        let sql = compile(&input, "facts.running");
+        assert!(sql.contains("SUM(base."), "{sql}");
+        assert!(!sql.contains("base.\"other.custom\""), "{sql}");
+        assert!(sql.contains("WHERE category = 'a'"), "{sql}");
+    }
+
+    #[test]
+    fn cross_model_cumulative_infers_complete_aggregate_population() {
+        for expression in [
+            "COUNT(*) FILTER (WHERE amount > 0)",
+            "COUNT(*) + 1",
+            "COALESCE(SUM(amount), 0) + COUNT(*)",
+            "SUM(amount) + COUNT(*)",
+            "NULLIF(COUNT(*), 1)",
+        ] {
+            let mut input = input();
+            input["models"][1]["metrics"][0]["sql"] = json!(expression);
+            let inferred = compile(&input, "facts.running");
+            input["models"][1]["metrics"][0]["sql_is_complete"] = json!(true);
+            let explicit = compile(&input, "facts.running");
+            assert_eq!(inferred, explicit, "{expression}");
+            assert!(inferred.contains("SELECT DISTINCT"), "{inferred}");
+        }
     }
 }

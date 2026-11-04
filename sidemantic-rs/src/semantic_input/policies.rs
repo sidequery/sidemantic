@@ -455,7 +455,15 @@ fn check_visibility(
         let Some(model_definition) = graph.get_model(model) else {
             return Ok(());
         };
-        let name = base_field(name);
+        // Filter/order binding prefers an exact declared field, including names
+        // containing __. Projection inputs are checked separately below.
+        let name = if model_definition.get_dimension(name).is_some()
+            || model_definition.get_metric(name).is_some()
+        {
+            name
+        } else {
+            base_field(name)
+        };
         let public = model_definition
             .get_dimension(name)
             .map(|dimension| dimension.public)
@@ -478,6 +486,9 @@ fn check_visibility(
         }
         if let Some((model, name)) = reference.split_once('.') {
             check(model, name)?;
+            if query.dimensions.contains(reference) && name.contains("__") {
+                check(model, base_field(name))?;
+            }
         } else if graph
             .get_metric(reference)
             .is_some_and(|metric| !metric.public)
@@ -830,6 +841,55 @@ mod tests {
             .add_metric(Metric::ratio("ratio", "orders.revenue", "accounts.quota"))
             .unwrap();
         graph
+    }
+
+    #[test]
+    fn visibility_distinguishes_exact_filter_fields_from_projection_grains() {
+        for base in ["created", "created__internal"] {
+            for private in ["base", "exact", "neither"] {
+                let field = format!("{base}__day");
+                let input = json!({
+                    "version": 1, "input_dialect": "duckdb",
+                    "models": [{"name": "orders", "table": "orders",
+                        "dimensions": [
+                            {"name": base, "type": "time", "granularity": "day",
+                             "sql": "timestamp", "public": private != "base"},
+                            {"name": field, "type": "categorical",
+                             "sql": "label", "public": private != "exact"}
+                        ],
+                        "metrics": [{"name": "count", "agg": "count"}]
+                    }]
+                });
+                let compile = |query: Value| {
+                    super::super::compile_with_semantic_input(
+                        &input.to_string(),
+                        &query.to_string(),
+                    )
+                };
+                let projection = compile(json!({
+                    "metrics": ["orders.count"],
+                    "dimensions": [format!("orders.{field}")],
+                    "enforce_visibility": true
+                }));
+                if private == "neither" {
+                    assert!(projection.is_ok(), "{projection:?}");
+                } else {
+                    assert!(matches!(projection, Err(SidemanticError::Security(_))));
+                }
+                let filter = compile(json!({
+                    "metrics": ["orders.count"],
+                    "filters": [format!("orders.{field} = 'public'")],
+                    "enforce_visibility": true
+                }));
+                if private == "exact" {
+                    assert!(matches!(filter, Err(SidemanticError::Security(_))));
+                } else {
+                    let sql = filter.unwrap();
+                    assert!(sql.contains("label"), "{sql}");
+                    assert!(!sql.contains("timestamp"), "{sql}");
+                }
+            }
+        }
     }
 
     #[test]

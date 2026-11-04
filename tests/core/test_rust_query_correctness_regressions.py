@@ -549,4 +549,8 @@ def test_native_distinct_metric_filters_preserve_sibling_and_derived_populations
         expected = conn.execute(control).fetchall()
     for actual_row, expected_row in zip(rows, expected, strict=True):
         # Parallel aggregate input order can change the last floating-point bit.
-        assert actual_row == pytest.approx(expected_row, rel=1e-12, abs=1e-12)
+        for actual, expected in zip(actual_row, expected_row, strict=True):
+            if isinstance(expected, float):
+                assert actual == pytest.approx(expected, rel=1e-12, abs=1e-12)
+            else:
+                assert actual == expected

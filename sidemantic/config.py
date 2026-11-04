@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -454,9 +454,9 @@ def build_connection_string(config: SidemanticConfig) -> str:
         return "duckdb:///:memory:"
     elif isinstance(config.connection, PostgreSQLConnection):
         password = _connection_password(config.connection)
-        password_part = f":{password}" if password else ""
+        password_part = f":{quote(password, safe='')}" if password else ""
         return (
-            f"postgres://{config.connection.username}{password_part}@"
+            f"postgres://{quote(config.connection.username, safe='')}{password_part}@"
             f"{config.connection.host}:{config.connection.port}/{config.connection.database}"
         )
     elif isinstance(config.connection, BigQueryConnection):
@@ -464,9 +464,9 @@ def build_connection_string(config: SidemanticConfig) -> str:
         return f"bigquery://{config.connection.project_id}{dataset_part}"
     elif isinstance(config.connection, ClickHouseConnection):
         password = _connection_password(config.connection)
-        password_part = f":{password}" if password else ""
+        password_part = f":{quote(password, safe='')}" if password else ""
         return (
-            f"clickhouse://{config.connection.username}{password_part}@"
+            f"clickhouse://{quote(config.connection.username, safe='')}{password_part}@"
             f"{config.connection.host}:{config.connection.port}/{config.connection.database}"
         )
     elif isinstance(config.connection, SnowflakeConnection):
@@ -486,19 +486,17 @@ def build_connection_string(config: SidemanticConfig) -> str:
         password = _connection_password(config.connection)
         if password is None:
             raise ValueError("snowflake connection requires password or password_file")
-        return f"snowflake://{config.connection.username}:{password}@{config.connection.account}{path}{query}"
+        return f"snowflake://{quote(config.connection.username, safe='')}:{quote(password, safe='')}@{config.connection.account}{path}{query}"
     elif isinstance(config.connection, SparkConnection):
         if config.connection.username:
             password = _connection_password(config.connection)
-            password_part = f":{password}" if password else ""
+            password_part = f":{quote(password, safe='')}" if password else ""
             return (
-                f"spark://{config.connection.username}{password_part}@"
+                f"spark://{quote(config.connection.username, safe='')}{password_part}@"
                 f"{config.connection.host}:{config.connection.port}/{config.connection.database}"
             )
         return f"spark://{config.connection.host}:{config.connection.port}/{config.connection.database}"
     elif isinstance(config.connection, ADBCConnection):
-        from urllib.parse import quote
-
         conn = config.connection
         # Pass through all fields except type and driver
         params = []

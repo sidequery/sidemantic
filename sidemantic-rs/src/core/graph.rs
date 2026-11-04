@@ -901,11 +901,7 @@ impl SemanticGraph {
                     related_instance.clone(),
                     from_keys.clone(),
                     to_keys.clone(),
-                    if rel.r#type == RelationshipType::ManyToMany {
-                        RelationshipType::OneToMany
-                    } else {
-                        rel.r#type.clone()
-                    },
+                    rel.r#type.clone(),
                     if rel.r#type == RelationshipType::Cross {
                         None
                     } else {
@@ -956,7 +952,7 @@ impl SemanticGraph {
                     RelationshipType::ManyToOne => RelationshipType::OneToMany,
                     RelationshipType::OneToMany => RelationshipType::ManyToOne,
                     RelationshipType::OneToOne => RelationshipType::OneToOne,
-                    RelationshipType::ManyToMany => RelationshipType::ManyToOne,
+                    RelationshipType::ManyToMany => RelationshipType::ManyToMany,
                     RelationshipType::Cross => RelationshipType::Cross,
                 };
 
@@ -1378,9 +1374,16 @@ mod tests {
             )
             .unwrap();
         let path = graph.find_join_path("flights", "airport").unwrap();
-        assert_eq!(path.steps[0].relationship_type, RelationshipType::OneToMany);
+        assert_eq!(
+            path.steps[0].relationship_type,
+            RelationshipType::ManyToMany
+        );
         assert_eq!(path.steps[0].from_keys, vec!["airport_id".to_string()]);
         assert_eq!(path.steps[0].to_keys, vec!["id".to_string()]);
+        let reverse = graph.find_join_path("airport", "flights").unwrap();
+        assert!(reverse.has_fan_out());
+        assert_eq!(reverse.steps[0].from_keys, path.steps[0].to_keys);
+        assert_eq!(reverse.steps[0].to_keys, path.steps[0].from_keys);
     }
 
     #[test]

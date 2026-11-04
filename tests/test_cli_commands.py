@@ -4,6 +4,7 @@ import builtins
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -901,6 +902,36 @@ def test_docker_entrypoint_does_not_use_eval():
     assert "eval " not in content
 
 
+@pytest.mark.parametrize("mode", ["serve", "both"])
+def test_docker_pg_modes_launch_postgres_command(mode, tmp_path):
+    entrypoint = Path(__file__).resolve().parent.parent / "docker-entrypoint.sh"
+    log = tmp_path / "commands.jsonl"
+    executable = tmp_path / "sidemantic"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['COMMAND_LOG'], 'a') as stream:\n"
+        "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    executable.chmod(0o755)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("SIDEMANTIC_")}
+    env.update(
+        PATH=f"{tmp_path}{os.pathsep}{env['PATH']}",
+        COMMAND_LOG=str(log),
+        SIDEMANTIC_MODE=mode,
+        SIDEMANTIC_USERNAME="demo_user",
+        SIDEMANTIC_PASSWORD="demo_password",
+        SIDEMANTIC_PORT="5433",
+    )
+    subprocess.run(["sh", str(entrypoint), "--demo"], env=env, check=True, capture_output=True, timeout=10)
+    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    postgres = next(args for args in commands if args[:2] == ["server", "postgres"])
+    assert postgres[postgres.index("--username") + 1] == "demo_user"
+    assert postgres[postgres.index("--password") + 1] == "demo_password"
+    assert postgres[postgres.index("--port") + 1] == "5433"
+    assert len(commands) == (2 if mode == "both" else 1)
+
+
 def test_mcp_serve_applies_static_user_attributes_and_visibility(monkeypatch, tmp_path):
     ensure_fake_mcp()
     called = {}
@@ -1117,3 +1148,37 @@ def test_stdio_mcp_rejects_trusted_header_option(tmp_path):
     result = runner.invoke(app, ["server", "mcp", str(tmp_path), "--trust-user-header"])
     assert result.exit_code != 0
     assert "--trust-user-header requires --http or --apps" in result.output
+
+
+@pytest.mark.parametrize("command", [["serve"], ["server", "api"]])
+def test_http_entrypoints_forward_query_limits(monkeypatch, tmp_path, command):
+    _write_min_model(tmp_path)
+    called = {}
+    monkeypatch.setattr("sidemantic.api_server.start_api_server", lambda layer, **kwargs: called.update(kwargs))
+    result = runner.invoke(
+        app,
+        [
+            *command,
+            str(tmp_path),
+            "--no-mcp",
+            "--max-result-rows",
+            "42",
+            "--max-response-bytes",
+            "2048",
+            "--query-timeout",
+            "3",
+            "--max-concurrent-queries",
+            "8",
+            "--query-queue-timeout",
+            "0.5",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    limits = called["server_limits"]
+    assert (
+        limits.max_rows,
+        limits.max_bytes,
+        limits.timeout_seconds,
+        limits.max_concurrency,
+        limits.queue_timeout_seconds,
+    ) == (42, 2048, 3, 8, 0.5)

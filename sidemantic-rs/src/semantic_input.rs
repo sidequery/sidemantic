@@ -2704,7 +2704,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            sql.contains("DATE_TRUNC(created_at, MONTH)"),
+            sql.contains("DATE_TRUNC(orders_cte.created_at, MONTH)"),
             "Generated BigQuery SQL:\n{sql}"
         );
         for dialect in ["bigquery", "mysql", "databricks", "postgres"] {

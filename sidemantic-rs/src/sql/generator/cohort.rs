@@ -253,7 +253,7 @@ impl SqlGenerator<'_> {
         let having =
             self.cohort_result_expression(having, &model.name, &fields, false, &inner_expressions)?;
         let mut filters = query.filters.clone();
-        filters.extend(self.resolve_segments(&query.segments)?);
+        filters.extend(self.resolve_segments(&query.segments, query.parameter_values.as_ref())?);
         filters.extend(metric.filters.clone());
         let mut predicates = Vec::new();
         for filter in &filters {

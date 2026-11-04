@@ -160,3 +160,44 @@ def test_write_model_files_conflict_without_force_raises(sample_db: Path, tmp_pa
 
     # With force it overwrites cleanly.
     assert write_model_files(result, models_dir, force=True)
+
+
+def test_bootstrap_keeps_same_named_tables_in_distinct_schemas_and_catalogs(tmp_path):
+    from sidemantic import Model, SemanticLayer
+
+    source = tmp_path / "source.duckdb"
+    other = tmp_path / "other.duckdb"
+    with duckdb.connect(str(other)) as con:
+        con.execute("CREATE TABLE orders AS SELECT 'remote' AS status")
+    with duckdb.connect(str(source)) as con:
+        con.execute("CREATE TABLE orders AS SELECT 1 AS id")
+        con.execute('CREATE SCHEMA "sales.region"')
+        con.execute(
+            "CREATE TABLE \"sales.region\".orders AS SELECT * FROM (VALUES (1, 'paid'), (2, 'paid')) t(id, status)"
+        )
+    init_sql = [f"ATTACH '{other}' AS remote"]
+    result = bootstrap_models(f"duckdb:///{source}", init_sql=init_sql)
+    assert len(result.tables) == len(result.model_dicts) == 3
+    assert sorted(table.row_count for table in result.tables) == [1, 1, 2]
+    assert sorted(len(table.columns) for table in result.tables) == [1, 1, 2]
+    sales = next(table for table in result.tables if table.schema == "sales.region")
+    assert sales.distinct_counts["status"] == 1
+    layer = SemanticLayer(connection=f"duckdb:///{source}", init_sql=init_sql, auto_register=False)
+    try:
+        for model in result.model_dicts.values():
+            layer.add_model(Model(**model))
+        counts = [layer.query(metrics=[f"{name}.record_count"]).fetchone()[0] for name in result.model_dicts]
+        assert sorted(counts) == [1, 1, 2]
+    finally:
+        layer.adapter.close()
+
+
+@pytest.mark.parametrize("dialect", ["duckdb", "postgres", "bigquery", "snowflake", "spark"])
+def test_qualified_source_uses_backend_identifier_quoting(dialect):
+    from sqlglot import parse_one
+
+    table = TableInfo(name="order details", schema="sales", catalog="warehouse", dialect=dialect)
+    model = generate_model_dict(table, {"order_details"})
+    parsed = parse_one("SELECT * FROM " + model["table"], dialect=dialect)
+    source = parsed.args["from_"].this
+    assert (source.catalog, source.db, source.name) == ("warehouse", "sales", "order details")

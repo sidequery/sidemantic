@@ -1971,7 +1971,7 @@ def test_count_distinct_exact_grain_preaggregation_executes(semantic_layer):
 
     assert explanation.chosen_plan == "single_model_preaggregation"
     assert "orders_preagg_unique_customers_by_status" in explanation.rewritten_sql
-    assert "SUM(unique_customers_raw) AS unique_customers" in explanation.rewritten_sql
+    assert "MAX(unique_customers_raw) AS unique_customers" in explanation.rewritten_sql
 
 
 def test_count_distinct_rollup_preaggregation_rejected(semantic_layer):

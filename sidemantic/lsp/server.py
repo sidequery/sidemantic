@@ -890,7 +890,7 @@ def validate_document(server: LanguageServer, uri: str):
                     source="sidemantic",
                 )
             )
-            server.publish_diagnostics(uri, diagnostics)
+            server.text_document_publish_diagnostics(lsp.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics))
             return
 
         for node in ast.walk(tree):
@@ -932,7 +932,7 @@ def validate_document(server: LanguageServer, uri: str):
                     )
                 )
 
-        server.publish_diagnostics(uri, diagnostics)
+        server.text_document_publish_diagnostics(lsp.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics))
         return
 
     try:
@@ -987,7 +987,7 @@ def validate_document(server: LanguageServer, uri: str):
             )
         )
 
-    server.publish_diagnostics(uri, diagnostics)
+    server.text_document_publish_diagnostics(lsp.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics))
 
 
 def get_completion_context(text: str, line: int, character: int) -> str:

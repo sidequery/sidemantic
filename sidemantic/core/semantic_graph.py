@@ -469,7 +469,7 @@ class SemanticGraph:
                             model_name,
                             remote_keys,
                             local_keys,
-                            "many_to_one",
+                            "one_to_many",
                             _reverse_custom_join_condition(custom_condition),
                             edge_id,
                         )

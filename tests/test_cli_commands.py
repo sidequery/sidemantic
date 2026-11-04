@@ -1148,37 +1148,3 @@ def test_stdio_mcp_rejects_trusted_header_option(tmp_path):
     result = runner.invoke(app, ["server", "mcp", str(tmp_path), "--trust-user-header"])
     assert result.exit_code != 0
     assert "--trust-user-header requires --http or --apps" in result.output
-
-
-@pytest.mark.parametrize("command", [["serve"], ["server", "api"]])
-def test_http_entrypoints_forward_query_limits(monkeypatch, tmp_path, command):
-    _write_min_model(tmp_path)
-    called = {}
-    monkeypatch.setattr("sidemantic.api_server.start_api_server", lambda layer, **kwargs: called.update(kwargs))
-    result = runner.invoke(
-        app,
-        [
-            *command,
-            str(tmp_path),
-            "--no-mcp",
-            "--max-result-rows",
-            "42",
-            "--max-response-bytes",
-            "2048",
-            "--query-timeout",
-            "3",
-            "--max-concurrent-queries",
-            "8",
-            "--query-queue-timeout",
-            "0.5",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    limits = called["server_limits"]
-    assert (
-        limits.max_rows,
-        limits.max_bytes,
-        limits.timeout_seconds,
-        limits.max_concurrency,
-        limits.queue_timeout_seconds,
-    ) == (42, 2048, 3, 8, 0.5)

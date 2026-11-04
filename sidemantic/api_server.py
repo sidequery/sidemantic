@@ -25,7 +25,6 @@ from sidemantic import SemanticLayer, __version__
 from sidemantic.loaders import load_from_directory
 from sidemantic.server.common import (
     ARROW_STREAM_MEDIA_TYPE,
-    QueryConcurrencyError,
     ServerLimits,
     check_response_size,
     execute_bounded,
@@ -362,10 +361,6 @@ def create_app(
     async def handle_value_error(_request: Request, exc: ValueError):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
-    @app.exception_handler(QueryConcurrencyError)
-    async def handle_query_concurrency_error(_request: Request, exc: QueryConcurrencyError):
-        return JSONResponse({"error": str(exc)}, status_code=503, headers={"Retry-After": "1"})
-
     from sidemantic.core.semantic_layer import PreaggregationStrictError, SecurityError
 
     @app.exception_handler(SecurityError)
@@ -493,7 +488,7 @@ def create_app(
         return response
 
     @app.get("/readyz")
-    async def readyz() -> dict[str, str]:
+    def readyz() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/health", dependencies=[Depends(require_auth)])

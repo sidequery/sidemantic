@@ -157,17 +157,12 @@ across requests. Both `run_query` and `run_sql` enforce row filters.
 ### HTTP and MCP resource limits
 
 Defaults can be adjusted with `--max-result-rows`, `--max-response-bytes`,
-`--query-timeout` (seconds), `--max-concurrent-queries`, and `--query-queue-timeout`
-(seconds) on `sidemantic serve` and the API/MCP CLI, or
+`--query-timeout` (seconds), and `--max-concurrent-queries` on the API/MCP CLI, or
 `create_app(server_limits=ServerLimits(...))` in a custom application.
 
 By default, query transports reject results above 10,000 rows or 16 MiB, admit at most four
 concurrent executions per server instance, and bound chart dimensions to 1–2,000 pixels
-on each axis. Queries wait up to 30 seconds for a free execution slot; set
-`--query-queue-timeout 0` to reject immediately when all slots are occupied. HTTP
-queue timeouts return 503 with `Retry-After: 1`. MCP query tools execute in worker
-threads, and `/readyz` remains responsive when the query worker pool is full.
-The queue timeout is separate from the execution deadline. DuckDB execution and result draining have a 30-second deadline
+on each axis. DuckDB execution and result draining have a 30-second deadline
 that interrupts the request's independent cursor. Other adapters still require
 backend statement timeouts; their drivers may materialize a batch before the
 transport can check its byte size. These controls do not impose a hard process

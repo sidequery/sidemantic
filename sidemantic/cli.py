@@ -1251,6 +1251,7 @@ def mcp_serve(
     max_response_bytes: int = typer.Option(16 * 1024 * 1024, "--max-response-bytes", min=1),
     query_timeout: float = typer.Option(30.0, "--query-timeout", min=0.001),
     max_concurrent_queries: int = typer.Option(4, "--max-concurrent-queries", min=1),
+    query_queue_timeout: float = typer.Option(30.0, "--query-queue-timeout", min=0),
     auth_token_file: Path = typer.Option(None, "--auth-token-file", help="Bearer token file required for HTTP MCP"),
     trust_user_header: bool = typer.Option(
         False, "--trust-user-header", help="Trust identity headers from an authenticated, header-sanitizing proxy"
@@ -1282,7 +1283,9 @@ def mcp_serve(
     from sidemantic.mcp_server import initialize_layer, mcp
     from sidemantic.server.common import ServerLimits, request_limits
 
-    limits = ServerLimits(max_result_rows, max_response_bytes, query_timeout, max_concurrent_queries)
+    limits = ServerLimits(
+        max_result_rows, max_response_bytes, query_timeout, max_concurrent_queries, query_queue_timeout
+    )
 
     if demo:
         # Use packaged demo models
@@ -2436,6 +2439,7 @@ def api_serve(
     max_response_bytes: int = typer.Option(16 * 1024 * 1024, "--max-response-bytes", min=1),
     query_timeout: float = typer.Option(30.0, "--query-timeout", min=0.001),
     max_concurrent_queries: int = typer.Option(4, "--max-concurrent-queries", min=1),
+    query_queue_timeout: float = typer.Option(30.0, "--query-queue-timeout", min=0),
     require_user_attrs: bool = typer.Option(
         False,
         "--require-user-attrs",
@@ -2618,7 +2622,9 @@ def api_serve(
         serve_ui=serve_ui,
         result_cache_mb=result_cache_mb_resolved,
         result_cache_ttl=result_cache_ttl_resolved,
-        server_limits=ServerLimits(max_result_rows, max_response_bytes, query_timeout, max_concurrent_queries),
+        server_limits=ServerLimits(
+            max_result_rows, max_response_bytes, query_timeout, max_concurrent_queries, query_queue_timeout
+        ),
         trust_user_header=trust_user_header,
         require_user_attrs=require_user_attrs,
         enforce_visibility=enforce_visibility,
@@ -2653,6 +2659,11 @@ def serve(
     mcp_endpoint: bool = typer.Option(
         True, "--mcp/--no-mcp", help="Serve the MCP endpoint at /mcp when the mcp extra is installed"
     ),
+    max_result_rows: int = typer.Option(10000, "--max-result-rows", min=1),
+    max_response_bytes: int = typer.Option(16 * 1024 * 1024, "--max-response-bytes", min=1),
+    query_timeout: float = typer.Option(30.0, "--query-timeout", min=0.001),
+    max_concurrent_queries: int = typer.Option(4, "--max-concurrent-queries", min=1),
+    query_queue_timeout: float = typer.Option(30.0, "--query-queue-timeout", min=0),
 ):
     """
     Serve the semantic layer on one port: web UI, HTTP API, and MCP.
@@ -2678,10 +2689,11 @@ def serve(
         max_request_body_bytes=None,
         result_cache_mb=None,
         result_cache_ttl=None,
-        max_result_rows=10000,
-        max_response_bytes=16 * 1024 * 1024,
-        query_timeout=30.0,
-        max_concurrent_queries=4,
+        max_result_rows=max_result_rows,
+        max_response_bytes=max_response_bytes,
+        query_timeout=query_timeout,
+        max_concurrent_queries=max_concurrent_queries,
+        query_queue_timeout=query_queue_timeout,
         trust_user_header=trust_user_header,
         require_user_attrs=False,
         enforce_visibility=False,

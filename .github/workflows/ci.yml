@@ -169,6 +169,8 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Resolve ${{ matrix.name }} dependencies
+        # Early sqlglotc releases are sdist-only and fail to compile with
+        # current mypyc. Exercise the lowest available compiled wheel instead.
         run: >-
           uv sync
           --extra dev
@@ -179,6 +181,7 @@ jobs:
           --extra workbench
           --upgrade
           --resolution ${{ matrix.resolution }}
+          --no-build-package sqlglotc
 
       - name: Exercise maintained Python surfaces
         run: >-

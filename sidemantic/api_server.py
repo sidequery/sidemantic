@@ -8,6 +8,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable
+from functools import wraps
 from pathlib import Path
 from typing import Any, Literal
 
@@ -25,10 +26,12 @@ from sidemantic import SemanticLayer, __version__
 from sidemantic.loaders import load_from_directory
 from sidemantic.server.common import (
     ARROW_STREAM_MEDIA_TYPE,
+    QueryConcurrencyError,
     ServerLimits,
     check_response_size,
     execute_bounded,
     request_limits,
+    run_query_in_worker,
     table_to_arrow_bytes,
     table_to_json_rows,
     validate_filter_expression,
@@ -38,6 +41,14 @@ ARROW_FORMAT = "arrow"
 JSON_FORMAT = "json"
 SESSION_COOKIE = "sidemantic_session"
 SESSION_TTL_SECONDS = 10 * 60
+
+
+def _query_worker(fn):
+    @wraps(fn)
+    async def dispatch(*args, **kwargs):
+        return await run_query_in_worker(fn, *args, **kwargs)
+
+    return dispatch
 
 
 class _BrowserSessionStore:
@@ -342,7 +353,7 @@ def create_app(
             return credential
         return None
 
-    def require_auth(
+    async def require_auth(
         request: Request,
         credentials: HTTPAuthorizationCredentials | None = Security(security),
     ) -> None:
@@ -360,6 +371,10 @@ def create_app(
     @app.exception_handler(ValueError)
     async def handle_value_error(_request: Request, exc: ValueError):
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+    @app.exception_handler(QueryConcurrencyError)
+    async def handle_query_concurrency_error(_request: Request, exc: QueryConcurrencyError):
+        return JSONResponse({"error": str(exc)}, status_code=503, headers={"Retry-After": "1"})
 
     from sidemantic.core.semantic_layer import PreaggregationStrictError, SecurityError
 
@@ -421,7 +436,7 @@ def create_app(
             request = Request(scope, receive=receive)
             try:
                 credentials = await security(request)
-                require_auth(request, credentials)
+                await require_auth(request, credentials)
                 attributes = resolve_user_attributes(request)
             except HTTPException as exc:
                 response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
@@ -488,7 +503,7 @@ def create_app(
         return response
 
     @app.get("/readyz")
-    def readyz() -> dict[str, str]:
+    async def readyz() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/health", dependencies=[Depends(require_auth)])
@@ -623,6 +638,7 @@ def create_app(
         return {"sql": sql}
 
     @app.post("/query", dependencies=[Depends(require_auth)])
+    @_query_worker
     def run_query(
         payload: StructuredQueryRequest,
         request: Request,
@@ -688,6 +704,7 @@ def create_app(
         return {"sql": rewritten_sql}
 
     @app.post("/sql", dependencies=[Depends(require_auth)])
+    @_query_worker
     def run_sql(
         payload: SQLRequest,
         request: Request,
@@ -731,6 +748,7 @@ def create_app(
         )
 
     @app.post("/raw", dependencies=[Depends(require_auth)])
+    @_query_worker
     def run_raw_sql(
         payload: SQLRequest,
         request: Request,

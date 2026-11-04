@@ -13,7 +13,8 @@ concurrency:
 jobs:
   python:
     name: Python ${{ matrix.python-version }} (${{ matrix.engine }} engine)
-    runs-on: ubuntu-latest
+    # The locked Playwright release does not support Ubuntu 26.04 yet.
+    runs-on: ubuntu-24.04
     env:
       UV_PYTHON: ${{ matrix.python-version }}
       SIDEMANTIC_ENGINE: ${{ matrix.engine }}

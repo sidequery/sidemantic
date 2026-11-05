@@ -3552,7 +3552,7 @@ wheels = [
 
 [[package]]
 name = "sidemantic"
-version = "0.13.0"
+version = "0.13.1"
 source = { editable = "." }
 dependencies = [
     { name = "antlr4-python3-runtime" },
@@ -3827,12 +3827,12 @@ dev = [
 
 [[package]]
 name = "sidemantic-dax"
-version = "0.13.0"
+version = "0.13.1"
 source = { directory = "crates/dax-pyo3" }
 
 [[package]]
 name = "sidemantic-rs"
-version = "0.13.0"
+version = "0.13.1"
 source = { directory = "sidemantic-rs" }
 
 [[package]]

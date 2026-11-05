@@ -72,16 +72,18 @@ def validate_latest_scope(validator, model, pointer, scope):
         if not isinstance(definition, Mapping):
             return
         for label, text in expression_variants(definition.get("expression")):
-            if label in _DIALECTS:
-                error = scalar_sql_expression_error(text, sqlglot_dialect=_DIALECTS[label])
-                if error:
-                    emit(error, location, "ossie.semantic.expression.invalid_sql")
-                    continue
             if label != "OSSIE_SQL_2026":
+                if label in _DIALECTS:
+                    error = scalar_sql_expression_error(text, sqlglot_dialect=_DIALECTS[label])
+                    if error:
+                        emit(error, location, "ossie.semantic.expression.invalid_sql")
                 continue
+            from sidemantic.interchange.ossie.portable import parse_portable_expression
+
             try:
-                tree = sqlglot.parse_one(text, read="snowflake")
-            except sqlglot.errors.SqlglotError:
+                tree = parse_portable_expression(text)
+            except ValueError as exc:
+                emit(str(exc), location, "ossie.semantic.expression.invalid_sql")
                 continue
             if tree is not None and any(
                 (call.name.upper() if isinstance(call, exp.Anonymous) else call.sql_name()) == "AGG"
@@ -101,8 +103,13 @@ def validate_latest_scope(validator, model, pointer, scope):
             if label not in _DIALECTS:
                 continue
             try:
-                tree = sqlglot.parse_one(text, read=_DIALECTS[label])
-            except sqlglot.errors.SqlglotError:
+                if label == "OSSIE_SQL_2026":
+                    from sidemantic.interchange.ossie.portable import parse_portable_expression
+
+                    tree = parse_portable_expression(text)
+                else:
+                    tree = sqlglot.parse_one(text, read=_DIALECTS[label])
+            except (sqlglot.errors.SqlglotError, ValueError):
                 continue  # Expression structural/lowering validation owns syntax errors.
             if tree is None:
                 continue

@@ -241,3 +241,29 @@ def test_vendor_dialect_duplicates_use_trimmed_casefolded_identity():
     native = rust_ossie_validate(json.dumps(document), "json")
     assert not native["valid"], native
     assert any(item["code"] == "ossie.semantic.expression.dialect_duplicate" for item in native["diagnostics"])
+
+
+@pytest.mark.parametrize("location", ["field", "dataset_metric", "model_metric"])
+@pytest.mark.parametrize("form", ["sql", "dialects", "nonselected"])
+def test_portable_typed_literals_use_the_portable_source_parser(location, form):
+    document = _document()
+    declaration = {
+        "field": document["datasets"][0]["fields"][0],
+        "dataset_metric": document["datasets"][0]["metrics"][0],
+        "model_metric": document["metrics"][0],
+    }[location]
+    text = "HOUR(TIMESTAMP_NTZ '2024-03-01 12:34:56')"
+    if location != "field":
+        text = f"SUM({text})"
+    declaration["expression"] = (
+        {"sql": text} if form == "sql" else {"dialects": [{"dialect": "OSSIE_SQL_2026", "expression": text}]}
+    )
+    if form == "nonselected":
+        declaration["expression"]["dialects"].append(
+            {"dialect": "DUCKDB", "expression": "12" if location == "field" else "SUM(12)"}
+        )
+    shared = _shared(document)
+    assert shared.valid and shared.executable, shared.diagnostics
+    native = rust_ossie_validate(json.dumps(document), "json")
+    assert native["valid"], native
+    assert rust_ossie_select_scope(json.dumps(document), "json", target="DUCKDB")

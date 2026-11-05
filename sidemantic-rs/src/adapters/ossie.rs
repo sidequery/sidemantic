@@ -1196,7 +1196,12 @@ fn validate_latest_variants(root: &Value, diagnostics: &mut Vec<OssieDiagnostic>
                     "REDSHIFT" => DialectType::Redshift,
                     _ => continue,
                 };
-                match parse_scalar_sql_dialect(sql, dialect, label) {
+                let parsed = if label == "OSSIE_SQL_2026" {
+                    super::ossie_sql::parse_portable_expression(sql)
+                } else {
+                    parse_scalar_sql_dialect(sql, dialect, label)
+                };
+                match parsed {
                     Ok(ast) if metric => {
                         let value = serde_json::to_value(ast).expect("serializable SQL AST");
                         if let Err(error) = check(&value, label, owner.as_deref(), &fields) {

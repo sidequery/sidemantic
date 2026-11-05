@@ -21,7 +21,7 @@ from sidemantic.interchange.ossie.identifier import (
 )
 from sidemantic.interchange.ossie.portable import lower_ossie_sql, parse_portable_expression
 from sidemantic.interchange.ossie.profiles import LATEST_OSSIE_SCHEMA_COMMIT
-from sidemantic.sql.rendering import render_sql
+from sidemantic.sql.rendering import render_ossie_sql as render_sql
 
 
 class OssieWideQueryError(ValueError):

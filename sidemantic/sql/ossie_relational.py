@@ -16,7 +16,7 @@ from sqlglot import exp
 
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.interchange.ossie.identifier import normalize_identifier
-from sidemantic.sql.rendering import render_sql
+from sidemantic.sql.rendering import render_ossie_sql as render_sql
 
 
 class OssieQueryError(ValueError):

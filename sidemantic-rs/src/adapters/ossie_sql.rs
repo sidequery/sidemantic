@@ -23,6 +23,24 @@ pub fn parse_portable_expression(sql: &str) -> Result<Expression, String> {
     }
     let expression = match expressions.remove(0) {
         Expression::Paren(parentheses) => parentheses.this,
+        // Polyglot classifies an extra parenthesized scalar prefix (such as
+        // ((a > 0) AND (a < 100))) as a Subquery wrapper. Unwrap only the
+        // wrapper introduced above; actual query nodes remain forbidden by
+        // validate_tree, including nested SELECTs.
+        Expression::Subquery(parentheses)
+            if parentheses.alias.is_none()
+                && parentheses.column_aliases.is_empty()
+                && parentheses.order_by.is_none()
+                && parentheses.limit.is_none()
+                && parentheses.offset.is_none()
+                && parentheses.distribute_by.is_none()
+                && parentheses.sort_by.is_none()
+                && parentheses.cluster_by.is_none()
+                && !parentheses.lateral
+                && !parentheses.modifiers_inside =>
+        {
+            parentheses.this
+        }
         expression => expression,
     };
     if matches!(
@@ -737,5 +755,26 @@ mod tests {
             "{lowered}"
         );
         assert!(!lowered.contains("INTERVAL -1 MONTH"), "{lowered}");
+    }
+    #[test]
+    fn parenthesized_boolean_filters_do_not_admit_queries_or_modifiers() {
+        for source in ["(a > 0) AND (a < 100)", "(a = 1 OR a = 2) AND (a > 1)"] {
+            let lowered = lower_ossie_sql(source, DialectType::DuckDB)
+                .unwrap_or_else(|error| panic!("{source}: {error}"));
+            assert!(
+                crate::core::parse_semantic_expression(&lowered).is_ok(),
+                "{lowered}"
+            );
+        }
+        for source in [
+            "SELECT 1",
+            "(SELECT 1)",
+            "1 + (SELECT 1)",
+            "(a > 0) ORDER BY 1",
+            "(a > 0) LIMIT 1",
+            "(a > 0) OFFSET 1",
+        ] {
+            assert!(parse_portable_expression(source).is_err(), "{source}");
+        }
     }
 }

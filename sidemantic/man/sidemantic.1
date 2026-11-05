@@ -149,6 +149,9 @@ Examples: sidemantic rewrite "SELECT orders.revenue FROM orders" \-\-models ./mo
 \fB\-\-models, \-m PATH\fR
 Directory containing semantic layer files
 .TP
+\fB\-\-ossie\-wide\fR
+Interpret the argument as a strict Ossie Layer 3 JSON query
+.TP
 \fB\-\-ossie\-scope TEXT\fR
 Explicit Apache Ossie semantic\-model scope
 .TP
@@ -244,6 +247,9 @@ Database connection string (e.g., postgres://host/db, bigquery://project/dataset
 .TP
 \fB\-\-db PATH\fR
 Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-ossie\-wide\fR
+Interpret the argument as a strict Ossie Layer 3 JSON query
 .TP
 \fB\-\-dry\-run\fR
 Show generated SQL without executing

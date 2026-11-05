@@ -66,6 +66,22 @@ struct OssieCompileRequest {
     filters: Vec<String>,
     #[serde(default)]
     order_by: Vec<String>,
+    #[serde(default)]
+    aliases: HashMap<String, String>,
+    dialect: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OssieWideCompileRequest {
+    content: String,
+    schema_revision: Option<String>,
+    serialization: String,
+    #[serde(default = "default_ossie_consumer_profile")]
+    consumer_profile: String,
+    #[serde(default = "default_ossie_target")]
+    target: String,
+    scope_id: Option<String>,
+    query: Value,
     dialect: String,
 }
 
@@ -77,6 +93,7 @@ enum Request {
     },
     Compile(Box<CompileRequest>),
     OssieCompile(Box<OssieCompileRequest>),
+    OssieWideCompile(Box<OssieWideCompileRequest>),
     JoinPath {
         models_yaml: String,
         from_model: String,
@@ -269,14 +286,36 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                     value: None,
                 });
             }
-            let query = SemanticQuery::new()
+            let mut query = SemanticQuery::new()
                 .with_metrics(request.metrics)
                 .with_dimensions(request.dimensions)
                 .with_filters(request.filters)
                 .with_order_by(request.order_by);
+            query.aliases = request.aliases;
             let sql = SqlGenerator::new(&graph)
                 .with_dialect(parse_dialect(&request.dialect)?)
                 .generate(&query)?;
+            Ok(Response::Ok {
+                sql: Some(sql),
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::OssieWideCompile(request) => {
+            let graph = OssieForwardAdapter
+                .select_scope_with_revision(
+                    &request.content,
+                    parse_ossie_serialization(&request.serialization)?,
+                    parse_ossie_consumer(&request.consumer_profile)?,
+                    parse_ossie_target(&request.target)?,
+                    request.scope_id.as_deref(),
+                    request.schema_revision.as_deref(),
+                )?
+                .into_graph()?;
+            let sql = SqlGenerator::new(&graph)
+                .with_dialect(parse_dialect(&request.dialect)?)
+                .generate_ossie_wide(&request.query)?;
             Ok(Response::Ok {
                 sql: Some(sql),
                 path: None,

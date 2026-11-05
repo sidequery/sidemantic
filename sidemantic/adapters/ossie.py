@@ -32,7 +32,7 @@ from sidemantic.interchange.ossie import (
     sort_diagnostics,
     synthesize_ossie_document,
 )
-from sidemantic.interchange.ossie.profiles import CURRENT_OSSIE_SCHEMA_COMMIT
+from sidemantic.interchange.ossie.profiles import LATEST_OSSIE_SCHEMA_COMMIT
 
 _GENERATED_DIRECTORIES = frozenset({"dbt_packages", "target"})
 
@@ -41,8 +41,17 @@ class OssieImportError(ValueError):
     """Raised when an Ossie source cannot produce the requested executable scope."""
 
     def __init__(self, message: str, *, diagnostics: tuple[OssieDiagnostic, ...] = ()) -> None:
-        super().__init__(message)
         self.diagnostics = diagnostics
+        errors = [diagnostic for diagnostic in diagnostics if diagnostic.severity.value == "error"]
+        if errors:
+            details = [
+                f"{diagnostic.json_pointer or '/'}: {diagnostic.message} ({diagnostic.code})"
+                for diagnostic in errors[:5]
+            ]
+            if len(errors) > 5:
+                details.append(f"{len(errors) - 5} more errors; inspect the structured diagnostics for all details.")
+            message = "\n".join([message, *details])
+        super().__init__(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,7 +248,7 @@ class OssieAdapter(BaseAdapter):
             scope_name=selected_scope,
             expression_dialect=selected_dialect,
             schema_version=schema_version or self._schema_version,
-            schema_revision=schema_revision or self._schema_revision or CURRENT_OSSIE_SCHEMA_COMMIT,
+            schema_revision=schema_revision or self._schema_revision or LATEST_OSSIE_SCHEMA_COMMIT,
             serialization=output_serialization,
             consumer_profile=self._parse_options.consumer_profile,
             portable_only=portable_only,

@@ -29,6 +29,8 @@ from sidemantic.interchange.ossie.expression_validation import scalar_sql_expres
 from sidemantic.interchange.ossie.identifier import normalize_identifier
 from sidemantic.interchange.ossie.profiles import (
     CURRENT_OSSIE_SCHEMA_COMMIT,
+    LATEST_OSSIE_SCHEMA_COMMIT,
+    LEGACY_OSSIE_SCHEMA_COMMIT,
     OssieConsumerProfile,
     OssieProfileError,
     OssieSerialization,
@@ -159,6 +161,7 @@ def _qualify_metric_expression(
     dialect: str,
     generated_fields: dict[str, dict[str, str]],
     model_local: bool,
+    latest: bool = False,
 ) -> str | None:
     """Move model-local column expressions into Ossie's scope-wide namespace."""
     parsed = sqlglot.parse_one(expression, read=_SQLGLOT_DIALECTS[dialect])
@@ -181,8 +184,10 @@ def _qualify_metric_expression(
     metric_names = set(graph.metrics)
     metric_names.update(item.name for model in graph.models.values() for item in model.metrics)
     for column in parsed.find_all(exp.Column):
-        if not raw_columns and column.name in metric_names:
-            if column.table:
+        if not raw_columns and (
+            column.name in metric_names or (latest and f"{column.table}.{column.name}" in metric_names)
+        ):
+            if column.table and not latest:
                 model = graph.models.get(column.table)
                 if model is not None and model.get_metric(column.name) is not None:
                     column.set("table", None)
@@ -205,7 +210,101 @@ def _qualify_metric_expression(
                     "__sidemantic_raw",
                 )
                 column.set("this", exp.to_identifier(field_name))
+        if latest and raw_columns and column.table in graph.models:
+            model = graph.models[column.table]
+            known = {normalize_identifier(d.name) for d in model.dimensions}
+            known.update(normalize_identifier(name) for name in generated_fields.get(column.table, {}))
+            source_name = column.this.sql(dialect=_SQLGLOT_DIALECTS[dialect])
+            if normalize_identifier(source_name) not in known:
+                # Native measures may read source columns not exposed as
+                # dimensions. Ossie model metrics can only name declared
+                # fields, so expose a private-to-this-export pass-through.
+                raw = column.copy()
+                raw.set("table", None)
+                name = _generated_field(
+                    graph,
+                    generated_fields,
+                    column.table,
+                    raw.sql(dialect=_SQLGLOT_DIALECTS[dialect]),
+                    column.name if not column.this.args.get("quoted") else "__sidemantic_raw",
+                )
+                column.set("this", exp.to_identifier(name))
     return parsed.sql(dialect=_SQLGLOT_DIALECTS[dialect])
+
+
+def _latest_metric_expression(
+    metric: Metric,
+    owner: str | None,
+    model_local: bool,
+    graph: SemanticGraph,
+    dialect: str,
+    generated_fields: dict[str, dict[str, str]],
+    visiting: frozenset[tuple[int, str | None]] = frozenset(),
+) -> str:
+    """Inline native metric dependencies without changing their owner or inputs."""
+    identity = (id(metric), owner)
+    if identity in visiting:
+        raise ValueError(f"Cyclic metric reference at {owner + '.' if owner else ''}{metric.name}")
+    if _unsupported_metric_options(metric) or metric.has_untranslated_dax:
+        raise ValueError(f"Referenced metric {metric.name!r} requires unsupported runtime semantics")
+    expression = _metric_expression(metric)
+    if expression is None:
+        raise ValueError(f"Metric {metric.name!r} has no portable scalar expression")
+    if owner:
+        expression = expression.replace("{model}", owner)
+    if metric.fill_nulls_with is not None:
+        value = exp.convert(metric.fill_nulls_with).sql(dialect=_SQLGLOT_DIALECTS[dialect])
+        expression = f"COALESCE({expression}, {value})"
+    error = _scalar_expression_error(expression, dialect)
+    if error is not None:
+        raise ValueError(f"Metric {metric.name!r} is not one {dialect} SQL expression: {error}")
+    parsed = sqlglot.parse_one(expression, read=_SQLGLOT_DIALECTS[dialect])
+    raw_columns = metric.sql_is_complete or bool(metric.agg) or any(parsed.find_all(exp.AggFunc))
+    qualified = _qualify_metric_expression(
+        expression, metric, owner, graph, dialect, generated_fields, model_local, latest=True
+    )
+    if qualified is None:
+        raise ValueError(f"Metric {metric.name!r} cannot preserve its dataset binding")
+    if raw_columns:
+        return qualified
+
+    def resolve(column: exp.Column) -> tuple[Metric, str | None, bool] | None:
+        reference = f"{column.table}.{column.name}" if column.table else column.name
+        # Match the native runtime's exact graph identity / model-context
+        # precedence before interpreting a dotted name as a model reference.
+        if column.table:
+            if reference in graph.metrics:
+                return graph.metrics[reference], graph.metric_owners.get(reference), False
+            model = graph.models.get(column.table)
+            match = model.get_metric(column.name) if model else None
+            return (match, column.table, True) if match is not None else None
+        if owner and (match := graph.models[owner].get_metric(column.name)) is not None:
+            return match, owner, True
+        if reference in graph.metrics:
+            return graph.metrics[reference], graph.metric_owners.get(reference), False
+        matches = [
+            (match, model.name, True)
+            for model in graph.models.values()
+            if (match := model.get_metric(column.name)) is not None
+        ]
+        if len(matches) > 1:
+            raise ValueError(f"Ambiguous metric reference {reference!r}; use a model-qualified name")
+        return matches[0] if matches else None
+
+    def inline(node: exp.Expression) -> exp.Expression:
+        if not isinstance(node, exp.Column) or (dependency := resolve(node)) is None:
+            return node
+        source, source_owner, source_local = dependency
+        expanded = _latest_metric_expression(
+            source, source_owner, source_local, graph, dialect, generated_fields, visiting | {identity}
+        )
+        return exp.Paren(this=sqlglot.parse_one(expanded, read=_SQLGLOT_DIALECTS[dialect]))
+
+    return (
+        sqlglot.parse_one(qualified, read=_SQLGLOT_DIALECTS[dialect])
+        .transform(inline)
+        .sql(dialect=_SQLGLOT_DIALECTS[dialect])
+    )
 
 
 def _unsupported_metric_options(metric: Metric) -> list[str]:
@@ -254,6 +353,7 @@ def _unrepresented_state_diagnostics(graph: SemanticGraph) -> list[OssieDiagnost
     supported combinations of these fields.
     """
     diagnostics: list[OssieDiagnostic] = []
+    source_revisions = (LATEST_OSSIE_SCHEMA_COMMIT, CURRENT_OSSIE_SCHEMA_COMMIT, LEGACY_OSSIE_SCHEMA_COMMIT)
 
     def check(item: BaseModel, handled: set[str], location: str) -> None:
         omitted = [
@@ -272,11 +372,21 @@ def _unrepresented_state_diagnostics(graph: SemanticGraph) -> list[OssieDiagnost
     for model in graph.models.values():
         # Lowering adds these source-location annotations to every core model.
         # They describe the input document, not native state to synthesize.
-        source_annotations = (
-            {"metadata"}
-            if not set(model.metadata or {}) - {"ossie_source_kind", "ossie_pointer", "ossie_source_name"}
-            else set()
-        )
+        model_source_annotations = {"ossie_source_kind", "ossie_pointer", "ossie_source_name", "ossie_scope_name"}
+        for dialect_annotation in ("ossie_source_dialect", "ossie_target_dialect"):
+            if (model.metadata or {}).get(dialect_annotation) in (
+                "duckdb",
+                "snowflake",
+                "bigquery",
+                "databricks",
+                "postgres",
+                "postgresql",
+                "spark",
+            ):
+                model_source_annotations.add(dialect_annotation)
+        if (model.metadata or {}).get("ossie_schema_revision") in source_revisions:
+            model_source_annotations.add("ossie_schema_revision")
+        source_annotations = {"metadata"} if not set(model.metadata or {}) - model_source_annotations else set()
         check(
             model,
             {
@@ -296,7 +406,11 @@ def _unrepresented_state_diagnostics(graph: SemanticGraph) -> list[OssieDiagnost
         for dimension in model.dimensions:
             # Imported identifiers are already bound to runtime names. Their
             # original spelling is archival provenance, not executable state.
-            source_annotations = {"metadata"} if not set(dimension.metadata or {}) - {"ossie_source_name"} else set()
+            source_annotations = (
+                {"metadata"}
+                if not set(dimension.metadata or {}) - {"ossie_source_name", "ossie_internal_expression"}
+                else set()
+            )
             check(
                 dimension,
                 {"name", "type", "sql", "logical_data_type", "declared_is_time", "description", "label", "public"}
@@ -312,12 +426,18 @@ def _unrepresented_state_diagnostics(graph: SemanticGraph) -> list[OssieDiagnost
     for metric in [*graph.metrics.values(), *(metric for model in graph.models.values() for metric in model.metrics)]:
         # Lowering records dialect provenance alongside the selected SQL. As
         # with model source annotations, these do not add native semantics.
-        source_annotations = (
-            {"metadata"}
-            if not set(metric.metadata or {})
-            - {"ossie_expression_dialect", "ossie_target_dialect", "ossie_source_name"}
-            else set()
-        )
+        metric_source_annotations = {
+            "ossie_expression_dialect",
+            "ossie_target_dialect",
+            "ossie_source_name",
+            "ossie_dataset_metric",
+            "ossie_dataset_owner",
+            "ossie_dataset_name",
+        }
+        declaration_index = (metric.metadata or {}).get("ossie_dataset_metric_index")
+        if type(declaration_index) is int and declaration_index >= 0:
+            metric_source_annotations.add("ossie_dataset_metric_index")
+        source_annotations = {"metadata"} if not set(metric.metadata or {}) - metric_source_annotations else set()
         check(
             metric,
             {
@@ -338,6 +458,12 @@ def _unrepresented_state_diagnostics(graph: SemanticGraph) -> list[OssieDiagnost
             f"Metric {metric.name!r}",
         )
     for name in ("parameters", "table_calculations", "explores", "saved_queries", "metadata", "import_warnings"):
+        if (
+            name == "metadata"
+            and graph.metadata == {"ossie_schema_revision": graph.metadata.get("ossie_schema_revision")}
+            and graph.metadata.get("ossie_schema_revision") in source_revisions
+        ):
+            continue
         if getattr(graph, name):
             diagnostics.append(
                 _error("ossie.synthesis.native_state_unrepresented", f"Graph {name} is not represented in Ossie core.")
@@ -613,6 +739,8 @@ def _metrics(
     dialect: str,
     diagnostics: list[OssieDiagnostic],
     generated_fields: dict[str, dict[str, str]],
+    latest: bool = False,
+    dataset_metrics: dict[str, list[dict[str, object]]] | None = None,
 ) -> list[dict[str, object]]:
     candidates: list[tuple[Metric, str | None, bool]] = [
         (metric, graph.metric_owners.get(name), False) for name, metric in graph.metrics.items()
@@ -655,9 +783,16 @@ def _metrics(
                 )
             )
             continue
-        expression = _qualify_metric_expression(
-            expression, metric, owner, graph, dialect, generated_fields, model_local
-        )
+        if latest:
+            try:
+                expression = _latest_metric_expression(metric, owner, model_local, graph, dialect, generated_fields)
+            except ValueError as exc:
+                diagnostics.append(_error("ossie.synthesis.metric_reference_invalid", str(exc)))
+                continue
+        else:
+            expression = _qualify_metric_expression(
+                expression, metric, owner, graph, dialect, generated_fields, model_local
+            )
         if expression is None:
             diagnostics.append(
                 _error(
@@ -677,7 +812,25 @@ def _metrics(
                 )
             continue
         seen[metric.name] = expression
-        value: dict[str, object] = {"name": metric.name, "expression": _expression(expression, dialect)}
+        metadata = metric.metadata or {}
+        dataset_metric = latest and metadata.get("ossie_dataset_metric") is True
+        if dataset_metric:
+            parsed = sqlglot.parse_one(expression, read=_SQLGLOT_DIALECTS[dialect])
+            if owner not in models or any(column.table != owner for column in parsed.find_all(exp.Column)):
+                diagnostics.append(
+                    _error(
+                        "ossie.synthesis.metric_reference_invalid",
+                        f"Dataset metric {metric.name!r} references fields outside its owning dataset.",
+                    )
+                )
+                continue
+            for column in parsed.find_all(exp.Column):
+                column.set("table", None)
+            expression = parsed.sql(dialect=_SQLGLOT_DIALECTS[dialect])
+        value: dict[str, object] = {
+            "name": metadata.get("ossie_source_name", metric.name) if dataset_metric else metric.name,
+            "expression": _expression(expression, dialect),
+        }
         if metric.logical_data_type is not None:
             if metric.logical_data_type not in _DATA_TYPES:
                 diagnostics.append(
@@ -690,7 +843,10 @@ def _metrics(
                 value["datatype"] = metric.logical_data_type
         if metric.description is not None:
             value["description"] = metric.description
-        result.append(value)
+        if dataset_metric and dataset_metrics is not None:
+            dataset_metrics.setdefault(owner, []).append(value)
+        else:
+            result.append(value)
     return result
 
 
@@ -700,7 +856,7 @@ def synthesize_ossie_document(
     scope_name: str,
     expression_dialect: str,
     schema_version: str = "0.2.0.dev0",
-    schema_revision: str | None = CURRENT_OSSIE_SCHEMA_COMMIT,
+    schema_revision: str | None = LATEST_OSSIE_SCHEMA_COMMIT,
     serialization: OssieSerialization | str = OssieSerialization.YAML,
     consumer_profile: OssieConsumerProfile | str = OssieConsumerProfile.OSSIE_CORE,
     portable_only: bool = False,
@@ -728,7 +884,8 @@ def synthesize_ossie_document(
             document=None,
             diagnostics=(_error("ossie.synthesis.profile_unsupported", str(exc), "/version"),),
         )
-    current_shape = profile.schema_revision == CURRENT_OSSIE_SCHEMA_COMMIT
+    latest = profile.schema_revision == LATEST_OSSIE_SCHEMA_COMMIT
+    current_shape = profile.schema_revision in {CURRENT_OSSIE_SCHEMA_COMMIT, LATEST_OSSIE_SCHEMA_COMMIT}
     scope_pointer = "" if current_shape else "/semantic_model/0"
     models = dict(graph.models)
     datasets = [
@@ -739,8 +896,13 @@ def synthesize_ossie_document(
     semantic_model: dict[str, object] = {"name": scope_name, "datasets": datasets}
     relationships = _relationships(models, diagnostics, scope_pointer)
     generated_fields: dict[str, dict[str, str]] = {}
-    metrics = _metrics(graph, models, dialect, diagnostics, generated_fields)
+    dataset_metrics: dict[str, list[dict[str, object]]] = {}
+    metrics = _metrics(
+        graph, models, dialect, diagnostics, generated_fields, latest=latest, dataset_metrics=dataset_metrics
+    )
     for dataset in datasets:
+        if dataset["name"] in dataset_metrics:
+            dataset["metrics"] = dataset_metrics[dataset["name"]]
         for field_name, expression in generated_fields.get(dataset["name"], {}).items():
             dataset.setdefault("fields", []).append(
                 {"name": field_name, "expression": _expression(expression, dialect)}

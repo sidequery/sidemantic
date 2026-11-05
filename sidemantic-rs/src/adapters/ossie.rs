@@ -20,6 +20,8 @@ use crate::error::{Result, SidemanticError};
 
 const VALIDATION_MODE: &str = "closed_structural_subset";
 const CURRENT_SCHEMA_REVISION: &str = "b6c702ed1c07e91382a69e870c875cbd19570828";
+pub const LATEST_SCHEMA_REVISION: &str = "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1";
+const LATEST_SCHEMA_VERSION: &str = "0.2.0.dev0-latest";
 const CURRENT_SCHEMA_VERSION: &str = "0.2.0.dev0-current";
 const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PARSE_DEPTH: usize = 256;
@@ -359,10 +361,19 @@ impl OssieCompiledScope {
             for model in self.models {
                 graph.add_model(model)?;
             }
+            let mut owners = HashMap::new();
             for metric in self.metrics {
+                if let Some(owner) = metric
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("ossie_dataset_owner"))
+                    .and_then(Value::as_str)
+                {
+                    owners.insert(metric.name.clone(), owner.to_string());
+                }
                 graph.add_metric_unvalidated(metric)?;
             }
-            graph.set_metric_scopes(HashMap::new())?;
+            graph.set_metric_scopes(owners)?;
             validate_scope_dependencies(&graph, target)?;
             Ok(graph)
         })
@@ -486,9 +497,19 @@ impl OssieForwardAdapter {
         serialization: OssieSerialization,
         consumer: OssieConsumerProfile,
     ) -> OssieStatus {
+        self.inspect_with_revision(content, serialization, consumer, None)
+    }
+
+    pub fn inspect_with_revision(
+        &self,
+        content: &str,
+        serialization: OssieSerialization,
+        consumer: OssieConsumerProfile,
+        schema_revision: Option<&str>,
+    ) -> OssieStatus {
         crate::semantic_input::with_semantic_stack(|| {
             Ok(self
-                .inspect_document(content, serialization, consumer)
+                .inspect_document(content, serialization, consumer, schema_revision)
                 .status())
         })
         .unwrap_or_else(|error| OssieStatus {
@@ -514,8 +535,19 @@ impl OssieForwardAdapter {
         consumer: OssieConsumerProfile,
         target: OssieTarget,
     ) -> Result<OssieCatalog> {
+        self.parse_catalog_with_revision(content, serialization, consumer, target, None)
+    }
+
+    pub fn parse_catalog_with_revision(
+        &self,
+        content: &str,
+        serialization: OssieSerialization,
+        consumer: OssieConsumerProfile,
+        target: OssieTarget,
+        schema_revision: Option<&str>,
+    ) -> Result<OssieCatalog> {
         crate::semantic_input::with_semantic_stack(|| {
-            self.parse_catalog_inner(content, serialization, consumer, target)
+            self.parse_catalog_inner(content, serialization, consumer, target, schema_revision)
         })
     }
 
@@ -525,8 +557,10 @@ impl OssieForwardAdapter {
         serialization: OssieSerialization,
         consumer: OssieConsumerProfile,
         target: OssieTarget,
+        schema_revision: Option<&str>,
     ) -> Result<OssieCatalog> {
-        let mut inspected = self.inspect_document(content, serialization, consumer);
+        let mut inspected =
+            self.inspect_document(content, serialization, consumer, schema_revision);
         if !inspected.diagnostics.is_empty() {
             return Err(status_error(&inspected.status()));
         }
@@ -570,6 +604,7 @@ impl OssieForwardAdapter {
                 &scope_pointer,
                 &scope_id,
                 target,
+                profile.schema_revision.as_deref() == Some(LATEST_SCHEMA_REVISION),
                 &mut diagnostics,
             ) {
                 scopes.push(scope);
@@ -605,7 +640,25 @@ impl OssieForwardAdapter {
         target: OssieTarget,
         scope_id: Option<&str>,
     ) -> Result<OssieCompiledScope> {
-        let catalog = self.parse_catalog(content, serialization, consumer, target)?;
+        self.select_scope_with_revision(content, serialization, consumer, target, scope_id, None)
+    }
+
+    pub fn select_scope_with_revision(
+        &self,
+        content: &str,
+        serialization: OssieSerialization,
+        consumer: OssieConsumerProfile,
+        target: OssieTarget,
+        scope_id: Option<&str>,
+        schema_revision: Option<&str>,
+    ) -> Result<OssieCompiledScope> {
+        let catalog = self.parse_catalog_with_revision(
+            content,
+            serialization,
+            consumer,
+            target,
+            schema_revision,
+        )?;
         match scope_id {
             Some(requested) => {
                 let available = catalog
@@ -645,7 +698,14 @@ impl OssieForwardAdapter {
         content: &str,
         serialization: OssieSerialization,
         consumer: OssieConsumerProfile,
+        schema_revision: Option<&str>,
     ) -> InspectedDocument {
+        let schema_revision = schema_revision.map(|revision| match revision {
+            "172a3e5" => LATEST_SCHEMA_REVISION,
+            "b6c702e" => CURRENT_SCHEMA_REVISION,
+            "831f48e" => "831f48e582731cf1ee2e65380ca5abf8157869c7",
+            revision => revision,
+        });
         PARSE_BUDGET.with(|budget| budget.set((0, 0)));
         let parsed = if content.len() > MAX_SOURCE_BYTES {
             Err("Ossie parser resource limit exceeded: source is larger than 16 MiB".to_string())
@@ -726,6 +786,34 @@ impl OssieForwardAdapter {
                 profile.schema_revision = Some(CURRENT_SCHEMA_REVISION.to_string());
             }
         }
+        if let Some(profile) = profile.as_mut() {
+            if flat_root && latest_logical_shape(object) && schema_revision.is_none() {
+                profile.schema_revision = Some(LATEST_SCHEMA_REVISION.to_string());
+            }
+            if let Some(revision) = schema_revision {
+                if profile.schema_version != "0.2.0.dev0"
+                    || !matches!(
+                        revision,
+                        CURRENT_SCHEMA_REVISION
+                            | LATEST_SCHEMA_REVISION
+                            | "831f48e582731cf1ee2e65380ca5abf8157869c7"
+                    )
+                    || (flat_root && revision == "831f48e582731cf1ee2e65380ca5abf8157869c7")
+                    || (!flat_root
+                        && kind == Some(DocumentKind::Logical)
+                        && revision != "831f48e582731cf1ee2e65380ca5abf8157869c7")
+                {
+                    diagnostics.push(diagnostic(
+                        "ossie.schema.profile_unsupported",
+                        "Unsupported schema revision for this document shape.",
+                        "",
+                        None,
+                    ));
+                } else {
+                    profile.schema_revision = Some(revision.to_string());
+                }
+            }
+        }
         // Keep the internal scope traversal shared. Source pointers are mapped
         // back to the flat document before returning diagnostics.
         let root = if flat_root {
@@ -742,7 +830,10 @@ impl OssieForwardAdapter {
             Some(DocumentKind::Logical) => {
                 validate_logical_root(object, profile.as_ref(), &mut diagnostics);
                 scope_ids = logical_scope_ids(object);
-                validate_semantics(object, &scope_ids, &mut diagnostics);
+                if profile.as_ref().is_some_and(|profile| profile.schema_revision.as_deref() == Some(LATEST_SCHEMA_REVISION)) {
+                    validate_latest_reserved_names(&root, "", &mut diagnostics);
+                }
+                validate_semantics(object, &scope_ids, profile.as_ref().is_some_and(|profile| profile.schema_revision.as_deref() == Some(LATEST_SCHEMA_REVISION)), &mut diagnostics);
             }
             Some(DocumentKind::Ontology) => validate_ontology_root(object, &mut diagnostics),
             None => diagnostics.push(diagnostic(
@@ -780,6 +871,103 @@ fn classify_document(root: &Map<String, Value>) -> Option<DocumentKind> {
         (false, true) => Some(DocumentKind::Ontology),
         _ => None,
     }
+}
+
+fn validate_latest_reserved_names(
+    value: &Value,
+    pointer: &str,
+    diagnostics: &mut Vec<OssieDiagnostic>,
+) {
+    fn calls_agg(value: &Value) -> bool {
+        for kind in ["function", "aggregate_function"] {
+            if value
+                .get(kind)
+                .and_then(|function| function.get("name"))
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.eq_ignore_ascii_case("AGG"))
+            {
+                return true;
+            }
+        }
+        match value {
+            Value::Object(fields) => fields.values().any(calls_agg),
+            Value::Array(values) => values.iter().any(calls_agg),
+            _ => false,
+        }
+    }
+    if let Some(expression) = value.get("expression").and_then(Value::as_object) {
+        let portable = expression.get("sql").and_then(Value::as_str).or_else(|| {
+            expression
+                .get("dialects")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|variant| {
+                    variant.get("dialect").and_then(Value::as_str) == Some("OSSIE_SQL_2026")
+                })
+                .and_then(|variant| variant.get("expression"))
+                .and_then(Value::as_str)
+        });
+        if let Some(sql) = portable {
+            if super::ossie_sql::parse_portable_expression(sql)
+                .ok()
+                .and_then(|ast| serde_json::to_value(ast).ok())
+                .as_ref()
+                .is_some_and(calls_agg)
+            {
+                diagnostics.push(diagnostic("ossie.semantic.expression.reserved_function", "AGG is reserved for measure queries and cannot appear in latest OSSIE_SQL_2026 model declarations.", format!("{pointer}/expression"), None));
+            }
+        }
+    }
+    match value {
+        Value::Object(fields) => {
+            for (name, child) in fields {
+                validate_latest_reserved_names(child, &format!("{pointer}/{name}"), diagnostics);
+            }
+        }
+        Value::Array(values) => {
+            for (index, child) in values.iter().enumerate() {
+                validate_latest_reserved_names(child, &format!("{pointer}/{index}"), diagnostics);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn latest_logical_shape(root: &Map<String, Value>) -> bool {
+    fn expression_latest(value: &Value) -> bool {
+        value.get("sql").is_some()
+            || value
+                .get("dialects")
+                .and_then(Value::as_array)
+                .is_some_and(|variants| {
+                    variants.iter().any(|variant| {
+                        variant
+                            .get("dialect")
+                            .and_then(Value::as_str)
+                            .is_some_and(|dialect| !DIALECTS_CURRENT.contains(&dialect))
+                    })
+                })
+    }
+    root.get("datasets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|dataset| {
+            dataset.get("metrics").is_some()
+                || dataset
+                    .get("fields")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .any(|field| field.get("expression").is_some_and(expression_latest))
+        })
+        || root
+            .get("metrics")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|metric| metric.get("expression").is_some_and(expression_latest))
 }
 
 fn current_ontology_shape(root: &Map<String, Value>) -> bool {
@@ -876,7 +1064,9 @@ fn validate_logical_root(
     diagnostics: &mut Vec<OssieDiagnostic>,
 ) {
     let validation_version = profile.map(|profile| {
-        if profile.schema_revision.is_some() {
+        if profile.schema_revision.as_deref() == Some(LATEST_SCHEMA_REVISION) {
+            LATEST_SCHEMA_VERSION
+        } else if profile.schema_revision.as_deref() == Some(CURRENT_SCHEMA_REVISION) {
             CURRENT_SCHEMA_VERSION
         } else {
             profile.validation_schema_version.as_str()
@@ -1000,8 +1190,19 @@ fn validate_dataset(
     let Some(dataset) = require_object(value, pointer, diagnostics, None) else {
         return;
     };
-    reject_unknown(
-        dataset,
+    let allowed = if version == Some(LATEST_SCHEMA_VERSION) {
+        &[
+            "name",
+            "source",
+            "primary_key",
+            "unique_keys",
+            "description",
+            "ai_context",
+            "fields",
+            "metrics",
+            "custom_extensions",
+        ][..]
+    } else {
         &[
             "name",
             "source",
@@ -1011,11 +1212,21 @@ fn validate_dataset(
             "ai_context",
             "fields",
             "custom_extensions",
-        ],
-        pointer,
-        diagnostics,
-        None,
-    );
+        ][..]
+    };
+    reject_unknown(dataset, allowed, pointer, diagnostics, None);
+    if version == Some(LATEST_SCHEMA_VERSION) {
+        if let Some(metrics) = optional_array(dataset, "metrics", pointer, diagnostics, None) {
+            for (index, metric) in metrics.iter().enumerate() {
+                validate_metric_schema(
+                    metric,
+                    &format!("{pointer}/metrics/{index}"),
+                    version,
+                    diagnostics,
+                );
+            }
+        }
+    }
     required_string(dataset, "name", pointer, diagnostics, None);
     if let Some(source) = required_string(dataset, "source", pointer, diagnostics, None) {
         if ![
@@ -1048,6 +1259,19 @@ fn validate_dataset(
         diagnostics,
         None,
     );
+    if version == Some(LATEST_SCHEMA_VERSION)
+        && dataset
+            .get("unique_keys")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        diagnostics.push(diagnostic(
+            "ossie.schema.min_items",
+            "unique_keys must contain at least one key when present.",
+            format!("{pointer}/unique_keys"),
+            None,
+        ));
+    }
     if let Some(fields) = optional_array(dataset, "fields", pointer, diagnostics, None) {
         for (index, field) in fields.iter().enumerate() {
             validate_field_schema(
@@ -1069,7 +1293,10 @@ fn validate_field_schema(
     let Some(field) = require_object(value, pointer, diagnostics, None) else {
         return;
     };
-    let allowed = if matches!(version, Some("0.2.0.dev0") | Some(CURRENT_SCHEMA_VERSION)) {
+    let allowed = if matches!(
+        version,
+        Some("0.2.0.dev0") | Some(CURRENT_SCHEMA_VERSION) | Some(LATEST_SCHEMA_VERSION)
+    ) {
         &[
             "name",
             "expression",
@@ -1141,7 +1368,10 @@ fn validate_metric_schema(
     let Some(metric) = require_object(value, pointer, diagnostics, None) else {
         return;
     };
-    let allowed = if matches!(version, Some("0.2.0.dev0") | Some(CURRENT_SCHEMA_VERSION)) {
+    let allowed = if matches!(
+        version,
+        Some("0.2.0.dev0") | Some(CURRENT_SCHEMA_VERSION) | Some(LATEST_SCHEMA_VERSION)
+    ) {
         &[
             "name",
             "expression",
@@ -1240,8 +1470,27 @@ fn validate_expression_schema(
     let Some(expression) = require_object(value, pointer, diagnostics, None) else {
         return;
     };
-    reject_unknown(expression, &["dialects"], pointer, diagnostics, None);
-    let Some(variants) = required_array(expression, "dialects", pointer, diagnostics, None) else {
+    let latest = version == Some(LATEST_SCHEMA_VERSION);
+    reject_unknown(
+        expression,
+        if latest {
+            &["sql", "dialects"]
+        } else {
+            &["dialects"][..]
+        },
+        pointer,
+        diagnostics,
+        None,
+    );
+    if latest && expression.contains_key("sql") {
+        required_string(expression, "sql", pointer, diagnostics, None);
+    }
+    let variants = if latest && expression.contains_key("sql") {
+        optional_array(expression, "dialects", pointer, diagnostics, None)
+    } else {
+        required_array(expression, "dialects", pointer, diagnostics, None)
+    };
+    let Some(variants) = variants else {
         return;
     };
     if variants.is_empty() {
@@ -1276,7 +1525,7 @@ fn validate_expression_schema(
         required_string(variant, "expression", &variant_pointer, diagnostics, None);
         if let Some(dialect) = dialect {
             let normalized = dialect.to_ascii_uppercase();
-            if !allowed_dialects.contains(&dialect) {
+            if !latest && !allowed_dialects.contains(&dialect) {
                 diagnostics.push(diagnostic(
                     "ossie.schema.enum",
                     format!("Unsupported expression dialect {dialect:?} for this profile."),
@@ -1438,18 +1687,21 @@ fn logical_scope_ids(root: &Map<String, Value>) -> Vec<String> {
 fn validate_semantics(
     root: &Map<String, Value>,
     scope_ids: &[String],
+    latest: bool,
     diagnostics: &mut Vec<OssieDiagnostic>,
 ) {
     let Some(scopes) = root.get("semantic_model").and_then(Value::as_array) else {
         return;
     };
-    duplicate_names(
-        scopes,
-        "/semantic_model",
-        "ossie.semantic.semantic_model.name_duplicate",
-        None,
-        diagnostics,
-    );
+    if !latest {
+        duplicate_names(
+            scopes,
+            "/semantic_model",
+            "ossie.semantic.semantic_model.name_duplicate",
+            None,
+            diagnostics,
+        );
+    }
     for (scope_index, scope_value) in scopes.iter().enumerate() {
         let Some(scope) = scope_value.as_object() else {
             continue;
@@ -1475,6 +1727,39 @@ fn validate_semantics(
                         scope_id.as_deref(),
                         diagnostics,
                     );
+                }
+                if let Some(metrics) = dataset.get("metrics").and_then(Value::as_array) {
+                    duplicate_names(
+                        metrics,
+                        &format!("{scope_pointer}/datasets/{dataset_index}/metrics"),
+                        "ossie.semantic.metric.name_duplicate",
+                        scope_id.as_deref(),
+                        diagnostics,
+                    );
+                    let fields = dataset
+                        .get("fields")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|field| field.get("name").and_then(Value::as_str))
+                        .map(normalize_identifier)
+                        .collect::<BTreeSet<_>>();
+                    for (index, metric) in metrics.iter().enumerate() {
+                        if metric
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|name| fields.contains(&normalize_identifier(name)))
+                        {
+                            diagnostics.push(diagnostic(
+                                "ossie.semantic.metric.field_name_collision",
+                                "Dataset fields and metrics share one namespace.",
+                                format!(
+                                    "{scope_pointer}/datasets/{dataset_index}/metrics/{index}/name"
+                                ),
+                                scope_id.as_deref(),
+                            ));
+                        }
+                    }
                 }
                 if let Some(fields) = dataset
                     .as_object()
@@ -1742,6 +2027,7 @@ fn compile_scope(
     scope_pointer: &str,
     scope_id: &str,
     target: OssieTarget,
+    latest: bool,
     diagnostics: &mut Vec<OssieDiagnostic>,
 ) -> Option<OssieCompiledScope> {
     let scope = value.as_object()?;
@@ -1928,7 +2214,7 @@ fn compile_scope(
             label: None,
             description: optional_string(dataset, "description"),
             metadata: Some(
-                serde_json::json!({"ossie_source_name": name, "ossie_source_kind": if is_query { "query" } else { "table" }}),
+                serde_json::json!({"ossie_source_name": name, "ossie_scope_name": scope_id, "ossie_target_dialect": target.label(), "ossie_schema_revision": if latest { Some(LATEST_SCHEMA_REVISION) } else { None }, "ossie_source_kind": if is_query { "query" } else { "table" }}),
             ),
             meta: None,
         };
@@ -2024,6 +2310,73 @@ fn compile_scope(
     }
 
     let mut metrics = Vec::new();
+    if latest {
+        for (dataset_index, dataset) in datasets.iter().enumerate() {
+            let Some(dataset_name) = dataset.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(&owner) = model_index.get(&normalize_identifier(dataset_name)) else {
+                continue;
+            };
+            let declarations = dataset
+                .get("metrics")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            let names = declarations
+                .iter()
+                .filter_map(|metric| metric.get("name").and_then(Value::as_str))
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            let aliases = runtime_names(&names);
+            for (metric_index, metric) in declarations.iter().enumerate() {
+                let Some(metric) = metric.as_object() else {
+                    continue;
+                };
+                let Some(name) = metric.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let pointer = format!(
+                    "{scope_pointer}/datasets/{dataset_index}/metrics/{metric_index}/expression"
+                );
+                let dialect = selected_expression_dialect(metric.get("expression"), target)
+                    .unwrap_or_default();
+                let sql = lower_selected_expression(metric.get("expression"), target)
+                    .and_then(|sql| {
+                        sql.ok_or_else(|| {
+                            "No executable expression for the selected target.".to_string()
+                        })
+                    })
+                    .and_then(|sql| {
+                        bind_latest_metric_sql(&sql, &mut models, Some(owner), target, &dialect)
+                    });
+                match sql {
+                    Ok(sql) => {
+                        let mut parsed =
+                            Metric::new(format!("{}.{}", models[owner].name, aliases[name]));
+                        parsed.r#type = MetricType::Derived;
+                        parsed.sql = Some(sql);
+                        parsed.sql_is_complete = true;
+                        parsed.description = optional_string(metric, "description");
+                        parsed.logical_data_type = optional_string(metric, "datatype");
+                        parsed.metadata = Some(
+                            serde_json::json!({"ossie_expression_dialect": dialect,
+                            "ossie_target_dialect": target.label(), "ossie_source_name": name,
+                            "ossie_dataset_metric": true, "ossie_dataset_metric_index": metric_index, "ossie_dataset_owner": models[owner].name}),
+                        );
+                        metrics.push(parsed);
+                    }
+                    Err(message) => diagnostics.push(diagnostic(
+                        "ossie.lowering.metric_unexecutable",
+                        message,
+                        pointer,
+                        Some(scope_id),
+                    )),
+                }
+            }
+        }
+    }
     let metric_source_names = scope
         .get("metrics")
         .and_then(Value::as_array)
@@ -2091,7 +2444,12 @@ fn compile_scope(
         }
         let expression_dialect =
             selected_expression_dialect(metric.get("expression"), target).unwrap_or_default();
-        let sql = match bind_metric_sql(&sql, &models, &metric_names, target, &expression_dialect) {
+        let bound = if latest {
+            bind_latest_metric_sql(&sql, &mut models, None, target, &expression_dialect)
+        } else {
+            bind_metric_sql(&sql, &models, &metric_names, target, &expression_dialect)
+        };
+        let sql = match bound {
             Ok(sql) => sql,
             Err(message) => {
                 diagnostics.push(diagnostic(
@@ -2221,10 +2579,18 @@ fn source_is_query(source: &str, target: OssieTarget) -> bool {
 }
 
 fn select_variant(value: Option<&Value>, target: OssieTarget) -> Option<(String, String)> {
-    let variants = value?.as_object()?.get("dialects")?.as_array()?;
+    let value = value?.as_object()?;
     let mut exact = None;
     let mut ansi = None;
-    let mut portable = None;
+    let mut portable = value
+        .get("sql")
+        .and_then(Value::as_str)
+        .map(|sql| (sql.to_string(), "OSSIE_SQL_2026".to_string()));
+    let variants = value
+        .get("dialects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
     for variant in variants {
         let variant = variant.as_object()?;
         let dialect = variant.get("dialect")?.as_str()?.to_ascii_uppercase();
@@ -2379,6 +2745,159 @@ fn validate_row_sql(sql: &str, target: OssieTarget) -> std::result::Result<(), S
         );
     }
     Ok(())
+}
+
+fn bind_latest_metric_sql(
+    sql: &str,
+    models: &mut [Model],
+    owner: Option<usize>,
+    target: OssieTarget,
+    expression_dialect: &str,
+) -> std::result::Result<String, String> {
+    fn identifier_key(value: &Value, dialect: &str) -> String {
+        let name = value["name"].as_str().unwrap_or("");
+        if value["quoted"].as_bool() == Some(true) && !matches!(dialect, "BIGQUERY" | "DATABRICKS")
+        {
+            name.to_string()
+        } else {
+            normalize_identifier(name)
+        }
+    }
+    fn identifier(name: &str) -> Value {
+        serde_json::json!({"name": name, "quoted": false})
+    }
+    fn hidden_field(model: &mut Model, sql: String, prefix: &str) -> String {
+        if let Some(field) = model
+            .dimensions
+            .iter()
+            .find(|field| !field.public && field.sql.as_ref() == Some(&sql))
+        {
+            return field.name.clone();
+        }
+        let mut name = prefix.to_string();
+        let mut index = 0;
+        while model
+            .dimensions
+            .iter()
+            .any(|field| field.name.eq_ignore_ascii_case(&name))
+        {
+            index += 1;
+            name = format!("{prefix}_{index}");
+        }
+        let mut field = Dimension::new(&name);
+        field.sql = Some(sql);
+        field.public = false;
+        field.metadata = Some(serde_json::json!({"ossie_private_input": true}));
+        model.dimensions.push(field);
+        name
+    }
+    fn walk(
+        value: &mut Value,
+        models: &mut [Model],
+        owner: Option<usize>,
+        target: OssieTarget,
+        dialect: &str,
+    ) -> std::result::Result<(), String> {
+        if let Some(column) = value.get_mut("column").and_then(Value::as_object_mut) {
+            let field_key = identifier_key(&column["name"], dialect);
+            let qualifier = column
+                .get("table")
+                .filter(|table| !table.is_null())
+                .map(|table| identifier_key(table, dialect));
+            let (index, physical) = if let Some(owner) = owner {
+                if let Some(qualifier) = qualifier {
+                    if !qualifier.eq_ignore_ascii_case("source") {
+                        return Err("Dataset-scoped metrics reference their fields by unqualified name, or source.column.".into());
+                    }
+                    if models[owner].dimensions.iter().any(|field| {
+                        field.public
+                            && normalize_identifier(source_name(&field.name, &field.metadata))
+                                == "SOURCE"
+                    }) {
+                        return Err("A field named source shadows access to source columns.".into());
+                    }
+                    (owner, true)
+                } else {
+                    (owner, false)
+                }
+            } else {
+                let qualifier = qualifier.ok_or_else(|| "Model-scoped metric references must be qualified dataset.field; metrics cannot reference other metrics.".to_string())?;
+                let index = models
+                    .iter()
+                    .position(|model| {
+                        normalize_identifier(source_name(&model.name, &model.metadata)) == qualifier
+                    })
+                    .ok_or_else(|| format!("Unknown dataset {qualifier:?}."))?;
+                (index, false)
+            };
+            let name = if physical {
+                let mut physical = column.clone();
+                physical.remove("table");
+                physical.remove("db");
+                physical.remove("catalog");
+                let expression: Expression =
+                    serde_json::from_value(serde_json::json!({"column": physical}))
+                        .map_err(|error| error.to_string())?;
+                let sql = polyglot_sql::generate(&expression, target.parser_dialect())
+                    .map_err(|error| error.to_string())?;
+                hidden_field(&mut models[index], sql, "__ossie_source")
+            } else {
+                models[index].dimensions.iter().find(|field| field.public && normalize_identifier(source_name(&field.name, &field.metadata)) == field_key)
+                    .map(|field| field.name.clone()).ok_or_else(|| format!("Unknown declared dataset field {field_key:?}; metrics cannot reference other metrics or undeclared source columns."))?
+            };
+            column.insert("name".into(), identifier(&name));
+            column.insert("table".into(), identifier(&models[index].name));
+            return Ok(());
+        }
+        // Anchor COUNT(*) to the declaring dataset without borrowing the query's
+        // other populations. The private constant is non-null for every row.
+        if let Some(owner) = owner {
+            if let Some(count) = value.get_mut("count").and_then(Value::as_object_mut) {
+                if count.get("star").and_then(Value::as_bool) == Some(true) {
+                    let name = hidden_field(&mut models[owner], "1".to_string(), "__ossie_row");
+                    count.insert("star".into(), Value::Bool(false));
+                    count.insert(
+                        "this".into(),
+                        serde_json::to_value(Expression::column(format!(
+                            "{}.{}",
+                            models[owner].name, name
+                        )))
+                        .map_err(|error| error.to_string())?,
+                    );
+                    if let Some(predicate) = count.get_mut("filter") {
+                        walk(predicate, models, Some(owner), target, dialect)?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        match value {
+            Value::Object(fields) => {
+                for child in fields.values_mut() {
+                    walk(child, models, owner, target, dialect)?;
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    walk(child, models, owner, target, dialect)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let mut value =
+        serde_json::to_value(parse_scalar_sql(sql, target)?).map_err(|error| error.to_string())?;
+    // Model-level argument grain is resolved by the Layer 3 query compiler.
+    // Columnless aggregate declarations remain valid Layer 1 source models.
+    walk(&mut value, models, owner, target, expression_dialect)?;
+    let expression = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    crate::semantic_input::dialects::emit(
+        expression,
+        target.parser_dialect(),
+        target.parser_dialect(),
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn bind_metric_sql(

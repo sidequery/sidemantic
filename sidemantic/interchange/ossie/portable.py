@@ -14,6 +14,9 @@ from sqlglot.dialects.snowflake import Snowflake
 from sqlglot.errors import ErrorLevel, SqlglotError
 from sqlglot.tokens import TokenType
 
+from sidemantic.interchange.ossie.expression_validation import is_aggregate_filter
+from sidemantic.sql.rendering import render_sql
+
 _TARGETS = {"postgresql": "postgres", "ansi_sql": "duckdb", "ansi": "duckdb"}
 _SUPPORTED_TARGETS = {"duckdb", "postgres", "snowflake", "bigquery", "databricks"}
 _EXTRACTIONS = {
@@ -104,6 +107,8 @@ def parse_portable_expression(expression: str) -> exp.Expression:
     if isinstance(root, (exp.Alias, exp.Star, exp.Tuple)):
         raise ValueError("OSSIE_SQL_2026 requires a scalar expression without an alias")
     for node in root.walk():
+        if isinstance(node, exp.Filter) and not is_aggregate_filter(node):
+            raise ValueError("FILTER must modify an aggregate expression")
         if isinstance(
             node,
             (
@@ -122,7 +127,7 @@ def parse_portable_expression(expression: str) -> exp.Expression:
                 exp.Array,
                 exp.Bracket,
             ),
-        ):
+        ) and not (isinstance(node, exp.Where) and is_aggregate_filter(node.parent) and node is node.parent.expression):
             raise ValueError(f"OSSIE_SQL_2026 expressions cannot contain {type(node).__name__}")
         if isinstance(node, exp.Identifier) and len(node.name) > 128:
             raise ValueError("OSSIE_SQL_2026 identifiers cannot exceed 128 characters")
@@ -296,6 +301,6 @@ def lower_ossie_sql(expression: str, target_dialect: str | None) -> str:
         elif replacement is not node:
             node.replace(replacement)
     try:
-        return root.sql(dialect=target, unsupported_level=ErrorLevel.RAISE)
+        return render_sql(root, dialect=target, unsupported_level=ErrorLevel.RAISE)
     except SqlglotError as exc:
         raise ValueError(f"OSSIE_SQL_2026 cannot be lowered to {target}: {exc}") from exc

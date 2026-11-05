@@ -50,6 +50,7 @@ struct CompileRequest {
 #[derive(Debug, Deserialize)]
 struct OssieCompileRequest {
     content: String,
+    schema_revision: Option<String>,
     serialization: String,
     #[serde(default = "default_ossie_consumer_profile")]
     consumer_profile: String,
@@ -131,12 +132,14 @@ enum Request {
         is_base_model: bool,
     },
     OssieValidate {
+        schema_revision: Option<String>,
         content: String,
         serialization: String,
         #[serde(default = "default_ossie_consumer_profile")]
         consumer_profile: String,
     },
     OssieSelectScope {
+        schema_revision: Option<String>,
         content: String,
         serialization: String,
         #[serde(default = "default_ossie_consumer_profile")]
@@ -246,12 +249,13 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
         }
         Request::OssieCompile(request) => {
             let graph = OssieForwardAdapter
-                .select_scope(
+                .select_scope_with_revision(
                     &request.content,
                     parse_ossie_serialization(&request.serialization)?,
                     parse_ossie_consumer(&request.consumer_profile)?,
                     parse_ossie_target(&request.target)?,
                     request.scope_id.as_deref(),
+                    request.schema_revision.as_deref(),
                 )?
                 .into_graph()?;
             let query = SemanticQuery::new()
@@ -457,13 +461,19 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
             )),
         }),
         Request::OssieValidate {
+            schema_revision,
             content,
             serialization,
             consumer_profile,
         } => {
             let serialization = parse_ossie_serialization(&serialization)?;
             let consumer = parse_ossie_consumer(&consumer_profile)?;
-            let status = OssieForwardAdapter.inspect(&content, serialization, consumer);
+            let status = OssieForwardAdapter.inspect_with_revision(
+                &content,
+                serialization,
+                consumer,
+                schema_revision.as_deref(),
+            );
             Ok(Response::Ok {
                 sql: None,
                 path: None,
@@ -476,18 +486,20 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
             })
         }
         Request::OssieSelectScope {
+            schema_revision,
             content,
             serialization,
             consumer_profile,
             target,
             scope_id,
         } => {
-            let scope = OssieForwardAdapter.select_scope(
+            let scope = OssieForwardAdapter.select_scope_with_revision(
                 &content,
                 parse_ossie_serialization(&serialization)?,
                 parse_ossie_consumer(&consumer_profile)?,
                 parse_ossie_target(&target)?,
                 scope_id.as_deref(),
+                schema_revision.as_deref(),
             )?;
             Ok(Response::Ok {
                 sql: None,
@@ -548,6 +560,7 @@ fn parse_dialect(dialect: &str) -> sidemantic::Result<DialectType> {
     match dialect.to_ascii_lowercase().as_str() {
         "duckdb" => Ok(DialectType::DuckDB),
         "bigquery" => Ok(DialectType::BigQuery),
+        "snowflake" => Ok(DialectType::Snowflake),
         "postgres" | "postgresql" => Ok(DialectType::PostgreSQL),
         value => Err(sidemantic::SidemanticError::Validation(format!(
             "Unsupported SQL dialect for pure Rust Python test parity adapter: {value}"

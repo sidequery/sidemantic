@@ -775,6 +775,85 @@ def test_convert_ossie_can_export_pinned_legacy_draft(tmp_path: Path):
     assert json.loads(output.read_text())["semantic_model"][0]["name"] == "commerce"
 
 
+@pytest.mark.parametrize("source_format", ["auto", "ossie"])
+def test_convert_ossie_input_revision_validates_ambiguous_source(tmp_path: Path, source_format: str):
+    from sidemantic.interchange.ossie import CURRENT_OSSIE_SCHEMA_COMMIT, LATEST_OSSIE_SCHEMA_COMMIT
+
+    source = tmp_path / "model.ossie.json"
+    source.write_text(
+        json.dumps(
+            {
+                "version": "0.2.0.dev0",
+                "name": "commerce",
+                "datasets": [{"name": "orders", "source": "analytics.orders"}],
+                "custom_extensions": [{"vendor_name": "", "data": ""}],
+            }
+        )
+    )
+    old_output = tmp_path / "old.yml"
+    old = runner.invoke(
+        app,
+        [
+            "convert",
+            str(source),
+            "--from",
+            source_format,
+            "--output",
+            str(old_output),
+            "--ossie-input-schema-revision",
+            CURRENT_OSSIE_SCHEMA_COMMIT,
+        ],
+    )
+    assert old.exit_code == 0, old.output
+    assert "analytics.orders" in old_output.read_text()
+
+    latest_output = tmp_path / "latest.yml"
+    latest = runner.invoke(
+        app,
+        [
+            "convert",
+            str(source),
+            "--from",
+            source_format,
+            "--output",
+            str(latest_output),
+            "--ossie-input-schema-revision",
+            LATEST_OSSIE_SCHEMA_COMMIT,
+        ],
+    )
+    assert latest.exit_code != 0
+    assert "vendor_name" in latest.output
+    assert not latest_output.exists()
+
+
+def test_convert_ossie_unknown_input_revision_does_not_publish_output(tmp_path: Path):
+    source = tmp_path / "model.ossie.json"
+    source.write_text(
+        json.dumps(
+            {
+                "version": "0.2.0.dev0",
+                "name": "commerce",
+                "datasets": [{"name": "orders", "source": "analytics.orders"}],
+            }
+        )
+    )
+    output = tmp_path / "native.yml"
+    result = runner.invoke(
+        app,
+        [
+            "convert",
+            str(source),
+            "--output",
+            str(output),
+            "--ossie-input-schema-revision",
+            "unknown-revision",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Unsupported Ossie schema revision" in result.output
+    assert not output.exists()
+
+
 def test_info_and_validate_can_select_a_multi_scope_ossie_document(tmp_path: Path):
     source = tmp_path / "multiple.ossie.yaml"
     source.write_text(

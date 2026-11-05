@@ -22,6 +22,7 @@ from sidemantic.interchange.ossie.diagnostics import (
 )
 from sidemantic.interchange.ossie.documents import (
     OssieLogicalDocument,
+    OssieMappingDocument,
     OssieOntologyDocument,
     is_logical_document_data,
 )
@@ -33,13 +34,14 @@ from sidemantic.interchange.ossie.identifier import (
     normalize_identifier,
 )
 from sidemantic.interchange.ossie.profiles import (
+    LATEST_OSSIE_SCHEMA_COMMIT,
     OssieConsumerProfile,
     OssieProfile,
     OssieProfileError,
     resolve_ossie_profile,
 )
 
-SemanticDocumentKind = Literal["logical", "ontology", "unsupported"]
+SemanticDocumentKind = Literal["logical", "ontology", "mapping", "unsupported"]
 SemanticFailureStage = Literal["semantic"]
 JSONObject: TypeAlias = Mapping[str, object]
 _BUILTIN_VALUE_CONCEPTS = frozenset({"Boolean", "Date", "DateTime", "Decimal", "Float", "Integer", "String"})
@@ -246,7 +248,17 @@ class _SemanticValidator:
         scope: str,
     ) -> None:
         expression_object = _mapping(expression)
-        if expression_object is None or "dialects" not in expression_object:
+        if expression_object is None:
+            return
+        sql = expression_object.get("sql")
+        if isinstance(sql, str) and not sql.strip():
+            self.emit(
+                "ossie.semantic.expression.text_empty",
+                "Expression text must not be empty.",
+                _pointer(expression_pointer, "sql"),
+                scope=scope,
+            )
+        if "dialects" not in expression_object:
             return
 
         dialects_pointer = _pointer(expression_pointer, "dialects")
@@ -334,6 +346,10 @@ class _SemanticValidator:
         semantic_model_pointer: str,
         scope: str,
     ) -> None:
+        if self.profile and self.profile.schema_revision == LATEST_OSSIE_SCHEMA_COMMIT:
+            from sidemantic.interchange.ossie.latest_semantics import validate_latest_scope
+
+            validate_latest_scope(self, semantic_model, semantic_model_pointer, scope)
         datasets_pointer = _pointer(semantic_model_pointer, "datasets")
         metrics_pointer = _pointer(semantic_model_pointer, "metrics")
         relationships_pointer = _pointer(semantic_model_pointer, "relationships")
@@ -1066,6 +1082,14 @@ def validate_ossie_semantics(
     semantic diagnostics, but skips checks whose prerequisite shape is absent.
     """
 
+    if isinstance(document, OssieMappingDocument) or (
+        isinstance(document, Mapping)
+        and any(key in document for key in ("ontology_ref", "semantic_model_ref", "concept_mappings"))
+    ):
+        from sidemantic.interchange.ossie.mapping import validate_ossie_mapping
+
+        return validate_ossie_mapping(document, profile=profile)
+
     source: OssieSourceLocation | None = None
     if isinstance(document, OssieLogicalDocument):
         canonical_data = document.canonical_data
@@ -1105,7 +1129,7 @@ def validate_ossie_semantics(
             )
         else:
             name = _name(canonical_data.get("name"))
-            if name:
+            if name and (not validator.profile or validator.profile.schema_revision != LATEST_OSSIE_SCHEMA_COMMIT):
                 validator.validate_identifier_length(name, "/name")
             scope = name or "semantic_model"
             validator.checked_scopes.append(scope)

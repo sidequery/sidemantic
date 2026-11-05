@@ -175,6 +175,7 @@ jobs:
         run: >-
           uv sync
           --extra dev
+          --extra rust
           --extra dax
           --extra charts
           --extra widget

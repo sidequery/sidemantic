@@ -42,7 +42,8 @@ def _identifier(value: str) -> exp.Identifier:
 
 
 def _agg(node: exp.Expression) -> bool:
-    return isinstance(node, exp.Agg) or isinstance(node, exp.Anonymous) and node.name.upper() == "AGG"
+    # Older supported SQLGlot releases parse AGG as Anonymous and have no Agg class.
+    return isinstance(node, getattr(exp, "Agg", ())) or isinstance(node, exp.Anonymous) and node.name.upper() == "AGG"
 
 
 def _definition(node: exp.Expression) -> bool:
@@ -354,8 +355,12 @@ class RelationalCompiler:
                 if view_name in self.view_stack:
                     raise _error("recursive measure views are not well-founded")
                 self.view_stack.add(view_name)
-                relation = self.compile(self.parse(sql), ctes, outer)
-                self.view_stack.remove(view_name)
+                try:
+                    # A persistent view has its own lexical scope. Caller CTEs
+                    # and correlated bindings cannot change its stored recipe.
+                    relation = self.compile(self.parse(sql), {}, [])
+                finally:
+                    self.view_stack.remove(view_name)
             elif (model := self.model_for(node)) is not None:
                 relation = self.model_relation(model)
             else:
@@ -706,6 +711,10 @@ class RelationalCompiler:
             if not star:
                 expanded.append(projection)
                 continue
+            modifiers = projection if isinstance(projection, exp.Star) else projection.this
+            excluded = {_key(item.this) for item in modifiers.args.get("except_") or []}
+            replacements = {_key(item.args["alias"]): item.this for item in modifiers.args.get("replace") or []}
+            renames = {_key(item.this.this): item.args["alias"] for item in modifiers.args.get("rename") or []}
             selected = sorted(sources, key=lambda source: not source.synthetic)
             if isinstance(projection, exp.Column) and projection.table:
                 selected = [source for source in sources if _key(source.name) == _key(projection.args["table"])]
@@ -715,11 +724,21 @@ class RelationalCompiler:
                 for column in source.relation.columns:
                     if isinstance(projection, exp.Star) and column.key in source.suppressed:
                         continue
-                    expanded.append(exp.Column(this=column.name.copy(), table=source.name.copy()))
+                    if column.key in excluded:
+                        continue
+                    expression = replacements.get(column.key)
+                    if expression is None:
+                        expression = exp.Column(this=column.name.copy(), table=source.name.copy())
+                    else:
+                        expression = expression.copy()
+                    name = renames.get(column.key, column.name)
+                    if column.key in replacements or column.key in renames:
+                        expression = exp.Alias(this=expression, alias=name.copy())
+                    expanded.append(expression)
         return expanded
 
     def measure(self, call, sources, outer):
-        arguments = [call.this] if isinstance(call, exp.Agg) else call.expressions
+        arguments = [call.this] if isinstance(call, getattr(exp, "Agg", ())) else call.expressions
         if len(arguments) != 1 or not isinstance(arguments[0], exp.Column) or arguments[0].is_star:
             raise _error("AGG requires exactly one measure-column reference")
         source, column = self.resolve(arguments[0], sources, outer)
@@ -842,7 +861,7 @@ class RelationalCompiler:
         if isinstance(expression, exp.Column):
             return self.resolve(expression, sources, outer)[1].data_type
         if _agg(expression):
-            argument = expression.this if isinstance(expression, exp.Agg) else expression.expressions[0]
+            argument = expression.this if isinstance(expression, getattr(exp, "Agg", ())) else expression.expressions[0]
             return self.resolve(argument, sources, outer)[1].data_type
         if isinstance(expression, exp.Count):
             return "BIGINT"
@@ -867,7 +886,7 @@ class RelationalCompiler:
         if isinstance(expression, exp.Column):
             return expression.this.copy()
         if _agg(expression):
-            argument = expression.this if isinstance(expression, exp.Agg) else expression.expressions[0]
+            argument = expression.this if isinstance(expression, getattr(exp, "Agg", ())) else expression.expressions[0]
             if isinstance(argument, exp.Column):
                 return argument.this.copy()
         return exp.to_identifier(expression.sql(), quoted=True)

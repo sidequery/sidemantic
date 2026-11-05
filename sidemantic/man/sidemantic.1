@@ -149,6 +149,9 @@ Examples: sidemantic rewrite "SELECT orders.revenue FROM orders" \-\-models ./mo
 \fB\-\-models, \-m PATH\fR
 Directory containing semantic layer files
 .TP
+\fB\-\-ossie\-scope TEXT\fR
+Explicit Apache Ossie semantic\-model scope
+.TP
 \fB\-\-connection TEXT\fR
 Database connection string (sets SQL dialect)
 .TP
@@ -204,6 +207,9 @@ Explicit pinned Ossie schema version for synthesized output
 .TP
 \fB\-\-ossie\-schema\-revision TEXT\fR
 Pinned Ossie draft revision for synthesized output (commit SHA)
+.TP
+\fB\-\-ossie\-input\-schema\-revision TEXT\fR
+Pinned Ossie draft revision for validating the source (commit SHA)
 .TP
 \fB\-\-ossie\-consumer\-profile TEXT\fR
 Ossie import or export consumer profile (ossie\-core or dbt\-1.12)

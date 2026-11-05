@@ -143,7 +143,7 @@ fn id_normal(id: &Identifier) -> String {
 #[derive(Clone)]
 enum Reference {
     Field(String, String),
-    Metric(Option<String>, Metric),
+    Metric(Option<String>, Box<Metric>),
 }
 #[derive(Clone)]
 struct Entry {
@@ -198,8 +198,7 @@ impl SqlGenerator<'_> {
     pub(super) fn generate_latest_ossie(&self, query: &SemanticQuery) -> Result<String> {
         // Sorting/pagination are explicit native API extensions. Population
         // changes still follow the draft's single-filter contract.
-        if query.filters.len() > 1
-            || !query.segments.is_empty()
+        if !query.segments.is_empty()
             || !query.table_calculations.is_empty()
             || query.ungrouped
             || query.with_totals
@@ -213,21 +212,38 @@ impl SqlGenerator<'_> {
                 "unsupported Ossie wide-table query extension",
             ));
         }
+        let output_name = |name: &str| {
+            query.aliases.get(name).cloned().unwrap_or_else(|| {
+                if query.metrics.iter().any(|metric| metric == name) {
+                    name.to_owned()
+                } else {
+                    parse_reference(name)
+                        .map(|column| column.name.name)
+                        .unwrap_or_else(|| name.to_owned())
+                }
+            })
+        };
         let entries = |names: &[String], key: &str| {
             names
                 .iter()
                 .map(|name| {
-                    if let Some(alias) = query.aliases.get(name) {
-                        serde_json::json!({key: name, "alias": alias})
-                    } else {
-                        Value::String(name.clone())
-                    }
+                    // Structured aliases are literal output names, whereas the
+                    // strict binding accepts SQL identifiers. Quote the whole
+                    // name so qualified metric references remain one output.
+                    let alias = format!("\"{}\"", output_name(name).replace('"', "\"\""));
+                    serde_json::json!({key: name, "alias": alias})
                 })
                 .collect::<Vec<_>>()
         };
         let mut request = serde_json::json!({"dimensions": entries(&query.dimensions, "field"), "metrics": entries(&query.metrics, "metric")});
-        if let Some(filter) = query.filters.first() {
-            request["filter"] = filter.clone().into();
+        if !query.filters.is_empty() {
+            request["filter"] = query
+                .filters
+                .iter()
+                .map(|filter| format!("({filter})"))
+                .collect::<Vec<_>>()
+                .join(" AND ")
+                .into();
         }
         let mut sql = self.generate_ossie_wide(&request)?;
         if !query.order_by.is_empty() {
@@ -238,11 +254,22 @@ impl SqlGenerator<'_> {
                     .map(|n| (n, " DESC"))
                     .or_else(|| order.strip_suffix(" ASC").map(|n| (n, " ASC")))
                     .unwrap_or((order.as_str(), ""));
-                let output = query.aliases.get(name).cloned().unwrap_or_else(|| {
-                    parse_reference(name)
-                        .map(|c| c.name.name)
-                        .unwrap_or_else(|| name.to_owned())
-                });
+                let selected =
+                    query
+                        .metrics
+                        .iter()
+                        .chain(&query.dimensions)
+                        .find(|reference| {
+                            match (parse_reference(reference), parse_reference(name)) {
+                                (Some(selected), Some(ordered)) => {
+                                    id_normal(&selected.name) == id_normal(&ordered.name)
+                                        && selected.table.as_ref().map(id_normal)
+                                            == ordered.table.as_ref().map(id_normal)
+                                }
+                                _ => false,
+                            }
+                        });
+                let output = output_name(selected.map(String::as_str).unwrap_or(name));
                 orders.push(format!("{}{direction}", self.quote_identifier(&output)));
             }
             sql.push_str(&format!(" ORDER BY {}", orders.join(", ")));
@@ -325,7 +352,10 @@ impl<'a, 'g> Planner<'a, 'g> {
                         &metric.metadata,
                     )) == field
                 {
-                    return Some(Reference::Metric(Some(owner.name.clone()), metric.clone()));
+                    return Some(Reference::Metric(
+                        Some(owner.name.clone()),
+                        Box::new(metric.clone()),
+                    ));
                 }
             }
             None
@@ -341,7 +371,7 @@ impl<'a, 'g> Planner<'a, 'g> {
                             .is_some_and(|v| v["ossie_dataset_metric"].as_bool() == Some(true))
                         && normal(source_name(&m.name, &m.metadata)) == field
                 })
-                .map(|m| Reference::Metric(None, m.clone()))
+                .map(|m| Reference::Metric(None, Box::new(m.clone())))
         }
     }
     fn entry_shapes(
@@ -435,10 +465,11 @@ impl<'a, 'g> Planner<'a, 'g> {
                         fail("E_INVALID_QUERY", "filter must be a nonempty expression")
                     })?;
                 crate::adapters::ossie_sql::lower_ossie_sql(sql, DialectType::DuckDB)
-                    .map_err(|_| fail("E_INVALID_QUERY", "malformed filter"))
+                    .map_err(|error| fail("E_INVALID_QUERY", format!("malformed filter: {error}")))
                     .and_then(|lowered| {
-                        parse_semantic_expression(&lowered)
-                            .map_err(|_| fail("E_INVALID_QUERY", "malformed filter"))
+                        parse_semantic_expression(&lowered).map_err(|error| {
+                            fail("E_INVALID_QUERY", format!("malformed filter: {error}"))
+                        })
                     })
             })
             .transpose()?;

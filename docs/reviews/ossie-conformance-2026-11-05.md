@@ -71,6 +71,27 @@ was checked before publication; native compilation also ran from the intermediat
 compatibility and Layer 2 sources. Full unrelated repository CI and live warehouse
 integrations were not rerun. The broader pre-review results below remain historical.
 
+## Second review round
+
+All eight subsequent review findings were corrected in their owning stack PRs:
+revision registration accompanies exposed schemas; vendor identifier validation
+matches lowering; native reserved-function checks ignore opaque metadata; stored
+view recipes use isolated CTE scopes; Python preserves wildcard modifiers;
+physical query discovery passes through to the database; Rust combines structured
+filters and retains structured output aliases. Parenthesized portable filters
+also retain Boolean semantics while actual subqueries remain rejected. Public
+Rust policy preflight delegates independent latest-model populations to the
+wide planner only when visibility and all model policies are inactive; ordinary
+graphs and active policy contexts retain the existing validation path. All 12
+native policy tests pass, including intermediate and unselected model policies.
+
+CI follow-ups regenerate the CLI manpage at each stage, support the minimum
+SQLGlot version without requiring its newer AGG node class, and fix Rust Clippy
+warnings. Native quoted wildcard RENAME operands now fail explicitly because the
+pinned parser loses quote identity; other aliases and wildcard modifiers remain
+supported. Regression tests cover ordinary physical SQL and quoted text/comments
+to keep the rejection confined to semantic wildcard queries.
+
 ## Recorded pre-review verification
 
 Implementation commit `6351374` was checked against independent expected results.

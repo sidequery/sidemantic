@@ -262,6 +262,9 @@ ordinary scalar results after `AGG()` retain normal SQL behavior. Using a measur
 as a scalar, filter predicate, join key, or grouping key fails during binding.
 Unaggregated inline-window `QUALIFY` preserves aliases and clause ordering;
 combined aggregation or named-window `QUALIFY` shapes reject explicitly.
+Wildcard `EXCLUDE`, `REPLACE`, and `RENAME` retain their projection semantics.
+Native Rust rejects quoted wildcard `RENAME` operands because its pinned parser
+loses their quoted-name identity; ordinary aliases remain supported.
 
 `DESCRIBE` and `information_schema.columns` identify measure columns using a
 `MEASURE` type marker. The metadata overlay includes semantic relations while

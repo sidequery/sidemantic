@@ -66,6 +66,8 @@ struct OssieCompileRequest {
     filters: Vec<String>,
     #[serde(default)]
     order_by: Vec<String>,
+    #[serde(default)]
+    aliases: HashMap<String, String>,
     dialect: String,
 }
 
@@ -284,11 +286,12 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                     value: None,
                 });
             }
-            let query = SemanticQuery::new()
+            let mut query = SemanticQuery::new()
                 .with_metrics(request.metrics)
                 .with_dimensions(request.dimensions)
                 .with_filters(request.filters)
                 .with_order_by(request.order_by);
+            query.aliases = request.aliases;
             let sql = SqlGenerator::new(&graph)
                 .with_dialect(parse_dialect(&request.dialect)?)
                 .generate(&query)?;

@@ -124,6 +124,103 @@
       "dependencies": [
         "logical-0.2.0.dev0-b6c702e"
       ]
+    },
+    "logical-0.2.0.dev0-172a3e5": {
+      "document_kind": "logical",
+      "version": "0.2.0.dev0",
+      "schema_revision": "172a3e5",
+      "schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+      "resource_uri": "urn:sidemantic:ossie:schema:logical:0.2.0.dev0:172a3e5",
+      "runtime_path": "logical/0.2.0.dev0-172a3e5/schema.json",
+      "runtime_sha256": "ea513794167c8d67e29fb7a7c537c9e2c33e718fb1e50becbe1ac389884ae662",
+      "upstream_path": "logical/0.2.0.dev0-172a3e5/schema.json",
+      "upstream_sha256": "ea513794167c8d67e29fb7a7c537c9e2c33e718fb1e50becbe1ac389884ae662",
+      "source": {
+        "repository": "https://github.com/apache/ossie",
+        "commit": "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1",
+        "path": "core-spec/ossie-schema.json",
+        "url": "https://raw.githubusercontent.com/apache/ossie/172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1/core-spec/ossie-schema.json",
+        "license": "Apache-2.0"
+      },
+      "transformations": [],
+      "dependencies": []
+    },
+    "ontology-0.2.0.dev0-172a3e5": {
+      "document_kind": "ontology",
+      "version": "0.2.0.dev0",
+      "schema_revision": "172a3e5",
+      "schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+      "resource_uri": "urn:sidemantic:ossie:schema:ontology:0.2.0.dev0:172a3e5",
+      "runtime_path": "ontology/0.2.0.dev0-172a3e5/schema.json",
+      "runtime_sha256": "03649920d4e8e1f2b75c86007acc34fb012a5650ae66ff38df3f0aa743baacdd",
+      "upstream_path": "ontology/0.2.0.dev0-172a3e5/upstream.json",
+      "upstream_sha256": "228b589ad950c557199f9049eb087b0c9cf8e6acbd6dab70e1b408dd1061fde2",
+      "source": {
+        "repository": "https://github.com/apache/ossie",
+        "commit": "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1",
+        "path": "ontology/ontology.json",
+        "url": "https://raw.githubusercontent.com/apache/ossie/172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1/ontology/ontology.json",
+        "license": "Apache-2.0"
+      },
+      "transformations": [
+        {
+          "operation": "replace_id",
+          "from": "https://github.com/apache/ossie/ontology/ontology.json",
+          "to": "urn:sidemantic:ossie:schema:ontology:0.2.0.dev0:172a3e5",
+          "reason": "Use an immutable revision-specific local resource identity for offline validation."
+        },
+        {
+          "operation": "replace_reference_base",
+          "from": "https://raw.githubusercontent.com/apache/ossie/main/core-spec/ossie-schema.json",
+          "to": "urn:sidemantic:ossie:schema:logical:0.2.0.dev0:172a3e5",
+          "reason": "Resolve against the same pinned schema revision without network access."
+        }
+      ],
+      "dependencies": [
+        "logical-0.2.0.dev0-172a3e5"
+      ]
+    },
+    "mapping-0.2.0.dev0-172a3e5": {
+      "document_kind": "mapping",
+      "version": "0.2.0.dev0",
+      "schema_revision": "172a3e5",
+      "schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+      "resource_uri": "urn:sidemantic:ossie:schema:mapping:0.2.0.dev0:172a3e5",
+      "runtime_path": "mapping/0.2.0.dev0-172a3e5/schema.json",
+      "runtime_sha256": "26a371b3a89974614157b21fe7aa10f5c2005cb14b12ae6d36f9514cd8ddc786",
+      "upstream_path": "mapping/0.2.0.dev0-172a3e5/upstream.json",
+      "upstream_sha256": "8db74be12cda94e23240cc502bb2ac0580b69a05431fda35ee0c9e8b7e6f096b",
+      "source": {
+        "repository": "https://github.com/apache/ossie",
+        "commit": "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1",
+        "path": "ontology/mapping.json",
+        "url": "https://raw.githubusercontent.com/apache/ossie/172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1/ontology/mapping.json",
+        "license": "Apache-2.0"
+      },
+      "transformations": [
+        {
+          "operation": "replace_id",
+          "from": "https://github.com/apache/ossie/ontology/mapping.json",
+          "to": "urn:sidemantic:ossie:schema:mapping:0.2.0.dev0:172a3e5",
+          "reason": "Use an immutable revision-specific local resource identity for offline validation."
+        },
+        {
+          "operation": "replace_reference_base",
+          "from": "https://raw.githubusercontent.com/apache/ossie/main/core-spec/ossie-schema.json",
+          "to": "urn:sidemantic:ossie:schema:logical:0.2.0.dev0:172a3e5",
+          "reason": "Resolve against the same pinned schema revision without network access."
+        },
+        {
+          "operation": "replace_reference_base",
+          "from": "https://raw.githubusercontent.com/apache/ossie/main/ontology/ontology.json",
+          "to": "urn:sidemantic:ossie:schema:ontology:0.2.0.dev0:172a3e5",
+          "reason": "Resolve against the same pinned schema revision without network access."
+        }
+      ],
+      "dependencies": [
+        "logical-0.2.0.dev0-172a3e5",
+        "ontology-0.2.0.dev0-172a3e5"
+      ]
     }
   }
 }

@@ -66,13 +66,27 @@ def _walk_scope(node: exp.Expression):
         yield from _walk_scope(child)
 
 
+_WINDOW_WRAPPERS = (exp.Filter, exp.WithinGroup, exp.IgnoreNulls, exp.RespectNulls)
+
+
+def _window_inputs(function: exp.Expression):
+    """Visit inputs/modifiers while excluding the outer window aggregate itself."""
+    for name, value in function.args.items():
+        if name == "this" and isinstance(function, _WINDOW_WRAPPERS):
+            yield from _window_inputs(value)
+        elif isinstance(value, exp.Expression):
+            yield value
+        elif isinstance(value, list):
+            yield from (child for child in value if isinstance(child, exp.Expression))
+
+
 def _has_aggregate(node: exp.Expression) -> bool:
     if isinstance(node, (exp.Subquery, exp.Query)) or _definition(node):
         return False
     if isinstance(node, exp.Window):
         # The window function itself does not group rows, but an aggregate in
         # its arguments or ordering does: SUM(SUM(amount)) OVER (...) does.
-        return any(_has_aggregate(child) for child in _children(node.this)) or any(
+        return any(_has_aggregate(child) for child in _window_inputs(node.this)) or any(
             _has_aggregate(child)
             for name, value in node.args.items()
             if name != "this"
@@ -661,15 +675,21 @@ class RelationalCompiler:
                 if isinstance(node, exp.Window) and name == "this":
                     # Keep the outer window operator; only its inputs belong
                     # to the preceding aggregate stage.
-                    function = value.copy()
-                    for argument, child in value.args.items():
-                        if isinstance(child, exp.Expression):
-                            function.set(argument, lift(child))
-                        elif isinstance(child, list):
-                            function.set(
-                                argument, [lift(item) if isinstance(item, exp.Expression) else item for item in child]
-                            )
-                    result.set(name, function)
+                    def lift_inputs(function):
+                        rewritten = function.copy()
+                        for argument, child in function.args.items():
+                            if argument == "this" and isinstance(function, _WINDOW_WRAPPERS):
+                                rewritten.set(argument, lift_inputs(child))
+                            elif isinstance(child, exp.Expression):
+                                rewritten.set(argument, lift(child))
+                            elif isinstance(child, list):
+                                rewritten.set(
+                                    argument,
+                                    [lift(item) if isinstance(item, exp.Expression) else item for item in child],
+                                )
+                        return rewritten
+
+                    result.set(name, lift_inputs(value))
                 elif isinstance(value, exp.Expression):
                     result.set(name, lift(value))
                 elif isinstance(value, list):

@@ -22,6 +22,7 @@ cache-keys = [
     { file = "../Cargo.lock" },
     { file = "build.rs" },
     { file = "src/**/*" },
+    { file = "schemas/**/*" },
     { file = "../.cargo/config.toml" },
     { file = "../rust-toolchain*" },
     { env = "RUSTFLAGS" },

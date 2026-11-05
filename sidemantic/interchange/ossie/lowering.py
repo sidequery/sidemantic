@@ -46,11 +46,14 @@ JSONObject = Mapping[str, object]
 _TEMPORAL_TYPES = frozenset({"Date", "Time", "DateTime", "DateTimeTz"})
 _NUMERIC_TYPES = frozenset({"Integer", "Decimal", "Float"})
 _DIALECT_LABELS = {
+    "clickhouse": "CLICKHOUSE",
+    "spark": "SPARK",
     "bigquery": "BIGQUERY",
     "databricks": "DATABRICKS",
     "snowflake": "SNOWFLAKE",
 }
 _SQLGLOT_DIALECTS = {
+    "clickhouse": "clickhouse",
     "bigquery": "bigquery",
     "databricks": "databricks",
     "duckdb": "duckdb",

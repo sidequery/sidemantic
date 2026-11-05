@@ -242,7 +242,7 @@ pub(super) fn validate(
     if profile.compatibility_alias_for.is_some() {
         document["version"] = Value::String(profile.validation_schema_version.clone());
     }
-    evaluate(&document, &schema, &schema, "", errors);
+    evaluate(&document, schema, schema, "", errors);
 }
 
 #[cfg(test)]

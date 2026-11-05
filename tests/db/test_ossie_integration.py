@@ -522,3 +522,51 @@ def test_wide_source_identity_stays_with_measure_inputs(database, route, rows):
     # must stay with their group while both identical physical rows still count.
     for _ in range(3):
         assert_rows(execute(route, adapter, query, wide=True, document=document), expected)
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize(
+    "predicate,expected",
+    [("", (2, 1, 0)), (" WHERE amount<0", (0, 0, 0)), (" WHERE FALSE", (0, 0, 0))],
+    ids=["matched", "nonmatching", "empty"],
+)
+def test_filtered_count_star_uses_database_empty_semantics(database, route, predicate, expected):
+    adapter, _ = database
+    source = (
+        "SELECT amount FROM (SELECT 11 AS amount UNION ALL SELECT 11 "
+        "UNION ALL SELECT NULL UNION ALL SELECT -1) AS input_rows" + predicate
+    )
+    document = {
+        "version": "0.2.0.dev0",
+        "name": "filtered_counts",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": source,
+                "fields": [{"name": "amount", "expression": {"sql": "amount"}}],
+                "metrics": [
+                    {"name": "positive_count", "expression": {"sql": "COUNT(*) FILTER(WHERE amount>0)"}},
+                    {
+                        "name": "positive_distinct_count",
+                        "expression": {"sql": "COUNT(DISTINCT amount) FILTER(WHERE amount>0)"},
+                    },
+                    {
+                        "name": "null_distinct_count",
+                        "expression": {"sql": "COUNT(DISTINCT NULL) FILTER(WHERE amount>0)"},
+                    },
+                ],
+            }
+        ],
+    }
+    # In particular, BigQuery COUNTIF(empty) must be checked on BigQuery itself;
+    # translating it to DuckDB COUNT_IF would change its empty-input result.
+    physical = reference_rows(
+        adapter,
+        "SELECT COUNT(CASE WHEN amount>0 THEN 1 END),"
+        "COUNT(DISTINCT CASE WHEN amount>0 THEN amount END),"
+        f"COUNT(DISTINCT CASE WHEN amount>0 THEN NULL END) FROM ({source}) population",
+    )
+    assert physical == [expected]
+    query = {"metrics": ["orders.positive_count", "orders.positive_distinct_count", "orders.null_distinct_count"]}
+    actual = execute(route, adapter, query, wide=True, document=document)
+    assert_rows(actual, physical)

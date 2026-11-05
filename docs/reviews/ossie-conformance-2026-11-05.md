@@ -130,6 +130,22 @@ CLI. BigQuery emulator view discovery and non-core CLI checks are explicitly out
 this suite's scope. A selected backend with missing dependencies or an unreachable
 service fails the run.
 
+The database matrix records 382 passing cases: 78 each on DuckDB and PostgreSQL,
+76 each on ClickHouse and fakesnow, and 74 on the BigQuery emulator. The excluded
+cases are the two core-only CLI checks on other targets and two BigQuery view
+lifecycle checks. Each target runs Python, public Rust with fallback disabled,
+and direct native Rust import/compilation. Filtered counts cover matched,
+nonmatching, and empty populations, including DISTINCT and all-NULL inputs.
+
+The follow-up also removes a native wide-query identity bug: independently
+numbering a rescanned population could associate measures with the wrong group.
+Measure inputs now travel with the deduplicated population. The original
+ClickHouse reproducer returned incorrect values in 6 of 25 executions; the
+corrected query passed all 25, with permanent permutation and duplicate-row
+regressions. FILTER wrappers on ordinary Python window aggregates preserve row
+cardinality. Filtered COUNT rendering is verified on SQLGlot 30.1, 30.12, and 30.23
+to preserve DISTINCT, NULL, and empty-population semantics.
+
 ## Recorded pre-review verification
 
 Implementation commit `6351374` was checked against independent expected results.

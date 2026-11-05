@@ -144,6 +144,17 @@ fn compile_with_semantic_input(
 }
 
 #[pyfunction]
+fn compile_ossie_wide_with_semantic_input(
+    py: Python<'_>,
+    input_json: &str,
+    query_json: &str,
+    dialect: &str,
+) -> PyResult<String> {
+    crate::semantic_input::compile_ossie_wide_with_semantic_input(input_json, query_json, dialect)
+        .map_err(|error| semantic_input_error(py, error))
+}
+
+#[pyfunction]
 fn compile_ossie_view_definition(
     py: Python<'_>,
     input_json: &str,
@@ -1533,6 +1544,7 @@ fn sidemantic_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.py().get_type::<UnsupportedSemanticFeaturesError>(),
     )?;
     m.add_function(wrap_pyfunction!(compile_with_semantic_input, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_ossie_wide_with_semantic_input, m)?)?;
     m.add_function(wrap_pyfunction!(compile_ossie_view_definition, m)?)?;
     m.add_function(wrap_pyfunction!(validate_with_semantic_input, m)?)?;
     m.add_function(wrap_pyfunction!(rewrite_with_semantic_input, m)?)?;

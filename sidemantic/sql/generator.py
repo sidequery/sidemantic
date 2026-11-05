@@ -1427,6 +1427,25 @@ class SQLGenerator:
         Returns:
             SQL query string
         """
+        from sidemantic.sql.ossie_wide import compile_ossie_wide_extended, is_latest_ossie_graph
+
+        if is_latest_ossie_graph(self.graph):
+            return compile_ossie_wide_extended(
+                self.graph,
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                aliases=aliases,
+                order_by=order_by,
+                limit=limit,
+                offset=offset,
+                dialect=self.dialect,
+                segments=segments,
+                parameters=parameters,
+                ungrouped=ungrouped,
+                use_preaggregations=use_preaggregations,
+                with_totals=with_totals,
+            )
         lowered = self._lower_ossie_aggregates() or self._lower_filtered_complete_aggregates()
         if lowered is not None:
             return lowered.generate(

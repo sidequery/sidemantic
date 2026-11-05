@@ -1456,6 +1456,9 @@ server_app.command("mcp")(mcp_serve)
 def rewrite(
     sql: str = typer.Argument(..., help="Semantic SQL query to rewrite, or - to read from stdin"),
     models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
+    ossie_wide: bool = typer.Option(
+        False, "--ossie-wide", help="Interpret the argument as a strict Ossie Layer 3 JSON query"
+    ),
     ossie_scope: str = typer.Option(None, "--ossie-scope", help="Explicit Apache Ossie semantic-model scope"),
     connection: str = typer.Option(None, "--connection", help="Database connection string (sets SQL dialect)"),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file"),
@@ -1494,7 +1497,12 @@ def rewrite(
 
         from sidemantic.core.transport_security import rewrite_transport_sql
 
-        rewritten_sql = rewrite_transport_sql(layer, sql, user_attributes=user_attributes, transport="CLI rewrite")
+        if ossie_wide:
+            import json
+
+            rewritten_sql = layer.compile_ossie_wide(json.loads(sql), user_attributes=user_attributes)
+        else:
+            rewritten_sql = rewrite_transport_sql(layer, sql, user_attributes=user_attributes, transport="CLI rewrite")
         _emit_engine_selection(layer)
         typer.echo(rewritten_sql)
     except typer.Exit:
@@ -1826,6 +1834,9 @@ def query(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
     ),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    ossie_wide: bool = typer.Option(
+        False, "--ossie-wide", help="Interpret the argument as a strict Ossie Layer 3 JSON query"
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show generated SQL without executing"),
     engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
     fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
@@ -1870,6 +1881,8 @@ def query(
         or limit is not None
         or offset is not None
     )
+    if ossie_wide and sql is None:
+        raise typer.BadParameter("--ossie-wide requires a JSON query argument or - for stdin")
     if sql is not None and structured_options:
         raise typer.BadParameter("SQL cannot be combined with structured query options")
     if sql is None and not any((explore, saved_query, metrics, dimensions)):
@@ -1903,9 +1916,17 @@ def query(
         if table_calculations:
             structured_query["table_calculations"] = table_calculations
 
+        wide_query = None
+        if ossie_wide:
+            import json
+
+            wide_query = json.loads(sql)
+
         # Dry run: show generated SQL without executing
         if dry_run:
-            if sql is None:
+            if ossie_wide:
+                rewritten_sql = layer.compile_ossie_wide(wide_query, user_attributes=user_attributes)
+            elif sql is None:
                 rewritten_sql = layer.compile(**structured_query)
             else:
                 from sidemantic.core.transport_security import rewrite_transport_sql
@@ -1926,7 +1947,10 @@ def query(
             return
 
         # Execute query
-        result = layer.query(**structured_query) if sql is None else layer.sql(sql, user_attributes=user_attributes)
+        if ossie_wide:
+            result = layer.query_ossie_wide(wide_query, user_attributes=user_attributes)
+        else:
+            result = layer.query(**structured_query) if sql is None else layer.sql(sql, user_attributes=user_attributes)
         _emit_engine_selection(layer)
 
         # Get results

@@ -486,7 +486,16 @@ fn latest_scope_identity_is_opaque_and_model_aggregate_grain_is_query_time() {
     ] {
         document["metrics"] =
             serde_json::json!([{"name":"ambiguous", "expression":{"sql":expression}}]);
-        assert!(latest_scope(&document).unwrap().into_graph().is_ok());
+        let graph = latest_scope(&document).unwrap().into_graph().unwrap();
+        let result = sidemantic::SqlGenerator::new(&graph)
+            .generate_ossie_wide(&serde_json::json!({"metrics":["ambiguous"]}));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("E_AMBIGUOUS_MEASURE_GRAIN"),
+            "{expression}"
+        );
     }
 }
 

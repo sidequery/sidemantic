@@ -1,0 +1,357 @@
+[
+  {
+    "id": "unknown_part",
+    "query": {
+      "metrics": [
+        "orders.revenue"
+      ],
+      "order_by": [
+        "orders.revenue"
+      ]
+    },
+    "error": "E_INVALID_QUERY"
+  },
+  {
+    "id": "null_metrics",
+    "query": {
+      "metrics": null
+    },
+    "error": "E_INVALID_QUERY"
+  },
+  {
+    "id": "null_filter",
+    "query": {
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": null
+    },
+    "error": "E_INVALID_QUERY"
+  },
+  {
+    "id": "unknown_entry_property",
+    "query": {
+      "metrics": [
+        {
+          "metric": "orders.revenue",
+          "unknown": 1
+        }
+      ]
+    },
+    "error": "E_INVALID_QUERY"
+  },
+  {
+    "id": "null_alias",
+    "query": {
+      "metrics": [
+        {
+          "metric": "orders.revenue",
+          "alias": null
+        }
+      ]
+    },
+    "error": "E_INVALID_QUERY"
+  },
+  {
+    "id": "invalid_query_nonobject",
+    "query": [],
+    "error": "E_INVALID_QUERY"
+  },
+  {
+    "id": "malformed_filter",
+    "query": {
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "orders.amount >"
+    },
+    "error": "E_INVALID_QUERY"
+  },
+  {
+    "id": "malformed_entry",
+    "query": {
+      "dimensions": [
+        {
+          "metric": "orders.revenue"
+        }
+      ]
+    },
+    "error": "E_INVALID_QUERY"
+  },
+  {
+    "id": "empty",
+    "query": {},
+    "error": "E_EMPTY_AGGREGATION_QUERY"
+  },
+  {
+    "id": "filter_only",
+    "query": {
+      "filter": "FALSE"
+    },
+    "error": "E_EMPTY_AGGREGATION_QUERY"
+  },
+  {
+    "id": "unknown_metric",
+    "query": {
+      "metrics": [
+        "missing"
+      ]
+    },
+    "error": "E_NAME_NOT_FOUND"
+  },
+  {
+    "id": "unknown_filter_field",
+    "query": {
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "orders.missing=1"
+    },
+    "error": "E_NAME_NOT_FOUND"
+  },
+  {
+    "id": "metric_in_dimensions",
+    "query": {
+      "dimensions": [
+        "orders.revenue"
+      ]
+    },
+    "error": "E_METRIC_IN_DIMENSIONS"
+  },
+  {
+    "id": "field_in_metrics",
+    "query": {
+      "metrics": [
+        "orders.amount"
+      ]
+    },
+    "error": "E_FIELD_IN_METRICS"
+  },
+  {
+    "id": "aggregate_filter",
+    "query": {
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "SUM(orders.amount)>0"
+    },
+    "error": "E_AGGREGATE_IN_WHERE"
+  },
+  {
+    "id": "metric_filter",
+    "query": {
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "orders.order_count>0"
+    },
+    "error": "E_AGGREGATE_IN_WHERE"
+  },
+  {
+    "id": "window_filter",
+    "query": {
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "ROW_NUMBER() OVER(ORDER BY orders.amount)>1"
+    },
+    "error": "E_WINDOW_IN_WHERE"
+  },
+  {
+    "id": "cross_dataset_filter",
+    "query": {
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "orders.amount>0 AND customers.region='EAST'"
+    },
+    "error": "E_CROSS_DATASET_FILTER"
+  },
+  {
+    "id": "normalized_output_collision",
+    "query": {
+      "metrics": [
+        {
+          "metric": "orders.revenue",
+          "alias": "Total"
+        },
+        {
+          "metric": "tickets.total_cost",
+          "alias": "TOTAL"
+        }
+      ]
+    },
+    "error": "E_NAME_COLLISION"
+  },
+  {
+    "id": "dimension_metric_output_collision",
+    "query": {
+      "dimensions": [
+        {
+          "field": "customers.region",
+          "alias": "revenue"
+        }
+      ],
+      "metrics": [
+        "orders.revenue"
+      ]
+    },
+    "error": "E_NAME_COLLISION"
+  },
+  {
+    "id": "no_path_reverse_direction",
+    "query": {
+      "dimensions": [
+        "orders.status"
+      ],
+      "metrics": [
+        "customers.customer_count"
+      ]
+    },
+    "error": "E_NO_PATH"
+  },
+  {
+    "id": "partial_dimension_reachability",
+    "query": {
+      "dimensions": [
+        "orders.status"
+      ],
+      "metrics": [
+        "orders.revenue",
+        "tickets.ticket_count"
+      ]
+    },
+    "error": "E_PARTIAL_DIMENSION_REACHABILITY"
+  },
+  {
+    "id": "unconnected_no_anchor",
+    "query": {
+      "dimensions": [
+        "orders.status",
+        "tickets.cost"
+      ]
+    },
+    "error": "E_NO_ANCHOR"
+  },
+  {
+    "id": "filter_unreachable_one_metric",
+    "query": {
+      "metrics": [
+        "orders.revenue",
+        "tickets.ticket_count"
+      ],
+      "filter": "orders.status='paid'"
+    },
+    "error": "E_UNSUPPORTED_FILTER_PATH"
+  },
+  {
+    "id": "dimension_only_filter_unreachable",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "filter": "orders.amount>0"
+    },
+    "error": "E_UNSUPPORTED_FILTER_PATH"
+  },
+  {
+    "id": "invalid_before_empty",
+    "query": {
+      "unknown": 1
+    },
+    "error": "E_INVALID_QUERY"
+  },
+  {
+    "id": "unknown_before_metric_dimension",
+    "query": {
+      "dimensions": [
+        "orders.revenue"
+      ],
+      "metrics": [
+        "unknown"
+      ]
+    },
+    "error": "E_NAME_NOT_FOUND"
+  },
+  {
+    "id": "metric_dimension_before_field_metric",
+    "query": {
+      "dimensions": [
+        "orders.revenue"
+      ],
+      "metrics": [
+        "orders.amount"
+      ]
+    },
+    "error": "E_METRIC_IN_DIMENSIONS"
+  },
+  {
+    "id": "aggregate_before_cross_filter",
+    "query": {
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "SUM(orders.amount)>0 AND customers.region='EAST'"
+    },
+    "error": "E_AGGREGATE_IN_WHERE"
+  },
+  {
+    "id": "cross_filter_before_name_collision",
+    "query": {
+      "metrics": [
+        {
+          "metric": "orders.revenue",
+          "alias": "x"
+        },
+        {
+          "metric": "tickets.total_cost",
+          "alias": "x"
+        }
+      ],
+      "filter": "orders.amount>tickets.cost"
+    },
+    "error": "E_CROSS_DATASET_FILTER"
+  },
+  {
+    "id": "no_path_before_filter_unreachable",
+    "query": {
+      "dimensions": [
+        "unrelated.label"
+      ],
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "tickets.cost>0"
+    },
+    "error": "E_NO_PATH"
+  },
+  {
+    "id": "multiple_statement_reference",
+    "query": {
+      "metrics": [
+        "orders.revenue; orders.order_count"
+      ]
+    },
+    "error": "E_INVALID_QUERY"
+  },
+  {
+    "id": "multiple_statement_filter",
+    "query": {
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "TRUE; FALSE"
+    },
+    "error": "E_INVALID_QUERY"
+  },
+  {
+    "id": "scalar_numeric_filter",
+    "query": {
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "1"
+    },
+    "error": "E_INVALID_QUERY"
+  }
+]

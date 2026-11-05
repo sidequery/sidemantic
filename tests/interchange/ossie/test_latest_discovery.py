@@ -1,8 +1,13 @@
 """Public discovery, persistent view recipes, and strict CLI query routes."""
 
+import json
+
+import duckdb
 import pytest
+from typer.testing import CliRunner
 
 from sidemantic import SemanticLayer
+from sidemantic.cli import app
 from sidemantic.interchange.ossie import lower_ossie_document, parse_ossie_document
 from tests.interchange.ossie.test_latest_query_interface import FIXTURES, ROUTES, _execute
 
@@ -61,6 +66,36 @@ def test_view_filters_and_renames_preserve_recipes_and_invalidate_cached_queries
         assert not layer.graph.metadata["ossie_views"]
     finally:
         layer.adapter.close()
+
+
+@pytest.mark.parametrize("engine", ["python", "rust"])
+@pytest.mark.parametrize("command", ["query", "rewrite"])
+def test_strict_wide_cli(engine, command, tmp_path):
+    database = tmp_path / "data.duckdb"
+    with duckdb.connect(str(database)) as connection:
+        connection.execute((FIXTURES / "scott/scott.sql").read_text())
+    query = {"metrics": ["emp.sum_sal", "emp.emp_count"]}
+    args = [
+        command,
+        "--ossie-wide",
+        "--models",
+        str(FIXTURES / "scott/scott_model.ossie.yaml"),
+        "--engine",
+        engine,
+        "--no-fallback",
+        "--connection",
+        f"duckdb:///{database}",
+    ]
+    # Stdin exercises the same strict JSON contract.
+    args.append("-")
+    result = CliRunner().invoke(app, args, input=json.dumps(query))
+    assert result.exit_code == 0, result.output
+    if command == "rewrite":
+        with duckdb.connect(str(database)) as connection:
+            assert connection.execute(result.stdout).fetchall() == [(29025, 14)]
+    else:
+        assert "29025" in result.stdout
+        assert ",14" in result.stdout
 
 
 @pytest.mark.parametrize("route", ROUTES)

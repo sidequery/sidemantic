@@ -1353,6 +1353,54 @@ pub fn compile_with_semantic_input(input_json: &str, query_json: &str) -> Result
     with_semantic_stack(|| compile_semantic_input(input_json, query_json))
 }
 
+/// Compile the strict Layer 3 request without translating it into native options.
+pub fn compile_ossie_wide_with_semantic_input(
+    input_json: &str,
+    query_json: &str,
+    dialect: &str,
+) -> Result<String> {
+    with_semantic_stack(|| {
+        // This interface has no request security context. Retain policy fields
+        // in the transport and fail closed before the general graph decoder.
+        let source: Value =
+            serde_json::from_str(input_json).map_err(|error| invalid("input", error))?;
+        if source
+            .get("models")
+            .and_then(Value::as_array)
+            .is_some_and(|models| {
+                models.iter().any(|model| {
+                    [
+                        "security",
+                        "invariant_filters",
+                        "required_filters",
+                        "required_filters_or_groups",
+                    ]
+                    .iter()
+                    .any(|key| {
+                        model.get(key).is_some_and(|value| {
+                            !value.is_null()
+                                && value.as_array().is_none_or(|values| !values.is_empty())
+                        })
+                    })
+                })
+            })
+        {
+            return Err(SidemanticError::Validation(
+                "E_INVALID_QUERY: Wide-table queries over native security/filter policies are not supported".into(),
+            ));
+        }
+        let input = SemanticInput::decode(input_json)?;
+        let query: Value = serde_json::from_str(query_json)
+            .map_err(|error| SidemanticError::Validation(format!("E_INVALID_QUERY: {error}")))?;
+        let dialect = dialect
+            .parse::<DialectType>()
+            .map_err(|error| invalid("query.dialect", error))?;
+        SqlGenerator::new(&input.graph)
+            .with_dialect(dialect)
+            .generate_ossie_wide(&query)
+    })
+}
+
 pub fn compile_ossie_view_definition(input_json: &str, sql: &str, dialect: &str) -> Result<Value> {
     with_semantic_stack(|| {
         let input = SemanticInput::decode(input_json)?;

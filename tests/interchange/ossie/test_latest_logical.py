@@ -151,13 +151,18 @@ def test_latest_schema_rejects_empty_vendor_name():
     assert any(d.code == "ossie.schema.min_length" for d in lowered.diagnostics)
 
 
-def test_latest_model_count_star_preserves_source():
+def test_latest_model_count_star_preserves_source_but_refuses_ambiguous_wide_execution():
     data = document()
     data["metrics"] = [field("unbound_count", "COUNT(*) FILTER (WHERE orders.amount > 0)")]
     lowered = lower(data)
     assert lowered.parse_result.valid
     assert lowered.semantic_validation.valid
     assert lowered.executable
+    from sidemantic.sql.ossie_wide import OssieWideQueryError, compile_ossie_wide_query
+
+    graph = next(iter(lowered.catalog.scopes.values())).graph
+    with pytest.raises(OssieWideQueryError, match="E_AMBIGUOUS_MEASURE_GRAIN"):
+        compile_ossie_wide_query(graph, {"metrics": ["unbound_count"]})
     assert json.loads(serialize_ossie_document(lowered.document, "json").data) == data
 
 

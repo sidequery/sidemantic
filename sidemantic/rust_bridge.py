@@ -200,6 +200,36 @@ def compile_semantic_input(
     return sql
 
 
+def compile_ossie_wide_semantic_input(
+    graph: SemanticGraph,
+    query: dict,
+    *,
+    dialect: str = "duckdb",
+    input_dialect: str = "duckdb",
+    rust_module=None,
+) -> str:
+    """Compile the strict Ossie Layer 3 request through the native planner."""
+    from sidemantic.sql.ossie_wide import OssieWideQueryError
+
+    module = rust_module if rust_module is not None else get_rust_module()
+    try:
+        sql = _call_semantic_entrypoint(
+            module,
+            "compile_ossie_wide_with_semantic_input",
+            json.dumps(graph_to_semantic_input(graph, input_dialect=input_dialect), allow_nan=False),
+            json.dumps(query, allow_nan=False),
+            dialect,
+        )
+    except (ValueError, RuntimeError) as error:
+        match = re.search(r"\b(E_[A-Z_]+):\s*(.*)", str(error), re.DOTALL)
+        if match:
+            raise OssieWideQueryError(match[1], match[2]) from error
+        raise
+    if not isinstance(sql, str):
+        raise TypeError("Rust wide-table compiler returned a non-string SQL result")
+    return sql
+
+
 def compile_ossie_view_definition(
     graph: SemanticGraph,
     sql: str,

@@ -10,6 +10,7 @@ mod fanout_complete;
 mod imported_totals;
 mod join_kind;
 mod options;
+mod ossie_wide;
 mod retention;
 mod snapshots;
 mod source_projection;
@@ -221,6 +222,9 @@ impl<'a> SqlGenerator<'a> {
         // parsing, AST transformation, serialization and destruction on the same
         // protected stack instead of returning a deep AST to the caller stack.
         crate::semantic_input::with_semantic_stack(|| {
+            if self.uses_latest_ossie() {
+                return self.generate_latest_ossie(query);
+            }
             if let Some(graph) = self.prepare_imported_window_dimensions()? {
                 return SqlGenerator::new(&graph)
                     .with_dialect(self.dialect)

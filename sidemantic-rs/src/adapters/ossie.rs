@@ -2783,7 +2783,9 @@ fn compile_scope(
 }
 
 fn classify_source(source: &str, target: OssieTarget) -> Option<bool> {
-    if let Ok(expressions) = polyglot_sql::parse(source, target.parser_dialect()) {
+    if let Ok(expressions) =
+        crate::semantic_input::dialects::parse_many(source, target.parser_dialect())
+    {
         if expressions.len() != 1 {
             return None;
         }

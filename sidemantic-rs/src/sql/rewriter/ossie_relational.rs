@@ -37,6 +37,172 @@ fn declared(name: &str) -> Identifier {
 fn sql(expr: &Expression) -> Result<String> {
     crate::semantic_input::dialects::emit(expr.clone(), DialectType::DuckDB, DialectType::DuckDB)
 }
+/// Lower a bound window filter after window evaluation and before DISTINCT,
+/// ordering and pagination. Every visible projection already has a stable slot.
+fn lower_bound_qualify(mut expression: Expression) -> Result<Expression> {
+    let mut sequence = 0;
+    loop {
+        let mut changed = false;
+        expression = binding::transform_nodes(expression, &mut |node| {
+            let Expression::Select(select) = node else {
+                return Ok(None);
+            };
+            let Some(qualify) = &select.qualify else {
+                return Ok(None);
+            };
+            changed = true;
+            sequence += 1;
+            let predicate_slot = format!("__ossie_qualify_predicate_{sequence}");
+            let mut inner = select.as_ref().clone();
+            inner.qualify = None;
+            let mut aliases = HashMap::new();
+            let mut visible = Vec::new();
+            for projection in &inner.expressions {
+                match projection {
+                    Expression::Alias(alias) => {
+                        aliases.insert(key(&alias.alias), alias.this.clone());
+                        visible.push(column(&alias.alias.name));
+                    }
+                    Expression::Column(value) => visible.push(column(&value.name.name)),
+                    _ => {
+                        return Err(error(
+                            "bound QUALIFY projection requires a stable output slot",
+                        ))
+                    }
+                }
+            }
+            let predicate = binding::transform_nodes(qualify.this.clone(), &mut |node| {
+                if let Expression::Column(value) = node {
+                    if value.table.is_none() {
+                        return Ok(aliases.get(&key(&value.name)).cloned());
+                    }
+                }
+                Ok(None)
+            })?;
+            inner.expressions.push(Expression::Alias(Box::new(
+                polyglot_sql::expressions::Alias::new(
+                    predicate,
+                    Identifier::quoted(&predicate_slot),
+                ),
+            )));
+            let Expression::Select(mut outer) =
+                parse("SELECT 1 FROM (SELECT 1) AS __ossie_qualified")?
+            else {
+                unreachable!()
+            };
+            outer.expressions = visible;
+            outer.distinct = inner.distinct;
+            inner.distinct = false;
+            outer.limit = inner.limit.take();
+            outer.offset = inner.offset.take();
+            outer.order_by = inner.order_by.take();
+            if let Some(order) = &mut outer.order_by {
+                for (index, ordered) in order.expressions.iter_mut().enumerate() {
+                    if matches!(&ordered.this, Expression::Literal(Literal::Number(_))) {
+                        continue;
+                    }
+                    let existing = inner.expressions.iter().find_map(|projection| match projection {
+                        Expression::Alias(alias) if alias.this == ordered.this || matches!(&ordered.this, Expression::Column(value) if value.table.is_none() && key(&value.name) == key(&alias.alias)) => Some(alias.alias.name.clone()),
+                        _ => None,
+                    });
+                    let slot = existing
+                        .unwrap_or_else(|| format!("__ossie_qualify_order_{sequence}_{index}"));
+                    if !inner.expressions.iter().any(|projection| matches!(projection, Expression::Alias(alias) if alias.alias.name == slot)) {
+                        inner.expressions.push(Expression::Alias(Box::new(polyglot_sql::expressions::Alias::new(ordered.this.clone(), Identifier::quoted(&slot)))));
+                    }
+                    ordered.this = column(&slot);
+                }
+            }
+            outer.where_clause = Some(polyglot_sql::expressions::Where {
+                this: column(&predicate_slot),
+            });
+            let Expression::Subquery(relation) = &mut outer.from.as_mut().unwrap().expressions[0]
+            else {
+                unreachable!()
+            };
+            relation.this = Expression::Select(Box::new(inner));
+            Ok(Some(Expression::Select(outer)))
+        })?;
+        if !changed {
+            return Ok(expression);
+        }
+    }
+}
+
+fn inline_declared_windows(mut expression: Expression) -> Result<Expression> {
+    loop {
+        let mut changed = false;
+        expression = binding::transform_nodes(expression, &mut |node| {
+            if let Expression::Select(select) = node {
+                if select
+                    .windows
+                    .as_ref()
+                    .is_some_and(|windows| !windows.is_empty())
+                {
+                    changed = true;
+                    return Ok(Some(Expression::Select(Box::new(inline_named_windows(
+                        select.as_ref().clone(),
+                    )?))));
+                }
+            }
+            Ok(None)
+        })?;
+        if !changed {
+            return Ok(expression);
+        }
+    }
+}
+
+fn emit_relational(mut expression: Expression, output: DialectType) -> Result<String> {
+    if output == DialectType::PostgreSQL {
+        expression = lower_bound_qualify(expression)?;
+    }
+    if !matches!(
+        output,
+        DialectType::DuckDB | DialectType::PostgreSQL | DialectType::SQLite
+    ) {
+        fn clear_materialized(value: &mut Value) {
+            match value {
+                Value::Object(fields) => {
+                    if fields.contains_key("materialized")
+                        && fields.contains_key("alias")
+                        && fields.contains_key("this")
+                    {
+                        fields.insert("materialized".into(), Value::Null);
+                    }
+                    for child in fields.values_mut() {
+                        clear_materialized(child);
+                    }
+                }
+                Value::Array(values) => values.iter_mut().for_each(clear_materialized),
+                _ => {}
+            }
+        }
+        let mut value = serde_json::to_value(expression).map_err(|err| error(err.to_string()))?;
+        clear_materialized(&mut value);
+        expression = serde_json::from_value(value).map_err(|err| error(err.to_string()))?;
+    }
+    if output == DialectType::ClickHouse {
+        expression = binding::transform_nodes(expression, &mut |node| {
+            if let Expression::NullSafeEq(comparison) = node {
+                return Ok(Some(expr(&format!(
+                    "(({} = {}) OR ({} IS NULL AND {} IS NULL))",
+                    sql(&comparison.left)?,
+                    sql(&comparison.right)?,
+                    sql(&comparison.left)?,
+                    sql(&comparison.right)?
+                ))?));
+            }
+            Ok(None)
+        })?;
+    }
+    let mut rendered =
+        crate::semantic_input::dialects::emit(expression, DialectType::DuckDB, output)?;
+    if output == DialectType::ClickHouse {
+        rendered.push_str(" SETTINGS join_use_nulls=1, aggregate_functions_null_for_empty=1, join_default_strictness='ALL'");
+    }
+    Ok(rendered)
+}
 fn parse(sql: &str) -> Result<Expression> {
     parse_sql_with_dialect(sql, DialectType::DuckDB)?
         .into_iter()
@@ -55,7 +221,11 @@ fn expr(sql: &str) -> Result<Expression> {
 fn ossie_input(source: &str, dialect: DialectType) -> Result<Vec<Expression>> {
     // A target generator may quote a keyword (rows -> "rows") even when the
     // author did not. Preserve identifier identity until Ossie name binding.
-    let mut originals = HashMap::<String, Value>::new();
+    let ProtectedWildcards {
+        source,
+        mut originals,
+        qualified_stars,
+    } = protect_wildcard_identifiers(source, dialect)?;
     fn protect(value: &mut Value, originals: &mut HashMap<String, Value>) {
         match value {
             Value::Object(fields) => {
@@ -122,7 +292,7 @@ fn ossie_input(source: &str, dialect: DialectType) -> Result<Vec<Expression>> {
         }
     }
     let normalized = if dialect == DialectType::DuckDB {
-        parse_rewrite_input(source, dialect)?
+        parse_rewrite_input(&source, dialect)?
     } else {
         let authored = source.to_owned();
         let parsed = run_parser(move || {
@@ -131,21 +301,50 @@ fn ossie_input(source: &str, dialect: DialectType) -> Result<Vec<Expression>> {
             )?])
         })?
         .remove(0);
+        // Snowflake's generator omits WINDOW declarations. Resolve them in
+        // their authored SELECT scope before any dialect generation can lose them.
+        let parsed = inline_declared_windows(parsed)?;
         let mut value = serde_json::to_value(parsed).map_err(|err| error(err.to_string()))?;
+        restore(&mut value, &originals);
+        originals.clear();
         protect(&mut value, &mut originals);
         let parsed = serde_json::from_value(value).map_err(|err| error(err.to_string()))?;
-        let protected = polyglot_sql::Dialect::get(dialect)
-            .generate(&parsed)
-            .map_err(|err| error(err.to_string()))?;
+        let protected = crate::semantic_input::dialects::generate_preserving_null_order(
+            &parsed, dialect, dialect,
+        )?;
         parse_rewrite_input(&protected, dialect)?
     };
+    // The intermediate DuckDB emitter omits NULLS LAST as its default.
+    // Restore that resolved choice before later target emission (Snowflake
+    // otherwise interprets an absent DESC modifier as NULLS FIRST).
+    fn restore_intermediate_null_order(value: &mut Value) {
+        match value {
+            Value::Object(fields) => {
+                if fields.contains_key("this")
+                    && fields.contains_key("desc")
+                    && fields.get("nulls_first").is_some_and(Value::is_null)
+                {
+                    fields.insert("nulls_first".into(), Value::Bool(false));
+                }
+                for child in fields.values_mut() {
+                    restore_intermediate_null_order(child);
+                }
+            }
+            Value::Array(children) => children
+                .iter_mut()
+                .for_each(restore_intermediate_null_order),
+            _ => {}
+        }
+    }
     normalized
         .into_iter()
         .map(|expression| {
             let mut value =
                 serde_json::to_value(expression).map_err(|err| error(err.to_string()))?;
             restore(&mut value, &originals);
+            restore_intermediate_null_order(&mut value);
             let expression = serde_json::from_value(value).map_err(|err| error(err.to_string()))?;
+            let expression = restore_qualified_stars(expression, &qualified_stars)?;
             crate::semantic_input::dialects::ossie_index_offsets(
                 expression,
                 dialect,
@@ -201,10 +400,26 @@ fn aggregate(node: &Expression) -> bool {
 fn has_aggregate(expression: &Expression) -> Result<bool> {
     let mut found = false;
     binding::transform_nodes(expression.clone(), &mut |node| {
-        if matches!(
-            node,
-            Expression::Subquery(_) | Expression::Select(_) | Expression::WindowFunction(_)
-        ) || is_call(node, "TO_MEASURE")
+        if let Expression::WindowFunction(window) = node {
+            let mut root = true;
+            binding::transform_nodes(window.this.clone(), &mut |child| {
+                if root {
+                    root = false;
+                    return Ok(None);
+                }
+                found |= has_aggregate(child)?;
+                Ok(Some(child.clone()))
+            })?;
+            for child in &window.over.partition_by {
+                found |= has_aggregate(child)?;
+            }
+            for ordered in &window.over.order_by {
+                found |= has_aggregate(&ordered.this)?;
+            }
+            return Ok(Some(node.clone()));
+        }
+        if matches!(node, Expression::Subquery(_) | Expression::Select(_))
+            || is_call(node, "TO_MEASURE")
         {
             return Ok(Some(node.clone()));
         }
@@ -215,6 +430,153 @@ fn has_aggregate(expression: &Expression) -> Result<bool> {
         Ok(None)
     })?;
     Ok(found)
+}
+
+fn has_window(expression: &Expression) -> Result<bool> {
+    let mut found = false;
+    binding::transform_nodes(expression.clone(), &mut |node| {
+        if matches!(node, Expression::Subquery(_) | Expression::Select(_)) {
+            return Ok(Some(node.clone()));
+        }
+        if matches!(node, Expression::WindowFunction(_)) {
+            found = true;
+            return Ok(Some(node.clone()));
+        }
+        Ok(None)
+    })?;
+    Ok(found)
+}
+
+fn bind_window_frame(
+    frame: &mut Option<polyglot_sql::expressions::WindowFrame>,
+    transform: &mut impl FnMut(&Expression) -> Result<Expression>,
+) -> Result<()> {
+    use polyglot_sql::expressions::WindowFrameBound;
+    if let Some(frame) = frame {
+        for bound in std::iter::once(&mut frame.start).chain(frame.end.iter_mut()) {
+            if let WindowFrameBound::Preceding(value)
+            | WindowFrameBound::Following(value)
+            | WindowFrameBound::Value(value) = bound
+            {
+                **value = transform(value)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn inline_named_windows(mut select: Select) -> Result<Select> {
+    use polyglot_sql::expressions::Over;
+    let mut definitions = HashMap::<String, Over>::new();
+    for definition in select.windows.take().unwrap_or_default() {
+        if definitions
+            .insert(key(&definition.name), definition.spec)
+            .is_some()
+        {
+            return Err(error("duplicate named window"));
+        }
+    }
+    fn resolve(
+        mut spec: Over,
+        definitions: &HashMap<String, Over>,
+        visiting: &mut HashSet<String>,
+    ) -> Result<Over> {
+        if let Some(reference) = spec.window_name.take().or(spec.alias.take()) {
+            let name = key(&reference);
+            if !visiting.insert(name.clone()) {
+                return Err(error("cyclic named window inheritance"));
+            }
+            let parent = definitions
+                .get(&name)
+                .ok_or_else(|| error(format!("named window not found: {}", reference.name)))?;
+            let inherited = resolve(parent.clone(), definitions, visiting)?;
+            visiting.remove(&name);
+            if !inherited.partition_by.is_empty() {
+                if !spec.partition_by.is_empty() {
+                    return Err(error("cannot override inherited window partition"));
+                }
+                spec.partition_by = inherited.partition_by;
+            }
+            if !inherited.order_by.is_empty() {
+                if !spec.order_by.is_empty() {
+                    return Err(error("cannot override inherited window order"));
+                }
+                spec.order_by = inherited.order_by;
+            }
+            if inherited.frame.is_some() {
+                if spec.frame.is_some() {
+                    return Err(error("cannot override inherited window frame"));
+                }
+                spec.frame = inherited.frame;
+            }
+        }
+        Ok(spec)
+    }
+    let mut root = true;
+    let rewritten = binding::transform_nodes(Expression::Select(Box::new(select)), &mut |node| {
+        if root {
+            root = false;
+            return Ok(None);
+        }
+        if matches!(node, Expression::Subquery(_) | Expression::Select(_)) {
+            return Ok(Some(node.clone()));
+        }
+        if let Expression::WindowFunction(window) = node {
+            let mut window = window.clone();
+            window.over = resolve(window.over, &definitions, &mut HashSet::new())?;
+            return Ok(Some(Expression::WindowFunction(window)));
+        }
+        Ok(None)
+    })?;
+    let Expression::Select(select) = rewritten else {
+        unreachable!()
+    };
+    Ok(*select)
+}
+
+fn expand_window_aliases(
+    node: Expression,
+    aliases: &HashMap<String, Expression>,
+    source_names: &HashSet<String>,
+) -> Result<Expression> {
+    fn expand(
+        node: Expression,
+        aliases: &HashMap<String, Expression>,
+        source_names: &HashSet<String>,
+        visiting: &HashSet<String>,
+    ) -> Result<Expression> {
+        binding::transform_nodes(node, &mut |value| {
+            if matches!(value, Expression::Subquery(_) | Expression::Select(_))
+                || is_call(value, "AGG")
+                || is_call(value, "TO_MEASURE")
+            {
+                return Ok(Some(value.clone()));
+            }
+            if let Expression::Column(column) = value {
+                let name = key(&column.name);
+                if column.table.is_none() && !source_names.contains(&name) {
+                    if let Some(replacement) = aliases
+                        .get(&name)
+                        .filter(|replacement| *replacement != value)
+                    {
+                        if visiting.contains(&name) {
+                            return Err(error("cyclic projection alias"));
+                        }
+                        let mut next = visiting.clone();
+                        next.insert(name);
+                        return Ok(Some(expand(
+                            replacement.clone(),
+                            aliases,
+                            source_names,
+                            &next,
+                        )?));
+                    }
+                }
+            }
+            Ok(None)
+        })
+    }
+    expand(node, aliases, source_names, &HashSet::new())
 }
 fn refs(expression: &Expression) -> Result<BTreeSet<String>> {
     let mut result = BTreeSet::new();
@@ -444,12 +806,15 @@ pub(super) fn bound_view_name<'a>(
         .iter()
         .chain(table.schema.iter())
         .chain([&table.name])
-        .map(|part| {
-            if dialect == DialectType::DuckDB {
+        .map(|part| match dialect {
+            // Match the database-normalized binding keys produced by ossie_views,
+            // independently of Ossie's portable semantic identifier rules.
+            DialectType::DuckDB | DialectType::BigQuery | DialectType::Redshift => {
                 part.name.to_lowercase()
-            } else {
-                key(part)
             }
+            DialectType::PostgreSQL if !part.quoted => part.name.to_lowercase(),
+            DialectType::ClickHouse => part.name.clone(),
+            _ => key(part),
         })
         .collect();
     graph
@@ -475,11 +840,34 @@ pub(super) fn bound_view_name<'a>(
 
 struct Compiler<'a> {
     input_dialect: DialectType,
+    decorrelate_measures: bool,
+    typed_inactive_groups: bool,
     graph: &'a SemanticGraph,
     sequence: usize,
     view_stack: HashSet<String>,
 }
 impl<'a> Compiler<'a> {
+    fn inactive_group_value(
+        &mut self,
+        value: &Expression,
+        spine: &str,
+        raw: &mut Vec<(String, Expression)>,
+    ) -> Result<Expression> {
+        if !self.typed_inactive_groups {
+            return expr("NULL");
+        }
+        // BigQuery otherwise assigns an inactive UNION branch's bare NULL INT64.
+        // An always-NULL aggregate retains the authored grouping expression type.
+        let slot = self.fresh("inactive_group");
+        raw.push((
+            slot.clone(),
+            expr(&format!(
+                "ANY_VALUE(CASE WHEN FALSE THEN {} ELSE NULL END)",
+                sql(value)?
+            ))?,
+        ));
+        qualified(spine, &slot)
+    }
     fn fresh(&mut self, kind: &str) -> String {
         self.sequence += 1;
         format!("__ossie_{kind}_{}", self.sequence)
@@ -595,7 +983,6 @@ impl<'a> Compiler<'a> {
             .and_then(|meta| meta.get("ossie_view_definition"))
             .and_then(Value::as_str)
         {
-            reject_quoted_wildcard_renames(definition)?;
             if !self.view_stack.insert(model.name.clone()) {
                 return Err(error("recursive measure view definition"));
             }
@@ -772,7 +1159,6 @@ impl<'a> Compiler<'a> {
                 let relation = if table.schema.is_none() && ctes.contains_key(&key(&table.name)) {
                     ctes[&key(&table.name)].clone()
                 } else if let Some((view_key, definition)) = self.view_definition(&table)? {
-                    reject_quoted_wildcard_renames(&definition)?;
                     if !self.view_stack.insert(view_key.clone()) {
                         return Err(error("recursive measure view definition"));
                     }
@@ -964,6 +1350,9 @@ impl<'a> Compiler<'a> {
                 for order in &mut window.over.order_by {
                     order.this = self.scalar(order.this.clone(), context, ctes, false)?;
                 }
+                bind_window_frame(&mut window.over.frame, &mut |value| {
+                    self.scalar(value.clone(), context, ctes, false)
+                })?;
                 return Ok(Some(Expression::WindowFunction(window)));
             }
             if let Expression::Select(_) = node {
@@ -1351,12 +1740,226 @@ impl<'a> Compiler<'a> {
             hidden: BTreeSet::new(),
         })
     }
+    fn lift_window_expression(
+        &mut self,
+        node: Expression,
+        aliases: &HashMap<String, Expression>,
+        source_names: &HashSet<String>,
+        lifted: &mut Vec<(String, Expression)>,
+    ) -> Result<Expression> {
+        let node = expand_window_aliases(node, aliases, source_names)?;
+        if matches!(&node, Expression::Literal(_) | Expression::Star(_)) {
+            return Ok(node);
+        }
+        if !has_window(&node)? {
+            if let Some((slot, _)) = lifted.iter().find(|(_, value)| value == &node) {
+                return Ok(column(slot));
+            }
+            let slot = self.fresh("window_input");
+            lifted.push((slot.clone(), node));
+            return Ok(column(&slot));
+        }
+        if let Expression::WindowFunction(mut window) = node {
+            let mut root = true;
+            window.this = binding::transform_nodes(window.this, &mut |child| {
+                if root {
+                    root = false;
+                    return Ok(None);
+                }
+                Ok(Some(self.lift_window_expression(
+                    child.clone(),
+                    aliases,
+                    source_names,
+                    lifted,
+                )?))
+            })?;
+            window.over.partition_by = window
+                .over
+                .partition_by
+                .into_iter()
+                .map(|value| self.lift_window_expression(value, aliases, source_names, lifted))
+                .collect::<Result<_>>()?;
+            for ordered in &mut window.over.order_by {
+                ordered.this = self.lift_window_expression(
+                    ordered.this.clone(),
+                    aliases,
+                    source_names,
+                    lifted,
+                )?;
+            }
+            bind_window_frame(&mut window.over.frame, &mut |value| {
+                self.lift_window_expression(value.clone(), aliases, source_names, lifted)
+            })?;
+            return Ok(Expression::WindowFunction(window));
+        }
+        let mut root = true;
+        binding::transform_nodes(node, &mut |child| {
+            if root {
+                root = false;
+                return Ok(None);
+            }
+            Ok(Some(self.lift_window_expression(
+                child.clone(),
+                aliases,
+                source_names,
+                lifted,
+            )?))
+        })
+    }
+
+    fn grouped_window_query(
+        &mut self,
+        mut select: Select,
+        projections: Vec<(Identifier, Expression)>,
+        context: &Context,
+        ctes: &HashMap<String, Relation>,
+    ) -> Result<Relation> {
+        use polyglot_sql::expressions::{Alias, GroupingSets, Tuple};
+        let aliases = projections
+            .iter()
+            .map(|(name, value)| (key(name), value.clone()))
+            .collect::<HashMap<_, _>>();
+        let source_names = context
+            .columns
+            .iter()
+            .filter(|bound| bound.unqualified)
+            .map(|bound| key(&bound.name))
+            .collect::<HashSet<_>>();
+        let mut lifted = Vec::new();
+        let Expression::Select(mut post) =
+            parse("SELECT 1 FROM (SELECT 1) AS __ossie_window_groups")?
+        else {
+            unreachable!()
+        };
+        post.expressions = projections
+            .iter()
+            .map(|(name, value)| {
+                Ok(Expression::Alias(Box::new(Alias::new(
+                    self.lift_window_expression(
+                        value.clone(),
+                        &aliases,
+                        &source_names,
+                        &mut lifted,
+                    )?,
+                    name.clone(),
+                ))))
+            })
+            .collect::<Result<_>>()?;
+        post.qualify = select
+            .qualify
+            .take()
+            .map(|mut qualify| {
+                qualify.this = self.lift_window_expression(
+                    qualify.this,
+                    &aliases,
+                    &source_names,
+                    &mut lifted,
+                )?;
+                Ok::<_, SidemanticError>(qualify)
+            })
+            .transpose()?;
+        post.order_by = select
+            .order_by
+            .take()
+            .map(|mut order| {
+                for ordered in &mut order.expressions {
+                    let value = match &ordered.this {
+                        Expression::Column(column) if column.table.is_none() => aliases
+                            .get(&key(&column.name))
+                            .cloned()
+                            .unwrap_or_else(|| ordered.this.clone()),
+                        _ => ordered.this.clone(),
+                    };
+                    ordered.this =
+                        self.lift_window_expression(value, &aliases, &source_names, &mut lifted)?;
+                }
+                Ok::<_, SidemanticError>(order)
+            })
+            .transpose()?;
+        post.distinct = select.distinct;
+        select.distinct = false;
+        post.limit = select.limit.take();
+        post.offset = select.offset.take();
+        select.with = None;
+        select.windows = None;
+        if let Some(having) = &mut select.having {
+            having.this = expand_window_aliases(having.this.clone(), &aliases, &HashSet::new())?;
+            if has_window(&having.this)? {
+                return Err(error("window functions are not allowed in HAVING"));
+            }
+        }
+        if let Some(group) = &mut select.group_by {
+            let expressions = if group.all == Some(true) {
+                projections
+                    .iter()
+                    .filter_map(
+                        |(_, value)| match (has_aggregate(value), has_window(value)) {
+                            (Ok(false), Ok(false)) => Some(Ok(value.clone())),
+                            (Err(err), _) | (_, Err(err)) => Some(Err(err)),
+                            _ => None,
+                        },
+                    )
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                group.expressions.clone()
+            };
+            let mut sets = vec![Vec::new()];
+            for expression in expressions {
+                let mut expanded = Vec::new();
+                for prefix in &sets {
+                    for suffix in group_options(expression.clone()) {
+                        let mut values = prefix.clone();
+                        for value in suffix {
+                            let value = if let Expression::Literal(Literal::Number(number)) = &value
+                            {
+                                number
+                                    .parse::<usize>()
+                                    .ok()
+                                    .filter(|position| *position > 0)
+                                    .and_then(|position| projections.get(position - 1))
+                                    .map(|(_, value)| value.clone())
+                                    .ok_or_else(|| error("GROUP BY ordinal is out of range"))?
+                            } else {
+                                value
+                            };
+                            values.push(expand_window_aliases(value, &aliases, &source_names)?);
+                        }
+                        expanded.push(values);
+                    }
+                }
+                sets = expanded;
+            }
+            group.all = None;
+            group.expressions = vec![Expression::GroupingSets(Box::new(GroupingSets {
+                expressions: sets
+                    .into_iter()
+                    .map(|expressions| Expression::Tuple(Box::new(Tuple { expressions })))
+                    .collect(),
+            }))];
+        }
+        if lifted.is_empty() {
+            lifted.push((self.fresh("group_row"), expr("1")?));
+        }
+        select.expressions = lifted
+            .into_iter()
+            .map(|(slot, value)| {
+                Expression::Alias(Box::new(Alias::new(value, Identifier::quoted(slot))))
+            })
+            .collect();
+        let Expression::Subquery(subquery) = &mut post.from.as_mut().unwrap().expressions[0] else {
+            unreachable!()
+        };
+        subquery.this = Expression::Select(Box::new(select));
+        self.select(*post, ctes, context.outer.as_deref().cloned())
+    }
+
     fn select(
         &mut self,
         select: Select,
         inherited: &HashMap<String, Relation>,
         outer: Option<Context>,
     ) -> Result<Relation> {
+        let select = inline_named_windows(select)?;
         let ctes = self.ctes(select.with.clone(), inherited, outer.clone())?;
         let mut hints = Vec::new();
         binding::transform_nodes(Expression::Select(Box::new(select.clone())), &mut |node| {
@@ -1588,10 +2191,21 @@ impl<'a> Compiler<'a> {
                 .qualify
                 .as_ref()
                 .is_some_and(|qualify| has_aggregate(&qualify.this).unwrap_or(false));
-        if select.qualify.is_some() && (aggregated || select.windows.is_some()) {
-            return Err(error(
-                "QUALIFY with aggregation or named windows is not supported",
-            ));
+        let windowed = projections
+            .iter()
+            .any(|(_, value)| has_window(value).unwrap_or(false))
+            || select
+                .qualify
+                .as_ref()
+                .is_some_and(|qualify| has_window(&qualify.this).unwrap_or(false))
+            || select.order_by.as_ref().is_some_and(|order| {
+                order
+                    .expressions
+                    .iter()
+                    .any(|ordered| has_window(&ordered.this).unwrap_or(false))
+            });
+        if aggregated && windowed {
+            return self.grouped_window_query(select, projections, &context, &ctes);
         }
         if aggregated {
             return self.aggregated(
@@ -1600,8 +2214,7 @@ impl<'a> Compiler<'a> {
                 aliases,
                 context,
                 ctes,
-                joined,
-                joined_sql,
+                (joined, joined_sql),
             );
         }
         let mut outputs = Vec::new();
@@ -1766,8 +2379,114 @@ impl<'a> Compiler<'a> {
         }
         Ok(result)
     }
-    // Keep the projection, relation, and binding scopes explicit at this compiler boundary.
-    #[allow(clippy::too_many_arguments)]
+    // ClickHouse cannot correlate through the row-number identity window. Aggregate each
+    // measure population independently, then join it to the ordinary group spine.
+    fn evaluate_grouped_measure(
+        &mut self,
+        recipe: &Recipe,
+        scope: (&str, &str),
+        groups: &HashMap<String, String>,
+        predicate: &str,
+        joins: &mut Vec<String>,
+    ) -> Result<Expression> {
+        let (joined, spine) = scope;
+        match recipe {
+            Recipe::Filtered {
+                recipe,
+                predicate: filter,
+            } => self.evaluate_grouped_measure(
+                recipe,
+                scope,
+                groups,
+                &format!("({predicate}) AND ({})", sql(filter)?),
+                joins,
+            ),
+            Recipe::Derived {
+                formula,
+                dependencies,
+            } => {
+                let replacements = dependencies
+                    .iter()
+                    .map(|(name, recipe)| {
+                        Ok((
+                            name.clone(),
+                            self.evaluate_grouped_measure(recipe, scope, groups, predicate, joins)?,
+                        ))
+                    })
+                    .collect::<Result<HashMap<_, _>>>()?;
+                binding::transform_nodes(formula.clone(), &mut |node| {
+                    if let Expression::Column(column) = node {
+                        return Ok(replacements.get(&column.name.name).cloned());
+                    }
+                    Ok(None)
+                })
+            }
+            Recipe::Base {
+                identity,
+                inputs,
+                formula,
+            } => {
+                let groups = groups.iter().collect::<BTreeMap<_, _>>();
+                let mut fields = inputs
+                    .iter()
+                    .cloned()
+                    .chain([identity.clone()])
+                    .collect::<BTreeSet<_>>()
+                    .iter()
+                    .map(|name| q(name))
+                    .collect::<Vec<_>>();
+                fields.extend(
+                    groups
+                        .iter()
+                        .map(|(value, slot)| format!("{value} AS {}", q(slot))),
+                );
+                let rows = format!(
+                    "SELECT DISTINCT {} FROM {} WHERE {} IS NOT NULL AND ({predicate})",
+                    fields.join(", "),
+                    q(joined),
+                    q(identity)
+                );
+                let value = self.fresh("measure_value");
+                let present = self.fresh("measure_present");
+                let result = self.fresh("measure_group");
+                let keys = groups
+                    .values()
+                    .map(|slot| q(slot))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let aggregate = format!("SELECT {keys}, {} AS {}, 1 AS {} FROM ({rows}) AS __ossie_inputs GROUP BY {keys}",
+                    sql(formula)?, q(&value), q(&present));
+                let condition = groups
+                    .values()
+                    .map(|slot| {
+                        format!(
+                            "isNotDistinctFrom({}.{}, {}.{})",
+                            q(&result),
+                            q(slot),
+                            q(spine),
+                            q(slot)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" AND ");
+                joins.push(format!(
+                    " LEFT JOIN ({aggregate}) AS {} ON {condition}",
+                    q(&result)
+                ));
+                // A missing population and a present NULL result have different empty-input
+                // semantics (COUNT, COALESCE(SUM(...), ...), and derived recipes preserve both.
+                let empty = recipe.evaluate(joined, "FALSE")?;
+                expr(&format!(
+                    "CASE WHEN {}.{} IS NULL THEN {} ELSE {}.{} END",
+                    q(&result),
+                    q(&present),
+                    sql(&empty)?,
+                    q(&result),
+                    q(&value)
+                ))
+            }
+        }
+    }
     fn aggregated(
         &mut self,
         select: Select,
@@ -1775,9 +2494,9 @@ impl<'a> Compiler<'a> {
         aliases: HashMap<String, Expression>,
         context: Context,
         ctes: HashMap<String, Relation>,
-        joined: String,
-        joined_sql: String,
+        population: (String, String),
     ) -> Result<Relation> {
+        let (joined, joined_sql) = population;
         let mut group_sets = vec![Vec::new()];
         if let Some(group) = &select.group_by {
             let expressions = if group.all == Some(true) {
@@ -1873,6 +2592,7 @@ impl<'a> Compiler<'a> {
                 predicate
             };
             let mut raw = Vec::new();
+            let mut measure_joins = Vec::new();
             let mut selected = Vec::new();
             for ((_, projection), slot) in projections.iter().zip(&output_slots) {
                 let value = self.evaluated(
@@ -1886,6 +2606,7 @@ impl<'a> Compiler<'a> {
                     &spine,
                     &predicate,
                     &mut raw,
+                    &mut measure_joins,
                 )?;
                 selected.push(format!("{} AS {}", sql(&value)?, q(slot)));
             }
@@ -1904,6 +2625,7 @@ impl<'a> Compiler<'a> {
                         &spine,
                         &predicate,
                         &mut raw,
+                        &mut measure_joins,
                     )
                 })
                 .transpose()?;
@@ -1931,6 +2653,7 @@ impl<'a> Compiler<'a> {
                         &spine,
                         &predicate,
                         &mut raw,
+                        &mut measure_joins,
                     )?;
                     selected.push(format!("{} AS {}", sql(&value)?, q(slot)));
                 }
@@ -1965,6 +2688,9 @@ impl<'a> Compiler<'a> {
                 selected.join(", "),
                 q(&spine)
             );
+            for measure_join in measure_joins {
+                body.push_str(&measure_join);
+            }
             if let Some(having) = having {
                 body.push_str(&format!(" WHERE {}", sql(&having)?));
             }
@@ -2024,10 +2750,13 @@ impl<'a> Compiler<'a> {
         spine: &str,
         predicate: &str,
         raw: &mut Vec<(String, Expression)>,
+        measure_joins: &mut Vec<String>,
     ) -> Result<Expression> {
         binding::transform_nodes(node, &mut |node| {
             if is_call(node, "AGG") {
                 return Ok(Some({
+                    let decorrelate = self.decorrelate_measures && !groups.is_empty();
+                    let predicate = if decorrelate { "TRUE" } else { predicate };
                     let predicate = if let Expression::AggregateFunction(function) = node {
                         if let Some(filter) = &function.filter {
                             format!(
@@ -2040,8 +2769,18 @@ impl<'a> Compiler<'a> {
                     } else {
                         predicate.to_string()
                     };
-                    self.resolve_measure(node, context)?
-                        .evaluate(joined, &predicate)?
+                    let recipe = self.resolve_measure(node, context)?;
+                    if decorrelate {
+                        self.evaluate_grouped_measure(
+                            &recipe,
+                            (joined, spine),
+                            groups,
+                            &predicate,
+                            measure_joins,
+                        )?
+                    } else {
+                        recipe.evaluate(joined, &predicate)?
+                    }
                 }));
             }
             if is_call(node, "TO_MEASURE") {
@@ -2073,7 +2812,7 @@ impl<'a> Compiler<'a> {
                             return Ok(Some(qualified(spine, slot)?));
                         }
                         if all_groups.contains_key(&canonical) {
-                            return Ok(Some(expr("NULL")?));
+                            return Ok(Some(self.inactive_group_value(value, spine, raw)?));
                         }
                         if let Expression::Column(column) = value {
                             if outer_refs.contains(&column.name.name) {
@@ -2132,7 +2871,7 @@ impl<'a> Compiler<'a> {
                     return Ok(Some(qualified(spine, slot)?));
                 }
                 if all_groups.contains_key(&key) {
-                    return Ok(Some(expr("NULL")?));
+                    return Ok(Some(self.inactive_group_value(&value, spine, raw)?));
                 }
             }
             if let Expression::Column(column) = node {
@@ -2150,6 +2889,7 @@ impl<'a> Compiler<'a> {
                                 spine,
                                 predicate,
                                 raw,
+                                measure_joins,
                             )?));
                         }
                     }
@@ -2254,27 +2994,209 @@ fn append_limit(body: &mut String, select: &Select) -> Result<()> {
     Ok(())
 }
 
-fn reject_quoted_wildcard_renames(source: &str) -> Result<()> {
-    let tokens = polyglot_sql::Dialect::get(DialectType::DuckDB)
+struct ProtectedWildcards {
+    source: String,
+    originals: HashMap<String, Value>,
+    qualified_stars: HashMap<String, Vec<Identifier>>,
+}
+
+/// Protect RENAME operands before the pinned parser turns them into unquoted
+/// identifiers. Token text contains the decoded name, including escaped quotes;
+/// spans keep comments, string literals, and adjacent identifiers untouched.
+fn protect_wildcard_identifiers(source: &str, dialect: DialectType) -> Result<ProtectedWildcards> {
+    use polyglot_sql::tokens::TokenType;
+    let tokens = polyglot_sql::Dialect::get(dialect)
         .tokenize(source)
         .map_err(|err| error(err.to_string()))?;
+    let offsets = source
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain([source.len()])
+        .collect::<Vec<_>>();
+    let mut originals = HashMap::new();
+    let mut edits = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
-        use polyglot_sql::tokens::TokenType;
-        if token.token_type == TokenType::Rename
-            && tokens
-                .get(index + 1)
-                .is_some_and(|next| next.token_type == TokenType::LParen)
-            && tokens[index + 2..]
-                .iter()
-                .take_while(|next| next.token_type != TokenType::RParen)
-                .any(|next| next.token_type == TokenType::QuotedIdentifier)
+        if token.token_type != TokenType::Rename {
+            continue;
+        }
+        let parenthesized = tokens
+            .get(index + 1)
+            .is_some_and(|next| next.token_type == TokenType::LParen);
+        let mut operand = index + if parenthesized { 2 } else { 1 };
+        while tokens
+            .get(operand + 1)
+            .is_some_and(|next| next.token_type == TokenType::As)
+            && tokens.get(operand + 2).is_some()
         {
-            // The pinned native wildcard parser loses quoted-name identity.
-            // Reject this shape rather than bind a different renamed column.
-            return Err(error("quoted wildcard RENAME operands are not supported"));
+            for token in [&tokens[operand], &tokens[operand + 2]] {
+                if token.token_type != TokenType::QuotedIdentifier {
+                    continue;
+                }
+                let mut serial = originals.len();
+                let placeholder = loop {
+                    let candidate = format!("__ossie_quoted_rename_{serial}");
+                    if !tokens
+                        .iter()
+                        .any(|token| token.text.eq_ignore_ascii_case(&candidate))
+                        && !originals.contains_key(&candidate)
+                    {
+                        break candidate;
+                    }
+                    serial += 1;
+                };
+                originals.insert(
+                    placeholder.clone(),
+                    serde_json::to_value(Identifier::quoted(&token.text))
+                        .map_err(|err| error(err.to_string()))?,
+                );
+                edits.push((
+                    offsets[token.span.start],
+                    offsets[token.span.end],
+                    placeholder,
+                ));
+            }
+            operand += 3;
+            if !parenthesized
+                || !tokens
+                    .get(operand)
+                    .is_some_and(|next| next.token_type == TokenType::Comma)
+            {
+                break;
+            }
+            operand += 1;
         }
     }
-    Ok(())
+    let mut qualified_stars = HashMap::new();
+    let is_identifier = |index: usize| {
+        matches!(
+            tokens[index].token_type,
+            TokenType::Var | TokenType::Identifier | TokenType::QuotedIdentifier
+        )
+    };
+    for (index, token) in tokens.iter().enumerate() {
+        if token.token_type != TokenType::Star
+            || index < 4
+            || tokens[index - 1].token_type != TokenType::Dot
+        {
+            continue;
+        }
+        let mut start = index - 2;
+        if !is_identifier(start) {
+            continue;
+        }
+        while start >= 2
+            && tokens[start - 1].token_type == TokenType::Dot
+            && is_identifier(start - 2)
+        {
+            start -= 2;
+        }
+        if start == index - 2 {
+            continue;
+        }
+        let mut serial = qualified_stars.len();
+        let placeholder = loop {
+            let candidate = format!("__ossie_qualified_star_{serial}");
+            if !tokens
+                .iter()
+                .any(|token| token.text.eq_ignore_ascii_case(&candidate))
+                && !qualified_stars.contains_key(&candidate)
+            {
+                break candidate;
+            }
+            serial += 1;
+        };
+        let parts = (start..index - 1)
+            .step_by(2)
+            .map(|index| {
+                let token = &tokens[index];
+                if token.token_type == TokenType::QuotedIdentifier {
+                    Identifier::quoted(&token.text)
+                } else {
+                    Identifier::new(&token.text)
+                }
+            })
+            .collect();
+        qualified_stars.insert(placeholder.clone(), parts);
+        edits.push((
+            offsets[tokens[start].span.start],
+            offsets[tokens[index - 2].span.end],
+            placeholder,
+        ));
+    }
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.0));
+    let mut protected = source.to_owned();
+    for (start, end, replacement) in edits {
+        protected.replace_range(start..end, &replacement);
+    }
+    Ok(ProtectedWildcards {
+        source: protected,
+        originals,
+        qualified_stars,
+    })
+}
+
+// Star.table in the pinned parser holds only one Identifier. Match the original
+// namespace components against this SELECT's sources before using their local
+// binding name, so quoted dots cannot masquerade as schema qualification.
+fn restore_qualified_stars(
+    expression: Expression,
+    qualifiers: &HashMap<String, Vec<Identifier>>,
+) -> Result<Expression> {
+    if qualifiers.is_empty() {
+        return Ok(expression);
+    }
+    binding::transform_nodes(expression, &mut |node| {
+        let Expression::Select(select) = node else {
+            return Ok(None);
+        };
+        let mut select = select.clone();
+        let mut changed = false;
+        for projection in &mut select.expressions {
+            let Expression::Star(star) = projection else {
+                continue;
+            };
+            let Some(parts) = star
+                .table
+                .as_ref()
+                .and_then(|table| qualifiers.get(&table.name))
+            else {
+                continue;
+            };
+            let source = select
+                .from
+                .iter()
+                .flat_map(|from| from.expressions.iter())
+                .chain(select.joins.iter().map(|join| &join.this))
+                .find_map(|source| {
+                    let Expression::Table(table) = source else {
+                        return None;
+                    };
+                    let source_parts: Vec<_> = table
+                        .catalog
+                        .iter()
+                        .chain(table.schema.iter())
+                        .chain([&table.name])
+                        .map(key)
+                        .collect();
+                    (table.alias.is_none()
+                        && source_parts == parts.iter().map(key).collect::<Vec<_>>())
+                    .then(|| table.name.clone())
+                })
+                .ok_or_else(|| {
+                    error("qualified wildcard does not match an unaliased source relation")
+                })?;
+            star.table = Some(source);
+            changed = true;
+        }
+        if changed {
+            Ok(Some(restore_qualified_stars(
+                Expression::Select(select),
+                qualifiers,
+            )?))
+        } else {
+            Ok(None)
+        }
+    })
 }
 
 /// Translate the draft's illustrative marker using lexer spans, never textual
@@ -2354,6 +3276,8 @@ impl QueryRewriter<'_> {
     ) -> Result<bool> {
         let compiler = Compiler {
             input_dialect: input,
+            decorrelate_measures: false,
+            typed_inactive_groups: false,
             graph: self.graph,
             sequence: 0,
             view_stack: HashSet::new(),
@@ -2410,6 +3334,8 @@ impl QueryRewriter<'_> {
         }
         let mut compiler = Compiler {
             input_dialect: input,
+            decorrelate_measures: output == DialectType::ClickHouse,
+            typed_inactive_groups: output == DialectType::BigQuery,
             graph: self.graph,
             sequence: 0,
             view_stack: HashSet::new(),
@@ -2417,7 +3343,6 @@ impl QueryRewriter<'_> {
         if !self.ossie_relational_query_relevant(&statements[0], input)? {
             return Ok(None);
         }
-        reject_quoted_wildcard_renames(&source)?;
         let zero_rows = matches!(&statements[0],Expression::Select(select) if select.limit.as_ref().is_some_and(|limit|matches!(&limit.this,Expression::Literal(Literal::Number(number)) if number=="0"))||select.where_clause.as_ref().is_some_and(|filter|sql(&filter.this).is_ok_and(|value|value.eq_ignore_ascii_case("FALSE"))));
         let relation = compiler.query(statements.remove(0), &HashMap::new(), None)?;
         if relation.has_measures() && !zero_rows {
@@ -2432,7 +3357,15 @@ impl QueryRewriter<'_> {
                     .map(|out| format!(
                         "{} AS {}",
                         if out.measure.is_some() {
-                            "CAST(NULL AS STRUCT(MEASURE VARCHAR))".to_string()
+                            if output == DialectType::DuckDB {
+                                "CAST(NULL AS STRUCT(MEASURE VARCHAR))".to_string()
+                            } else if output == DialectType::ClickHouse {
+                                "CAST(NULL AS Nullable(String))".to_string()
+                            } else {
+                                // Other databases have no portable MEASURE type.
+                                // Discovery carries the marker; zero-row SQL uses NULL.
+                                "NULL".to_string()
+                            }
                         } else {
                             q(&out.slot)
                         },
@@ -2450,11 +3383,7 @@ impl QueryRewriter<'_> {
             DialectType::DuckDB,
             output,
         )?;
-        Ok(Some(crate::semantic_input::dialects::emit(
-            statement,
-            DialectType::DuckDB,
-            output,
-        )?))
+        Ok(Some(emit_relational(statement, output)?))
     }
     pub fn compile_ossie_view_definition(
         &self,
@@ -2465,7 +3394,6 @@ impl QueryRewriter<'_> {
         if self.security_controls {
             return Err(error("measure views require explicit policy preparation"));
         }
-        reject_quoted_wildcard_renames(source)?;
         let source = preprocess_measure_syntax(source)?;
         let mut statements = ossie_input(&source, input)?;
         if statements.len() != 1 {
@@ -2473,6 +3401,8 @@ impl QueryRewriter<'_> {
         }
         let mut compiler = Compiler {
             input_dialect: input,
+            decorrelate_measures: output == DialectType::ClickHouse,
+            typed_inactive_groups: output == DialectType::BigQuery,
             graph: self.graph,
             sequence: 0,
             view_stack: HashSet::new(),
@@ -2502,16 +3432,78 @@ impl QueryRewriter<'_> {
             relation.visible_sql()
         };
         Ok((
-            crate::semantic_input::dialects::emit(
+            emit_relational(
                 crate::semantic_input::dialects::ossie_index_offsets(
                     parse(&physical)?,
                     DialectType::DuckDB,
                     output,
                 )?,
-                DialectType::DuckDB,
                 output,
             )?,
             Value::Array(columns),
         ))
+    }
+}
+
+#[cfg(test)]
+mod view_binding_tests {
+    use super::*;
+
+    #[test]
+    fn snowflake_input_normalization_preserves_explicit_null_order() {
+        for placement in ["FIRST", "LAST"] {
+            let parsed = ossie_input(&format!("SELECT ROW_NUMBER() OVER(ORDER BY amount DESC NULLS {placement}) AS rn FROM orders QUALIFY rn<=3"), DialectType::Snowflake).unwrap();
+            let normalized = sql(&parsed[0]).unwrap();
+            assert!(
+                normalized.contains(&format!("DESC NULLS {placement}")),
+                "{normalized}"
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_input_qualify_handles_distinct_input_and_output_dialects() {
+        let source = serde_json::json!({"version":1,"input_dialect":"duckdb","models":[],"metrics":[],"metric_owners":{},"metadata":{}}).to_string();
+        let query = "SELECT status, AGG(revenue) AS total FROM (SELECT status, TO_MEASURE(SUM(amount)) AS revenue FROM orders) o GROUP BY status WINDOW ranked AS (ORDER BY AGG(revenue) DESC) QUALIFY ROW_NUMBER() OVER ranked=1 ORDER BY total DESC LIMIT 1";
+        for dialect in ["postgres", "snowflake"] {
+            let context = serde_json::json!({"sql_dialect": if dialect == "postgres" { "duckdb" } else { dialect }, "output_dialect":dialect}).to_string();
+            let compiled = crate::semantic_input::rewrite_with_semantic_input_context(
+                &source, query, &context,
+            )
+            .unwrap();
+            assert!(!compiled.contains("OVER ranked"), "{compiled}");
+            if dialect == "postgres" {
+                assert!(!compiled.contains("QUALIFY"), "{compiled}");
+                assert!(compiled.contains("__ossie_qualify_predicate"), "{compiled}");
+            }
+        }
+    }
+
+    #[test]
+    fn database_view_bindings_use_database_identifier_folding() {
+        for (dialect, unquoted, quoted) in [
+            (DialectType::DuckDB, "mixed", "mixed"),
+            (DialectType::PostgreSQL, "mixed", "MiXeD"),
+            (DialectType::Redshift, "mixed", "mixed"),
+            (DialectType::Snowflake, "MIXED", "MiXeD"),
+            (DialectType::ClickHouse, "MiXeD", "MiXeD"),
+            (DialectType::BigQuery, "mixed", "mixed"),
+        ] {
+            for (is_quoted, expected) in [(false, unquoted), (true, quoted)] {
+                let mut graph = SemanticGraph::new();
+                graph.set_metadata(serde_json::json!({
+                    "ossie_view_bindings": [{
+                        "parts": [expected, expected, expected], "name": "canonical"
+                    }]
+                }));
+                let mut table = TableRef::new_with_catalog("MiXeD", "MiXeD", "MiXeD");
+                table.name.quoted = is_quoted;
+                table.schema.as_mut().unwrap().quoted = is_quoted;
+                table.catalog.as_mut().unwrap().quoted = is_quoted;
+                assert_eq!(bound_view_name(&graph, &table, dialect), Some("canonical"));
+                table.name.name = "Other".into();
+                assert_eq!(bound_view_name(&graph, &table, dialect), None);
+            }
+        }
     }
 }

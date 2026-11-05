@@ -70,7 +70,15 @@ def _has_aggregate(node: exp.Expression) -> bool:
     if isinstance(node, (exp.Subquery, exp.Query)) or _definition(node):
         return False
     if isinstance(node, exp.Window):
-        return False
+        # The window function itself does not group rows, but an aggregate in
+        # its arguments or ordering does: SUM(SUM(amount)) OVER (...) does.
+        return any(_has_aggregate(child) for child in _children(node.this)) or any(
+            _has_aggregate(child)
+            for name, value in node.args.items()
+            if name != "this"
+            for child in (value if isinstance(value, list) else [value])
+            if isinstance(child, exp.Expression)
+        )
     return isinstance(node, exp.AggFunc) or _agg(node) or any(_has_aggregate(child) for child in _children(node))
 
 
@@ -561,7 +569,185 @@ class RelationalCompiler:
             )
         return relation
 
+    def inline_named_windows(self, query):
+        definitions = {}
+        for definition in query.args.get("windows") or []:
+            name = _key(definition.this)
+            if name in definitions:
+                raise _error("duplicate named window")
+            definitions[name] = definition
+
+        def resolve(window, visiting):
+            result = window.copy()
+            reference = window.args.get("alias")
+            if reference is None:
+                return result
+            name = _key(reference)
+            if name not in definitions:
+                raise _error(f"named window not found: {reference.sql()}")
+            if name in visiting:
+                raise _error("cyclic named window inheritance")
+            inherited = resolve(definitions[name], visiting | {name})
+            for attribute in ("partition_by", "order", "spec"):
+                value = inherited.args.get(attribute)
+                if value:
+                    if result.args.get(attribute):
+                        raise _error(f"cannot override inherited window {attribute}")
+                    result.set(attribute, [item.copy() for item in value] if isinstance(value, list) else value.copy())
+            result.set("alias", None)
+            return result
+
+        def replace(node):
+            if isinstance(node, (exp.Subquery, exp.Query)):
+                return node.copy()
+            if isinstance(node, exp.Window):
+                return resolve(node, set())
+            return None
+
+        result = query.copy()
+        result.set("windows", None)
+        for name, value in result.args.items():
+            if isinstance(value, exp.Expression):
+                result.set(name, _copy_transform(value, replace))
+            elif isinstance(value, list):
+                result.set(
+                    name,
+                    [_copy_transform(item, replace) if isinstance(item, exp.Expression) else item for item in value],
+                )
+        return result
+
+    def grouped_window_query(self, query, projections, sources, ctes, outer):
+        """Materialize group expressions before windows, including grouping sets."""
+        aliases = {_key(item.args["alias"]): item.this for item in projections if isinstance(item, exp.Alias)}
+        source_names = {
+            column.key
+            for source in sources
+            for column in source.relation.columns
+            if column.key not in source.suppressed
+        }
+
+        def expand(node, visiting=frozenset(), prefer_alias=False):
+            def replace(value):
+                if isinstance(value, (exp.Subquery, exp.Query)) or _agg(value) or _definition(value):
+                    return value.copy()
+                if isinstance(value, exp.Column) and not value.table:
+                    name = _key(value.this)
+                    if name in aliases and (prefer_alias or name not in source_names) and aliases[name] != value:
+                        if name in visiting:
+                            raise _error("cyclic projection alias")
+                        return expand(aliases[name], visiting | {name}, prefer_alias)
+                return None
+
+            return _copy_transform(node, replace)
+
+        def has_window(node):
+            return any(isinstance(item, exp.Window) for item in _walk_scope(node))
+
+        lifted = {}
+
+        def lift(node):
+            node = expand(node)
+            if isinstance(node, (exp.Literal, exp.Boolean, exp.Null, exp.Identifier, exp.Star)):
+                return node.copy()
+            if not has_window(node) and not isinstance(
+                node, (exp.Order, exp.Ordered, exp.Qualify, exp.Where, exp.WindowSpec, exp.Distinct)
+            ):
+                key = node.sql()
+                if key not in lifted:
+                    lifted[key] = (self.fresh("window_input"), node.copy())
+                return exp.column(lifted[key][0])
+            result = node.copy()
+            for name, value in node.args.items():
+                if isinstance(node, exp.Window) and name == "this":
+                    # Keep the outer window operator; only its inputs belong
+                    # to the preceding aggregate stage.
+                    function = value.copy()
+                    for argument, child in value.args.items():
+                        if isinstance(child, exp.Expression):
+                            function.set(argument, lift(child))
+                        elif isinstance(child, list):
+                            function.set(
+                                argument, [lift(item) if isinstance(item, exp.Expression) else item for item in child]
+                            )
+                    result.set(name, function)
+                elif isinstance(value, exp.Expression):
+                    result.set(name, lift(value))
+                elif isinstance(value, list):
+                    result.set(name, [lift(item) if isinstance(item, exp.Expression) else item for item in value])
+            return result
+
+        result = exp.Select()
+        result.set(
+            "expressions",
+            [
+                exp.Alias(
+                    this=lift(item.this if isinstance(item, exp.Alias) else item),
+                    alias=item.args["alias"].copy() if isinstance(item, exp.Alias) else self.output_name(item),
+                )
+                for item in projections
+            ],
+        )
+        if query.args.get("qualify"):
+            result.set("qualify", lift(query.args["qualify"]))
+        if query.args.get("order"):
+            order = query.args["order"].copy()
+            for ordered in order.expressions:
+                value = ordered.this
+                # Bare ORDER BY output names take precedence over source names;
+                # window ordering and QUALIFY retain source-name precedence.
+                if isinstance(value, exp.Column) and not value.table and _key(value.this) in aliases:
+                    value = aliases[_key(value.this)]
+                ordered.set("this", lift(value))
+            result.set("order", order)
+        for name in ("distinct", "limit", "offset"):
+            result.set(name, query.args.get(name))
+
+        inner = query.copy()
+        for name in ("qualify", "order", "distinct", "limit", "offset", "windows"):
+            inner.set(name, None)
+        if inner.args.get("having"):
+            inner.set("having", expand(inner.args["having"], prefer_alias=True))
+
+        def group_term(term):
+            if isinstance(term, (exp.Group, exp.GroupingSets, exp.Rollup, exp.Cube, exp.Tuple, exp.Paren)):
+                rewritten = term.copy()
+                for name, value in term.args.items():
+                    if isinstance(value, exp.Expression):
+                        rewritten.set(name, group_term(value))
+                    elif isinstance(value, list):
+                        rewritten.set(
+                            name, [group_term(item) if isinstance(item, exp.Expression) else item for item in value]
+                        )
+                return rewritten
+            if isinstance(term, exp.Literal) and term.is_int:
+                index = int(term.this) - 1
+                if not 0 <= index < len(projections):
+                    raise _error("GROUP BY ordinal is out of range")
+                term = projections[index]
+                term = term.this if isinstance(term, exp.Alias) else term
+            return expand(term)
+
+        if inner.args.get("group"):
+            group = inner.args["group"]
+            if group.args.get("all"):
+                group = exp.Group(
+                    expressions=[
+                        item.this if isinstance(item, exp.Alias) else item
+                        for item in projections
+                        if not _has_aggregate(item) and not has_window(item)
+                    ]
+                )
+            inner.set("group", group_term(group))
+        inner.set(
+            "expressions",
+            [exp.alias_(value, name) for name, value in lifted.values()]
+            or [exp.alias_(exp.Literal.number(1), self.fresh("group_row"))],
+        )
+        result = result.from_(inner.subquery(self.fresh("window_groups")))
+        return self.compile(result, ctes, outer)
+
     def select(self, query: exp.Select, ctes, outer) -> Relation:
+        query = self.inline_named_windows(query)
         if (
             not outer
             and not self.relevant(query)
@@ -636,6 +822,16 @@ class RelationalCompiler:
             joins.append(copied)
         where = self.bind(query.args["where"].this, sources, ctes, outer) if query.args.get("where") else None
         projections = self.expand_projections(query.expressions, sources)
+        stage_expressions = [
+            *projections,
+            *([query.args["order"]] if query.args.get("order") else []),
+            *([query.args["qualify"]] if query.args.get("qualify") else []),
+        ]
+        grouped = bool(query.args.get("group") or query.args.get("having")) or any(
+            _has_aggregate(item) for item in stage_expressions
+        )
+        if grouped and any(isinstance(node, exp.Window) for item in stage_expressions for node in _walk_scope(item)):
+            return self.grouped_window_query(query, projections, sources, ctes, outer)
         # Bind projection/group/order references before building joined columns,
         # so ordinary physical tables may expose explicitly referenced fields.
         for expression in [
@@ -693,8 +889,6 @@ class RelationalCompiler:
                 *([query.args["qualify"]] if query.args.get("qualify") else []),
             ]
         )
-        if query.args.get("qualify") and (grouped or query.args.get("windows")):
-            raise _error("QUALIFY with aggregation or named windows is not supported")
         if grouped:
             relation = self.aggregate(query, projections, post_sources, ctes, outer, joined_name, joined_alias)
         else:
@@ -944,13 +1138,15 @@ class RelationalCompiler:
                     seen.add(key)
         return sets, all_terms
 
-    def evaluate(self, recipe, joined, alias, terms, group_names, spine, predicate=None):
+    def evaluate(self, recipe, joined, alias, terms, group_names, spine, predicate=None, measure_joins=None):
         if recipe.predicate is not None:
             predicate = exp.and_(predicate, recipe.predicate) if predicate is not None else recipe.predicate
         if recipe.identity is None:
             return _copy_transform(
                 recipe.expression,
-                lambda node: self.evaluate(recipe.parts[node.name], joined, alias, terms, group_names, spine, predicate)
+                lambda node: self.evaluate(
+                    recipe.parts[node.name], joined, alias, terms, group_names, spine, predicate, measure_joins
+                )
                 if isinstance(node, exp.Column) and node.name in recipe.parts
                 else None,
             )
@@ -969,6 +1165,51 @@ class RelationalCompiler:
                     if isinstance(node, exp.Column) and (not node.table or node.table == alias)
                     else node
                 )
+            )
+        if self.dialect == "clickhouse" and terms and measure_joins is not None:
+            # ClickHouse cannot decorrelate a scalar aggregate whose source
+            # contains identity windows. Aggregate each measure independently,
+            # then attach it to the existing group domain with NULL-equal keys.
+            groups = []
+            for term in terms:
+                inside = term.transform(
+                    lambda node: exp.column(node.name, table=inner)
+                    if isinstance(node, exp.Column) and node.table == alias
+                    else node
+                )
+                name = group_names[term.sql()]
+                rows = rows.select(exp.alias_(inside, name), append=True)
+                groups.append(name)
+            rows = rows.where(exp.and_(*conditions))
+            value_name, present_name = self.fresh("measure_value"), self.fresh("measure_present")
+            aggregate = (
+                exp.select(
+                    *(exp.column(name) for name in groups),
+                    exp.alias_(recipe.expression.copy(), value_name),
+                    exp.alias_(exp.Literal.number(1), present_name),
+                )
+                .from_(rows.subquery(self.fresh("deduplicated")))
+                .group_by(*(exp.column(name) for name in groups))
+            )
+            result_alias = self.fresh("measure_result")
+            condition = exp.and_(
+                *(
+                    exp.Anonymous(
+                        this="isNotDistinctFrom",
+                        expressions=[exp.column(name, table=result_alias), exp.column(name, table=spine)],
+                    )
+                    for name in groups
+                )
+            )
+            measure_joins.append((aggregate.subquery(result_alias), condition))
+            empty_rows = rows.copy().where(exp.false())
+            empty = exp.select(recipe.expression.copy()).from_(empty_rows.subquery(self.fresh("empty_measure")))
+            return (
+                exp.Case()
+                .when(
+                    exp.Is(this=exp.column(present_name, table=result_alias), expression=exp.Null()), empty.subquery()
+                )
+                .else_(exp.column(value_name, table=result_alias))
             )
         for term in terms:
             inside = term.transform(
@@ -998,6 +1239,7 @@ class RelationalCompiler:
             active = {term.sql() for term in terms}
             spine = self.fresh("spine")
             raw = {}
+            measure_joins = []
 
             def render(node, *, output_alias=False):
                 if isinstance(node, exp.Alias):
@@ -1009,10 +1251,25 @@ class RelationalCompiler:
                 if isinstance(node, exp.Filter) and _agg(node.this):
                     predicate = self.bind(node.expression.this, sources, ctes, outer)
                     return self.evaluate(
-                        self.measure(node.this, sources, outer), joined, alias, terms, group_names, spine, predicate
+                        self.measure(node.this, sources, outer),
+                        joined,
+                        alias,
+                        terms,
+                        group_names,
+                        spine,
+                        predicate,
+                        measure_joins,
                     )
                 if _agg(node):
-                    return self.evaluate(self.measure(node, sources, outer), joined, alias, terms, group_names, spine)
+                    return self.evaluate(
+                        self.measure(node, sources, outer),
+                        joined,
+                        alias,
+                        terms,
+                        group_names,
+                        spine,
+                        measure_joins=measure_joins,
+                    )
                 if isinstance(node, (exp.Grouping, exp.GroupingId)):
                     arguments = ([node.this] if node.this is not None else []) + list(node.expressions)
                     bits = [self.bind(arg, sources, ctes, outer).sql() not in active for arg in arguments]
@@ -1086,10 +1343,19 @@ class RelationalCompiler:
                 else values[int(item.this.this) - 1].copy()
                 for item in query.args.get("order", exp.Order()).expressions
             ]
-            spine_items = [
-                exp.alias_(term.copy() if term.sql() in active else exp.Null(), group_names[term.sql()])
-                for term in all_terms
-            ]
+
+            def group_value(term):
+                if term.sql() in active:
+                    return term.copy()
+                if self.dialect == "bigquery":
+                    # A bare NULL becomes INT64 in a BigQuery UNION branch.
+                    # Keep the grouping expression's type, including empty input.
+                    return exp.AnyValue(
+                        this=exp.Case(ifs=[exp.If(this=exp.false(), true=term.copy())], default=exp.Null())
+                    )
+                return exp.Null()
+
+            spine_items = [exp.alias_(group_value(term), group_names[term.sql()]) for term in all_terms]
             spine_items += [exp.alias_(expression, name) for name, expression in raw.values()]
             spine_items.append(exp.alias_(exp.Count(this=exp.Star()), self.fresh("group_size")))
             spine_query = exp.select(*spine_items).from_(exp.to_table(joined).as_(alias))
@@ -1099,6 +1365,8 @@ class RelationalCompiler:
                 *(exp.alias_(value, slot) for value, slot in zip(values, output_slots, strict=True)),
                 *(exp.alias_(value, slot) for value, slot in zip(order_values, order_slots, strict=True)),
             ).from_(spine_query.subquery(spine))
+            for measure_relation, condition in measure_joins:
+                branch = branch.join(measure_relation, on=condition, join_type="LEFT")
             if having is not None:
                 branch = branch.where(having)
             branches.append(branch)
@@ -1132,8 +1400,40 @@ class RelationalCompiler:
         expressions = []
         for column in relation.columns:
             value = exp.Null() if column.recipe else exp.column(column.physical, table=alias)
+            if column.recipe and self.dialect == "clickhouse":
+                value = exp.Cast(this=value, to=exp.DataType.build("Nullable(String)", dialect="clickhouse"))
             expressions.append(exp.Alias(this=value, alias=column.name.copy()))
         return exp.select(*expressions).from_(relation.query.subquery(alias))
+
+
+def _render_relational_result(query, dialect):
+    if dialect not in {"duckdb", "postgres", "sqlite"}:
+        for cte in query.find_all(exp.CTE):
+            cte.set("materialized", None)
+    if dialect == "clickhouse":
+
+        def null_safe(node):
+            if isinstance(node, exp.NullSafeEQ):
+                left, right = node.this, node.expression
+                return exp.or_(
+                    exp.EQ(this=left.copy(), expression=right.copy()),
+                    exp.and_(
+                        exp.Is(this=left.copy(), expression=exp.Null()),
+                        exp.Is(this=right.copy(), expression=exp.Null()),
+                    ),
+                )
+            return node
+
+        query = query.transform(null_safe)
+        query.set(
+            "settings",
+            [
+                exp.EQ(this=exp.column("join_use_nulls"), expression=exp.Literal.number(1)),
+                exp.EQ(this=exp.column("aggregate_functions_null_for_empty"), expression=exp.Literal.number(1)),
+                exp.EQ(this=exp.column("join_default_strictness"), expression=exp.Literal.string("ALL")),
+            ],
+        )
+    return render_sql(query, dialect=dialect)
 
 
 def compile_ossie_relational_query(sql: str, graph: SemanticGraph, dialect: str = "duckdb") -> str | None:
@@ -1169,7 +1469,7 @@ def compile_ossie_relational_query(sql: str, graph: SemanticGraph, dialect: str 
                     "this",
                     exp.Cast(this=exp.Null(), to=exp.DataType.build(f"STRUCT(MEASURE {dtype})", dialect=dialect)),
                 )
-    return render_sql(finished, dialect=dialect)
+    return _render_relational_result(finished, dialect)
 
 
 def compile_ossie_view_definition(sql: str, graph: SemanticGraph, dialect: str = "duckdb"):
@@ -1179,4 +1479,4 @@ def compile_ossie_view_definition(sql: str, graph: SemanticGraph, dialect: str =
         {"name": column.name.name, "is_measure": column.recipe is not None, "data_type": column.data_type}
         for column in relation.columns
     ]
-    return render_sql(compiler.finish(relation, allow_measures=True), dialect=dialect), descriptors
+    return _render_relational_result(compiler.finish(relation, allow_measures=True), dialect), descriptors

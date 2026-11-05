@@ -38,6 +38,14 @@ def _document():
         ),
         (
             {
+                "summary": 'SELECT * RENAME(total AS "total.pay") FROM '
+                "(SELECT TO_MEASURE(SUM(amount)) AS total FROM orders) r"
+            },
+            'SELECT AGG("total.pay") FROM summary',
+            [(30,)],
+        ),
+        (
+            {
                 "base_view": "SELECT TO_MEASURE(SUM(amount)) AS total FROM orders",
                 "summary": "SELECT total FROM base_view",
             },
@@ -55,7 +63,7 @@ def _document():
             [(999,)],
         ),
     ],
-    ids=["dataset_shadow", "nested_view_shadow", "view_local_cte", "caller_cte_still_shadows_view"],
+    ids=["dataset_shadow", "quoted_rename", "nested_view_shadow", "view_local_cte", "caller_cte_still_shadows_view"],
 )
 def test_stored_view_has_its_own_cte_scope(route, views, query, expected):
     graph = next(iter(shared_catalog(_document()).scopes.values())).graph
@@ -131,11 +139,7 @@ def test_wildcard_modifiers_preserve_projection_and_measure_lineage(route, query
 @pytest.mark.parametrize("route", ROUTES)
 def test_quoted_wildcard_rename_never_silently_changes_identifier_identity(route):
     query = 'SELECT AGG("total.pay") AS total FROM(SELECT * RENAME(revenue AS "total.pay") FROM shop.orders) q'
-    if route == "python":
-        assert execute(route, query, document=_document(), ddl="SELECT 1") == ([(30,)], ["total"])
-    else:
-        with pytest.raises(ValueError, match="quoted wildcard RENAME"):
-            execute(route, query, document=_document(), ddl="SELECT 1")
+    assert execute(route, query, document=_document(), ddl="SELECT 1") == ([(30,)], ["total"])
 
 
 @pytest.mark.parametrize("route", ROUTES)

@@ -87,7 +87,10 @@ def test_structured_metrics_with_same_local_name_have_distinct_default_outputs(r
 
 
 @pytest.mark.parametrize("route", ROUTES)
-@pytest.mark.parametrize("order", ["orders.total DESC", "ORDERS.TOTAL DESC"])
+@pytest.mark.parametrize(
+    "order",
+    ["orders.total DESC", "ORDERS.TOTAL DESC", "orders.total DESC NULLS FIRST", "orders.total desc nulls last"],
+)
 def test_structured_default_metric_name_remains_orderable(route, order):
     rows, columns = _execute(
         route,

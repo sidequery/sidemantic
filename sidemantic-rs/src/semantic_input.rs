@@ -2045,6 +2045,53 @@ mod tests {
     }
 
     #[test]
+    fn latest_ossie_structured_ordering_preserves_direction_and_nulls() {
+        let mut source = input();
+        source["models"][0]["metadata"] =
+            json!({"ossie_schema_revision":"172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1"});
+        source["models"][0]["dimensions"] =
+            json!([{"name":"amount", "type":"numeric", "sql":"amount"}]);
+        source["models"][0]["metrics"] =
+            json!([{"name":"revenue", "type":"derived", "sql":"SUM(amount)"}]);
+        for (order, alias, expected) in [
+            (
+                "orders.revenue DESC NULLS FIRST",
+                None,
+                "\"orders.revenue\" DESC NULLS FIRST",
+            ),
+            (
+                "orders.revenue asc nulls last",
+                None,
+                "\"orders.revenue\" ASC NULLS LAST",
+            ),
+            (
+                "orders.revenue NULLS FIRST",
+                None,
+                "\"orders.revenue\" NULLS FIRST",
+            ),
+            (
+                "Sort DESC NULLS FIRST",
+                Some("Sort DESC NULLS FIRST"),
+                "\"Sort DESC NULLS FIRST\"",
+            ),
+            (
+                "Sort DESC NULLS FIRST ASC NULLS LAST",
+                Some("Sort DESC NULLS FIRST"),
+                "\"Sort DESC NULLS FIRST\" ASC NULLS LAST",
+            ),
+        ] {
+            let mut request =
+                json!({"metrics":["orders.revenue"], "dialect":"postgres", "order_by":[order]});
+            if let Some(alias) = alias {
+                request["aliases"] = json!({"orders.revenue":alias});
+            }
+            let sql =
+                compile_with_semantic_input(&source.to_string(), &request.to_string()).unwrap();
+            assert!(sql.ends_with(&format!("ORDER BY {expected}")), "{sql}");
+        }
+    }
+
+    #[test]
     fn selected_order_names_remain_canonical_before_sql_rendering() {
         let mut source = input();
         source["models"][0]["dimensions"] = json!([

@@ -19,7 +19,7 @@ use crate::core::{
 use crate::error::{Result, SidemanticError};
 
 const VALIDATION_MODE: &str = "closed_structural_subset";
-const CURRENT_SCHEMA_REVISION: &str = "b6c702ed1c07e91382a69e870c875cbd19570828";
+pub(super) const CURRENT_SCHEMA_REVISION: &str = "b6c702ed1c07e91382a69e870c875cbd19570828";
 pub const LATEST_SCHEMA_REVISION: &str = "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1";
 const LATEST_SCHEMA_VERSION: &str = "0.2.0.dev0-latest";
 const CURRENT_SCHEMA_VERSION: &str = "0.2.0.dev0-current";
@@ -269,6 +269,8 @@ pub enum OssieTarget {
     Snowflake,
     Databricks,
     BigQuery,
+    ClickHouse,
+    Spark,
 }
 
 impl OssieTarget {
@@ -280,8 +282,10 @@ impl OssieTarget {
             "SNOWFLAKE" => Ok(Self::Snowflake),
             "DATABRICKS" => Ok(Self::Databricks),
             "BIGQUERY" | "BIG_QUERY" => Ok(Self::BigQuery),
+            "CLICKHOUSE" => Ok(Self::ClickHouse),
+            "SPARK" => Ok(Self::Spark),
             other => Err(format!(
-                "unsupported executable Ossie target {other:?}; supported: ANSI_SQL, DUCKDB, POSTGRES, SNOWFLAKE, DATABRICKS, BIGQUERY"
+                "unsupported executable Ossie target {other:?}; supported: ANSI_SQL, DUCKDB, POSTGRES, SNOWFLAKE, DATABRICKS, BIGQUERY, CLICKHOUSE, SPARK"
             )),
         }
     }
@@ -294,6 +298,8 @@ impl OssieTarget {
             Self::Snowflake => "SNOWFLAKE",
             Self::Databricks => "DATABRICKS",
             Self::BigQuery => "BIGQUERY",
+            Self::ClickHouse => "CLICKHOUSE",
+            Self::Spark => "SPARK",
         }
     }
 
@@ -304,6 +310,8 @@ impl OssieTarget {
             Self::Snowflake => DialectType::Snowflake,
             Self::Databricks => DialectType::Databricks,
             Self::BigQuery => DialectType::BigQuery,
+            Self::ClickHouse => DialectType::ClickHouse,
+            Self::Spark => DialectType::Spark,
         }
     }
 }
@@ -477,7 +485,11 @@ impl InspectedDocument {
         OssieStatus {
             valid,
             executable: valid && self.kind == Some(DocumentKind::Logical),
-            validation_mode: VALIDATION_MODE,
+            validation_mode: if self.kind == Some(DocumentKind::Logical) {
+                "pinned_json_schema"
+            } else {
+                VALIDATION_MODE
+            },
             profile: self.profile.clone(),
             document_kind: self.kind.map(|kind| kind.label().to_string()),
             scopes: self.scope_ids.clone(),
@@ -615,7 +627,7 @@ impl OssieForwardAdapter {
             let status = OssieStatus {
                 valid: false,
                 executable: false,
-                validation_mode: VALIDATION_MODE,
+                validation_mode: "pinned_json_schema",
                 profile: Some(profile),
                 document_kind: Some("logical".to_string()),
                 scopes: inspected.scope_ids,
@@ -626,7 +638,7 @@ impl OssieForwardAdapter {
 
         Ok(OssieCatalog {
             profile,
-            validation_mode: VALIDATION_MODE,
+            validation_mode: "pinned_json_schema",
             scopes,
             diagnostics,
         })
@@ -814,6 +826,11 @@ impl OssieForwardAdapter {
                 }
             }
         }
+        if kind == Some(DocumentKind::Logical) {
+            if let Some(profile) = &profile {
+                super::ossie_schema::validate(&root, profile, &mut diagnostics);
+            }
+        }
         // Keep the internal scope traversal shared. Source pointers are mapped
         // back to the flat document before returning diagnostics.
         let root = if flat_root {
@@ -832,6 +849,7 @@ impl OssieForwardAdapter {
                 scope_ids = logical_scope_ids(object);
                 if profile.as_ref().is_some_and(|profile| profile.schema_revision.as_deref() == Some(LATEST_SCHEMA_REVISION)) {
                     validate_latest_reserved_names(&root, "", &mut diagnostics);
+                    validate_latest_variants(&root, &mut diagnostics);
                 }
                 validate_semantics(object, &scope_ids, profile.as_ref().is_some_and(|profile| profile.schema_revision.as_deref() == Some(LATEST_SCHEMA_REVISION)), &mut diagnostics);
             }
@@ -965,6 +983,238 @@ fn validate_latest_reserved_names(
                         &format!("{scope_pointer}/datasets/{dataset_index}/{collection}/{index}"),
                         diagnostics,
                     );
+                }
+            }
+        }
+    }
+}
+
+/// Validate every known expression language, including variants not selected for
+/// execution. Unknown vendor languages remain opaque, as required by Ossie.
+fn validate_latest_variants(root: &Value, diagnostics: &mut Vec<OssieDiagnostic>) {
+    fn key(value: &Value, label: &str) -> String {
+        let name = value["name"].as_str().unwrap_or("");
+        if value["quoted"].as_bool() == Some(true)
+            && !matches!(label, "BIGQUERY" | "DATABRICKS" | "SPARK")
+        {
+            name.to_string()
+        } else {
+            normalize_identifier(name)
+        }
+    }
+    fn tables(value: &Value, label: &str, names: &mut BTreeSet<String>) {
+        if let Some(table) = value
+            .get("column")
+            .and_then(|column| column.get("table"))
+            .filter(|table| !table.is_null())
+        {
+            names.insert(key(table, label));
+        }
+        match value {
+            Value::Object(object) => {
+                for child in object.values() {
+                    tables(child, label, names);
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    tables(child, label, names);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn check(
+        value: &Value,
+        label: &str,
+        owner: Option<&str>,
+        fields: &HashMap<String, BTreeSet<String>>,
+    ) -> Result<()> {
+        if let Some(column) = value.get("column") {
+            let field = key(&column["name"], label);
+            let table = column
+                .get("table")
+                .filter(|table| !table.is_null())
+                .map(|table| key(table, label));
+            let extra_parts = ["db", "catalog"]
+                .iter()
+                .any(|name| column.get(*name).is_some_and(|value| !value.is_null()));
+            if owner.is_some_and(|owner| {
+                table.as_deref() == Some("SOURCE") && fields[owner].contains("SOURCE")
+            }) {
+                return Err(SidemanticError::Validation(
+                    "A field named source shadows access to source columns.".into(),
+                ));
+            }
+            let valid = if extra_parts {
+                false
+            } else if let Some(owner) = owner {
+                match table.as_deref() {
+                    None => fields[owner].contains(&field),
+                    Some("SOURCE") => !fields[owner].contains("SOURCE"),
+                    _ => false,
+                }
+            } else {
+                table
+                    .as_ref()
+                    .and_then(|name| fields.get(name))
+                    .is_some_and(|names| names.contains(&field))
+            };
+            if !valid {
+                return Err(SidemanticError::Validation("Metric references must name declared local fields/source.column for dataset metrics or dataset.field for model metrics.".into()));
+            }
+        }
+        if owner.is_none() {
+            // Polyglot represents FILTER either as a wrapper or a typed
+            // aggregate member; inspect both without skipping function children.
+            if let Some(filter) = value.get("filter").filter(|value| !value.is_null()) {
+                let mut names = BTreeSet::new();
+                tables(value, label, &mut names);
+                tables(filter, label, &mut names);
+                if names.len() > 1 {
+                    return Err(SidemanticError::Validation(
+                        "FILTER predicate and arguments must reference the same dataset.".into(),
+                    ));
+                }
+            }
+        }
+        match value {
+            Value::Object(object) => {
+                for child in object.values() {
+                    check(child, label, owner, fields)?;
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    check(child, label, owner, fields)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    for (scope_index, scope) in root["semantic_model"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let scope_id = scope["name"].as_str();
+        let datasets = scope["datasets"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let fields = datasets
+            .iter()
+            .filter_map(|dataset| {
+                Some((
+                    normalize_identifier(dataset["name"].as_str()?),
+                    dataset["fields"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|field| field["name"].as_str().map(normalize_identifier))
+                        .collect::<BTreeSet<_>>(),
+                ))
+            })
+            .collect::<HashMap<_, _>>();
+        let base = format!("/semantic_model/{scope_index}");
+        let mut declarations = Vec::new();
+        for (i, dataset) in datasets.iter().enumerate() {
+            let Some(name) = dataset["name"].as_str() else {
+                continue;
+            };
+            for (j, metric) in dataset["metrics"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                declarations.push((
+                    metric,
+                    Some(normalize_identifier(name)),
+                    format!("{base}/datasets/{i}/metrics/{j}/expression"),
+                    true,
+                ));
+            }
+            for (j, field) in dataset["fields"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                declarations.push((
+                    field,
+                    None,
+                    format!("{base}/datasets/{i}/fields/{j}/expression"),
+                    false,
+                ));
+            }
+        }
+        for (i, metric) in scope["metrics"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            declarations.push((metric, None, format!("{base}/metrics/{i}/expression"), true));
+        }
+        for (declaration, owner, pointer, metric) in declarations {
+            let expression = &declaration["expression"];
+            let mut variants = Vec::new();
+            if let Some(sql) = expression["sql"].as_str() {
+                variants.push(("OSSIE_SQL_2026", sql));
+            }
+            for variant in expression["dialects"].as_array().into_iter().flatten() {
+                if let (Some(label), Some(sql)) =
+                    (variant["dialect"].as_str(), variant["expression"].as_str())
+                {
+                    if label != "OSSIE_SQL_2026" || expression.get("sql").is_none() {
+                        variants.push((label, sql));
+                    }
+                }
+            }
+            for (label, sql) in variants {
+                if sql.trim().is_empty() || label.trim().is_empty() {
+                    diagnostics.push(diagnostic(
+                        "ossie.semantic.expression.text_empty",
+                        "Expression text and dialect must not be blank.",
+                        &pointer,
+                        scope_id,
+                    ));
+                    continue;
+                }
+                let dialect = match label {
+                    "OSSIE_SQL_2026" | "SNOWFLAKE" => DialectType::Snowflake,
+                    "ANSI_SQL" | "DUCKDB" => DialectType::DuckDB,
+                    "POSTGRES" => DialectType::PostgreSQL,
+                    "BIGQUERY" => DialectType::BigQuery,
+                    "DATABRICKS" => DialectType::Databricks,
+                    "SPARK" => DialectType::Spark,
+                    "CLICKHOUSE" => DialectType::ClickHouse,
+                    "TRINO" => DialectType::Trino,
+                    "REDSHIFT" => DialectType::Redshift,
+                    _ => continue,
+                };
+                match parse_scalar_sql_dialect(sql, dialect, label) {
+                    Ok(ast) if metric => {
+                        let value = serde_json::to_value(ast).expect("serializable SQL AST");
+                        if let Err(error) = check(&value, label, owner.as_deref(), &fields) {
+                            diagnostics.push(diagnostic(
+                                "ossie.semantic.metric.reference_invalid",
+                                error.to_string(),
+                                &pointer,
+                                scope_id,
+                            ));
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => diagnostics.push(diagnostic(
+                        "ossie.semantic.expression.invalid_sql",
+                        error,
+                        &pointer,
+                        scope_id,
+                    )),
                 }
             }
         }
@@ -1272,6 +1522,8 @@ fn validate_dataset(
             OssieTarget::Snowflake,
             OssieTarget::Databricks,
             OssieTarget::BigQuery,
+            OssieTarget::ClickHouse,
+            OssieTarget::Spark,
         ]
         .iter()
         .any(|target| classify_source(source, *target).is_some())
@@ -1561,7 +1813,7 @@ fn validate_expression_schema(
         let dialect = required_string(variant, "dialect", &variant_pointer, diagnostics, None);
         required_string(variant, "expression", &variant_pointer, diagnostics, None);
         if let Some(dialect) = dialect {
-            let normalized = dialect.to_ascii_uppercase();
+            let normalized = dialect.trim().to_ascii_uppercase();
             if !latest && !allowed_dialects.contains(&dialect) {
                 diagnostics.push(diagnostic(
                     "ossie.schema.enum",
@@ -2642,7 +2894,11 @@ fn select_variant(value: Option<&Value>, target: OssieTarget) -> Option<(String,
             portable = Some((expression, dialect));
         }
     }
-    exact.or(portable).or(ansi)
+    if target == OssieTarget::Spark {
+        exact.or(ansi).or(portable)
+    } else {
+        exact.or(portable).or(ansi)
+    }
 }
 
 #[cfg(test)]
@@ -2662,6 +2918,11 @@ fn lower_selected_expression(
         return Ok(None);
     };
     if dialect == "OSSIE_SQL_2026" {
+        if target == OssieTarget::Spark {
+            return Err(
+                "Unsupported OSSIE_SQL_2026 target SPARK; supply SPARK or ANSI_SQL.".into(),
+            );
+        }
         super::ossie_sql::lower_ossie_sql(&sql, target.parser_dialect()).map(Some)
     } else {
         Ok(Some(sql))
@@ -2683,18 +2944,22 @@ fn parse_scalar_sql_inner(
     sql: &str,
     target: OssieTarget,
 ) -> std::result::Result<Expression, String> {
+    parse_scalar_sql_dialect(sql, target.parser_dialect(), target.label())
+}
+
+fn parse_scalar_sql_dialect(
+    sql: &str,
+    dialect: DialectType,
+    label: &str,
+) -> std::result::Result<Expression, String> {
     let wrapped = format!("SELECT {sql}");
-    let mut statements =
-        crate::semantic_input::dialects::parse_many(&wrapped, target.parser_dialect())
-            .map_err(|error| format!("Invalid {} SQL expression: {error}", target.label()))?;
+    let mut statements = crate::semantic_input::dialects::parse_many(&wrapped, dialect)
+        .map_err(|error| format!("Invalid {} SQL expression: {error}", label))?;
     if statements.len() != 1 {
         return Err("Expected exactly one scalar SQL expression.".into());
     }
     let Expression::Select(mut select) = statements.remove(0) else {
-        return Err(format!(
-            "Expected one scalar {} SQL expression.",
-            target.label()
-        ));
+        return Err(format!("Expected one scalar {} SQL expression.", label));
     };
     let has_query_clauses = select.from.is_some()
         || !select.joins.is_empty()
@@ -2710,7 +2975,7 @@ fn parse_scalar_sql_inner(
     if select.expressions.len() != 1 || has_query_clauses {
         return Err(format!(
             "Expected one scalar {} SQL expression without query clauses.",
-            target.label()
+            label
         ));
     }
     let expression = select.expressions.remove(0);
@@ -2725,7 +2990,7 @@ fn parse_scalar_sql_inner(
     if contains_query {
         return Err(format!(
             "Expected one scalar {} SQL expression without a nested query.",
-            target.label()
+            label
         ));
     }
     Ok(expression)
@@ -2793,7 +3058,8 @@ fn bind_latest_metric_sql(
 ) -> std::result::Result<String, String> {
     fn identifier_key(value: &Value, dialect: &str) -> String {
         let name = value["name"].as_str().unwrap_or("");
-        if value["quoted"].as_bool() == Some(true) && !matches!(dialect, "BIGQUERY" | "DATABRICKS")
+        if value["quoted"].as_bool() == Some(true)
+            && !matches!(dialect, "BIGQUERY" | "DATABRICKS" | "SPARK")
         {
             name.to_string()
         } else {
@@ -2949,7 +3215,7 @@ fn bind_metric_sql(
     fn key(identifier: &Value, expression_dialect: &str) -> String {
         let name = identifier["name"].as_str().unwrap_or("");
         if identifier["quoted"].as_bool() == Some(true)
-            && !matches!(expression_dialect, "BIGQUERY" | "DATABRICKS")
+            && !matches!(expression_dialect, "BIGQUERY" | "DATABRICKS" | "SPARK")
         {
             name.to_string()
         } else {
@@ -3488,7 +3754,7 @@ fn optional_string(object: &Map<String, Value>, key: &str) -> Option<String> {
     object.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
-fn diagnostic(
+pub(super) fn diagnostic(
     code: impl Into<String>,
     message: impl Into<String>,
     instance_path: impl Into<String>,

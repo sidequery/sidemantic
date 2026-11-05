@@ -441,31 +441,39 @@ Use `--force` only when intentionally replacing an existing output file.
 
 ## Rust forward-import status
 
-The experimental Rust runtime now has a strict forward Ossie import subset in
+The experimental Rust runtime has a strict forward Ossie logical importer in
 its dedicated `ossie` adapter. It supports explicit consumer profiles,
 including `ossie-core` (`0.1.1` and `0.2.0.dev0`) and `dbt-1.12` compatibility
 profiles. It preserves separate semantic-model scopes and uses
 exact-target, portable, then `ANSI_SQL` expression selection for its supported runtime
 targets: `ANSI_SQL`, `DUCKDB`, `POSTGRES`, `SNOWFLAKE`, `DATABRICKS`, and
-`BIGQUERY`. Its import gate also checks scalar SQL structure, identifiers,
+`BIGQUERY`, `SPARK`, and `CLICKHOUSE`. Its import gate also checks scalar SQL structure, identifiers,
 declared primary and unique keys, relationship identity and endpoints, key
 arity, and target-key uniqueness. Invalid or unsupported input fails closed;
 the legacy `osi` adapter remains a separate compatibility surface.
+Spark retains its existing exact-dialect or ANSI fallback behavior; portable
+`OSSIE_SQL_2026` lowering is not enabled for Spark.
 
 The Python CLI/API uses the shared Python source importer before selecting the
 Python or Rust query engine. Preserved source documents, complete pinned JSON
 Schema validation, ontology validation, permissive import, and export remain
 owned by that shared interchange API for both engine choices.
 
-The separate native Rust forward importer has strict structural validation,
-all three pinned development profiles, their logical shapes, and native expression lowering. It does not
-duplicate the shared preserved-document, exact-byte, or synthesis APIs. Native
-structural status is labelled `closed_structural_subset`, not full JSON Schema
-validation. Use `OssieCompiledScope::into_graph()` to retain graph-level metric
+The separate native Rust forward importer validates logical documents against
+the same four immutable JSON Schemas as Python: `0.1.1` and all three pinned
+development revisions. These schemas are bundled for offline native and WASM
+builds. The evaluator covers every assertion used by those schemas and fails
+closed if an unsupported assertion is introduced. Logical validation reports
+`pinned_json_schema`; semantic checks also validate recognized SQL variants even
+when another variant is selected for execution.
+
+The native importer does not duplicate the shared preserved-document, exact-byte,
+permissive-import, ontology/mapping, or synthesis APIs. Those are interchange
+operations available to both public engine choices through the shared importer;
+they are separate from compiling logical models in native Rust.
+Use `OssieCompiledScope::into_graph()` to retain graph-level metric
 scope and logical expression semantics when passing a native import to the
-compiler. The conformance tests execute one corpus through Python import and
-both runtimes, plus native Rust import/compilation, against DuckDB. They do not
-certify live warehouse behavior for every target database.
+compiler.
 
 Native callers may select a pinned revision explicitly through the
 `*_with_revision` adapter methods or the Python extension's optional

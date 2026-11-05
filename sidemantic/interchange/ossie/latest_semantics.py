@@ -5,11 +5,14 @@ from collections.abc import Mapping
 import sqlglot
 from sqlglot import exp
 
+from sidemantic.interchange.ossie.expression_validation import scalar_sql_expression_error
 from sidemantic.interchange.ossie.identifier import normalize_identifier
 
 _DIALECTS = {
     "OSSIE_SQL_2026": "snowflake",
     "ANSI_SQL": None,
+    "DUCKDB": "duckdb",
+    "SPARK": "spark",
     "BIGQUERY": "bigquery",
     "DATABRICKS": "databricks",
     "SNOWFLAKE": "snowflake",
@@ -42,7 +45,7 @@ def expression_variants(expression):
 def identifier_key(identifier, dialect):
     # BigQuery/Databricks quoting is syntactic and does not opt a logical name
     # into ANSI delimited-identifier case sensitivity (the lowering contract).
-    quoted = identifier.args.get("quoted") and dialect not in {"BIGQUERY", "DATABRICKS"}
+    quoted = identifier.args.get("quoted") and dialect not in {"BIGQUERY", "DATABRICKS", "SPARK"}
     return identifier.name if quoted else normalize_identifier(identifier.name)
 
 
@@ -69,6 +72,11 @@ def validate_latest_scope(validator, model, pointer, scope):
         if not isinstance(definition, Mapping):
             return
         for label, text in expression_variants(definition.get("expression")):
+            if label in _DIALECTS:
+                error = scalar_sql_expression_error(text, sqlglot_dialect=_DIALECTS[label])
+                if error:
+                    emit(error, location, "ossie.semantic.expression.invalid_sql")
+                    continue
             if label != "OSSIE_SQL_2026":
                 continue
             try:

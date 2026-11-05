@@ -610,6 +610,9 @@ fn parse_dialect(dialect: &str) -> sidemantic::Result<DialectType> {
     match dialect.to_ascii_lowercase().as_str() {
         "duckdb" => Ok(DialectType::DuckDB),
         "bigquery" => Ok(DialectType::BigQuery),
+        "clickhouse" => Ok(DialectType::ClickHouse),
+        "spark" => Ok(DialectType::Spark),
+        "databricks" => Ok(DialectType::Databricks),
         "snowflake" => Ok(DialectType::Snowflake),
         "postgres" | "postgresql" => Ok(DialectType::PostgreSQL),
         value => Err(sidemantic::SidemanticError::Validation(format!(

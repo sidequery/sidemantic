@@ -18,7 +18,7 @@ from sidemantic.interchange.ossie.expression_validation import is_aggregate_filt
 from sidemantic.sql.rendering import render_sql
 
 _TARGETS = {"postgresql": "postgres", "ansi_sql": "duckdb", "ansi": "duckdb"}
-_SUPPORTED_TARGETS = {"duckdb", "postgres", "snowflake", "bigquery", "databricks"}
+_SUPPORTED_TARGETS = {"duckdb", "postgres", "snowflake", "bigquery", "databricks", "clickhouse"}
 _EXTRACTIONS = {
     exp.Year: "YEAR",
     exp.Quarter: "QUARTER",

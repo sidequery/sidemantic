@@ -253,6 +253,9 @@ impl QueryRewriter<'_> {
                 &describe.target,
                 Expression::Select(_) | Expression::Union(_)
             ) {
+                if !self.ossie_relational_query_relevant(&describe.target, input)? {
+                    return Ok(Some(sql.to_owned()));
+                }
                 if self.security_controls {
                     return Err(policy::unsupported());
                 }

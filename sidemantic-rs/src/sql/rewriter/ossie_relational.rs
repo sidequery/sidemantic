@@ -587,7 +587,7 @@ impl<'a> Compiler<'a> {
     fn model_relation(
         &mut self,
         model: &Model,
-        ctes: &HashMap<String, Relation>,
+        _ctes: &HashMap<String, Relation>,
     ) -> Result<Relation> {
         if let Some(definition) = model
             .metadata
@@ -595,12 +595,13 @@ impl<'a> Compiler<'a> {
             .and_then(|meta| meta.get("ossie_view_definition"))
             .and_then(Value::as_str)
         {
+            reject_quoted_wildcard_renames(definition)?;
             if !self.view_stack.insert(model.name.clone()) {
                 return Err(error("recursive measure view definition"));
             }
             let result = self.query(
                 ossie_input(&preprocess_measure_syntax(definition)?, self.input_dialect)?.remove(0),
-                ctes,
+                &HashMap::new(),
                 None,
             );
             self.view_stack.remove(&model.name);
@@ -771,13 +772,14 @@ impl<'a> Compiler<'a> {
                 let relation = if table.schema.is_none() && ctes.contains_key(&key(&table.name)) {
                     ctes[&key(&table.name)].clone()
                 } else if let Some((view_key, definition)) = self.view_definition(&table)? {
+                    reject_quoted_wildcard_renames(&definition)?;
                     if !self.view_stack.insert(view_key.clone()) {
                         return Err(error("recursive measure view definition"));
                     }
                     let relation = self.query(
                         ossie_input(&preprocess_measure_syntax(&definition)?, self.input_dialect)?
                             .remove(0),
-                        ctes,
+                        &HashMap::new(),
                         None,
                     )?;
                     self.view_stack.remove(&view_key);
@@ -1252,6 +1254,8 @@ impl<'a> Compiler<'a> {
         }
         Ok(ctes)
     }
+    // Each argument represents a distinct SQL set-operation clause or binding scope.
+    #[allow(clippy::too_many_arguments)]
     fn set(
         &mut self,
         left: Expression,
@@ -1762,6 +1766,8 @@ impl<'a> Compiler<'a> {
         }
         Ok(result)
     }
+    // Keep the projection, relation, and binding scopes explicit at this compiler boundary.
+    #[allow(clippy::too_many_arguments)]
     fn aggregated(
         &mut self,
         select: Select,
@@ -2248,6 +2254,29 @@ fn append_limit(body: &mut String, select: &Select) -> Result<()> {
     Ok(())
 }
 
+fn reject_quoted_wildcard_renames(source: &str) -> Result<()> {
+    let tokens = polyglot_sql::Dialect::get(DialectType::DuckDB)
+        .tokenize(source)
+        .map_err(|err| error(err.to_string()))?;
+    for (index, token) in tokens.iter().enumerate() {
+        use polyglot_sql::tokens::TokenType;
+        if token.token_type == TokenType::Rename
+            && tokens
+                .get(index + 1)
+                .is_some_and(|next| next.token_type == TokenType::LParen)
+            && tokens[index + 2..]
+                .iter()
+                .take_while(|next| next.token_type != TokenType::RParen)
+                .any(|next| next.token_type == TokenType::QuotedIdentifier)
+        {
+            // The pinned native wildcard parser loses quoted-name identity.
+            // Reject this shape rather than bind a different renamed column.
+            return Err(error("quoted wildcard RENAME operands are not supported"));
+        }
+    }
+    Ok(())
+}
+
 /// Translate the draft's illustrative marker using lexer spans, never textual
 /// replacements in string literals or quoted identifiers.
 fn preprocess_measure_syntax(source: &str) -> Result<String> {
@@ -2318,6 +2347,34 @@ impl QueryRewriter<'_> {
             .and_then(|metadata| metadata.get("ossie_views"))
             .is_some()
     }
+    pub(super) fn ossie_relational_query_relevant(
+        &self,
+        query: &Expression,
+        input: DialectType,
+    ) -> Result<bool> {
+        let compiler = Compiler {
+            input_dialect: input,
+            graph: self.graph,
+            sequence: 0,
+            view_stack: HashSet::new(),
+        };
+        let mut relevant = false;
+        binding::transform_nodes(query.clone(), &mut |node| {
+            if is_call(node, "AGG") || is_call(node, "TO_MEASURE") {
+                relevant = true;
+            }
+            if let Expression::Table(table) = node {
+                if compiler.model(table)?.is_some() {
+                    relevant = true;
+                }
+                if compiler.view_definition(table)?.is_some() {
+                    relevant = true;
+                }
+            }
+            Ok(None)
+        })?;
+        Ok(relevant)
+    }
     pub(super) fn rewrite_ossie_relational(
         &self,
         source: &str,
@@ -2357,24 +2414,10 @@ impl QueryRewriter<'_> {
             sequence: 0,
             view_stack: HashSet::new(),
         };
-        let mut relevant = false;
-        binding::transform_nodes(statements[0].clone(), &mut |node| {
-            if is_call(node, "AGG") || is_call(node, "TO_MEASURE") {
-                relevant = true;
-            }
-            if let Expression::Table(table) = node {
-                if compiler.model(table)?.is_some() {
-                    relevant = true;
-                }
-                if compiler.view_definition(table)?.is_some() {
-                    relevant = true;
-                }
-            }
-            Ok(None)
-        })?;
-        if !relevant {
+        if !self.ossie_relational_query_relevant(&statements[0], input)? {
             return Ok(None);
         }
+        reject_quoted_wildcard_renames(&source)?;
         let zero_rows = matches!(&statements[0],Expression::Select(select) if select.limit.as_ref().is_some_and(|limit|matches!(&limit.this,Expression::Literal(Literal::Number(number)) if number=="0"))||select.where_clause.as_ref().is_some_and(|filter|sql(&filter.this).is_ok_and(|value|value.eq_ignore_ascii_case("FALSE"))));
         let relation = compiler.query(statements.remove(0), &HashMap::new(), None)?;
         if relation.has_measures() && !zero_rows {
@@ -2422,6 +2465,7 @@ impl QueryRewriter<'_> {
         if self.security_controls {
             return Err(error("measure views require explicit policy preparation"));
         }
+        reject_quoted_wildcard_renames(source)?;
         let source = preprocess_measure_syntax(source)?;
         let mut statements = ossie_input(&source, input)?;
         if statements.len() != 1 {

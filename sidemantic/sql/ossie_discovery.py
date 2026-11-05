@@ -98,8 +98,10 @@ def compile_ossie_discovery(sql: str, graph, dialect: str = "duckdb") -> str | N
     if isinstance(statement, exp.Describe):
         table = statement.this
         if isinstance(table, exp.Query):
-            from sidemantic.sql.ossie_relational import compile_ossie_view_definition
+            from sidemantic.sql.ossie_relational import RelationalCompiler, compile_ossie_view_definition
 
+            if not RelationalCompiler(graph, dialect).relevant(table):
+                return statement.sql(dialect=dialect)
             _, descriptors = compile_ossie_view_definition(table.sql(dialect=dialect), graph, dialect)
             return _rows(
                 ("column_name", "column_type", "null", "key", "default", "extra"),

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+LATEST_OSSIE_SCHEMA_COMMIT = "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1"
 CURRENT_OSSIE_SCHEMA_COMMIT = "b6c702ed1c07e91382a69e870c875cbd19570828"
 LEGACY_OSSIE_SCHEMA_COMMIT = "831f48e582731cf1ee2e65380ca5abf8157869c7"
 
@@ -96,6 +97,12 @@ OSSIE_CORE_0_2_0_CURRENT = OssieProfile(
     upstream_schema_version="0.2.0.dev0",
     schema_revision=CURRENT_OSSIE_SCHEMA_COMMIT,
 )
+OSSIE_CORE_0_2_0_LATEST = OssieProfile(
+    schema_version="0.2.0.dev0",
+    consumer_profile=OssieConsumerProfile.OSSIE_CORE,
+    upstream_schema_version="0.2.0.dev0",
+    schema_revision=LATEST_OSSIE_SCHEMA_COMMIT,
+)
 DBT_1_12_0_1_0_ALIAS = OssieProfile(
     schema_version="0.1.0",
     consumer_profile=OssieConsumerProfile.DBT_1_12,
@@ -114,6 +121,7 @@ OSSIE_PROFILES = (
     DBT_1_12_0_1_0_ALIAS,
     DBT_1_12_0_1_1,
     OSSIE_CORE_0_2_0_CURRENT,
+    OSSIE_CORE_0_2_0_LATEST,
 )
 _PROFILE_INDEX = {
     (profile.schema_version, profile.consumer_profile): profile
@@ -139,6 +147,8 @@ def resolve_ossie_profile(
             raise OssieProfileError("schema_revision must be a pinned commit string")
         if schema_version != "0.2.0.dev0" or normalized_consumer is not OssieConsumerProfile.OSSIE_CORE:
             raise OssieProfileError("A schema revision is supported only for ossie-core 0.2.0.dev0")
+        if schema_revision in {LATEST_OSSIE_SCHEMA_COMMIT, LATEST_OSSIE_SCHEMA_COMMIT[:7]}:
+            return OSSIE_CORE_0_2_0_LATEST
         if schema_revision in {CURRENT_OSSIE_SCHEMA_COMMIT, CURRENT_OSSIE_SCHEMA_COMMIT[:7]}:
             return OSSIE_CORE_0_2_0_CURRENT
         if schema_revision not in {LEGACY_OSSIE_SCHEMA_COMMIT, LEGACY_OSSIE_SCHEMA_COMMIT[:7]}:

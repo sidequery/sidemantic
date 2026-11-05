@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -3561,7 +3561,6 @@ dependencies = [
     { name = "jinja2" },
     { name = "pydantic" },
     { name = "pyyaml" },
-    { name = "sidemantic-rs", marker = "sys_platform != 'emscripten'" },
     { name = "sqlglot" },
     { name = "typer" },
 ]
@@ -3651,6 +3650,7 @@ full = [
     { name = "pyarrow" },
     { name = "pygls" },
     { name = "sidemantic-dax" },
+    { name = "sidemantic-rs", marker = "sys_platform != 'emscripten'" },
     { name = "textual", extra = ["syntax"] },
     { name = "textual-plotext" },
     { name = "uvicorn" },
@@ -3678,6 +3678,9 @@ ossie = [
 postgres = [
     { name = "psycopg", extra = ["binary"] },
     { name = "pyarrow" },
+]
+rust = [
+    { name = "sidemantic-rs", marker = "sys_platform != 'emscripten'" },
 ]
 serve = [
     { name = "pyarrow" },
@@ -3784,9 +3787,9 @@ requires-dist = [
     { name = "riffq", marker = "extra == 'serve'", specifier = ">=0.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "sidemantic", extras = ["postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc"], marker = "extra == 'all-databases'" },
-    { name = "sidemantic", extras = ["workbench", "mcp", "apps", "charts", "lsp", "dax", "lookml", "malloy", "metricflow", "widget", "api", "ossie"], marker = "extra == 'full'" },
+    { name = "sidemantic", extras = ["workbench", "mcp", "apps", "charts", "lsp", "dax", "lookml", "malloy", "metricflow", "widget", "api", "ossie", "rust"], marker = "extra == 'full'" },
     { name = "sidemantic-dax", marker = "extra == 'dax'", directory = "crates/dax-pyo3" },
-    { name = "sidemantic-rs", marker = "sys_platform != 'emscripten'", directory = "sidemantic-rs" },
+    { name = "sidemantic-rs", marker = "sys_platform != 'emscripten' and extra == 'rust'", directory = "sidemantic-rs" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0.0" },
     { name = "sqlglot", specifier = ">=30.1.0" },
     { name = "sqlglot", extras = ["c"], marker = "extra == 'dev'", specifier = ">=30.1.0" },
@@ -3801,7 +3804,7 @@ requires-dist = [
     { name = "vl-convert-python", marker = "extra == 'apps'", specifier = ">=1.0.0" },
     { name = "vl-convert-python", marker = "extra == 'charts'", specifier = ">=1.0.0" },
 ]
-provides-extras = ["dev", "workbench", "mcp", "apps", "charts", "fast", "ossie", "serve", "api", "postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc", "lsp", "dax", "lookml", "malloy", "metricflow", "widget", "all-databases", "full"]
+provides-extras = ["rust", "dev", "workbench", "mcp", "apps", "charts", "fast", "ossie", "serve", "api", "postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc", "lsp", "dax", "lookml", "malloy", "metricflow", "widget", "all-databases", "full"]
 
 [package.metadata.requires-dev]
 dev = [

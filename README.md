@@ -96,7 +96,9 @@ uvx --from "sidemantic[workbench]" sidemantic workbench ./models
 - **Explore data:** launch the terminal workbench, notebook widget, or browser UI.
 - **Serve other tools:** expose models over the HTTP API, PostgreSQL wire protocol, or MCP server.
 
-Install Sidemantic in a project with `uv add sidemantic`. Optional features are packaged as extras: `malloy`, `dax`, `workbench`, `widget`, `api`, and `serve`.
+Install Sidemantic in a project with `uv add sidemantic`. Optional features are packaged as extras: `malloy`, `dax`, `workbench`, `widget`, `api`, `serve`, and `rust`.
+
+Python is the default engine. To use the optional Rust engine, install `uv tool install "sidemantic[rust]"` (CLI) or `uv add "sidemantic[rust]"` (project), then select `--engine rust`. See [Rust engine mode](docs/rust-engine-mode.md).
 
 ## DAX And TMDL
 

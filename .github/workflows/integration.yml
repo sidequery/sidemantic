@@ -53,7 +53,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra postgres --extra dev
+        run: uv sync --extra postgres --extra dev --extra rust
 
       - name: Run PostgreSQL integration tests
         env:
@@ -123,7 +123,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra bigquery --extra dev
+        run: uv sync --extra bigquery --extra dev --extra rust
 
       - name: Run BigQuery integration tests
         env:
@@ -168,7 +168,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra snowflake --extra dev
+        run: uv sync --extra snowflake --extra dev --extra rust
 
       - name: Run Snowflake integration tests
         env:
@@ -228,7 +228,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra clickhouse --extra dev
+        run: uv sync --extra clickhouse --extra dev --extra rust
 
       - name: Run ClickHouse integration tests
         env:
@@ -315,7 +315,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra dev --extra adbc
+        run: uv sync --extra dev --extra adbc --extra rust
 
       - name: Install ADBC driver through dbc
         run: |

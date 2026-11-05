@@ -55,7 +55,8 @@ def get_rust_module() -> object:
             raise
         raise RustBackendUnavailableError(
             "Rust backend requires the sidemantic_rs Python extension. "
-            "Install it with: uv pip install sidemantic-rs, or select --engine python."
+            'Install it with: uv tool install "sidemantic[rust]" (CLI) or '
+            'uv add "sidemantic[rust]" (project), or select --engine python.'
         ) from e
     return sidemantic_rs
 

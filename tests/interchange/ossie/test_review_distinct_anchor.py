@@ -31,7 +31,7 @@ def _document(empty):
 
 @pytest.mark.parametrize("route", ["python", "public_rust", "native_rust"])
 @pytest.mark.parametrize("empty", [False, True], ids=["nonempty", "empty"])
-@pytest.mark.parametrize("surface", ["structured"])
+@pytest.mark.parametrize("surface", ["structured", "relational"])
 def test_distinct_constant_counts_keep_source_population(route, empty, surface):
     document = _document(empty)
     if surface == "structured":

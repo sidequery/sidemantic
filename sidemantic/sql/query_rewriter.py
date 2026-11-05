@@ -210,9 +210,14 @@ class QueryRewriter:
             ):
                 raise ValueError("yardstick() is not supported while semantic security controls are active")
         if not uses_yardstick:
+            from sidemantic.sql.ossie_discovery import is_ossie_discovery
+            from sidemantic.sql.ossie_relational import RelationalCompiler, _measure_syntax
+
             try:
                 statements = [
-                    statement for statement in sqlglot.parse(sql, dialect=self.dialect) if statement is not None
+                    statement
+                    for statement in sqlglot.parse(_measure_syntax(sql, self.dialect), dialect=self.dialect)
+                    if statement is not None
                 ]
             except SqlglotError as exc:
                 if strict:
@@ -223,7 +228,13 @@ class QueryRewriter:
                     raise ValueError("Multiple statements are not supported")
                 return sql
             parsed = statements[0]
-            if not isinstance(parsed, (exp.Select, exp.SetOperation)):
+            ossie_compiler = RelationalCompiler(self.graph, self.dialect)
+            ossie_query = (
+                bool(ossie_compiler.models or self.graph.metadata.get("ossie_views")) and is_ossie_discovery(parsed)
+            ) or ossie_compiler.relevant(parsed)
+            if ossie_query:
+                self._validate_ossie_controls()
+            if not isinstance(parsed, (exp.Select, exp.SetOperation)) and not ossie_query:
                 if strict:
                     raise ValueError("Only SELECT queries are supported")
                 return sql
@@ -236,7 +247,13 @@ class QueryRewriter:
                     if strict:
                         raise ValueError("SELECT * requires a FROM clause with a single table")
                     return sql
-            if not self._expression_tree_references_semantic_model(parsed):
+            from sidemantic.sql.ossie_query import has_ossie_aggregate_query
+
+            if (
+                not ossie_query
+                and not self._expression_tree_references_semantic_model(parsed)
+                and not has_ossie_aggregate_query(parsed, self.graph)
+            ):
                 self.last_engine_selection = {"engine": "passthrough", "reason": "No semantic model reference"}
                 return sql
             contextual_rust = (
@@ -284,7 +301,19 @@ class QueryRewriter:
         selection = self.last_engine_selection
         result = self._rewrite_python(sql, strict=strict, user_attributes=user_attributes)
         self.last_engine_selection = selection
-        return result
+        if result.strip() == sql.strip():
+            return result
+        return self._render_ossie_windows(result)
+
+    def _render_ossie_windows(self, sql: str) -> str:
+        """Retain window placement through the final relational wrapper."""
+        if not re.search(r"\bOVER\s*\(", sql, re.IGNORECASE) or not any(
+            (model.metadata or {}).get("ossie_scope_name") for model in self.graph.models.values()
+        ):
+            return sql
+        from sidemantic.sql.rendering import render_sql
+
+        return render_sql(parse_fragment(sql, self.dialect), dialect=self._dialect_instance)
 
     def explain(self, sql: str, strict: bool = True, user_attributes: dict | None = None) -> RewriteExplanation:
         """Explain the engine that actually compiles the semantic query."""
@@ -306,7 +335,41 @@ class QueryRewriter:
         selection = self.last_engine_selection
         result = self._explain_python(sql, strict=strict, user_attributes=user_attributes)
         self.last_engine_selection = selection
+        if result.chosen_plan != "passthrough_plain_sql":
+            result.rewritten_sql = self._render_ossie_windows(result.rewritten_sql)
         return result
+
+    def _validate_ossie_controls(self):
+        from sidemantic.core.required_filters import has_required_filters
+
+        if (
+            self.enforce_visibility
+            or has_required_filters(self.graph)
+            or any(model.security is not None or model.invariant_filters for model in self.graph.models.values())
+        ):
+            raise ValueError("Ossie relational queries are unavailable while semantic security controls are active")
+
+    def _compile_ossie_python(self, sql):
+        if self.would_use_yardstick_rewrite(sql) or re.search(r"\byardstick\s*\(", sql, re.IGNORECASE):
+            return None
+        from sidemantic.sql.ossie_discovery import compile_ossie_discovery
+        from sidemantic.sql.ossie_relational import RelationalCompiler, _measure_syntax, compile_ossie_relational_query
+
+        discovery = compile_ossie_discovery(_measure_syntax(sql, self.dialect), self.graph, self.dialect)
+        if discovery is not None:
+            self._validate_ossie_controls()
+            return discovery
+        compiler = RelationalCompiler(self.graph, self.dialect)
+        if (
+            compiler.models
+            or self.graph.metadata.get("ossie_views")
+            or re.search(r"\b(?:TO_MEASURE|MEASURE)\b", sql, re.IGNORECASE)
+        ):
+            parsed = compiler.parse(sql)
+            if compiler.relevant(parsed):
+                self._validate_ossie_controls()
+                return compile_ossie_relational_query(sql, self.graph, self.dialect)
+        return None
 
     def _rewrite_python(self, sql: str, strict: bool = True, user_attributes: dict | None = None) -> str:
         """Rewrite user SQL to use semantic layer.
@@ -331,6 +394,9 @@ class QueryRewriter:
             ValueError: If SQL cannot be rewritten (unsupported features, invalid references, etc.)
                        Only raised when strict=True
         """
+        ossie = self._compile_ossie_python(sql)
+        if ossie is not None:
+            return ossie
         sql = self._expand_yardstick_table_functions(sql.strip(), user_attributes=user_attributes)
         # Expose the attributes to the internal generate() calls for this rewrite.
         self._rewrite_user_attributes = user_attributes
@@ -476,6 +542,11 @@ class QueryRewriter:
         The explanation follows the same routing as rewrite() but returns
         structured planner state and candidate decisions instead of only SQL.
         """
+        ossie = self._compile_ossie_python(sql)
+        if ossie is not None:
+            return RewriteExplanation(
+                input_sql=sql, rewritten_sql=ossie, chosen_plan="ossie_relational", source_kind="ossie"
+            )
         sql = sql.strip()
         self._rewrite_user_attributes = user_attributes
 
@@ -5965,8 +6036,19 @@ class QueryRewriter:
             # "metrics" is a special virtual table for semantic layer
             if table_name == "metrics":
                 return True
-            # Check if this is a known model
-            return table_name in self.graph.models
+            # Ossie model schemas are logical namespaces; a physical relation
+            # with the same basename in another schema is ordinary SQL.
+            model = self.graph.models.get(table_name)
+            if model is not None and (model.metadata or {}).get("ossie_scope_name"):
+                from sidemantic.interchange.ossie.identifier import normalize_identifier
+
+                if table_expr.catalog:
+                    return False
+                if table_expr.db:
+                    return normalize_identifier(table_expr.args["db"].sql()) == normalize_identifier(
+                        model.metadata["ossie_scope_name"]
+                    )
+            return model is not None
 
         return False
 

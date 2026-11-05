@@ -51,6 +51,7 @@ struct CompileRequest {
 struct OssieCompileRequest {
     content: String,
     schema_revision: Option<String>,
+    sql: Option<String>,
     serialization: String,
     #[serde(default = "default_ossie_consumer_profile")]
     consumer_profile: String,
@@ -258,6 +259,16 @@ fn handle(request: Request) -> sidemantic::Result<Response> {
                     request.schema_revision.as_deref(),
                 )?
                 .into_graph()?;
+            if let Some(sql) = request.sql {
+                let sql = QueryRewriter::new(&graph)
+                    .rewrite_with_dialect(&sql, parse_dialect(&request.dialect)?)?;
+                return Ok(Response::Ok {
+                    sql: Some(sql),
+                    path: None,
+                    catalog: None,
+                    value: None,
+                });
+            }
             let query = SemanticQuery::new()
                 .with_metrics(request.metrics)
                 .with_dimensions(request.dimensions)

@@ -1456,6 +1456,7 @@ server_app.command("mcp")(mcp_serve)
 def rewrite(
     sql: str = typer.Argument(..., help="Semantic SQL query to rewrite, or - to read from stdin"),
     models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
+    ossie_scope: str = typer.Option(None, "--ossie-scope", help="Explicit Apache Ossie semantic-model scope"),
     connection: str = typer.Option(None, "--connection", help="Database connection string (sets SQL dialect)"),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file"),
     engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
@@ -1488,6 +1489,7 @@ def rewrite(
             fallback=fallback,
             enforce_visibility=enforce_visibility,
             use_preaggregations=use_preaggregations,
+            ossie_scope=ossie_scope,
         )
 
         from sidemantic.core.transport_security import rewrite_transport_sql

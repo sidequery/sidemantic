@@ -15,6 +15,9 @@ use crate::sql::SemanticQuery;
 type QueryPreparer<'a> = &'a dyn Fn(&SemanticGraph, &mut SemanticQuery) -> Result<()>;
 
 mod binding;
+mod ossie;
+mod ossie_discovery;
+mod ossie_relational;
 #[cfg(not(target_arch = "wasm32"))]
 mod parser_worker;
 mod policy;
@@ -104,6 +107,14 @@ impl<'a> QueryRewriter<'a> {
         output_dialect: DialectType,
     ) -> Result<String> {
         self.used_preaggregation.set(false);
+        if let Some(rewritten) = self.rewrite_ossie_discovery(sql, input_dialect, output_dialect)? {
+            return Ok(rewritten);
+        }
+        if let Some(rewritten) =
+            self.rewrite_ossie_relational(sql, input_dialect, output_dialect)?
+        {
+            return Ok(rewritten);
+        }
         if let Some(rewritten) = self.rewrite_yardstick(sql, input_dialect, output_dialect)? {
             return Ok(rewritten);
         }
@@ -119,7 +130,9 @@ impl<'a> QueryRewriter<'a> {
         }
 
         let mut rewritten_statements = Vec::new();
+        let statement_count = statements.len();
         for statement in statements {
+            let statement = self.bind_ossie_aggregate_query(statement, statement_count)?;
             let rewritten = self.rewrite_statement(statement)?;
             rewritten_statements.push(crate::semantic_input::dialects::emit(
                 rewritten,

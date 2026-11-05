@@ -1,0 +1,10 @@
+CREATE TABLE raw_customers(id INTEGER, region VARCHAR, segment VARCHAR);
+INSERT INTO raw_customers VALUES (1,'EAST','SMB'),(2,'EAST','ENT'),(3,'WEST','SMB'),(4,'NORTH','SMB'),(5,NULL,'SMB'),(6,'SOUTH','ENT');
+CREATE TABLE raw_orders(id INTEGER, customer_id INTEGER, amount INTEGER, status VARCHAR);
+INSERT INTO raw_orders VALUES (1,1,10,'paid'),(1,1,10,'paid'),(2,1,10,'open'),(3,2,30,'paid'),(4,3,40,'paid'),(5,999,50,'paid'),(6,NULL,60,'open'),(7,5,70,'paid'),(8,1,NULL,'paid');
+CREATE TABLE raw_tickets(id INTEGER, customer_id INTEGER, cost INTEGER);
+INSERT INTO raw_tickets VALUES (101,1,3),(102,1,7),(103,3,5),(104,4,11),(105,NULL,13),(106,5,NULL);
+CREATE TABLE raw_visits(id INTEGER, customer_id INTEGER);
+INSERT INTO raw_visits VALUES (201,4),(202,4),(203,5),(204,6);
+CREATE TABLE raw_unrelated(label VARCHAR,value INTEGER);
+INSERT INTO raw_unrelated VALUES ('elsewhere',9);

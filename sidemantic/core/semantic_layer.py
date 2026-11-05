@@ -2295,7 +2295,12 @@ class SemanticLayer:
             >>> layer.sql("SELECT orders.revenue, orders.status FROM orders WHERE orders.status = 'completed'")
         """
         from sidemantic.core.transport_security import rewrite_transport_sql
+        from sidemantic.sql.ossie_views import execute_ossie_view_ddl
         from sidemantic.sql.query_rewriter import yardstick_warnings_may_apply
+
+        handled, result = execute_ossie_view_ddl(self, query, user_attributes=user_attributes)
+        if handled:
+            return result
 
         # Recompile warning-sensitive queries so changing a warnings policy also
         # applies to repeated SQL, rather than silently returning cached rewrites.

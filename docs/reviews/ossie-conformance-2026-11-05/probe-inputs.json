@@ -1,0 +1,278 @@
+{
+  "filter_aggregate": {
+    "version": "0.2.0.dev0",
+    "name": "probe",
+    "datasets": [
+      {
+        "name": "orders",
+        "source": "orders",
+        "fields": [
+          {
+            "name": "amount",
+            "expression": {
+              "dialects": [
+                {
+                  "dialect": "OSSIE_SQL_2026",
+                  "expression": "amount"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "metrics": [
+      {
+        "name": "total",
+        "expression": {
+          "dialects": [
+            {
+              "dialect": "OSSIE_SQL_2026",
+              "expression": "SUM(orders.amount) FILTER (WHERE orders.amount > 10)"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "undeclared_model_field": {
+    "version": "0.2.0.dev0",
+    "name": "probe",
+    "datasets": [
+      {
+        "name": "orders",
+        "source": "orders",
+        "fields": [
+          {
+            "name": "amount",
+            "expression": {
+              "dialects": [
+                {
+                  "dialect": "OSSIE_SQL_2026",
+                  "expression": "amount"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "metrics": [
+      {
+        "name": "total",
+        "expression": {
+          "dialects": [
+            {
+              "dialect": "OSSIE_SQL_2026",
+              "expression": "SUM(orders.not_declared)"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "metric_reference": {
+    "version": "0.2.0.dev0",
+    "name": "probe",
+    "datasets": [
+      {
+        "name": "orders",
+        "source": "orders",
+        "fields": [
+          {
+            "name": "amount",
+            "expression": {
+              "dialects": [
+                {
+                  "dialect": "OSSIE_SQL_2026",
+                  "expression": "amount"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "metrics": [
+      {
+        "name": "total",
+        "expression": {
+          "dialects": [
+            {
+              "dialect": "OSSIE_SQL_2026",
+              "expression": "SUM(orders.amount)"
+            }
+          ]
+        }
+      },
+      {
+        "name": "double_total",
+        "expression": {
+          "dialects": [
+            {
+              "dialect": "OSSIE_SQL_2026",
+              "expression": "total * 2"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "empty_vendor": {
+    "version": "0.2.0.dev0",
+    "name": "probe",
+    "datasets": [
+      {
+        "name": "orders",
+        "source": "orders",
+        "fields": [
+          {
+            "name": "amount",
+            "expression": {
+              "dialects": [
+                {
+                  "dialect": "OSSIE_SQL_2026",
+                  "expression": "amount"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "metrics": [
+      {
+        "name": "total",
+        "expression": {
+          "dialects": [
+            {
+              "dialect": "OSSIE_SQL_2026",
+              "expression": "SUM(orders.amount)"
+            }
+          ]
+        }
+      }
+    ],
+    "custom_extensions": [
+      {
+        "vendor_name": "",
+        "data": ""
+      }
+    ]
+  },
+  "opaque_postgres_variant": {
+    "version": "0.2.0.dev0",
+    "name": "probe",
+    "datasets": [
+      {
+        "name": "orders",
+        "source": "orders",
+        "fields": [
+          {
+            "name": "amount",
+            "expression": {
+              "dialects": [
+                {
+                  "dialect": "OSSIE_SQL_2026",
+                  "expression": "amount"
+                },
+                {
+                  "dialect": "POSTGRES",
+                  "expression": "amount"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "metrics": [
+      {
+        "name": "total",
+        "expression": {
+          "dialects": [
+            {
+              "dialect": "OSSIE_SQL_2026",
+              "expression": "SUM(orders.amount)"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "dataset_metrics": {
+    "version": "0.2.0.dev0",
+    "name": "probe",
+    "datasets": [
+      {
+        "name": "orders",
+        "source": "orders",
+        "fields": [
+          {
+            "name": "amount",
+            "expression": {
+              "dialects": [
+                {
+                  "dialect": "OSSIE_SQL_2026",
+                  "expression": "amount"
+                }
+              ]
+            }
+          }
+        ],
+        "metrics": [
+          {
+            "name": "local_total",
+            "expression": {
+              "dialects": [
+                {
+                  "dialect": "OSSIE_SQL_2026",
+                  "expression": "SUM(amount)"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "metrics": [
+      {
+        "name": "total",
+        "expression": {
+          "dialects": [
+            {
+              "dialect": "OSSIE_SQL_2026",
+              "expression": "SUM(orders.amount)"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "portable_sql": {
+    "version": "0.2.0.dev0",
+    "name": "probe",
+    "datasets": [
+      {
+        "name": "orders",
+        "source": "orders",
+        "fields": [
+          {
+            "name": "amount",
+            "expression": {
+              "sql": "amount"
+            }
+          }
+        ]
+      }
+    ],
+    "metrics": [
+      {
+        "name": "total",
+        "expression": {
+          "sql": "SUM(orders.amount)"
+        }
+      }
+    ]
+  }
+}

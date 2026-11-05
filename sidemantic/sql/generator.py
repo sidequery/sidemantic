@@ -25,6 +25,7 @@ from sidemantic.sql.fragment import (
 )
 from sidemantic.sql.order_by import split_order_field
 from sidemantic.sql.parsing import parse_fragment as _parse_fragment
+from sidemantic.sql.rendering import render_sql
 from sidemantic.validation import QueryValidationError
 
 
@@ -240,6 +241,7 @@ class SQLGenerator:
                             if aggregation
                             else expression.sql(dialect=self.dialect),
                             "sql_is_complete": aggregation is None,
+                            "metadata": {**(metric.metadata or {}), "ossie_physical_aggregate_inputs": True},
                         }
                     )
                     replacements[owner] = model.model_copy(update={"metrics": [*model.metrics, leaf]})
@@ -690,6 +692,15 @@ class SQLGenerator:
         )
 
     def _cache_generate_result(self, cache_key: tuple[object, ...], sql: str) -> str:
+        if "OVER" in sql.upper() and any(
+            (model.metadata or {}).get("ossie_source_name") for model in self.graph.models.values()
+        ):
+            # Preserve portable window semantics at the final emission boundary:
+            # intermediate SQLGlot serializers may omit nominal-default NULLS
+            # clauses even on engines whose session can change that default.
+            parsed = _parse_fragment(sql, self.dialect)
+            if parsed.find(exp.Window) is not None:
+                sql = render_sql(parsed, dialect=self.dialect, pretty=True)
         if len(self._generate_cache) >= self._generate_cache_limit:
             self._generate_cache.pop(next(iter(self._generate_cache)))
         self._generate_cache[cache_key] = sql
@@ -1416,6 +1427,25 @@ class SQLGenerator:
         Returns:
             SQL query string
         """
+        from sidemantic.sql.ossie_wide import compile_ossie_wide_extended, is_latest_ossie_graph
+
+        if is_latest_ossie_graph(self.graph):
+            return compile_ossie_wide_extended(
+                self.graph,
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                aliases=aliases,
+                order_by=order_by,
+                limit=limit,
+                offset=offset,
+                dialect=self.dialect,
+                segments=segments,
+                parameters=parameters,
+                ungrouped=ungrouped,
+                use_preaggregations=use_preaggregations,
+                with_totals=with_totals,
+            )
         lowered = self._lower_ossie_aggregates() or self._lower_filtered_complete_aggregates()
         if lowered is not None:
             return lowered.generate(
@@ -5206,6 +5236,11 @@ class SQLGenerator:
                     if any(metric is mm for mm in m.metrics):
                         metric_model_name = m_name
                         break
+            if metric_model_name and (metric.metadata or {}).get("ossie_physical_aggregate_inputs"):
+                # These leaves already contain physical source expressions. Their
+                # input columns must use dedicated raw aliases, not logical field
+                # projections that would apply calculated fields a second time.
+                return self._build_complete_sql_expr(metric, metric_model_name, grouped=False)
             formula = metric.sql
             if metric_model_name:
                 cte_alias = self._quote_identifier(self._cte_name(metric_model_name))

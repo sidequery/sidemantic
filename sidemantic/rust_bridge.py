@@ -200,6 +200,72 @@ def compile_semantic_input(
     return sql
 
 
+def compile_ossie_wide_semantic_input(
+    graph: SemanticGraph,
+    query: dict,
+    *,
+    dialect: str = "duckdb",
+    input_dialect: str = "duckdb",
+    rust_module=None,
+) -> str:
+    """Compile the strict Ossie Layer 3 request through the native planner."""
+    from sidemantic.sql.ossie_wide import OssieWideQueryError
+
+    module = rust_module if rust_module is not None else get_rust_module()
+    try:
+        sql = _call_semantic_entrypoint(
+            module,
+            "compile_ossie_wide_with_semantic_input",
+            json.dumps(graph_to_semantic_input(graph, input_dialect=input_dialect), allow_nan=False),
+            json.dumps(query, allow_nan=False),
+            dialect,
+        )
+    except (ValueError, RuntimeError) as error:
+        match = re.search(r"\b(E_[A-Z_]+):\s*(.*)", str(error), re.DOTALL)
+        if match:
+            raise OssieWideQueryError(match[1], match[2]) from error
+        raise
+    if not isinstance(sql, str):
+        raise TypeError("Rust wide-table compiler returned a non-string SQL result")
+    return sql
+
+
+def compile_ossie_view_definition(
+    graph: SemanticGraph,
+    sql: str,
+    *,
+    dialect: str = "duckdb",
+    input_dialect: str = "duckdb",
+    rust_module=None,
+) -> dict:
+    """Compile a measure-preserving view with native schema descriptors."""
+    module = rust_module if rust_module is not None else get_rust_module()
+    result = _call_semantic_entrypoint(
+        module,
+        "compile_ossie_view_definition",
+        json.dumps(graph_to_semantic_input(graph, input_dialect=input_dialect), allow_nan=False),
+        sql,
+        dialect,
+    )
+    if isinstance(result, str):
+        result = json.loads(result)
+    if (
+        not isinstance(result, dict)
+        or not isinstance(result.get("sql"), str)
+        or not isinstance(result.get("columns"), list)
+    ):
+        raise TypeError("Rust view compiler returned an invalid schema result")
+    return result
+
+
+def compile_ossie_view_semantic_input(
+    graph: SemanticGraph, sql: str, *, dialect: str = "duckdb", rust_module=None
+) -> tuple[str, list[dict]]:
+    """Return the native view SQL and descriptors for the execution boundary."""
+    result = compile_ossie_view_definition(graph, sql, dialect=dialect, input_dialect=dialect, rust_module=rust_module)
+    return result["sql"], result["columns"]
+
+
 def validate_semantic_input(
     graph: SemanticGraph,
     metrics: list[str],

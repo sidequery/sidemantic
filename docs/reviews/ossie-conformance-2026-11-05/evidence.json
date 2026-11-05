@@ -1,0 +1,1024 @@
+{
+  "upstream_commit": "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1",
+  "sidemantic_commit": "641d443896b3174aa647c09f86ce301e251013d5",
+  "python_portability": [
+    {
+      "file": "compliance/portability/m0/m0_ansi_qualified.ossie.yaml",
+      "rows": [
+        [
+          "40.00"
+        ]
+      ],
+      "source_grade": {
+        "PORTABLE": 2
+      },
+      "graph_grade": {
+        "PORTABLE": 2
+      }
+    },
+    {
+      "file": "compliance/portability/m0/m0_ossiesql_qualified.ossie.yaml",
+      "rows": [
+        [
+          "40.00"
+        ]
+      ],
+      "source_grade": {
+        "PORTABLE": 2
+      },
+      "graph_grade": {
+        "RELABELED": 2
+      }
+    },
+    {
+      "file": "compliance/portability/m0/m0_sum_bare.ossie.yaml",
+      "rows": [
+        [
+          "40.00"
+        ]
+      ],
+      "source_grade": {
+        "PORTABLE": 2
+      },
+      "graph_grade": {
+        "REWRITTEN": 1,
+        "PORTABLE": 1
+      }
+    },
+    {
+      "file": "compliance/portability/m1/m1_scalar_field.ossie.yaml",
+      "rows": [
+        [
+          "40.00"
+        ]
+      ],
+      "source_grade": {
+        "PORTABLE": 3
+      },
+      "graph_grade": {
+        "PORTABLE": 3
+      }
+    },
+    {
+      "file": "compliance/portability/m2/m2_aggregates_bare.ossie.yaml",
+      "rows": [
+        [
+          "40.00",
+          4,
+          2,
+          13.333333333333334,
+          "10.00",
+          "20.00"
+        ]
+      ],
+      "source_grade": {
+        "PORTABLE": 9
+      },
+      "graph_grade": {
+        "REWRITTEN": 6,
+        "PORTABLE": 3
+      }
+    },
+    {
+      "file": "compliance/portability/m2/m2_aggregates_qualified.ossie.yaml",
+      "rows": [
+        [
+          "40.00",
+          4,
+          2,
+          13.333333333333334,
+          "10.00",
+          "20.00"
+        ]
+      ],
+      "source_grade": {
+        "PORTABLE": 9
+      },
+      "graph_grade": {
+        "PORTABLE": 9
+      }
+    },
+    {
+      "file": "compliance/portability/m3/m3_filtered_agg_bare.ossie.yaml",
+      "rows": [
+        [
+          "20.00"
+        ]
+      ],
+      "source_grade": {
+        "PORTABLE": 3
+      },
+      "graph_grade": {
+        "REWRITTEN": 1,
+        "PORTABLE": 2
+      }
+    },
+    {
+      "file": "compliance/portability/m3/m3_filtered_agg_qualified.ossie.yaml",
+      "rows": [
+        [
+          "20.00"
+        ]
+      ],
+      "source_grade": {
+        "PORTABLE": 3
+      },
+      "graph_grade": {
+        "PORTABLE": 3
+      }
+    }
+  ],
+  "python_probes": {
+    "portable_sql": {
+      "upstream": [],
+      "parse_valid": false,
+      "lower_valid": false,
+      "scopes": 0,
+      "diagnostics": [
+        {
+          "code": "ossie.schema.additional_properties",
+          "pointer": "/datasets/0/fields/0/expression",
+          "message": "Additional properties are not allowed ('sql' was unexpected)"
+        },
+        {
+          "code": "ossie.schema.required",
+          "pointer": "/datasets/0/fields/0/expression",
+          "message": "'dialects' is a required property"
+        },
+        {
+          "code": "ossie.schema.additional_properties",
+          "pointer": "/metrics/0/expression",
+          "message": "Additional properties are not allowed ('sql' was unexpected)"
+        },
+        {
+          "code": "ossie.schema.required",
+          "pointer": "/metrics/0/expression",
+          "message": "'dialects' is a required property"
+        }
+      ]
+    },
+    "dataset_metrics": {
+      "upstream": [],
+      "parse_valid": false,
+      "lower_valid": false,
+      "scopes": 0,
+      "diagnostics": [
+        {
+          "code": "ossie.schema.additional_properties",
+          "pointer": "/datasets/0",
+          "message": "Additional properties are not allowed ('metrics' was unexpected)"
+        }
+      ]
+    },
+    "opaque_postgres_variant": {
+      "upstream": [],
+      "parse_valid": false,
+      "lower_valid": false,
+      "scopes": 0,
+      "diagnostics": [
+        {
+          "code": "ossie.schema.enum",
+          "pointer": "/datasets/0/fields/0/expression/dialects/1/dialect",
+          "message": "'POSTGRES' is not one of ['ANSI_SQL', 'SNOWFLAKE', 'MDX', 'TABLEAU', 'DATABRICKS', 'MAQL', 'BIGQUERY', 'SIGMA', 'THOUGHTSPOT', 'DAX', 'OSSIE_SQL_2026']"
+        }
+      ]
+    },
+    "empty_vendor": {
+      "upstream": [
+        "[Schema] custom_extensions -> 0 -> vendor_name: '' should be non-empty"
+      ],
+      "parse_valid": true,
+      "lower_valid": true,
+      "scopes": 1,
+      "diagnostics": []
+    },
+    "metric_reference": {
+      "upstream": [
+        "[Reference] Warning: Metric 'double_total' in model 'probe' (OSSIE_SQL_2026): 'total' names the metric 'total'; metric expressions cannot refer to other metrics"
+      ],
+      "parse_valid": true,
+      "lower_valid": true,
+      "scopes": 1,
+      "diagnostics": []
+    },
+    "model_unqualified_field": {
+      "upstream": [
+        "[Reference] Warning: Metric 'total' in model 'probe' (OSSIE_SQL_2026): 'amount' is not qualified; metric expressions refer to fields as dataset.field"
+      ],
+      "parse_valid": true,
+      "lower_valid": true,
+      "scopes": 1,
+      "diagnostics": []
+    },
+    "undeclared_model_field": {
+      "upstream": [
+        "[Reference] Warning: Metric 'total' in model 'probe' (OSSIE_SQL_2026): 'orders.not_declared' is not a declared field of dataset 'orders'"
+      ],
+      "parse_valid": true,
+      "lower_valid": true,
+      "scopes": 1,
+      "diagnostics": []
+    },
+    "filter_aggregate": {
+      "upstream": [],
+      "parse_valid": true,
+      "lower_valid": false,
+      "scopes": 0,
+      "diagnostics": [
+        {
+          "code": "ossie.lowering.expression_invalid",
+          "pointer": "/metrics/0/expression",
+          "message": "Metric 'total' is not one executable duckdb SQL expression: OSSIE_SQL_2026 expressions cannot contain Where"
+        }
+      ]
+    },
+    "scott_model.ossie.yaml": {
+      "parse_valid": false,
+      "lower_valid": false,
+      "scopes": 0,
+      "diagnostics": [
+        {
+          "code": "ossie.schema.additional_properties",
+          "pointer": "/datasets/0",
+          "message": "Additional properties are not allowed ('metrics' was unexpected)"
+        },
+        {
+          "code": "ossie.schema.additional_properties",
+          "pointer": "/datasets/1",
+          "message": "Additional properties are not allowed ('metrics' was unexpected)"
+        },
+        {
+          "code": "ossie.schema.additional_properties",
+          "pointer": "/datasets/2",
+          "message": "Additional properties are not allowed ('metrics' was unexpected)"
+        }
+      ]
+    },
+    "flights.semantic_model.yaml": {
+      "parse_valid": false,
+      "lower_valid": false,
+      "scopes": 0,
+      "diagnostics": [
+        {
+          "code": "ossie.schema.additional_properties",
+          "pointer": "/datasets/0/fields/0/expression",
+          "message": "Additional properties are not allowed ('sql' was unexpected)"
+        },
+        {
+          "code": "ossie.schema.required",
+          "pointer": "/datasets/0/fields/0/expression",
+          "message": "'dialects' is a required property"
+        },
+        {
+          "code": "ossie.schema.additional_properties",
+          "pointer": "/datasets/0/fields/1/expression",
+          "message": "Additional properties are not allowed ('sql' was unexpected)"
+        },
+        {
+          "code": "ossie.schema.required",
+          "pointer": "/datasets/0/fields/1/expression",
+          "message": "'dialects' is a required property"
+        },
+        {
+          "code": "ossie.schema.additional_properties",
+          "pointer": "/datasets/0/fields/2/expression",
+          "message": "Additional properties are not allowed ('sql' was unexpected)"
+        },
+        {
+          "code": "ossie.schema.required",
+          "pointer": "/datasets/0/fields/2/expression",
+          "message": "'dialects' is a required property"
+        }
+      ]
+    },
+    "flights.ontology.yaml": {
+      "parse_valid": true,
+      "lower_valid": true,
+      "scopes": 0,
+      "diagnostics": []
+    },
+    "flights.mapping.yaml": {
+      "parse_valid": false,
+      "lower_valid": false,
+      "scopes": 0,
+      "diagnostics": [
+        {
+          "code": "ossie.schema.additional_properties",
+          "pointer": "",
+          "message": "Additional properties are not allowed ('concept_mappings', 'ontology_ref', 'semantic_model_ref' were unexpected)"
+        },
+        {
+          "code": "ossie.schema.required",
+          "pointer": "",
+          "message": "'datasets' is a required property"
+        }
+      ]
+    }
+  },
+  "rust_portability": [
+    {
+      "fixture": "compliance/portability/m0/m0_ansi_qualified.ossie.yaml",
+      "route": "native_rust",
+      "rows": [
+        [
+          "60.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m0/m0_ansi_qualified.ossie.yaml",
+      "route": "public_rust",
+      "rows": [
+        [
+          "60.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m0/m0_ossiesql_qualified.ossie.yaml",
+      "route": "native_rust",
+      "rows": [
+        [
+          "60.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m0/m0_ossiesql_qualified.ossie.yaml",
+      "route": "public_rust",
+      "rows": [
+        [
+          "60.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m0/m0_sum_bare.ossie.yaml",
+      "route": "native_rust",
+      "rows": [
+        [
+          "60.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m0/m0_sum_bare.ossie.yaml",
+      "route": "public_rust",
+      "rows": [
+        [
+          "60.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m1/m1_scalar_field.ossie.yaml",
+      "route": "native_rust",
+      "rows": [
+        [
+          "60.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m1/m1_scalar_field.ossie.yaml",
+      "route": "public_rust",
+      "rows": [
+        [
+          "60.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m2/m2_aggregates_bare.ossie.yaml",
+      "route": "native_rust",
+      "rows": [
+        [
+          "60.00",
+          4,
+          2,
+          20.0,
+          "10.00",
+          "30.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m2/m2_aggregates_bare.ossie.yaml",
+      "route": "public_rust",
+      "rows": [
+        [
+          "60.00",
+          4,
+          2,
+          20.0,
+          "10.00",
+          "30.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m2/m2_aggregates_qualified.ossie.yaml",
+      "route": "native_rust",
+      "rows": [
+        [
+          "60.00",
+          4,
+          2,
+          20.0,
+          "10.00",
+          "30.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m2/m2_aggregates_qualified.ossie.yaml",
+      "route": "public_rust",
+      "rows": [
+        [
+          "60.00",
+          4,
+          2,
+          20.0,
+          "10.00",
+          "30.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m3/m3_filtered_agg_bare.ossie.yaml",
+      "route": "native_rust",
+      "rows": [
+        [
+          "40.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m3/m3_filtered_agg_bare.ossie.yaml",
+      "route": "public_rust",
+      "rows": [
+        [
+          "40.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m3/m3_filtered_agg_qualified.ossie.yaml",
+      "route": "native_rust",
+      "rows": [
+        [
+          "40.00"
+        ]
+      ],
+      "status": "ok"
+    },
+    {
+      "fixture": "compliance/portability/m3/m3_filtered_agg_qualified.ossie.yaml",
+      "route": "public_rust",
+      "rows": [
+        [
+          "40.00"
+        ]
+      ],
+      "status": "ok"
+    }
+  ],
+  "native_rust_windows": [
+    {
+      "expression": "ASC",
+      "session": "NULLS_LAST",
+      "rows": [
+        [
+          5,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          null,
+          3
+        ]
+      ]
+    },
+    {
+      "expression": "ASC",
+      "session": "NULLS_FIRST",
+      "rows": [
+        [
+          null,
+          1
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          10,
+          3
+        ]
+      ]
+    },
+    {
+      "expression": "ASC NULLS FIRST",
+      "session": "NULLS_LAST",
+      "rows": [
+        [
+          null,
+          1
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          10,
+          3
+        ]
+      ]
+    },
+    {
+      "expression": "ASC NULLS FIRST",
+      "session": "NULLS_FIRST",
+      "rows": [
+        [
+          null,
+          1
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          10,
+          3
+        ]
+      ]
+    },
+    {
+      "expression": "ASC NULLS LAST",
+      "session": "NULLS_LAST",
+      "rows": [
+        [
+          5,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          null,
+          3
+        ]
+      ]
+    },
+    {
+      "expression": "ASC NULLS LAST",
+      "session": "NULLS_FIRST",
+      "rows": [
+        [
+          null,
+          1
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          10,
+          3
+        ]
+      ]
+    },
+    {
+      "expression": "DESC",
+      "session": "NULLS_LAST",
+      "rows": [
+        [
+          10,
+          1
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          null,
+          3
+        ]
+      ]
+    },
+    {
+      "expression": "DESC",
+      "session": "NULLS_FIRST",
+      "rows": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    },
+    {
+      "expression": "DESC NULLS FIRST",
+      "session": "NULLS_LAST",
+      "rows": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    },
+    {
+      "expression": "DESC NULLS FIRST",
+      "session": "NULLS_FIRST",
+      "rows": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    },
+    {
+      "expression": "DESC NULLS LAST",
+      "session": "NULLS_LAST",
+      "rows": [
+        [
+          10,
+          1
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          null,
+          3
+        ]
+      ]
+    },
+    {
+      "expression": "DESC NULLS LAST",
+      "session": "NULLS_FIRST",
+      "rows": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    }
+  ],
+  "public_windows": [
+    {
+      "route": "python",
+      "order": "ASC",
+      "session": "NULLS_LAST",
+      "result": [
+        [
+          5,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          null,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "python",
+      "order": "ASC",
+      "session": "NULLS_FIRST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          10,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "python",
+      "order": "DESC",
+      "session": "NULLS_LAST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "python",
+      "order": "DESC",
+      "session": "NULLS_FIRST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "python",
+      "order": "ASC NULLS LAST",
+      "session": "NULLS_LAST",
+      "result": [
+        [
+          5,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          null,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "python",
+      "order": "ASC NULLS LAST",
+      "session": "NULLS_FIRST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          10,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "python",
+      "order": "DESC NULLS FIRST",
+      "session": "NULLS_LAST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "python",
+      "order": "DESC NULLS FIRST",
+      "session": "NULLS_FIRST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "public_rust",
+      "order": "ASC",
+      "session": "NULLS_LAST",
+      "result": [
+        [
+          5,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          null,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "public_rust",
+      "order": "ASC",
+      "session": "NULLS_FIRST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          10,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "public_rust",
+      "order": "DESC",
+      "session": "NULLS_LAST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "public_rust",
+      "order": "DESC",
+      "session": "NULLS_FIRST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "public_rust",
+      "order": "ASC NULLS LAST",
+      "session": "NULLS_LAST",
+      "result": [
+        [
+          5,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          null,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "public_rust",
+      "order": "ASC NULLS LAST",
+      "session": "NULLS_FIRST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          5,
+          2
+        ],
+        [
+          10,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "public_rust",
+      "order": "DESC NULLS FIRST",
+      "session": "NULLS_LAST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    },
+    {
+      "route": "public_rust",
+      "order": "DESC NULLS FIRST",
+      "session": "NULLS_FIRST",
+      "result": [
+        [
+          null,
+          1
+        ],
+        [
+          10,
+          2
+        ],
+        [
+          5,
+          3
+        ]
+      ]
+    }
+  ]
+}

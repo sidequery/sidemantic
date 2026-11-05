@@ -240,7 +240,18 @@ def load_from_directory(
     # Collect parsed definitions first, then register in dependency order.
     all_models = {}
     all_metrics = {}
+    all_metric_owners = {}
     all_parameters = {}
+
+    def collect_metrics(graph):
+        all_metrics.update(graph.metrics)
+        for name in graph.metrics:
+            owner = graph.metric_owners.get(name)
+            if owner is None:
+                all_metric_owners.pop(name, None)
+            else:
+                all_metric_owners[name] = owner
+
     consumption_catalogs = {name: {} for name in ("explores", "saved_queries", "table_calculations")}
     # Snowflake table-scoped metrics whose table lives in another file, held as
     # (table_name, Metric) pairs so same-named scoped metrics never collide.
@@ -284,7 +295,7 @@ def load_from_directory(
                 if not hasattr(model, "_source_file"):
                     model._source_file = str(tmdl_root.relative_to(directory))
             _merge_models(all_models, graph.models)
-            all_metrics.update(graph.metrics)
+            collect_metrics(graph)
             all_parameters.update(graph.parameters)
         except Exception as e:
             _append_import_warning(
@@ -329,7 +340,7 @@ def load_from_directory(
             # _drop_non_registerable_models).
             template_target_names |= {n for n, m in graph.models.items() if not _is_registerable_model(m)}
             _merge_models(all_models, graph.models)
-            all_metrics.update(graph.metrics)
+            collect_metrics(graph)
             all_parameters.update(graph.parameters)
         except Exception as e:
             _append_import_warning(
@@ -385,7 +396,7 @@ def load_from_directory(
             # The adapter has already resolved all intra-Malloy conflicts. This
             # merge only arbitrates names against other semantic formats.
             _merge_models(all_models, graph.models)
-            all_metrics.update(graph.metrics)
+            collect_metrics(graph)
             all_parameters.update(graph.parameters)
         except Exception as e:
             error_source = malloy_source
@@ -618,7 +629,7 @@ def load_from_directory(
                 # still be stripped even when the name is reused by a registerable model.
                 template_target_names |= {n for n, m in graph.models.items() if not _is_registerable_model(m)}
                 _merge_models(all_models, graph.models)
-                all_metrics.update(graph.metrics)
+                collect_metrics(graph)
                 all_parameters.update(graph.parameters)
                 all_pending_table_metrics.extend(getattr(graph, "_pending_table_metrics", []))
                 all_pending_relationships.extend(getattr(graph, "_pending_relationships", []))
@@ -671,6 +682,8 @@ def load_from_directory(
     for metric in all_metrics.values():
         if metric.name not in layer.graph.metrics:
             layer.add_metric(metric)
+            if metric.name in all_metric_owners:
+                layer.graph.metric_owners[metric.name] = all_metric_owners[metric.name]
 
     for parameter in all_parameters.values():
         if parameter.name not in layer.graph.parameters:

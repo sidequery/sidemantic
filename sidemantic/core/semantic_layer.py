@@ -1381,6 +1381,53 @@ class SemanticLayer:
                 )
         return self._freeze_current_time_sql(self._apply_post_process(inner_sql, post_process), dialect or self.dialect)
 
+    def compile_ossie_wide(
+        self, query: dict, *, dialect: str | None = None, user_attributes: dict | None = None
+    ) -> str:
+        """Compile an Ossie Layer 3 dimensions/metrics/filter request.
+
+        This strict interface applies the imported model's directed relationship
+        and independent-population semantics. It accepts only the draft's JSON
+        request properties; native query extensions remain on ``compile``.
+        """
+        from sidemantic.core.transport_security import controls_are_active
+        from sidemantic.rust_bridge import compile_ossie_wide_semantic_input
+        from sidemantic.sql.ossie_wide import OssieWideQueryError, compile_ossie_wide_query
+
+        if controls_are_active(self) or user_attributes is not None:
+            raise OssieWideQueryError("E_INVALID_QUERY", "The strict wide-table interface has no security context")
+        target = dialect or self.dialect
+        self.last_engine_selection = None
+        if self._use_rust_sql_generator:
+            try:
+                if self._rust_module is None:
+                    raise RustBackendUnavailableError(
+                        self._rust_unavailable_reason or "Rust SQL generator backend is not initialized"
+                    )
+                sql = compile_ossie_wide_semantic_input(
+                    self.graph,
+                    query,
+                    dialect=target,
+                    input_dialect=self.dialect,
+                    rust_module=self._rust_module,
+                )
+            except (RustBackendUnavailableError, UnsupportedSemanticFeaturesError) as error:
+                if self._rust_no_fallback or self._strict_rust_sql_generator_entrypoint:
+                    raise
+                self.last_engine_selection = {"engine": "python", "reason": str(error)}
+            else:
+                self.last_engine_selection = {"engine": "rust", "reason": None}
+                return self._freeze_current_time_sql(sql, target)
+        if self.last_engine_selection is None:
+            self.last_engine_selection = {"engine": "python", "reason": None}
+        return self._freeze_current_time_sql(
+            compile_ossie_wide_query(self.graph, query, target, input_dialect=self.dialect), target
+        )
+
+    def query_ossie_wide(self, query: dict, *, user_attributes: dict | None = None):
+        """Execute a strict Ossie Layer 3 request with this layer's adapter."""
+        return self.adapter.execute(self.compile_ossie_wide(query, user_attributes=user_attributes))
+
     def _freeze_current_time_sql(self, sql: str, dialect: str | None = None) -> str:
         """Freeze current-time functions in compiled query SQL when enabled for ``dialect``.
 
@@ -2295,7 +2342,12 @@ class SemanticLayer:
             >>> layer.sql("SELECT orders.revenue, orders.status FROM orders WHERE orders.status = 'completed'")
         """
         from sidemantic.core.transport_security import rewrite_transport_sql
+        from sidemantic.sql.ossie_views import execute_ossie_view_ddl
         from sidemantic.sql.query_rewriter import yardstick_warnings_may_apply
+
+        handled, result = execute_ossie_view_ddl(self, query, user_attributes=user_attributes)
+        if handled:
+            return result
 
         # Recompile warning-sensitive queries so changing a warnings policy also
         # applies to repeated SQL, rather than silently returning cached rewrites.

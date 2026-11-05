@@ -1,0 +1,38 @@
+import json, importlib.util, sys, os
+from pathlib import Path
+from sidemantic import SemanticLayer, Model, Metric, Dimension
+from sidemantic.interchange.ossie import synthesize_ossie_document
+
+root = Path(os.environ.get("OSSIE_UPSTREAM", "/workspace/ossie-latest"))
+layer = SemanticLayer(engine="python", auto_register=False)
+try:
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            dimensions=[Dimension(name="amount", type="numeric")],
+            metrics=[
+                Metric(name="total", agg="sum", sql="amount"),
+                Metric(name="double_total", type="derived", sql="total * 2"),
+            ],
+        )
+    )
+    r = synthesize_ossie_document(layer.graph, scope_name="native", expression_dialect="ANSI_SQL", portable_only=True)
+    assert r.valid, r.diagnostics
+    d = r.document.to_parsed_data()
+    s = importlib.util.spec_from_file_location("upstream", root / "validation/validate.py")
+    v = importlib.util.module_from_spec(s)
+    sys.modules["upstream"] = v
+    s.loader.exec_module(v)
+    print(
+        json.dumps(
+            {
+                "export_valid": r.valid,
+                "metrics": d["metrics"],
+                "upstream": v.validate_document(d, json.loads((root / "core-spec/ossie-schema.json").read_text())),
+            },
+            indent=2,
+        )
+    )
+finally:
+    layer.adapter.close()

@@ -505,8 +505,11 @@ def validate_model(model: "Model") -> list[str]:
                 f"Must be one of: categorical, time, boolean, numeric"
             )
 
-        # Time dimensions should have granularity
-        if dim.type == "time" and not dim.granularity:
+        # Ossie declares temporal field types independently of query grain.
+        # Its validated source fields must retain their original values rather
+        # than acquiring a fabricated default truncation during CLI loading.
+        ossie_field = "ossie_source_kind" in (model.metadata or {}) and "ossie_source_name" in (dim.metadata or {})
+        if dim.type == "time" and not dim.granularity and not ossie_field:
             errors.append(f"Model '{model.name}': time dimension '{dim.name}' should have a granularity defined")
 
     # Check that measures have valid aggregation types

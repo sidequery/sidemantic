@@ -1,0 +1,104 @@
+import sys, json, copy
+from pathlib import Path
+
+sys.path.insert(0, "/workspace/sidemantic")
+import yaml, duckdb, sidemantic_rs
+from tests.rust_layer_adapter import _rust_request, RustRuntimeSemanticLayer
+from sidemantic.interchange.ossie import parse_ossie_document, lower_ossie_document, OssieParseOptions
+
+root = Path("/workspace/ossie-latest")
+results = []
+for path in sorted((root / "compliance/portability").rglob("*.ossie.yaml")):
+    d = yaml.safe_load(path.read_text())
+    metrics = [m["name"] for m in d.get("metrics", [])]
+    name = str(path.relative_to(root))
+    # Bind the fixture's unmodified three-part source to a deterministic in-memory dataset.
+    ddl = "ATTACH ':memory:' AS samples; CREATE SCHEMA samples.sales; CREATE TABLE samples.sales.orders(amount DECIMAL(12,2), order_id INT, customer_id INT, status VARCHAR); INSERT INTO samples.sales.orders VALUES (10,1,1,'completed'), (20,2,1,'pending'), (30,3,2,'completed'), (NULL,4,2,'completed')"
+    for route in ["native_rust", "public_rust"]:
+        row = {"fixture": name, "route": route}
+        try:
+            if route == "native_rust":
+                r = _rust_request(
+                    {
+                        "action": "ossie_compile",
+                        "content": path.read_text(),
+                        "serialization": "yaml",
+                        "target": "DUCKDB",
+                        "dialect": "duckdb",
+                        "metrics": metrics,
+                    }
+                )
+                if r["status"] != "ok":
+                    raise ValueError(r.get("error", r))
+                con = duckdb.connect()
+                con.execute(ddl)
+                row["sql"] = r["sql"]
+                row["rows"] = con.execute(r["sql"]).fetchall()
+                con.close()
+            else:
+                p = parse_ossie_document(
+                    path.read_bytes(), options=OssieParseOptions(target_dialect="duckdb", validate_schema=True)
+                )
+                l = lower_ossie_document(p)
+                if not l.valid:
+                    raise ValueError(str(l.diagnostics))
+                layer = RustRuntimeSemanticLayer.from_catalog(l.catalog, auto_register=False)
+                layer.adapter.execute(ddl)
+                row["rows"] = layer.query(metrics=metrics).fetchall()
+                row["sql"] = layer.compile(metrics=metrics)
+                layer.adapter.close()
+            row["status"] = "ok"
+        except Exception as e:
+            row.update(status="error", error=str(e))
+        results.append(row)
+    print(name, [(x["route"], x["status"], str(x.get("rows", x.get("error")))[:200]) for x in results[-2:]], flush=True)
+base = {
+    "version": "0.2.0.dev0",
+    "name": "probe",
+    "datasets": [
+        {
+            "name": "orders",
+            "source": "orders",
+            "fields": [
+                {"name": "amount", "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "amount"}]}}
+            ],
+        }
+    ],
+}
+probes = {}
+d = copy.deepcopy(base)
+d["datasets"][0]["metrics"] = [
+    {"name": "total", "expression": {"dialects": [{"dialect": "OSSIE_SQL_2026", "expression": "SUM(amount)"}]}}
+]
+probes["dataset_metrics"] = d
+d = copy.deepcopy(base)
+d["datasets"][0]["fields"][0]["expression"] = {"sql": "amount"}
+probes["expression_sql"] = d
+d = copy.deepcopy(base)
+d["datasets"][0]["fields"][0]["expression"]["dialects"].append({"dialect": "POSTGRES", "expression": "amount"})
+probes["postgres_with_ansi_fallback"] = d
+d = copy.deepcopy(base)
+d["metrics"] = [
+    {
+        "name": "filtered",
+        "expression": {
+            "dialects": [
+                {"dialect": "OSSIE_SQL_2026", "expression": "SUM(orders.amount) FILTER (WHERE orders.amount > 10)"}
+            ]
+        },
+    }
+]
+probes["filter_aggregate"] = d
+for name, d in probes.items():
+    row = {
+        "probe": name,
+        "document": d,
+        "native_validation": json.loads(sidemantic_rs.ossie_validate(json.dumps(d), "json")),
+    }
+    try:
+        row["native_catalog"] = json.loads(sidemantic_rs.ossie_parse_catalog(json.dumps(d), "json", target="DUCKDB"))
+    except Exception as e:
+        row["native_error"] = str(e)
+    results.append(row)
+    print(name, row["native_validation"]["valid"], row.get("native_error", "imported")[:500], flush=True)
+Path("/tmp/ossie-rust-upstream-results.json").write_text(json.dumps(results, indent=2, default=str))

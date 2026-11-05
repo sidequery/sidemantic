@@ -20,6 +20,7 @@ from sidemantic.interchange.ossie.documents import (
     OssieDocument,
     OssieDocumentSource,
     OssieLogicalDocument,
+    OssieMappingDocument,
     OssieOntologyDocument,
     UnsupportedOssieDocument,
     is_logical_document_data,
@@ -276,9 +277,10 @@ def _classify_document(
             "ossie.document.root_type",
         )
 
+    has_mapping_root = any(key in parsed for key in ("ontology_ref", "semantic_model_ref", "concept_mappings"))
     has_logical_root = is_logical_document_data(parsed)
     has_ontology_root = "ontology" in parsed or "ontology_mappings" in parsed
-    if has_logical_root and has_ontology_root:
+    if sum((has_logical_root, has_ontology_root, has_mapping_root)) > 1:
         reason = "The document mixes logical semantic_model and ontology root families"
         return (
             UnsupportedOssieDocument(
@@ -289,6 +291,8 @@ def _classify_document(
             ),
             "ossie.document.family_mixed",
         )
+    if has_mapping_root:
+        return OssieMappingDocument(canonical_data=parsed, serialization=serialization, source=source), None
     if has_logical_root:
         return (
             OssieLogicalDocument(canonical_data=parsed, serialization=serialization, source=source),
@@ -376,6 +380,8 @@ def _schema_profile_name(document: OssieDocument) -> str | None:
         return f"logical-{version}"
     if isinstance(document, OssieOntologyDocument):
         return f"ontology-{version}"
+    if isinstance(document, OssieMappingDocument):
+        return f"mapping-{version}"
     return None
 
 

@@ -89,7 +89,100 @@ fn prepare_source_literals(sql: &str) -> Result<String, String> {
     Ok(prepared)
 }
 
+fn validate_filter_populations(
+    arguments: &serde_json::Value,
+    predicate: &serde_json::Value,
+) -> Result<(), String> {
+    fn datasets(value: &serde_json::Value, names: &mut std::collections::BTreeSet<String>) {
+        if let Some(column) = value.get("column") {
+            if let Some(name) = column["table"]["name"].as_str() {
+                names.insert(name.to_ascii_uppercase());
+            }
+        }
+        match value {
+            serde_json::Value::Object(fields) => {
+                for child in fields.values() {
+                    datasets(child, names);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for child in values {
+                    datasets(child, names);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut inputs = std::collections::BTreeSet::new();
+    let mut predicates = std::collections::BTreeSet::new();
+    datasets(arguments, &mut inputs);
+    datasets(predicate, &mut predicates);
+    if predicates.len() > 1
+        || (!inputs.is_empty() && !predicates.is_empty() && inputs != predicates)
+    {
+        return Err(
+            "FILTER predicates must reference the same dataset as the aggregate inputs".into(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_node(node: &Expression) -> Result<(), String> {
+    if let Expression::AggregateFunction(function) = node {
+        if function.filter.is_some() {
+            // The parser wraps any function followed by FILTER as an aggregate,
+            // including known scalar functions. Recheck the unmodified call.
+            let arguments = function
+                .args
+                .iter()
+                .map(source_sql)
+                .collect::<polyglot_sql::Result<Vec<_>>>()
+                .map_err(|error| error.to_string())?
+                .join(", ");
+            let original = parse_source(&format!("{}({arguments})", function.name))
+                .map_err(|error| error.to_string())?;
+            if !crate::core::is_aggregate_ast_kind(&function.name.to_ascii_lowercase())
+                && !matches!(
+                    function.name.to_ascii_uppercase().as_str(),
+                    "PERCENTILE_CONT" | "PERCENTILE_DISC" | "CORR" | "COVAR_POP" | "COVAR_SAMP"
+                )
+                && !crate::core::is_aggregate_ast_node(
+                    &serde_json::to_value(original).map_err(|error| error.to_string())?,
+                )
+            {
+                return Err("FILTER requires an aggregate expression".into());
+            }
+        }
+    }
+    if let Expression::Filter(filter) = node {
+        let aggregate = serde_json::to_value(&filter.this).map_err(|error| error.to_string())?;
+        let aggregate = aggregate
+            .get("within_group")
+            .and_then(|group| group.get("this"))
+            .unwrap_or(&aggregate);
+        if !crate::core::is_aggregate_ast_node(aggregate) {
+            return Err("FILTER requires an aggregate expression".into());
+        }
+        validate_filter_populations(
+            aggregate,
+            &serde_json::to_value(&filter.expression).map_err(|error| error.to_string())?,
+        )?;
+    }
+    let value = serde_json::to_value(node).map_err(|error| error.to_string())?;
+    if crate::core::is_aggregate_ast_node(&value) {
+        if let Some(aggregate) = value
+            .as_object()
+            .and_then(|fields| fields.values().next())
+            .and_then(serde_json::Value::as_object)
+        {
+            if let Some(predicate) = aggregate.get("filter").filter(|value| !value.is_null()) {
+                let mut inputs = aggregate.clone();
+                inputs.remove("filter");
+                validate_filter_populations(&serde_json::Value::Object(inputs), predicate)?;
+            }
+        }
+    }
+
     if polyglot_sql::is_ddl(node)
         || matches!(
             node,
@@ -440,11 +533,38 @@ fn lower_ossie_sql_inner(sql: &str, target: DialectType) -> Result<String, Strin
         Ok(())
     }
     let mut value = serde_json::to_value(expression).map_err(|error| error.to_string())?;
+    fn pin_portable_order(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if fields.contains_key("this")
+                    && fields.contains_key("desc")
+                    && fields
+                        .get("nulls_first")
+                        .is_some_and(serde_json::Value::is_null)
+                {
+                    fields.insert("nulls_first".into(), fields["desc"].clone());
+                }
+                for child in fields.values_mut() {
+                    pin_portable_order(child);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for child in values {
+                    pin_portable_order(child);
+                }
+            }
+            _ => {}
+        }
+    }
+    pin_portable_order(&mut value);
     rewrite(&mut value, target, &dialect)?;
     let expression = serde_json::from_value(value).map_err(|error| error.to_string())?;
-    dialect
-        .generate_with_source(&expression, DialectType::Snowflake)
-        .map_err(|error| error.to_string())
+    crate::semantic_input::dialects::generate_preserving_null_order(
+        &expression,
+        target,
+        DialectType::Snowflake,
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

@@ -1,0 +1,58 @@
+import sys, json
+
+sys.path.insert(0, "/workspace/sidemantic")
+from tests.rust_layer_adapter import _rust_request
+import duckdb
+
+rows = []
+for direction in ["ASC", "DESC"]:
+    for placement in ["", " NULLS FIRST", " NULLS LAST"]:
+        d = {
+            "version": "0.2.0.dev0",
+            "name": "win",
+            "datasets": [
+                {
+                    "name": "orders",
+                    "source": "orders",
+                    "fields": [
+                        {
+                            "name": "amount",
+                            "expression": {"dialects": [{"dialect": "OSSIE_SQL_2026", "expression": "amount"}]},
+                        },
+                        {
+                            "name": "rank",
+                            "expression": {
+                                "dialects": [
+                                    {
+                                        "dialect": "OSSIE_SQL_2026",
+                                        "expression": f"ROW_NUMBER() OVER (ORDER BY amount {direction}{placement})",
+                                    }
+                                ]
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+        r = _rust_request(
+            {
+                "action": "ossie_compile",
+                "content": json.dumps(d),
+                "serialization": "json",
+                "target": "DUCKDB",
+                "dialect": "duckdb",
+                "dimensions": ["orders.amount", "orders.rank"],
+                "order_by": ["orders.rank"],
+            }
+        )
+        for setting in ["NULLS_LAST", "NULLS_FIRST"]:
+            out = {"expression": f"{direction}{placement}", "session": setting, "response": r}
+            if r["status"] == "ok":
+                c = duckdb.connect()
+                c.execute("create table orders(amount int); insert into orders values (10),(NULL),(5)")
+                c.execute(f"SET default_null_order='{setting}'")
+                out["rows"] = c.execute(r["sql"]).fetchall()
+                c.close()
+            rows.append(out)
+            print(out, flush=True)
+open("/tmp/ossie-rust-window-results.json", "w").write(json.dumps(rows, indent=2))

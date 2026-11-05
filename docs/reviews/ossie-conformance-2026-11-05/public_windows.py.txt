@@ -1,0 +1,48 @@
+import sys, json
+
+sys.path.insert(0, "/workspace/sidemantic")
+from tests.interchange.ossie.test_ossie_engine_conformance import _query
+
+rows = []
+for route in ["python", "public_rust"]:
+    for order in ["ASC", "DESC", "ASC NULLS LAST", "DESC NULLS FIRST"]:
+        d = {
+            "version": "0.2.0.dev0",
+            "name": "win",
+            "datasets": [
+                {
+                    "name": "orders",
+                    "source": "orders",
+                    "fields": [
+                        {
+                            "name": "amount",
+                            "expression": {"dialects": [{"dialect": "OSSIE_SQL_2026", "expression": "amount"}]},
+                        },
+                        {
+                            "name": "rank",
+                            "expression": {
+                                "dialects": [
+                                    {
+                                        "dialect": "OSSIE_SQL_2026",
+                                        "expression": f"ROW_NUMBER() OVER (ORDER BY amount {order})",
+                                    }
+                                ]
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+        for setting in ["NULLS_LAST", "NULLS_FIRST"]:
+            try:
+                r = _query(
+                    d,
+                    route,
+                    {"dimensions": ["orders.amount", "orders.rank"], "order_by": ["orders.rank"]},
+                    f"create table orders(amount int); insert into orders values (10),(NULL),(5); SET default_null_order='{setting}'",
+                )
+            except Exception as e:
+                r = str(e)
+            rows.append({"route": route, "order": order, "session": setting, "result": r})
+            print(rows[-1])
+open("/tmp/ossie-public-window-results.json", "w").write(json.dumps(rows, indent=2, default=str))

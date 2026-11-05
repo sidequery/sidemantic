@@ -25,11 +25,16 @@ from sidemantic.interchange.ossie.diagnostics import (
     OssieSourceLocation,
     sort_diagnostics,
 )
-from sidemantic.interchange.ossie.documents import OssieLogicalDocument, OssieOntologyDocument, logical_model_entries
+from sidemantic.interchange.ossie.documents import (
+    OssieLogicalDocument,
+    OssieMappingDocument,
+    OssieOntologyDocument,
+    logical_model_entries,
+)
 from sidemantic.interchange.ossie.expression_validation import scalar_sql_expression_error
 from sidemantic.interchange.ossie.identifier import identifier_within_limit, is_quoted_identifier, normalize_identifier
 from sidemantic.interchange.ossie.parser import OssieParseResult
-from sidemantic.interchange.ossie.profiles import OssieImportPolicy
+from sidemantic.interchange.ossie.profiles import LATEST_OSSIE_SCHEMA_COMMIT, OssieImportPolicy
 from sidemantic.interchange.ossie.runtime_extension import decode_runtime_extension, resolve_runtime_graph
 from sidemantic.interchange.ossie.semantic_validation import (
     SemanticValidationResult,
@@ -147,11 +152,12 @@ def _normalize_dialect(value: str) -> str:
 def _expression_for_target(expression: object, target_dialect: str) -> tuple[str, str] | None:
     expression_object = _mapping(expression)
     variants = _array(expression_object.get("dialects")) if expression_object else None
-    if not variants:
+    portable_sql = expression_object.get("sql") if expression_object else None
+    if not variants and not isinstance(portable_sql, str):
         return None
 
     by_dialect: dict[str, str] = {}
-    for value in variants:
+    for value in variants or ():
         variant = _mapping(value)
         if variant is None:
             continue
@@ -160,6 +166,8 @@ def _expression_for_target(expression: object, target_dialect: str) -> tuple[str
         if isinstance(dialect, str) and dialect and isinstance(text, str) and text.strip():
             by_dialect.setdefault(dialect.upper(), text)
 
+    if isinstance(portable_sql, str) and portable_sql.strip():
+        by_dialect["OSSIE_SQL_2026"] = portable_sql
     normalized = _normalize_dialect(target_dialect)
     target_label = _DIALECT_LABELS.get(normalized)
     if target_label and target_label in by_dialect:
@@ -325,6 +333,65 @@ def _bind_metric_expression(
     return parsed.sql(dialect=dialect) if changed else expression
 
 
+def _bind_dataset_metric(expression: str, model: Model, target_dialect: str, expression_dialect: str) -> str:
+    """Resolve dataset fields separately from physical source columns and row anchors."""
+    dialect = _SQLGLOT_DIALECTS[_normalize_dialect(target_dialect)]
+    tree = sqlglot.parse_one(expression, read=dialect)
+    declarations = _dimension_declarations(model)
+
+    def private_field(sql: str, prefix: str) -> str:
+        for dimension in model.dimensions:
+            if (dimension.metadata or {}).get("ossie_internal_expression") == sql:
+                return dimension.name
+        used = {dimension.name.lower() for dimension in model.dimensions}
+        index = 0
+        name = prefix
+        while name.lower() in used:
+            index += 1
+            name = f"{prefix}_{index}"
+        model.dimensions.append(
+            Dimension(name=name, type="categorical", sql=sql, metadata={"ossie_internal_expression": sql})
+        )
+        return name
+
+    for column in list(tree.find_all(exp.Column)):
+        if not isinstance(column.this, exp.Identifier) or len(column.parts) > 2:
+            raise ValueError("Dataset metric references must be local fields or source.column")
+        if column.table:
+            table = column.args.get("table")
+            if not isinstance(table, exp.Identifier) or _reference_key(table, expression_dialect) != "SOURCE":
+                raise ValueError("Dataset metric cannot reference another dataset")
+            if "SOURCE" in declarations:
+                raise ValueError("source.column is ambiguous when the dataset declares a field named source")
+            name = private_field(column.this.sql(dialect=dialect), "__ossie_source")
+        else:
+            name = declarations.get(_reference_key(column.this, expression_dialect))
+            if name is None:
+                raise ValueError(f"Unknown dataset field {column.name!r}; qualify physical columns with source")
+        column.set("this", exp.to_identifier(name))
+        column.set("table", exp.to_identifier(model.name))
+
+    for aggregate in tree.find_all(exp.AggFunc):
+        if list(aggregate.find_all(exp.Column)):
+            continue
+        row_name = private_field("1", "__ossie_row")
+        row = exp.column(row_name, table=model.name)
+        if isinstance(aggregate, exp.Count) and isinstance(aggregate.this, exp.Star):
+            aggregate.set("this", row)
+        elif aggregate.this is not None:
+            # Preserve the argument (including NULL/type), but retain its row source.
+            aggregate.set(
+                "this",
+                exp.Case(
+                    ifs=[
+                        exp.If(this=exp.Not(this=exp.Is(this=row, expression=exp.Null())), true=aggregate.this.copy())
+                    ],
+                    default=exp.Null(),
+                ),
+            )
+    return tree.sql(dialect=dialect)
+
+
 def _classify_source(source: str, source_dialect: str | None) -> tuple[str, str] | None:
     dialect = _SQLGLOT_DIALECTS.get(_normalize_dialect(source_dialect)) if source_dialect else None
     try:
@@ -419,10 +486,19 @@ def _lower_scope(
     runtime_override: SemanticGraph | None = None,
 ) -> CompiledSemanticScope:
     graph = runtime_override if runtime_override is not None else SemanticGraph()
+    if runtime_override is None and result.profile and result.profile.schema_revision:
+        graph.metadata["ossie_schema_revision"] = result.profile.schema_revision
     source_dialect = result.options.source_dialect if result.options else None
     dataset_values = _array(semantic_model.get("datasets")) if runtime_override is None else ()
     dataset_names = _runtime_names([name for _, _, name in _unique_named_items(dataset_values)])
     lowered_models: dict[str, Model] = {}
+
+    def unsafe_latest_construct(pointer: str) -> bool:
+        return bool(result.profile and result.profile.schema_revision == LATEST_OSSIE_SCHEMA_COMMIT) and any(
+            diagnostic.severity is OssieDiagnosticSeverity.ERROR
+            and (diagnostic.json_pointer == pointer or diagnostic.json_pointer.startswith(pointer + "/"))
+            for diagnostic in document_diagnostics
+        )
 
     # Model/Metric construction has a legacy auto-registration hook. Lowering
     # must be isolated from any ambient user layer.
@@ -460,6 +536,8 @@ def _lower_scope(
             field_names = _runtime_names([name for _, _, name in _unique_named_items(fields)])
             for field_index, field, field_name in _unique_named_items(fields):
                 field_pointer = f"{pointer}/fields/{field_index}"
+                if unsafe_latest_construct(field_pointer):
+                    continue
                 selected = _expression_for_target(field.get("expression"), target_dialect)
                 if selected is None:
                     diagnostics.append(
@@ -544,6 +622,14 @@ def _lower_scope(
                     dimensions=dimensions,
                     default_time_dimension=None,
                     metadata={
+                        "ossie_scope_name": scope_id,
+                        "ossie_target_dialect": _normalize_dialect(target_dialect),
+                        **({"ossie_source_dialect": _normalize_dialect(source_dialect)} if source_dialect else {}),
+                        **(
+                            {"ossie_schema_revision": result.profile.schema_revision}
+                            if result.profile and result.profile.schema_revision
+                            else {}
+                        ),
                         "ossie_source_kind": source_kind,
                         "ossie_pointer": pointer,
                         "ossie_source_name": dataset_name,
@@ -562,6 +648,58 @@ def _lower_scope(
                 continue
             graph.add_model(model)
             lowered_models[normalize_identifier(dataset_name)] = model
+
+        if runtime_override is None:
+            for dataset_index, dataset, dataset_name in _unique_named_items(dataset_values):
+                model = lowered_models.get(normalize_identifier(dataset_name))
+                if model is None:
+                    continue
+                local_metrics = _array(dataset.get("metrics"))
+                local_names = _runtime_names([name for _, _, name in _unique_named_items(local_metrics)])
+                for metric_index, metric, metric_name in _unique_named_items(local_metrics):
+                    pointer = f"{scope_pointer}/datasets/{dataset_index}/metrics/{metric_index}"
+                    if unsafe_latest_construct(pointer):
+                        continue
+                    selected = _expression_for_target(metric.get("expression"), target_dialect)
+                    try:
+                        if selected is None:
+                            raise ValueError("No expression is available for the requested target")
+                        expression, error = _lower_selected_sql(selected, target_dialect)
+                        if error:
+                            raise ValueError(error)
+                        expression = _bind_dataset_metric(expression, model, target_dialect, selected[1])
+                        runtime_name = f"{model.name}.{local_names[metric_name]}"
+                        metric_object = Metric(
+                            name=runtime_name,
+                            sql=expression,
+                            sql_is_complete=True,
+                            metadata={
+                                "ossie_expression_dialect": selected[1],
+                                "ossie_target_dialect": _normalize_dialect(target_dialect),
+                                "ossie_dataset_metric": True,
+                                "ossie_dataset_metric_index": metric_index,
+                                "ossie_dataset_owner": model.name,
+                                "ossie_dataset_name": dataset_name,
+                                "ossie_source_name": metric_name,
+                            },
+                            logical_data_type=metric.get("datatype")
+                            if isinstance(metric.get("datatype"), str)
+                            else None,
+                            description=metric.get("description")
+                            if isinstance(metric.get("description"), str)
+                            else None,
+                        )
+                        graph.add_metric(metric_object, model_name=model.name)
+                    except (TypeError, ValueError) as exc:
+                        diagnostics.append(
+                            _diagnostic(
+                                result,
+                                code="ossie.lowering.metric_unexecutable",
+                                message=f"Dataset metric {dataset_name}.{metric_name} cannot be represented safely: {exc}",
+                                pointer=pointer,
+                                scope=scope_id,
+                            )
+                        )
 
         relationships = _array(semantic_model.get("relationships")) if runtime_override is None else ()
         for relationship_index, relationship, edge_id in _unique_named_items(relationships):
@@ -632,6 +770,8 @@ def _lower_scope(
         }
         for metric_index, metric, metric_name in _unique_named_items(metrics):
             pointer = f"{scope_pointer}/metrics/{metric_index}"
+            if unsafe_latest_construct(pointer):
+                continue
             selected = _expression_for_target(metric.get("expression"), target_dialect)
             if selected is None:
                 diagnostics.append(
@@ -751,7 +891,9 @@ def lower_ossie_document(
 
     document = parse_result.document
     schema_validation = parse_result.schema_validation
-    if schema_validation is None and isinstance(document, (OssieLogicalDocument, OssieOntologyDocument)):
+    if schema_validation is None and isinstance(
+        document, (OssieLogicalDocument, OssieOntologyDocument, OssieMappingDocument)
+    ):
         schema_validation = validate_ossie_schema(
             document.to_parsed_data(),
             profile=parse_result.profile,
@@ -759,12 +901,12 @@ def lower_ossie_document(
         )
 
     semantic_validation = None
-    if isinstance(document, (OssieLogicalDocument, OssieOntologyDocument)):
+    if isinstance(document, (OssieLogicalDocument, OssieOntologyDocument, OssieMappingDocument)):
         semantic_validation = validate_ossie_semantics(document, profile=parse_result.profile)
 
     diagnostics: list[OssieDiagnostic] = []
     selected_target = target_dialect or (parse_result.options.target_dialect if parse_result.options else None)
-    if selected_target is None:
+    if selected_target is None and isinstance(document, OssieLogicalDocument):
         diagnostics.append(
             _diagnostic(
                 parse_result,
@@ -801,11 +943,14 @@ def lower_ossie_document(
         if (model := _mapping(value)) is not None
         if (model_name := _name(model.get("name"))) is not None
     ]
-    name_counts = Counter(normalize_identifier(name) for _, _, _, name in named_models if identifier_within_limit(name))
+    latest = bool(parse_result.profile and parse_result.profile.schema_revision == LATEST_OSSIE_SCHEMA_COMMIT)
+    name_counts = Counter(
+        normalize_identifier(name) for _, _, _, name in named_models if latest or identifier_within_limit(name)
+    )
     document_id = _document_id(parse_result)
     scopes = []
     for index, scope_pointer, semantic_model, name in named_models:
-        if not identifier_within_limit(name):
+        if not latest and not identifier_within_limit(name):
             continue
         scope_id = name if name_counts[normalize_identifier(name)] == 1 else f"{name}@{index}"
         try:

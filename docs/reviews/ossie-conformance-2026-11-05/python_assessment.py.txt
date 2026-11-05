@@ -1,0 +1,147 @@
+import sys, json, importlib.util, copy, os
+from pathlib import Path
+from dataclasses import asdict
+import yaml, duckdb
+
+sys.path.insert(0, os.environ.get("SIDEMANTIC_REPO", "/workspace/sidemantic"))
+from sidemantic import SemanticLayer
+from sidemantic.interchange.ossie import *
+
+ROOT = Path(os.environ.get("OSSIE_UPSTREAM", "/workspace/ossie-latest"))
+OUT = Path(os.environ.get("OSSIE_ASSESSMENT_OUTPUT", "/tmp/ossie-python-assessment"))
+OUT.mkdir(parents=True, exist_ok=True)
+
+
+def module(name, path):
+    s = importlib.util.spec_from_file_location(name, path)
+    m = importlib.util.module_from_spec(s)
+    sys.modules[name] = m
+    s.loader.exec_module(m)
+    return m
+
+
+validator = module("latest_validator", ROOT / "validation/validate.py")
+grader = module("latest_grader", ROOT / "compliance/portability/grader/grade.py")
+schema = json.loads((ROOT / "core-spec/ossie-schema.json").read_text())
+
+
+def diags(result):
+    return [{"code": d.code, "pointer": d.json_pointer, "message": d.message} for d in result.diagnostics]
+
+
+def check(data):
+    p = parse_ossie_document(
+        json.dumps(data).encode(), options=OssieParseOptions(validate_schema=True, target_dialect="duckdb")
+    )
+    l = lower_ossie_document(p)
+    return {
+        "upstream": validator.validate_document(data, schema),
+        "parse_valid": p.valid,
+        "lower_valid": l.valid,
+        "scopes": len(l.catalog),
+        "diagnostics": diags(l),
+    }
+
+
+results = {"portability": [], "probes": {}}
+for path in sorted((ROOT / "compliance/portability").glob("m*/*.yaml")):
+    data = yaml.safe_load(path.read_text())
+    p = parse_ossie_document(
+        path.read_bytes(), options=OssieParseOptions(validate_schema=True, target_dialect="duckdb")
+    )
+    l = lower_ossie_document(p)
+    r = {
+        "file": str(path.relative_to(ROOT)),
+        "upstream": validator.validate_document(data, schema),
+        "parse_valid": p.valid,
+        "lower_valid": l.valid,
+        "diagnostics": diags(l),
+    }
+    if p.valid:
+        returned = serialize_ossie_document(p.document, "yaml")
+        d = yaml.safe_load(returned.data)
+        (OUT / (path.stem + ".source.yaml")).write_bytes(returned.data)
+        r["source_grade"] = asdict(grader.grade(data, d, converter="sidemantic-source"))
+    if l.valid and len(l.catalog):
+        scope = next(iter(l.catalog.scopes.values()))
+        layer = SemanticLayer.from_catalog(l.catalog, engine="python", fallback=False, auto_register=False)
+        try:
+            layer.adapter.execute(
+                "ATTACH ':memory:' AS samples; CREATE SCHEMA samples.sales; CREATE TABLE samples.sales.orders(amount DECIMAL(10,2), status VARCHAR, order_id INTEGER, customer_id INTEGER); INSERT INTO samples.sales.orders VALUES (10,'completed',1,1),(20,'pending',2,1),(10,'completed',3,2),(NULL,'completed',4,2)"
+            )
+            names = [m["name"] for m in data.get("metrics", [])]
+            r["rows"] = layer.query(metrics=names).fetchall()
+        except Exception as e:
+            r["execution_error"] = str(e)
+        finally:
+            layer.adapter.close()
+        try:
+            synth = synthesize_ossie_document(
+                scope.graph, scope_name=data["name"], expression_dialect="ANSI_SQL", portable_only=True
+            )
+            r["synthesis_valid"] = synth.valid
+            r["synthesis_diagnostics"] = diags(synth)
+            if synth.valid:
+                output = serialize_ossie_document(synth.document, "yaml")
+                d = yaml.safe_load(output.data)
+                (OUT / (path.stem + ".graph.yaml")).write_bytes(output.data)
+                r["graph_grade"] = asdict(grader.grade(data, d, converter="sidemantic-graph-ANSI_SQL"))
+                r["graph_upstream"] = validator.validate_document(d, schema)
+        except Exception as e:
+            r["synthesis_error"] = str(e)
+    results["portability"].append(r)
+f = lambda n, e, d="OSSIE_SQL_2026": {"name": n, "expression": {"dialects": [{"dialect": d, "expression": e}]}}
+base = {
+    "version": "0.2.0.dev0",
+    "name": "probe",
+    "datasets": [{"name": "orders", "source": "orders", "fields": [f("amount", "amount")]}],
+    "metrics": [f("total", "SUM(orders.amount)")],
+}
+probes = {}
+d = copy.deepcopy(base)
+d["datasets"][0]["fields"][0]["expression"] = {"sql": "amount"}
+d["metrics"][0]["expression"] = {"sql": "SUM(orders.amount)"}
+probes["portable_sql"] = d
+d = copy.deepcopy(base)
+d["datasets"][0]["metrics"] = [f("local_total", "SUM(amount)")]
+probes["dataset_metrics"] = d
+d = copy.deepcopy(base)
+d["datasets"][0]["fields"][0]["expression"]["dialects"].append({"dialect": "POSTGRES", "expression": "amount"})
+probes["opaque_postgres_variant"] = d
+d = copy.deepcopy(base)
+d["custom_extensions"] = [{"vendor_name": "", "data": ""}]
+probes["empty_vendor"] = d
+d = copy.deepcopy(base)
+d["metrics"].append(f("double_total", "total * 2"))
+probes["metric_reference"] = d
+d = copy.deepcopy(base)
+d["metrics"][0] = f("total", "SUM(amount)")
+probes["model_unqualified_field"] = d
+d = copy.deepcopy(base)
+d["metrics"][0] = f("total", "SUM(orders.not_declared)")
+probes["undeclared_model_field"] = d
+d = copy.deepcopy(base)
+d["metrics"][0] = f("total", "SUM(orders.amount) FILTER (WHERE orders.amount > 10)")
+probes["filter_aggregate"] = d
+for name, d in probes.items():
+    (OUT / (name + ".json")).write_text(json.dumps(d, indent=2))
+    results["probes"][name] = check(d)
+for path in [
+    ROOT / "compliance/query/scott/scott_model.ossie.yaml",
+    ROOT / "examples/flights.semantic_model.yaml",
+    ROOT / "examples/flights.ontology.yaml",
+    ROOT / "examples/flights.mapping.yaml",
+]:
+    data = yaml.safe_load(path.read_text())
+    p = parse_ossie_document(
+        path.read_bytes(), options=OssieParseOptions(validate_schema=True, target_dialect="duckdb")
+    )
+    l = lower_ossie_document(p)
+    results["probes"][path.name] = {
+        "parse_valid": p.valid,
+        "lower_valid": l.valid,
+        "scopes": len(l.catalog),
+        "diagnostics": diags(l),
+    }
+(OUT / "results.json").write_text(json.dumps(results, indent=2, default=str))
+print(json.dumps(results, indent=2, default=str))

@@ -315,17 +315,38 @@ jobs:
           rust-key: ${{ steps.rust-cache.outputs.key }}
           uv-key: ${{ steps.uv.outputs.cache-key }}
 
-  update-schema:
-    name: Update JSON Schema
+  schema-pr-state:
+    name: Check schema update eligibility
     needs: python
     if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      eligible: ${{ steps.state.outputs.result }}
+    steps:
+      - uses: actions/github-script@v7
+        id: state
+        with:
+          script: |
+            const {data: pr} = await github.rest.pulls.get({
+              ...context.repo, pull_number: context.issue.number
+            });
+            return pr.state === 'open'
+              && pr.head.sha === context.payload.pull_request.head.sha
+              && pr.head.repo.full_name === context.payload.repository.full_name;
+
+  update-schema:
+    name: Update JSON Schema
+    needs: schema-pr-state
+    if: needs.schema-pr-state.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -350,6 +371,9 @@ jobs:
         run: uv sync --extra dev --extra dax
 
       - name: Generate and commit schema if needed
+        env:
+          PR_BRANCH: ${{ github.head_ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           uv run python scripts/generate_schema.py
           if ! git diff --exit-code sidemantic-schema.json; then
@@ -357,7 +381,7 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add sidemantic-schema.json
             git commit -m "Auto-update JSON schema"
-            git push
+            git push --force-with-lease="refs/heads/$PR_BRANCH:$PR_HEAD_SHA" origin "HEAD:refs/heads/$PR_BRANCH"
           fi
 
       - name: Save completed build caches

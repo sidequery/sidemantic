@@ -34,6 +34,7 @@ runs:
           sidemantic-rs/Cargo.toml
           sidemantic-rs/build.rs
           sidemantic-rs/src/**
+          sidemantic-rs/schemas/**
           crates/*/Cargo.toml
           crates/*/src/**
           crates/dax-pyo3/python/**/*.py

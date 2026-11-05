@@ -80,6 +80,14 @@ jobs:
           uv run pytest --test-engine python -m integration tests/db/test_postgres_cli_e2e.py -v
           uv run pytest --test-engine rust -m integration tests/db/test_postgres_cli_e2e.py -v
 
+      # The suite parametrizes Python, public Rust (no fallback), and native Rust import/compile.
+      - name: Run Ossie on real PostgreSQL and DuckDB
+        env:
+          POSTGRES_URL: "postgres://test:test@localhost:5432/sidemantic_test"
+        run: |
+          OSSIE_INTEGRATION_BACKEND=duckdb uv run pytest -m integration tests/db/test_ossie_integration.py -v
+          OSSIE_INTEGRATION_BACKEND=postgres uv run pytest -m integration tests/db/test_ossie_integration.py -v
+
       - name: Save completed build caches
         if: ${{ !cancelled() }}
         uses: ./.github/actions/save-build-caches
@@ -109,8 +117,15 @@ jobs:
             ghcr.io/goccy/bigquery-emulator:0.8.1 \
             --project=test-project --dataset=test_dataset
 
-          # Wait for emulator to be ready
-          sleep 5
+          # Require a responding emulator before executing database assertions.
+          for attempt in {1..30}; do
+            if curl --fail --silent http://localhost:9050/bigquery/v2/projects/test-project/datasets > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs bigquery-emulator
+          exit 1
 
       - name: Install uv
         id: uv
@@ -134,6 +149,28 @@ jobs:
         run: |
           uv run pytest --test-engine python -m integration tests/db/test_bigquery_integration.py -v
           uv run pytest --test-engine rust -m integration tests/db/test_bigquery_integration.py -v
+
+      # The suite parametrizes Python, public Rust (no fallback), and native Rust import/compile.
+      - name: Run Ossie on BigQuery emulator (not live cloud)
+        env:
+          OSSIE_INTEGRATION_BACKEND: "bigquery"
+          BIGQUERY_EMULATOR_HOST: "localhost:9050"
+          BIGQUERY_PROJECT: "test-project"
+          BIGQUERY_DATASET: "test_dataset"
+        run: |
+          # The emulator retains a bounded WASM heap. Isolate each compiler
+          # route from earlier suites without skipping any route's SQL assertions.
+          for ossie_route in python public_rust native_rust; do
+            docker restart bigquery-emulator
+            for attempt in {1..30}; do
+              if curl --fail --silent http://localhost:9050/bigquery/v2/projects/test-project/datasets > /dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            curl --fail --silent http://localhost:9050/bigquery/v2/projects/test-project/datasets > /dev/null
+            uv run pytest -m integration tests/db/test_ossie_integration.py -k "$ossie_route" -v
+          done
 
       - name: Save completed build caches
         if: ${{ !cancelled() }}
@@ -178,6 +215,13 @@ jobs:
           # a preceding uv pip install is undone by the locked project sync.
           uv run --with "fakesnow==0.11.11" pytest --test-engine python -m integration tests/db/test_snowflake_integration.py -v
           uv run --with "fakesnow==0.11.11" pytest --test-engine rust -m integration tests/db/test_snowflake_integration.py -v
+
+      # The suite parametrizes Python, public Rust (no fallback), and native Rust import/compile.
+      - name: Run Ossie on fakesnow emulator (not live Snowflake)
+        env:
+          OSSIE_INTEGRATION_BACKEND: "snowflake"
+        run: |
+          uv run --with "fakesnow==0.11.11" pytest -m integration tests/db/test_ossie_integration.py -v
 
       - name: Save completed build caches
         if: ${{ !cancelled() }}
@@ -239,6 +283,16 @@ jobs:
         run: |
           uv run pytest --test-engine python -m integration tests/db/test_clickhouse_integration.py -v
           uv run pytest --test-engine rust -m integration tests/db/test_clickhouse_integration.py -v
+
+      # The suite parametrizes Python, public Rust (no fallback), and native Rust import/compile.
+      - name: Run Ossie on real ClickHouse
+        env:
+          OSSIE_INTEGRATION_BACKEND: "clickhouse"
+          CLICKHOUSE_HOST: "localhost"
+          CLICKHOUSE_PORT: "8123"
+          CLICKHOUSE_PASSWORD: "clickhouse"
+        run: |
+          uv run pytest -m integration tests/db/test_ossie_integration.py -v
 
       - name: Save completed build caches
         if: ${{ !cancelled() }}

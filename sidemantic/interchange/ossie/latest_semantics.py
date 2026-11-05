@@ -39,8 +39,11 @@ def expression_variants(expression):
             yield label, text
 
 
-def identifier_key(identifier):
-    return identifier.name if identifier.args.get("quoted") else normalize_identifier(identifier.name)
+def identifier_key(identifier, dialect):
+    # BigQuery/Databricks quoting is syntactic and does not opt a logical name
+    # into ANSI delimited-identifier case sensitivity (the lowering contract).
+    quoted = identifier.args.get("quoted") and dialect not in {"BIGQUERY", "DATABRICKS"}
+    return identifier.name if quoted else normalize_identifier(identifier.name)
 
 
 def validate_latest_scope(validator, model, pointer, scope):
@@ -98,9 +101,9 @@ def validate_latest_scope(validator, model, pointer, scope):
             for column in tree.find_all(exp.Column):
                 if not isinstance(column.this, exp.Identifier):
                     continue
-                field = identifier_key(column.this)
+                field = identifier_key(column.this, label)
                 table = column.args.get("table")
-                table_key = identifier_key(table) if isinstance(table, exp.Identifier) else None
+                table_key = identifier_key(table, label) if isinstance(table, exp.Identifier) else None
                 if owner is not None:
                     if len(column.parts) == 1 and field in fields[owner]:
                         continue
@@ -119,12 +122,12 @@ def validate_latest_scope(validator, model, pointer, scope):
                 if owner is not None:
                     continue
                 argument_tables = {
-                    identifier_key(c.args["table"])
+                    identifier_key(c.args["table"], label)
                     for c in filtered.this.find_all(exp.Column)
                     if isinstance(c.args.get("table"), exp.Identifier)
                 }
                 predicate_tables = {
-                    identifier_key(c.args["table"])
+                    identifier_key(c.args["table"], label)
                     for c in filtered.expression.find_all(exp.Column)
                     if isinstance(c.args.get("table"), exp.Identifier)
                 }

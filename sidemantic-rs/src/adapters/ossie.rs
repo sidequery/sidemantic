@@ -895,7 +895,10 @@ fn validate_latest_reserved_names(
             _ => false,
         }
     }
-    if let Some(expression) = value.get("expression").and_then(Value::as_object) {
+    fn check_declaration(value: &Value, pointer: &str, diagnostics: &mut Vec<OssieDiagnostic>) {
+        let Some(expression) = value.get("expression").and_then(Value::as_object) else {
+            return;
+        };
         let portable = expression.get("sql").and_then(Value::as_str).or_else(|| {
             expression
                 .get("dialects")
@@ -919,18 +922,52 @@ fn validate_latest_reserved_names(
             }
         }
     }
-    match value {
-        Value::Object(fields) => {
-            for (name, child) in fields {
-                validate_latest_reserved_names(child, &format!("{pointer}/{name}"), diagnostics);
+    // Only model declarations define executable expressions. AI context and
+    // extension payloads can contain arbitrary lookalike objects and are opaque.
+    for (scope_index, scope) in value
+        .get("semantic_model")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let scope_pointer = format!("{pointer}/semantic_model/{scope_index}");
+        for (index, metric) in scope
+            .get("metrics")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            check_declaration(
+                metric,
+                &format!("{scope_pointer}/metrics/{index}"),
+                diagnostics,
+            );
+        }
+        for (dataset_index, dataset) in scope
+            .get("datasets")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            for collection in ["fields", "metrics"] {
+                for (index, definition) in dataset
+                    .get(collection)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    check_declaration(
+                        definition,
+                        &format!("{scope_pointer}/datasets/{dataset_index}/{collection}/{index}"),
+                        diagnostics,
+                    );
+                }
             }
         }
-        Value::Array(values) => {
-            for (index, child) in values.iter().enumerate() {
-                validate_latest_reserved_names(child, &format!("{pointer}/{index}"), diagnostics);
-            }
-        }
-        _ => {}
     }
 }
 

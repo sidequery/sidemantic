@@ -1548,6 +1548,11 @@ def convert(
         "--ossie-schema-revision",
         help="Pinned Ossie draft revision for synthesized output (commit SHA)",
     ),
+    ossie_input_schema_revision: str = typer.Option(
+        None,
+        "--ossie-input-schema-revision",
+        help="Pinned Ossie draft revision for validating the source (commit SHA)",
+    ),
     ossie_consumer_profile: str = typer.Option(
         None,
         "--ossie-consumer-profile",
@@ -1621,6 +1626,8 @@ def convert(
                     source_adapter_options["consumer_profile"] = ossie_consumer_profile
                 if ossie_permissive:
                     source_adapter_options["import_policy"] = "permissive"
+                if ossie_input_schema_revision is not None:
+                    source_adapter_options["schema_revision"] = ossie_input_schema_revision
 
             target_adapter_options = None
             target_export_options = None

@@ -18,14 +18,165 @@ pub(crate) fn parse_dialect(name: &str) -> Result<DialectType> {
     })
 }
 
+/// The pinned transpiler preserves bracket text instead of translating array
+/// positions. Apply this correction only at Ossie's declared-dialect boundaries;
+/// ordinary native graph compilation retains its existing behavior.
+pub(crate) fn ossie_index_offsets(
+    expression: Expression,
+    source: DialectType,
+    target: DialectType,
+) -> Result<Expression> {
+    use polyglot_sql::expressions::{BinaryOp, Case, Literal, UnaryFunc};
+    if !matches!(
+        (source, target),
+        (DialectType::Snowflake, DialectType::DuckDB)
+            | (DialectType::DuckDB, DialectType::Snowflake)
+    ) {
+        return Ok(expression);
+    }
+    fn number(value: i64) -> Expression {
+        Expression::Literal(Literal::Number(value.to_string()))
+    }
+    fn adjust_node(node: Expression, source: DialectType) -> Expression {
+        let Expression::Subscript(mut subscript) = node else {
+            return node;
+        };
+        // String subscripts select object/map keys, not array positions.
+        if matches!(&subscript.index, Expression::Literal(Literal::String(_))) {
+            return Expression::Subscript(subscript);
+        }
+        let literal = match &subscript.index {
+            Expression::Literal(Literal::Number(value)) => value.parse::<i64>().ok(),
+            _ => None,
+        };
+        if let Some(index) = literal.filter(|index| *index >= 0) {
+            subscript.index = number(if source == DialectType::Snowflake {
+                index.saturating_add(1)
+            } else {
+                index - 1
+            });
+        } else {
+            let index = subscript.index.clone();
+            let (condition, yes, no) = if source == DialectType::Snowflake {
+                // Negative Snowflake positions are absent; DuckDB negative
+                // positions count from the end, so use its absent zero slot.
+                (
+                    Expression::Gte(Box::new(BinaryOp::new(index.clone(), number(0)))),
+                    Expression::Add(Box::new(BinaryOp::new(index, number(1)))),
+                    number(0),
+                )
+            } else {
+                let size = Expression::ArraySize(Box::new(UnaryFunc {
+                    this: subscript.this.clone(),
+                    original_name: None,
+                    inferred_type: None,
+                }));
+                (
+                    Expression::Lt(Box::new(BinaryOp::new(index.clone(), number(0)))),
+                    Expression::Add(Box::new(BinaryOp::new(size, index.clone()))),
+                    Expression::Sub(Box::new(BinaryOp::new(index, number(1)))),
+                )
+            };
+            subscript.index = Expression::Case(Box::new(Case {
+                operand: None,
+                whens: vec![(condition, yes)],
+                else_: Some(no),
+                comments: vec![],
+                inferred_type: None,
+            }));
+        }
+        Expression::Subscript(subscript)
+    }
+    fn visit(value: &mut Value, source: DialectType) -> Result<()> {
+        match value {
+            Value::Object(fields) => {
+                for child in fields.values_mut() {
+                    visit(child, source)?;
+                }
+                if fields.contains_key("subscript") {
+                    let expression = serde_json::from_value(value.clone())
+                        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                    *value = serde_json::to_value(adjust_node(expression, source))
+                        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                }
+            }
+            Value::Array(children) => {
+                for child in children {
+                    visit(child, source)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    // Walk every typed function payload; the dependency's visitor skips some
+    // aggregate/scalar arguments, including SUM and ABS subscripts.
+    let mut value = serde_json::to_value(expression)
+        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+    visit(&mut value, source)?;
+    serde_json::from_value(value).map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
+}
+
+fn ossie_adjust_sql(sql: &str, source: DialectType, kind: Option<Fragment>) -> Result<String> {
+    if source != DialectType::Snowflake || !sql.contains('[') {
+        return Ok(sql.to_owned());
+    }
+    let expression = match kind {
+        Some(kind) => {
+            let wrapper = match kind {
+                Fragment::Scalar => format!("SELECT {sql}"),
+                Fragment::Order => format!("SELECT 1 ORDER BY {sql}"),
+                Fragment::Table => format!("SELECT * FROM {sql}"),
+            };
+            extract_fragment(&wrapper, source, kind)?
+        }
+        None => parse(sql, source)?,
+    };
+    let adjusted = ossie_index_offsets(expression, source, DialectType::DuckDB)?;
+    let sql = Dialect::get(source)
+        .generate(&adjusted)
+        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+    Ok(if matches!(kind, Some(Fragment::Order)) {
+        sql.strip_prefix("ORDER BY ").unwrap_or(&sql).to_owned()
+    } else {
+        sql
+    })
+}
+
+fn ossie_adjust_definition(definition: &mut Value, source: DialectType, query: bool) -> Result<()> {
+    for name in [
+        "sql",
+        "entity",
+        "window_expression",
+        "having",
+        "cohort_event",
+        "activity_event",
+        "window_order",
+    ] {
+        if let Some(Value::String(sql)) = definition.get_mut(name) {
+            *sql = ossie_adjust_sql(
+                sql,
+                source,
+                if name == "sql" && query {
+                    None
+                } else if name == "window_order" {
+                    Some(Fragment::Order)
+                } else {
+                    Some(Fragment::Scalar)
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn emit(
     expression: Expression,
     source: DialectType,
     target: DialectType,
 ) -> Result<String> {
     if source == target {
-        return polyglot_sql::generate(&expression, target)
-            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()));
+        return generate_preserving_null_order(&expression, target, source);
     }
 
     // The pinned dialect transformer has large recursive frames even for the
@@ -62,7 +213,77 @@ fn emit_transformed(
     let expression = dialect
         .transform(expression)
         .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
-    dialect
+    generate_preserving_null_order(&expression, target, source)
+}
+
+/// Preserve explicit NULL placement even when the warehouse's mutable session
+/// default currently matches it. Polyglot otherwise omits that clause. Render
+/// only the Ordered leaf as target SQL after transformation, keeping every other
+/// expression in the target dialect's normal generator.
+pub(crate) fn generate_preserving_null_order(
+    expression: &Expression,
+    target: DialectType,
+    source: DialectType,
+) -> Result<String> {
+    fn preserve(value: &mut Value, target: DialectType, source: DialectType) -> Result<()> {
+        match value {
+            Value::Object(fields) => {
+                for child in fields.values_mut() {
+                    preserve(child, target, source)?;
+                }
+                if fields.contains_key("this")
+                    && fields.contains_key("desc")
+                    && fields.contains_key("nulls_first")
+                {
+                    if let Some(nulls_first) = fields.get("nulls_first").and_then(Value::as_bool) {
+                        let expression: Expression = serde_json::from_value(fields["this"].clone())
+                            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                        let sql = Dialect::get(target)
+                            .generate_with_source(&expression, source)
+                            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+                        let direction = if fields["desc"].as_bool() == Some(true) {
+                            "DESC"
+                        } else {
+                            "ASC"
+                        };
+                        let nulls = if nulls_first { "FIRST" } else { "LAST" };
+                        let raw = Expression::Var(Box::new(polyglot_sql::expressions::Var {
+                            this: format!("{sql} {direction} NULLS {nulls}"),
+                        }));
+                        fields.insert(
+                            "this".into(),
+                            serde_json::to_value(raw).map_err(|error| {
+                                SidemanticError::SqlGeneration(error.to_string())
+                            })?,
+                        );
+                        fields.insert("desc".into(), Value::Bool(false));
+                        fields.insert("explicit_asc".into(), Value::Bool(false));
+                        fields.insert("nulls_first".into(), Value::Null);
+                    }
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    preserve(child, target, source)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    // These targets have mutable NULL defaults. Other target generators retain
+    // their existing support/emulation rules.
+    if !matches!(target, DialectType::DuckDB | DialectType::Snowflake) {
+        return Dialect::get(target)
+            .generate_with_source(expression, source)
+            .map_err(|error| SidemanticError::SqlGeneration(error.to_string()));
+    }
+    let mut value = serde_json::to_value(expression)
+        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+    preserve(&mut value, target, source)?;
+    let expression = serde_json::from_value(value)
+        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
+    Dialect::get(target)
         .generate_with_source(&expression, source)
         .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
 }
@@ -414,8 +635,11 @@ fn definition_dialect(definition: &mut Value, fallback: DialectType) -> Result<D
     Ok(dialect)
 }
 
-fn metric(definition: &mut Value, source: DialectType) -> Result<()> {
+fn metric(definition: &mut Value, source: DialectType, ossie_latest: bool) -> Result<()> {
     let source = definition_dialect(definition, source)?;
+    if ossie_latest {
+        ossie_adjust_definition(definition, source, false)?;
+    }
     for name in [
         "sql",
         "entity",
@@ -456,6 +680,19 @@ pub(super) fn normalize(
     source: DialectType,
 ) -> Result<SegmentDialects> {
     let mut deferred_segments = HashMap::new();
+    let latest_models: std::collections::HashSet<String> = envelope
+        .models
+        .iter()
+        .filter(|model| {
+            model
+                .pointer("/metadata/ossie_schema_revision")
+                .and_then(Value::as_str)
+                == Some(crate::adapters::ossie::LATEST_SCHEMA_REVISION)
+        })
+        .filter_map(|model| model.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    let exclusively_latest =
+        !envelope.models.is_empty() && latest_models.len() == envelope.models.len();
     for model in &mut envelope.models {
         let source = definition_dialect(model, source)?;
         let model_name = model
@@ -463,14 +700,39 @@ pub(super) fn normalize(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        let latest = latest_models.contains(&model_name);
+        // Physical source SQL can be authored in a different dialect from the
+        // selected/lowered field and metric expressions. Canonicalize each
+        // against its own declaration, then mark both as executable DuckDB SQL.
+        let physical_source = if latest {
+            model
+                .pointer("/metadata/ossie_source_dialect")
+                .and_then(Value::as_str)
+                .map(parse_dialect)
+                .transpose()?
+                .unwrap_or(source)
+        } else {
+            source
+        };
         if let Some(Value::String(sql)) = model.get_mut("sql") {
-            *sql = template_sql(sql, source, None)?;
+            if latest {
+                *sql = ossie_adjust_sql(sql, physical_source, None)?;
+            }
+            *sql = template_sql(sql, physical_source, None)?;
         }
-        field(model, "table", source, Fragment::Table)?;
+        field(model, "table", physical_source, Fragment::Table)?;
+        if latest {
+            if let Some(marker) = model.pointer_mut("/metadata/ossie_source_dialect") {
+                *marker = Value::String("duckdb".into());
+            }
+        }
         for collection in ["dimensions", "relationships", "segments"] {
             if let Some(Value::Array(values)) = model.get_mut(collection) {
                 for value in values {
                     let dialect = definition_dialect(value, source)?;
+                    if latest {
+                        ossie_adjust_definition(value, dialect, false)?;
+                    }
                     if collection == "segments"
                         && value
                             .get("sql")
@@ -493,7 +755,7 @@ pub(super) fn normalize(
         }
         if let Some(Value::Array(metrics)) = model.get_mut("metrics") {
             for value in metrics {
-                metric(value, source)?;
+                metric(value, source, latest)?;
             }
         }
         if let Some(Value::Array(preaggregations)) = model.get_mut("pre_aggregations") {
@@ -505,7 +767,13 @@ pub(super) fn normalize(
         }
     }
     for value in &mut envelope.metrics {
-        metric(value, source)?;
+        let latest = exclusively_latest
+            || value
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(|name| envelope.metric_owners.get(name))
+                .is_some_and(|owner| latest_models.contains(owner));
+        metric(value, source, latest)?;
     }
     Ok(deferred_segments)
 }
@@ -513,6 +781,78 @@ pub(super) fn normalize(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ossie_physical_and_expression_dialects_normalize_independently_once() {
+        for (physical, expression, query, field_sql) in [
+            (
+                "snowflake",
+                "duckdb",
+                "SELECT ARRAY_CONSTRUCT(10, 20)[0] AS first, ARRAY_CONSTRUCT(30, 40) AS xs",
+                "xs[1]",
+            ),
+            (
+                "duckdb",
+                "snowflake",
+                "SELECT [10, 20][1] AS first, [30, 40] AS xs",
+                "xs[0]",
+            ),
+            (
+                "snowflake",
+                "snowflake",
+                "SELECT ARRAY_CONSTRUCT(10, 20)[0] AS first, ARRAY_CONSTRUCT(30, 40) AS xs",
+                "xs[0]",
+            ),
+        ] {
+            let mut envelope: crate::semantic_input::Envelope = serde_json::from_value(serde_json::json!({
+                "version": 1, "input_dialect": "duckdb", "models": [{
+                    "name": "items", "sql": query,
+                    "metadata": {"ossie_schema_revision": crate::adapters::ossie::LATEST_SCHEMA_REVISION,
+                        "ossie_source_dialect": physical, "ossie_target_dialect": expression},
+                    "dimensions": [{"name": "value", "sql": field_sql}],
+                    "metrics": [{"name": "total", "sql": format!("SUM({field_sql})")}]
+                }]
+            })).unwrap();
+            normalize(&mut envelope, DialectType::DuckDB).unwrap();
+            let canonical = envelope.models.clone();
+            let model = &canonical[0];
+            assert_eq!(model["metadata"]["ossie_source_dialect"], "duckdb");
+            assert_eq!(model["metadata"]["ossie_target_dialect"], "duckdb");
+            let source_sql = model["sql"].as_str().unwrap();
+            assert!(source_sql.contains("[1]"), "{source_sql}");
+            assert!(!source_sql.contains("[2]"), "{source_sql}");
+            assert_eq!(model["dimensions"][0]["sql"], "xs[1]");
+            assert_eq!(model["metrics"][0]["sql"], "SUM(xs[1])");
+            normalize(&mut envelope, DialectType::DuckDB).unwrap();
+            assert_eq!(
+                envelope.models, canonical,
+                "canonicalization must be idempotent"
+            );
+        }
+    }
+
+    #[test]
+    fn ossie_array_offsets_reach_typed_functions_and_keep_object_keys() {
+        let expression = parse(
+            "SELECT SUM(ABS(xs[0])), object['key'], xs[position], xs[-2] FROM source",
+            DialectType::Snowflake,
+        )
+        .unwrap();
+        let adjusted =
+            ossie_index_offsets(expression, DialectType::Snowflake, DialectType::DuckDB).unwrap();
+        let sql = Dialect::get(DialectType::DuckDB)
+            .generate(&adjusted)
+            .unwrap();
+        assert!(sql.contains("SUM(ABS(xs[1]))"), "{sql}");
+        assert!(sql.contains("object['key']"), "{sql}");
+        assert!(sql.contains("position >= 0"), "{sql}");
+        assert!(sql.contains("ELSE 0 END"), "{sql}");
+        // Native, unmarked declarations continue through the original path.
+        assert_eq!(
+            fragment("xs[0]", DialectType::Snowflake, Fragment::Scalar).unwrap(),
+            "xs[0]"
+        );
+    }
 
     #[test]
     fn ordered_quantiles_preserve_arguments_order_filter_and_window() {

@@ -65,8 +65,8 @@ jobs:
           assert "sidemantic_dax" not in sys.modules
           PY
 
-      - name: Install DAX dependencies
-        run: uv sync --extra dev --extra dax --extra apps
+      - name: Install Rust and DAX dependencies
+        run: uv sync --extra dev --extra rust --extra dax --extra apps
 
       - name: Install browser test runtime
         run: uv run python -m playwright install --with-deps chromium
@@ -172,7 +172,7 @@ jobs:
           uv lock
           # Re-lock can move packages that only extras install (e.g. sqlglotc); plain
           # `uv run` would leave those stale and validate a mismatched environment.
-          uv sync --extra dev --extra dax --extra apps
+          uv sync --extra dev --extra rust --extra dax --extra apps
           uv run python scripts/generate_man_page.py
 
       - name: Validate release tree

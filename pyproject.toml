@@ -6,8 +6,6 @@ readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
 dependencies = [
-    # PYODIDE: Native wheels are excluded from Emscripten installs.
-    "sidemantic-rs==0.13.1; sys_platform != 'emscripten'",
     "antlr4-python3-runtime>=4.13.2",
     "sqlglot>=30.1.0",
     "pyyaml>=6.0",
@@ -22,6 +20,10 @@ dependencies = [
 sidemantic = "sidemantic.cli:app"
 
 [project.optional-dependencies]
+rust = [
+    # PYODIDE: Native wheels are excluded from Emscripten installs.
+    "sidemantic-rs==0.13.1; sys_platform != 'emscripten'",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
@@ -133,7 +135,7 @@ all-databases = [
     "sidemantic[postgres,bigquery,snowflake,clickhouse,databricks,spark,adbc]",
 ]
 full = [
-    "sidemantic[workbench,mcp,apps,charts,lsp,dax,lookml,malloy,metricflow,widget,api,ossie]",
+    "sidemantic[workbench,mcp,apps,charts,lsp,dax,lookml,malloy,metricflow,widget,api,ossie,rust]",
 ]
 
 [build-system]

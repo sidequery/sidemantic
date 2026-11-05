@@ -65,8 +65,8 @@ jobs:
           assert "sidemantic_dax" not in sys.modules
           PY
 
-      - name: Install DAX and MCP Apps test dependencies
-        run: uv sync --extra dev --extra dax --extra apps
+      - name: Install Rust, DAX, and MCP Apps test dependencies
+        run: uv sync --extra dev --extra rust --extra dax --extra apps
 
       - name: Install browser test runtime
         run: uv run python -m playwright install --with-deps chromium
@@ -228,12 +228,13 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Build runtime distribution
-        run: uv build sidemantic-rs --out-dir /tmp/sidemantic-runtime-dist
+      - name: Build Python distribution
+        run: uv build --wheel --out-dir /tmp/sidemantic-dist
 
       - name: Smoke base CLI install
         run: |
           set -euo pipefail
+          SIDEMANTIC_WHEEL=$(realpath "$(find /tmp/sidemantic-dist -name 'sidemantic-[0-9]*.whl' -print -quit)")
           tmpdir="$(mktemp -d)"
           mkdir -p "$tmpdir/models"
           cat > "$tmpdir/models/models.yml" <<'YAML'
@@ -249,22 +250,31 @@ jobs:
                   agg: count
           YAML
 
-          uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with . sidemantic --version
-          uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with . sidemantic validate "$tmpdir/models"
-          uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with . sidemantic query "SELECT order_count, status FROM orders" --models "$tmpdir/models" --dry-run
+          cd "$tmpdir"
+          uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic --version
+          uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic validate "$tmpdir/models"
+          uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic query "SELECT order_count, status FROM orders" --models "$tmpdir/models" --dry-run
 
-          uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with . python - <<'PYTHON'
+          uv run --no-project --with "$SIDEMANTIC_WHEEL" python - <<'PYTHON'
+          from importlib.util import find_spec
           from sidemantic import SemanticLayer, Model, Metric
-          for engine in (None, "rust"):
-              layer = SemanticLayer(engine=engine)
-              layer.add_model(Model(name="orders", table="orders", metrics=[Metric(name="count", agg="count")]))
-              layer.compile(metrics=["orders.count"])
-              assert layer.last_engine_selection == {"engine": engine or "python", "reason": None}
-              layer.adapter.close()
+          from sidemantic.semantic_handoff import RustBackendUnavailableError
+
+          assert find_spec("sidemantic_rs") is None
+          with SemanticLayer() as layer:
+              layer.add_model(Model(name="orders", sql="select 1 as id", metrics=[Metric(name="count", agg="count")]))
+              assert layer.sql("select orders.count from orders").fetchall() == [(1,)]
+              assert layer.last_engine_selection == {"engine": "python", "reason": None}
+          try:
+              SemanticLayer(engine="rust")
+          except RustBackendUnavailableError as error:
+              assert "sidemantic[rust]" in str(error)
+          else:
+              raise AssertionError("Rust must require the extra")
           PYTHON
 
           set +e
-          timeout 10s uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with . sidemantic serve "$tmpdir/models" >"$tmpdir/serve.out" 2>"$tmpdir/serve.err"
+          timeout 10s uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic serve "$tmpdir/models" >"$tmpdir/serve.out" 2>"$tmpdir/serve.err"
           serve_status=$?
           set -e
           if [ "$serve_status" -eq 0 ]; then
@@ -278,6 +288,24 @@ jobs:
             exit 1
           fi
           grep -q "sidemantic\\[api\\]" "$tmpdir/serve.err"
+
+      - name: Build runtime distribution
+        run: uv build sidemantic-rs --out-dir /tmp/sidemantic-runtime-dist
+
+      - name: Smoke Rust extra install
+        run: |
+          SIDEMANTIC_WHEEL=$(realpath "$(find /tmp/sidemantic-dist -name 'sidemantic-[0-9]*.whl' -print -quit)")
+          cd /tmp
+          uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with "${SIDEMANTIC_WHEEL}[rust]" python - <<'PYTHON'
+          import sidemantic_rs
+          from sidemantic import SemanticLayer, Model, Metric
+
+          for engine in (None, "rust"):
+              with SemanticLayer(engine=engine) as layer:
+                  layer.add_model(Model(name="orders", sql="select 1 as id", metrics=[Metric(name="count", agg="count")]))
+                  assert layer.sql("select orders.count from orders").fetchall() == [(1,)]
+                  assert layer.last_engine_selection == {"engine": engine or "python", "reason": None}
+          PYTHON
 
       - name: Save completed build caches
         if: ${{ !cancelled() }}

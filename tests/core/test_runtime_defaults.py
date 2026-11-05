@@ -76,6 +76,16 @@ def test_missing_explicit_rust_runtime_does_not_silently_fall_back(monkeypatch):
     assert SemanticLayer(engine="auto")._rust_unavailable_reason == "missing native package"
 
 
+def test_missing_rust_extra_reports_install_command_and_auto_executes_with_python(monkeypatch):
+    monkeypatch.setitem(sys.modules, "sidemantic_rs", None)
+    with pytest.raises(RustBackendUnavailableError, match=r"sidemantic\[rust\]"):
+        SemanticLayer(engine="rust")
+    with _count_layer(engine="auto") as layer:
+        assert layer.sql("select count from orders").fetchall() == [(2,)]
+        assert layer.last_engine_selection["engine"] == "python"
+        assert "sidemantic[rust]" in layer.last_engine_selection["reason"]
+
+
 def test_pyodide_defaults_to_python_without_native_import(monkeypatch):
     monkeypatch.setattr(sys, "platform", "emscripten")
     assert RuntimeConfig().engine == "python"

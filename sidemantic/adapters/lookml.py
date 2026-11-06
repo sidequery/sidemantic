@@ -11,7 +11,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.fidelity import record_import_note
+from sidemantic.fidelity import record_export_note, record_import_note
 from sidemantic.sql.lookml_expression import (
     lookml_expression_has_subquery,
     replace_lookml_placeholders,
@@ -96,6 +96,8 @@ class LookMLAdapter(BaseAdapter):
                 if rels:
                     model.relationships = [r for r in rels if r.name not in skipped]
                 prev_layer.add_model(model)
+        if graph.metadata.get("lookml", {}).get("explores"):
+            graph.metadata["lookml"]["relationship_snapshot"] = self._relationship_snapshot(graph.models)
         return graph
 
     def _build_graph(self, source: str | Path) -> SemanticGraph:
@@ -845,6 +847,8 @@ class LookMLAdapter(BaseAdapter):
             if _src and not hasattr(_model, "_source_file"):
                 _model._source_file = _src
 
+        if graph.metadata.get("lookml", {}).get("explores"):
+            graph.metadata["lookml"]["relationship_snapshot"] = self._relationship_snapshot(graph.models)
         return graph
 
     @classmethod
@@ -2070,6 +2074,15 @@ class LookMLAdapter(BaseAdapter):
                 # Check for primary key
                 if dim_def.get("primary_key") in ("yes", True):
                     primary_key = dim.name
+                    raw_sql = dim_def.get("sql", "").strip()
+                    keys = re.findall(r"CASE WHEN \$\{(\w+)\} IS NULL", raw_sql)
+                    if (
+                        dim.name.startswith("_sidemantic_primary_key")
+                        and len(keys) > 1
+                        and raw_sql == self._composite_key_sql(keys)
+                    ):
+                        primary_key = keys
+                        dimensions.remove(dim)
 
         # Parse dimension_group (time dimensions)
         for dim_group_def in view_def.get("dimension_groups") or []:
@@ -3847,6 +3860,9 @@ class LookMLAdapter(BaseAdapter):
                 return
 
         base_model = graph.models[base_model_name]
+        retained = graph.metadata.setdefault("lookml", {}).setdefault("explores", [])
+        if explore_def not in retained:
+            retained.append(copy.deepcopy(explore_def))
 
         # Set description from explore if model doesn't already have one
         explore_desc = explore_def.get("description")
@@ -3976,100 +3992,86 @@ class LookMLAdapter(BaseAdapter):
                         join_target,
                         join_target,
                     )
-            relationship = self._parse_join(join_def, base_model_name, explore_name)
+            owner, owner_alias = base_model_name, explore_name
+            aliases = {explore_name: base_model_name, base_model_name: base_model_name}
+            aliases.update({j["name"]: j.get("from", j["name"]) for j in explore_def.get("joins", [])})
+            referenced = {name for name, _ in re.findall(r"\$\{(\w+)\.(\w+)\}", join_def.get("sql_on", ""))}
+            other = referenced - {join_def.get("name")}
+            if not (other & {base_model_name, explore_name}) and len(other) == 1:
+                candidate = next(iter(other))
+                if candidate in aliases and aliases[candidate] in graph.models:
+                    owner, owner_alias = aliases[candidate], candidate
+            relationship = self._parse_join(join_def, owner, owner_alias)
             if relationship:
-                # Add relationship to the base model
-                base_model.relationships.append(relationship)
+                graph.models[owner].relationships.append(relationship)
 
     def _parse_join(self, join_def: dict, base_model_name: str, explore_name: str | None = None) -> Relationship | None:
-        """Parse a join definition into a Relationship.
-
-        Args:
-            join_def: Join definition from explore
-            base_model_name: Name of the base model in the explore
-            explore_name: Optional explore alias (for from: aliased explores where
-                sql_on may reference the explore name instead of the view name)
-
-        Returns:
-            Relationship or None if parsing fails
-        """
+        """Retain complete equi-join keys; diagnose predicates the key IR cannot express."""
         join_name = join_def.get("name")
         if not join_name:
             return None
-
-        # Handle from: aliasing on joins (join alias -> actual view)
         actual_model_name = join_def.get("from", join_name)
-
-        # Get relationship type from LookML
-        # LookML uses: one_to_one, one_to_many, many_to_one, many_to_many
-        lookml_relationship = join_def.get("relationship", "many_to_one")
-
-        # Map LookML relationship types to Sidemantic types
-        relationship_mapping = {
-            "many_to_one": "many_to_one",
-            "one_to_one": "one_to_one",
-            "one_to_many": "one_to_many",
-            "many_to_many": "many_to_many",
-        }
-
-        relationship_type = relationship_mapping.get(lookml_relationship, "many_to_one")
-
-        # Extract foreign key from sql_on if possible
-        # sql_on typically looks like: ${orders.customer_id} = ${customers.id}
-        foreign_key = None
-        primary_key = None
+        relationship_type = join_def.get("relationship", "many_to_one")
+        if relationship_type not in {"many_to_one", "one_to_one", "one_to_many", "many_to_many"}:
+            raise ValueError(f"Unsupported LookML relationship {relationship_type!r}")
+        join_type = join_def.get("type", "left_outer")
+        if join_type not in {"left_outer", "inner", "full_outer", "cross"}:
+            raise ValueError(f"Unsupported LookML join type {join_type!r}")
+        metadata = {"join_type": join_type}
+        if "type" in join_def:
+            metadata["bsl_how"] = join_type.removesuffix("_outer")
+        if join_type == "cross":
+            return Relationship(name=actual_model_name, type="cross", metadata=metadata)
         sql_on = join_def.get("sql_on", "")
+        base_aliases = {base_model_name, explore_name or base_model_name}
+        # Parse the whole predicate rather than extracting the first two references.
+        # Extra filters, non-equality and functions must never become a weaker equality.
+        import sqlglot
+        from sqlglot import expressions as exp
 
-        # Try to extract foreign key from sql_on
-        # For many_to_one: base model has the FK -> extract from base_model
-        # For one_to_many: joined model has the FK -> extract from join_name
-        if sql_on:
-            matches = re.findall(r"\$\{(\w+)\.(\w+)\}", sql_on)
-            models_in_sql = {m for m, c in matches}
+        refs = re.findall(r"\$\{(\w+)\.(\w+)\}", sql_on)
+        replacements = {f"${{{model}.{column}}}": f'"{model}"."{column}"' for model, column in refs}
+        try:
+            tree = sqlglot.parse_one(replace_lookml_placeholders(sql_on, replacements))
+        except Exception:
+            tree = None
+        pairs = []
 
-            # Build set of names that represent the base model in sql_on.
-            # With from: aliasing (explore: orders { from: fact_orders }), the
-            # sql_on may reference either the view name or the explore alias.
-            base_aliases = {base_model_name}
-            if explore_name and explore_name != base_model_name:
-                base_aliases.add(explore_name)
+        def collect(node):
+            if isinstance(node, exp.Paren):
+                return collect(node.this)
+            if isinstance(node, exp.And):
+                return collect(node.left) and collect(node.right)
+            if (
+                not isinstance(node, exp.EQ)
+                or not isinstance(node.left, exp.Column)
+                or not isinstance(node.right, exp.Column)
+            ):
+                return False
+            left, right = node.left, node.right
+            if left.table == join_name and right.table in base_aliases:
+                left, right = right, left
+            if left.table not in base_aliases or right.table != join_name:
+                return False
+            pairs.append((left.name, right.name))
+            return True
 
-            # Check if this is a direct relationship between base_model and join_name
-            # For many_to_one: base_model must be in sql_on (it has the FK)
-            # For one_to_many: join_name must be in sql_on (it has the FK)
-            # If the required model isn't present, this is likely a multi-hop join
-            # (e.g., orders -> regions via customers.region_id = regions.id where orders isn't present)
-            # Skip these as sidemantic will compute the path through intermediate models
-            if relationship_type == "many_to_one":
-                if not (base_aliases & models_in_sql):
-                    return None
-                # Base model has the FK (e.g., orders.customer_id -> customers.id)
-                for model, column in matches:
-                    if model in base_aliases:
-                        foreign_key = column
-                        break
-                primary_key = next((column for model, column in matches if model == join_name), None)
-            elif relationship_type in ("one_to_many", "one_to_one"):
-                if join_name not in models_in_sql:
-                    return None
-                # Joined model has the FK (e.g., customers.id <- orders.customer_id)
-                for model, column in matches:
-                    if model == join_name:
-                        foreign_key = column
-                        break
-                primary_key = next((column for model, column in matches if model in base_aliases), None)
-
-        # Capture LookML join type (left_outer, inner, full_outer, cross)
-        metadata = None
-        lookml_join_type = join_def.get("type")
-        if lookml_join_type:
-            metadata = {"join_type": lookml_join_type}
-
+        if not collect(tree):
+            detail = (
+                f"LookML join {base_model_name}.{join_name} cannot be lowered to a direct column equality; "
+                "the original explore is retained for export, but this join is unavailable for native queries."
+            )
+            logger.warning(detail)
+            record_import_note("join_predicate", detail, severity="unsupported", source="lookml")
+            return None
+        local, remote = map(list, zip(*pairs))
+        if relationship_type in {"one_to_many", "one_to_one"}:
+            local, remote = remote, local
         return Relationship(
             name=actual_model_name,
             type=relationship_type,
-            foreign_key=foreign_key,
-            primary_key=primary_key,
+            foreign_key=local[0] if len(local) == 1 else local,
+            primary_key=remote[0] if len(remote) == 1 else remote,
             metadata=metadata,
         )
 
@@ -4081,6 +4083,12 @@ class LookMLAdapter(BaseAdapter):
             output_path: Path to output .lkml file
         """
         output_path = Path(output_path)
+        owned_metrics = {id(metric) for model in graph.models.values() for metric in model.metrics}
+        graph_only = [name for name, metric in graph.metrics.items() if id(metric) not in owned_metrics]
+        if graph_only:
+            detail = "LookML export cannot safely assign graph-level metrics to views: " + ", ".join(graph_only)
+            record_export_note("graph_metric", detail, severity="unsupported", source="lookml")
+            raise ValueError(detail)
 
         # Resolve inheritance first
         from sidemantic.core.inheritance import resolve_model_inheritance
@@ -4093,7 +4101,28 @@ class LookMLAdapter(BaseAdapter):
             view = self._export_view(model, graph)
             views.append(view)
 
-        data = {"views": views}
+        retained = (graph.metadata.get("lookml") or {}).get("explores")
+        if retained:
+            # Retain separate explores instead of merging their distinct filters/aliases.
+            # Refuse stale relation edits: silently replaying the original predicate would
+            # discard a native edit, while merging scopes would change Looker semantics.
+            snapshot = (graph.metadata.get("lookml") or {}).get("relationship_snapshot")
+            current = self._relationship_snapshot(resolved_models)
+            if snapshot is not None and snapshot != current:
+                raise ValueError(
+                    "LookML relationships changed after import; remove retained explore metadata before exporting a new graph"
+                )
+            explores = copy.deepcopy(retained)
+            for explore in explores:
+                for name in [
+                    explore.get("from", explore["name"]),
+                    *(join.get("from", join["name"]) for join in explore.get("joins", [])),
+                ]:
+                    if name not in resolved_models:
+                        raise ValueError(f"LookML explore references missing view {name!r}")
+        else:
+            explores = self._export_explores(resolved_models, views)
+        data = {"views": views, "explores": explores}
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -4102,6 +4131,123 @@ class LookMLAdapter(BaseAdapter):
         with open(output_path, "w") as f:
             lookml_str = lkml.dump(data)
             f.write(lookml_str)
+
+    @staticmethod
+    def _composite_key_sql(keys: list[str]) -> str:
+        parts = []
+        for key in keys:
+            ref = "${" + key + "}"
+            text = f"CAST({ref} AS VARCHAR)"
+            parts.append(
+                f"CASE WHEN {ref} IS NULL THEN 'N;' ELSE CONCAT('V', CAST(LENGTH({text}) AS VARCHAR), ':', {text}) END"
+            )
+        return "CONCAT(" + ", ".join(parts) + ")"
+
+    @staticmethod
+    def _relationship_snapshot(models: dict[str, Model]) -> dict:
+        return {name: [rel.model_dump() for rel in model.relationships] for name, model in models.items()}
+
+    def _export_explores(self, models: dict[str, Model], views: list[dict]) -> list[dict]:
+        """Build queryable explores, including compound and transitive joins."""
+        view_defs = {view["name"]: view for view in views}
+
+        def field_reference(model, alias, column):
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column):
+                raise ValueError(f"LookML join key {model.name}.{column} is not a field identifier")
+            view = view_defs[model.name]
+            fields = view.setdefault("dimensions", [])
+            if not any(field["name"] == column for field in fields):
+                if any(metric.name == column for metric in model.metrics):
+                    raise ValueError(f"LookML join key {model.name}.{column} collides with a measure")
+                if any(dim.name == column for dim in model.dimensions):
+                    raise ValueError(f"LookML join key {model.name}.{column} requires an explicit exported dimension")
+                # Keys need not have been exposed as dimensions in the native model.
+                fields.append({"name": column, "hidden": "yes", "sql": "${TABLE}." + column})
+            return "${" + alias + "." + column + "}"
+
+        explores = []
+        for root in models.values():
+            if (root.meta or {}).get("lookml_template"):
+                continue
+            explore = {"name": root.name}
+            joins = []
+            used = {root.name}
+            queue = [(root, root.name, (root.name,))]
+            while queue:
+                model, source_alias, ancestors = queue.pop(0)
+                for rel in model.relationships:
+                    if not rel.active:
+                        record_export_note(
+                            "inactive_relationship",
+                            f"Inactive relationship {model.name}.{rel.name} omitted",
+                            source="lookml",
+                        )
+                        continue
+                    target = models.get(rel.related_model)
+                    if target is None:
+                        raise ValueError(f"LookML relationship {model.name}.{rel.name} targets a missing model")
+                    if target.name in ancestors:
+                        record_export_note(
+                            "relationship_cycle",
+                            f"Explore {root.name} cuts cyclic relationship {model.name}.{rel.name}",
+                            source="lookml",
+                        )
+                        continue
+                    if rel.through:
+                        raise ValueError(
+                            f"LookML relationship {model.name}.{rel.name} uses an unsupported junction model"
+                        )
+                    alias = rel.name
+                    if alias in used:
+                        alias = source_alias + "_" + alias
+                    if alias in used:
+                        raise ValueError(f"Ambiguous LookML join alias {alias!r} in explore {root.name}")
+                    used.add(alias)
+                    join_type = (rel.metadata or {}).get("join_type")
+                    if join_type is None:
+                        how = (rel.metadata or {}).get("bsl_how", "left")
+                        join_type = {
+                            "left": "left_outer",
+                            "inner": "inner",
+                            "outer": "full_outer",
+                            "full": "full_outer",
+                        }.get(how)
+                    if rel.type == "cross":
+                        join_type = "cross"
+                    if join_type not in {"left_outer", "inner", "full_outer", "cross"}:
+                        raise ValueError(f"Unsupported LookML join type {join_type!r}")
+                    join = {
+                        "name": alias,
+                        "type": join_type,
+                        "relationship": "many_to_many" if rel.type == "cross" else rel.type,
+                    }
+                    if alias != target.name:
+                        join["from"] = target.name
+                    if rel.sql:
+                        raise ValueError(
+                            f"LookML relationship {model.name}.{rel.name} has custom SQL; export requires explicit column pairs"
+                        )
+                    if rel.type != "cross":
+                        if rel.type in {"one_to_many", "one_to_one"}:
+                            local = rel.primary_key_columns or model.primary_key_columns
+                            remote = rel.foreign_key_columns
+                        else:
+                            local = rel.foreign_key_columns
+                            remote = rel.primary_key_columns or target.primary_key_columns
+                        if not local or len(local) != len(remote):
+                            raise ValueError(
+                                f"LookML relationship {model.name}.{rel.name} has missing or mismatched join keys"
+                            )
+                        join["sql_on"] = " AND ".join(
+                            field_reference(model, source_alias, left) + " = " + field_reference(target, alias, right)
+                            for left, right in zip(local, remote)
+                        )
+                    joins.append(join)
+                    queue.append((target, alias, (*ancestors, target.name)))
+            if joins:
+                explore["joins"] = joins
+            explores.append(explore)
+        return explores
 
     @classmethod
     def _fold_filter_conds(cls, filters: list[str], model: Model) -> str:
@@ -4465,6 +4611,41 @@ class LookMLAdapter(BaseAdapter):
 
             dimensions.append(dim_def)
 
+        if len(model.primary_key_columns) == 1:
+            key = model.primary_key_columns[0]
+            if not any(dim["name"] == key for dim in dimensions):
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or any(
+                    field.name == key for field in [*model.dimensions, *model.metrics]
+                ):
+                    raise ValueError(f"LookML primary key {model.name}.{key} is not an exported scalar dimension")
+                dimensions.append({"name": key, "hidden": "yes", "primary_key": "yes", "sql": "${TABLE}." + key})
+        if len(model.primary_key_columns) > 1:
+            used_names = {dim.name for dim in model.dimensions} | {metric.name for metric in model.metrics}
+            key_name = "_sidemantic_primary_key"
+            while key_name in used_names:
+                key_name += "_"
+            for key in model.primary_key_columns:
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                    raise ValueError(f"LookML composite primary key {model.name}.{key} is not a field identifier")
+                if not any(dim["name"] == key for dim in dimensions):
+                    if key in used_names:
+                        raise ValueError(f"LookML composite key {model.name}.{key} is not an exported scalar dimension")
+                    dimensions.append({"name": key, "hidden": "yes", "sql": "${TABLE}." + key})
+            dimensions.append(
+                {
+                    "name": key_name,
+                    "hidden": "yes",
+                    "primary_key": "yes",
+                    "type": "string",
+                    "sql": self._composite_key_sql(model.primary_key_columns),
+                }
+            )
+            record_export_note(
+                "composite_primary_key",
+                f"{model.name}: composite key encoded with length-prefixed VARCHAR casts; verify casts in the Looker connection dialect",
+                severity="approximated",
+                source="lookml",
+            )
         if dimensions:
             view["dimensions"] = dimensions
 

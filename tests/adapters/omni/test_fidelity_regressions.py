@@ -264,3 +264,73 @@ def test_conflicting_native_time_properties_are_rejected():
     )
     with pytest.raises(ValueError, match="must be included in supported_granularities"):
         OmniAdapter()._export_view(model)
+
+
+@pytest.mark.parametrize("config", [{}, {"label": "Business model", "week_start_day": "Monday"}])
+@pytest.mark.parametrize("edit", ["change", "delete"])
+@pytest.mark.parametrize("suffix", ["yaml", "yml"])
+def test_in_place_export_removes_legacy_relationships(tmp_path, config, edit, suffix):
+    for name in ("orders", "customers"):
+        (tmp_path / f"{name}.view").write_text(f"name: {name}\ntable_name: {name}\n")
+    (tmp_path / f"model.{suffix}").write_text(
+        yaml.safe_dump(
+            {
+                **config,
+                "relationships": [
+                    {
+                        "join_from_view": "orders",
+                        "join_to_view": "customers",
+                        "on_sql": "${orders.old_customer_id} = ${customers.id}",
+                    }
+                ],
+            }
+        )
+    )
+    adapter = OmniAdapter()
+    graph = adapter.parse(tmp_path)
+    if edit == "change":
+        graph.models["orders"].relationships[0].foreign_key = "customer_id"
+    else:
+        graph.models["orders"].relationships.clear()
+
+    adapter.export(graph, tmp_path)
+
+    assert yaml.safe_load((tmp_path / "model.yaml").read_text()) == config
+    assert yaml.safe_load((tmp_path / f"model.{suffix}").read_text()) == config
+    restored = adapter.parse(tmp_path)
+    relationships = restored.models["orders"].relationships
+    assert [relationship.foreign_key for relationship in relationships] == (["customer_id"] if edit == "change" else [])
+
+    # A subsequent deletion also clears the current relationships.yaml output.
+    if edit == "change":
+        restored.models["orders"].relationships.clear()
+        adapter.export(restored, tmp_path)
+        assert yaml.safe_load((tmp_path / "relationships.yaml").read_text()) == []
+        assert not adapter.parse(tmp_path).models["orders"].relationships
+
+
+@pytest.mark.parametrize("edit", ["change", "delete"])
+def test_in_place_export_clears_alternate_relationship_file(tmp_path, edit):
+    for name in ("orders", "customers"):
+        (tmp_path / f"{name}.view").write_text(f"name: {name}\ntable_name: {name}\n")
+    (tmp_path / "relationships.yml").write_text(
+        yaml.safe_dump(
+            [
+                {
+                    "join_from_view": "orders",
+                    "join_to_view": "customers",
+                    "on_sql": "${orders.old_customer_id} = ${customers.id}",
+                }
+            ]
+        )
+    )
+    adapter = OmniAdapter()
+    graph = adapter.parse(tmp_path)
+    if edit == "change":
+        graph.models["orders"].relationships[0].foreign_key = "customer_id"
+    else:
+        graph.models["orders"].relationships.clear()
+    adapter.export(graph, tmp_path)
+    assert yaml.safe_load((tmp_path / "relationships.yml").read_text()) == []
+    restored = adapter.parse(tmp_path).models["orders"].relationships
+    assert [relationship.foreign_key for relationship in restored] == (["customer_id"] if edit == "change" else [])

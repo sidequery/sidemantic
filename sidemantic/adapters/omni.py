@@ -860,14 +860,22 @@ class OmniAdapter(BaseAdapter):
         # Keep model-wide configuration and topics independent of join definitions.
         model_config = deepcopy(project.get("model", {}))
         model_config.pop("relationships", None)
-        if model_config:
+        # An imported legacy model may contain only relationships. Still replace
+        # that file after moving its joins, otherwise in-place export leaves the
+        # original definitions behind and import reads both versions.
+        if model_config or "model" in project:
             output_child(output_path, "model.yaml").write_text(yaml.safe_dump(model_config, sort_keys=False))
+        legacy_model_file = output_child(output_path, "model.yml")
+        if legacy_model_file.exists():
+            legacy_config = _yaml_safe_load(legacy_model_file.read_text()) or {}
+            if isinstance(legacy_config, dict) and "relationships" in legacy_config:
+                legacy_config.pop("relationships")
+                legacy_model_file.write_text(yaml.safe_dump(legacy_config, sort_keys=False))
         for relative, topic in project.get("topics", {}).items():
             topic_path = self._project_path(output_path, relative)
             topic_path.parent.mkdir(parents=True, exist_ok=True)
             topic_path.write_text(yaml.safe_dump(topic, sort_keys=False))
-        if any(model.relationships for model in resolved_models.values()):
-            self._export_relationships(resolved_models, output_path)
+        self._export_relationships(resolved_models, output_path)
 
     @staticmethod
     def _validate_topics(topics: dict, models: dict[str, Model]) -> None:
@@ -1180,7 +1188,7 @@ class OmniAdapter(BaseAdapter):
         return mapping.get(comparison_type, "1 year")
 
     def _export_relationships(self, models: dict[str, Model], output_dir: Path) -> None:
-        """Export relationships to model.yaml file.
+        """Export relationships to relationships.yaml, clearing removed joins.
 
         Args:
             models: Dictionary of resolved models
@@ -1269,7 +1277,12 @@ class OmniAdapter(BaseAdapter):
 
                 relationships.append(rel_def)
 
-        if relationships:
-            model_file = output_child(output_dir, "relationships.yaml")
+        model_file = output_child(output_dir, "relationships.yaml")
+        if relationships or model_file.exists():
             with open(model_file, "w") as f:
                 yaml.safe_dump(relationships, f, default_flow_style=False, sort_keys=False)
+        # The importer accepts both suffixes; old .yml joins must not coexist
+        # with the authoritative .yaml output after an in-place export.
+        alternate_file = output_child(output_dir, "relationships.yml")
+        if alternate_file.exists():
+            alternate_file.write_text("[]\n")

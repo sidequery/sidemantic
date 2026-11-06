@@ -95,12 +95,22 @@ def _normalize_join_keys(value: Any) -> None:
 
 
 def _column_type_metadata(column: dict[str, Any]) -> dict[str, Any]:
+    source_column = column.get("db_column_name") or column.get("name")
     return {
         "thoughtspot": {
             "data_type": column.get("data_type"),
             "db_column_properties": deepcopy(column.get("db_column_properties")),
+            "source_column": source_column,
+            "source_sql": _convert_tml_expr(source_column),
         }
     }
+
+
+def _preserved_column_binding(field: Dimension | Metric) -> str | None:
+    native = (field.metadata or {}).get("thoughtspot", {})
+    if field.sql == native.get("source_sql"):
+        return native.get("source_column")
+    return None
 
 
 def _restore_column_type(
@@ -1679,7 +1689,11 @@ class ThoughtSpotAdapter(BaseAdapter):
         native = (model.metadata or {}).get("thoughtspot", {})
         if native.get("kind") == "table":
             for field in [*model.dimensions, *model.metrics]:
-                if field.sql and not _SIMPLE_IDENTIFIER.fullmatch(field.sql):
+                if (
+                    field.sql
+                    and _preserved_column_binding(field) is None
+                    and not _SIMPLE_IDENTIFIER.fullmatch(field.sql)
+                ):
                     record_export_feature("table_field_expression", "rejected", location=f"{model.name}.{field.name}")
                     raise ValueError(
                         f"ThoughtSpot table '{model.name}': field '{field.name}' has a SQL expression "
@@ -1718,7 +1732,7 @@ class ThoughtSpotAdapter(BaseAdapter):
 
             col_def: dict[str, Any] = {
                 "name": dim.name,
-                "db_column_name": _simple_column(dim.sql, dim.name),
+                "db_column_name": _preserved_column_binding(dim) or _simple_column(dim.sql, dim.name),
                 "data_type": data_type,
                 "properties": {
                     "column_type": "ATTRIBUTE",
@@ -1744,7 +1758,7 @@ class ThoughtSpotAdapter(BaseAdapter):
             data_type = "DOUBLE"
             col_def: dict[str, Any] = {
                 "name": metric.name,
-                "db_column_name": _simple_column(metric.sql, metric.name),
+                "db_column_name": _preserved_column_binding(metric) or _simple_column(metric.sql, metric.name),
                 "data_type": data_type,
                 "properties": {
                     "column_type": "MEASURE",

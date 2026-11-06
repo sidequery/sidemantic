@@ -78,6 +78,49 @@ def test_native_table_expression_edits_reject_before_writing(tmp_path, field_kin
     assert not destination.exists()
 
 
+@pytest.mark.parametrize("source_column", ["Order ID", "order-id", "订单编号", "amount[usd]"])
+@pytest.mark.parametrize("role", ["ATTRIBUTE", "MEASURE"])
+@pytest.mark.parametrize("aliased", [False, True])
+def test_native_column_names_roundtrip_without_sql_identifier_restrictions(tmp_path, source_column, role, aliased):
+    name = "display_name" if aliased else source_column
+    source = tmp_path / "orders.table.tml"
+    source.write_text(
+        yaml.safe_dump(
+            {
+                "table": {
+                    "name": "orders",
+                    "columns": [
+                        {
+                            "name": name,
+                            "db_column_name": source_column,
+                            "data_type": "DOUBLE",
+                            "properties": {"column_type": role, "aggregation": "SUM"},
+                        }
+                    ],
+                }
+            }
+        )
+    )
+    adapter = ThoughtSpotAdapter()
+    graph = adapter.parse(source)
+    destination = tmp_path / "out.tml"
+    adapter.export(graph, destination)
+    column = yaml.safe_load(destination.read_text())["table"]["columns"][0]
+    assert column["name"] == name
+    assert column["db_column_name"] == source_column
+    imported = adapter.parse(destination).models["orders"]
+    model = graph.models["orders"]
+    field = model.dimensions[0] if role == "ATTRIBUTE" else model.metrics[0]
+    restored = imported.dimensions[0] if role == "ATTRIBUTE" else imported.metrics[0]
+    assert restored.sql == field.sql
+
+    field.sql = f"{field.sql} * 2"
+    rejected_destination = tmp_path / "rejected"
+    with pytest.raises(ValueError, match="SQL expression.*native table column"):
+        adapter.export(graph, rejected_destination)
+    assert not rejected_destination.exists()
+
+
 def test_multimodel_file_output_rejects_instead_of_dropping_models(tmp_path):
     from sidemantic.core.model import Model
     from sidemantic.core.semantic_graph import SemanticGraph

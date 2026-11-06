@@ -22,7 +22,7 @@ Table, Worksheet and Model TML import remain supported. SQL View documents are e
 
 Native Table round trips retain connection metadata, original data types (including `db_column_properties`) and original `joins_with`. Edited native joins are rejected instead of replaying stale join definitions. Changing a native Table to a SQL source requires SQL View export, which is unsupported. Modern Model export still uses the existing Worksheet/Table conversion rather than producing a modern Model document set.
 
-Native Table field SQL must remain a simple column binding. Dimension or metric expressions that need formulas are rejected before writing rather than replaced with a column name.
+Native Table exports preserve unchanged source column names, including spaces, punctuation and Unicode. Edited field SQL must be a simple column binding. Dimension or metric expressions that need formulas are rejected before writing rather than replaced with a column name.
 
 A destination file accepts one model. Use an output directory for multiple models. Rejected native exports are checked before writing any document in the set.
 

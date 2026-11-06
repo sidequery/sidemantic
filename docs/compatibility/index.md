@@ -13,12 +13,12 @@ Detailed compatibility documents describe field-level limitations where they exi
 | `cube` | `cubejs`, `cube-js` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 10 | [Detailed guide](cube.md) |
 | `gooddata` | `good-data` | `file_or_directory` | `.json` | Registered | Yes | 2 | Registry summary only |
 | `graphene` | `gsql` | `file_or_directory` | `.gsql` | Registered | No | 1 | [Detailed guide](graphene.md) |
-| `hex` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 6 | Registry summary only |
-| `holistics` | `aml` | `file_or_directory` | `.aml` | Registered | Yes | 4 | Registry summary only |
+| `hex` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 7 | Registry summary only |
+| `holistics` | `aml` | `file_or_directory` | `.aml` | Registered | Yes | 5 | Registry summary only |
 | `lookml` | `looker` | `file_or_directory` | `.lkml` | Registered | Yes | 10 | [Detailed guide](lookml.md) |
 | `malloy` | — | `file_or_directory` | `.malloy` | Registered | Yes | 18 | [Detailed guide](malloy.md) |
 | `metricflow` | `dbt`, `dbt-semantic-layer` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 6 | Registry summary only |
-| `omni` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 4 | Registry summary only |
+| `omni` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 5 | [Detailed guide](omni.md) |
 | `ossie` | `apache-ossie`, `osi`, `open-semantic-interchange` | `file_or_directory` | `.yml`, `.yaml`, `.json` | Registered | Yes | 5 | [Detailed guide](ossie.md) |
 | `rill` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 8 | Registry summary only |
 | `sidemantic` | `native` | `file` | `.yml`, `.yaml`, `.sql` | Registered | Yes | 2 | Registry summary only |

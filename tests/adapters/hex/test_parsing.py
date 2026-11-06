@@ -182,7 +182,7 @@ def test_hex_dimension_type_timestamp():
 
 
 def test_hex_dimension_type_boolean():
-    """Test Hex boolean dimension type maps to categorical."""
+    """Test Hex boolean dimension type maps to boolean."""
     hex_def = {
         "id": "test_model",
         "base_sql_table": "test_table",
@@ -198,7 +198,7 @@ def test_hex_dimension_type_boolean():
         graph = adapter.parse(temp_path)
 
         dim = graph.models["test_model"].get_dimension("is_active")
-        assert dim.type == "categorical"
+        assert dim.type == "boolean"
     finally:
         temp_path.unlink()
 

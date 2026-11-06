@@ -4,6 +4,15 @@ Sidemantic's Cube adapter parses YAML schema files (`.yml` / `.yaml`) and maps C
 
 Features are marked **supported**, **partial support**, or **unsupported**. Partial support entries include notes explaining the limitation. Properties that parse without error but have no Sidemantic equivalent (UI hints, caching config, access control) are grouped together per section rather than listed individually.
 
+
+## Export fidelity
+
+Imported views, view groups and hierarchies are retained for Cube export. Views retain their original member curation, aliases and folders; exporting a changed materialized view projection is rejected because it cannot be safely translated back to a source view definition.
+
+Native `granularities`, switch values, currency/mask settings and multi-stage properties (`multi_stage`, `group_by`, `add_group_by`, `time_shift`) are restored at their Cube schema locations. Adapter source metadata is separate from user `meta`, so a user's same-named metadata is not promoted into an executable Cube property. CASE dimensions support literal labels and dynamic `{sql: ...}` labels; an unchanged expression exports as its original CASE definition.
+
+Source preservation is distinct from execution. Custom granularity intervals/origins, dynamic switch selection, subquery dimensions, rank fallbacks, multi-stage measures and rolling leading/offset settings produce unsupported import diagnostics when their behavior is not executed. Graph-level metrics without a Cube owner produce unsupported export diagnostics. JavaScript models are still not converted.
+
 ---
 
 ## Schema Format
@@ -48,9 +57,9 @@ Not mapped: `title`, `rewrite_queries`, `context_members`.
 | `type: string` | Supported (maps to `categorical`) |
 | `type: number` | Supported (maps to `numeric`) |
 | `type: time` | Supported (maps to `time`, default granularity `day`) |
-| `type: boolean` | Supported (maps to `categorical`) |
-| `type: geo` | Partial support: parses without error but latitude/longitude sub-fields are not stored. Maps to `categorical`. |
-| `type: switch` | Supported (maps to `categorical`; the `values` list is preserved in `Dimension.meta["switch_values"]`). |
+| `type: boolean` | Supported (maps to `boolean`) |
+| `type: geo` | Partial support: latitude/longitude retained for export; imports as categorical, without geo execution. |
+| `type: switch` | Partial support: values and source type retained for export; dynamic switch selection is not executed. |
 | `sql: ${CUBE}.column` | Supported (`${CUBE}` replaced with `{model}` placeholder) |
 | `sql: {CUBE}.column` (no dollar sign) | Supported (also replaced with `{model}`) |
 | `sql: ${cube_name}.column` | Supported (cube-name references replaced with `{model}`) |
@@ -65,8 +74,8 @@ Not mapped: `title`, `rewrite_queries`, `context_members`.
 | Cross-cube dimension references (`${other_cube.field}`) | Supported (preserved as-is in SQL) |
 | Path-qualified references (`{b.d.id}`) | Supported (preserved as-is in SQL) |
 | `case: { when: [...] }` (case dimensions) | Supported (converted to SQL `CASE WHEN ... THEN ... ELSE ... END` expression) |
-| Custom `granularities` on time dimensions | Supported (stored in `Dimension.supported_granularities`) |
-| `sub_query: true` | Unsupported (flag ignored, dimension SQL preserved verbatim) |
+| Custom `granularities` on time dimensions | Partial support: names and definitions retained; custom intervals/origins are not executed. |
+| `sub_query: true` | Unsupported execution; source flag retained for export with a diagnostic. |
 
 Not mapped: `propagate_filters_to_sub_query`.
 

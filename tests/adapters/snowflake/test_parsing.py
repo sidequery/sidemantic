@@ -213,7 +213,7 @@ tables:
         assert "test_table" in graph.models
         model = graph.models["test_table"]
         assert model.table == "test"
-        assert model.primary_key == "id"  # Default
+        assert model.primary_key is None
 
     def test_parse_table_without_base_table(self, adapter, tmp_path):
         """Test parsing a table without base_table."""
@@ -231,8 +231,8 @@ tables:
         model = graph.models["virtual_table"]
         assert model.table is None
 
-    def test_parse_composite_primary_key_uses_first(self, adapter, tmp_path):
-        """Test that composite primary keys use the first column."""
+    def test_parse_composite_primary_key(self, adapter, tmp_path):
+        """Test that every composite primary key column is preserved."""
         composite = tmp_path / "composite.yaml"
         composite.write_text("""
 name: test
@@ -248,7 +248,7 @@ tables:
         graph = adapter.parse(composite)
 
         model = graph.models["test_table"]
-        assert model.primary_key == "col1"
+        assert model.primary_key == ["col1", "col2"]
 
     def test_parse_relationship_without_columns(self, adapter, tmp_path):
         """Test that relationships without columns are skipped."""

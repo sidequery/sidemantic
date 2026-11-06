@@ -13,7 +13,7 @@ from sqlglot.errors import SqlglotError
 
 from sidemantic.core.preagg_matcher import FINALIZED_AGGREGATIONS, PreAggregationMatcher
 from sidemantic.core.relative_date import bigquery_trunc_part
-from sidemantic.core.semantic_graph import SemanticGraph, _relationship_local_key_columns
+from sidemantic.core.semantic_graph import JoinPath, SemanticGraph, _relationship_local_key_columns
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.sql.fragment import (
@@ -2115,6 +2115,35 @@ class SQLGenerator:
                 except SqlglotError:
                     logging.debug("Failed to parse filter for model extraction: %s", filter_expr, exc_info=True)
 
+        # Directed native relationships restrict which population may anchor a
+        # query. Keep dimension-first ordering for ordinary graphs, but choose
+        # a reachable anchor when that ordering would traverse a forbidden edge.
+        if (
+            not self.base_model
+            and len(models) > 1
+            and any(
+                (relationship.metadata or {}).get("reversible") is False
+                for model in self.graph.models.values()
+                for relationship in model.relationships
+            )
+        ):
+            if self.graph._adjacency_dirty:
+                self.graph.build_adjacency()
+            required = set(models)
+            for candidate in models:
+                reachable = {candidate}
+                pending = [candidate]
+                while pending:
+                    current = pending.pop()
+                    for edge in self.graph._adjacency.get(current, []):
+                        target = edge[0]
+                        if target not in reachable:
+                            reachable.add(target)
+                            pending.append(target)
+                if required <= reachable:
+                    models = [candidate, *(name for name in models if name != candidate)]
+                    break
+
         return models
 
     def _find_aggregate_metric_models(self, metric_refs: list[str]) -> set[str]:
@@ -2638,9 +2667,10 @@ class SQLGenerator:
 
         # Check if other models have has_many/has_one pointing to this model
         if needs_keyed_joins:
-            for other_model_name, other_model in self.graph.models.items():
-                if other_model_name not in all_models:
-                    continue
+            # Incoming relationships can originate at a nested role instance,
+            # whose canonical model need not participate in this query.
+            for other_model_name in sorted(all_models):
+                other_model = self.graph.get_model(other_model_name)
                 for other_join in other_model.relationships:
                     target_instance = self.graph.relationship_target_instance(other_model_name, other_join)
                     # Custom-SQL joins supply their key columns via the custom-join
@@ -3001,9 +3031,8 @@ class SQLGenerator:
             if target_instance in all_models and relationship.type != "cross":
                 return True
 
-        for other_model_name, other_model in self.graph.models.items():
-            if other_model_name not in all_models:
-                continue
+        for other_model_name in sorted(all_models):
+            other_model = self.graph.get_model(other_model_name)
             for relationship in other_model.relationships:
                 target_instance = self.graph.relationship_target_instance(other_model_name, relationship)
                 if target_instance == model_name and relationship.type != "cross":
@@ -3049,21 +3078,50 @@ class SQLGenerator:
         Returns:
             Dict mapping model names to whether they need symmetric aggregates
         """
-        models = [base_model_name, *other_models]
-        needs_symmetric = dict.fromkeys(models, False)
-        # A dimension can anchor the query on the many side. Assess fanout from
-        # each metric owner's perspective, not just the chosen FROM model.
-        for model_name in models:
-            for other_model in models:
-                if model_name == other_model:
-                    continue
-                try:
-                    path = self.graph.find_relationship_path(model_name, other_model)
-                    if any(hop.relationship == "one_to_many" for hop in path):
+
+        def direct_many_to_many(hop: JoinPath) -> bool:
+            # Direct many-to-many edges use one_to_many adjacency in both
+            # directions. Their inverse multiplicity cannot be inferred from
+            # that normalized label alone.
+            return any(
+                relationship.active
+                and relationship.type == "many_to_many"
+                and not relationship.through
+                and self.graph.relationship_target_instance(source, relationship) == target
+                for source, target in ((hop.from_model, hop.to_model), (hop.to_model, hop.from_model))
+                for relationship in self.graph.get_model(source).relationships
+            )
+
+        # Analyze only the joins emitted for this query. A permitted return
+        # route through a directed cycle can have different cardinalities from
+        # the inverse of the actual join. Reversing the perspective here does
+        # not permit reverse traversal when selecting query paths.
+        adjacency: dict[str, list[tuple[str, bool]]] = {base_model_name: []}
+        for hop in self._query_join_paths(base_model_name, other_models):
+            many_to_many = direct_many_to_many(hop)
+            adjacency.setdefault(hop.from_model, []).append(
+                (hop.to_model, many_to_many or hop.relationship in {"one_to_many", "cross"})
+            )
+            adjacency.setdefault(hop.to_model, []).append(
+                (hop.from_model, many_to_many or hop.relationship in {"many_to_one", "cross"})
+            )
+
+        needs_symmetric = dict.fromkeys(adjacency, False)
+        for model_name in adjacency:
+            visited = {model_name}
+            pending = [model_name]
+            while pending:
+                current = pending.pop()
+                for target, multiplies_rows in adjacency[current]:
+                    if target in visited:
+                        continue
+                    if multiplies_rows:
                         needs_symmetric[model_name] = True
                         break
-                except (ValueError, KeyError):
-                    pass
+                    visited.add(target)
+                    pending.append(target)
+                if needs_symmetric[model_name]:
+                    break
 
         return needs_symmetric
 
@@ -3183,30 +3241,18 @@ class SQLGenerator:
         # Check if any pair of metric models would cause fan-out
         # Fan-out occurs when model A joins to model B via a path that includes
         # a many_to_one relationship from B's perspective (one_to_many from A's)
-        metric_model_list = list(metric_models)
+        metric_model_list = sorted(metric_models)
         for i, model_a in enumerate(metric_model_list):
             for model_b in metric_model_list[i + 1 :]:
-                try:
-                    # Check path from A to B
-                    join_path = self.graph.find_relationship_path(model_a, model_b)
-                    if join_path:
-                        # If any hop is many_to_one (from A's perspective), model_a metrics
-                        # would be replicated when joining to model_b
-                        for jp in join_path:
-                            if jp.relationship == "many_to_one":
-                                # model_a is on the "many" side, so its rows fan out
-                                # when we aggregate model_b metrics
-                                return True
-
-                    # Check reverse path
-                    join_path_reverse = self.graph.find_relationship_path(model_b, model_a)
-                    if join_path_reverse:
-                        for jp in join_path_reverse:
-                            if jp.relationship == "many_to_one":
-                                return True
-
-                except (ValueError, KeyError):
-                    pass
+                for source, target in ((model_a, model_b), (model_b, model_a)):
+                    try:
+                        join_path = self.graph.find_relationship_path(source, target)
+                    except (ValueError, KeyError):
+                        continue
+                    # Either orientation repeats the one side. A directed
+                    # relationship may expose only its one-to-many traversal.
+                    if any(hop.relationship in {"many_to_one", "one_to_many"} for hop in join_path):
+                        return True
 
         return False
 
@@ -3439,6 +3485,18 @@ class SQLGenerator:
             child_generator.base_model = self.base_model or (
                 None if model_name in complete_groups.values() else model_name
             )
+            if self.base_model is None and child_generator.base_model is not None:
+                for required_model in child_generator._find_required_models(model_metrics, dimensions, model_filters):
+                    try:
+                        self.graph.find_relationship_path(child_generator.base_model, required_model)
+                    except ValueError as error:
+                        if not str(error).startswith("No join path"):
+                            raise
+                        # The metric owner was only an implicit preference.
+                        # Reuse the ordinary directed-anchor selection instead
+                        # of treating it as an explicit user restriction.
+                        child_generator.base_model = None
+                        break
             child_generator._generate_cache = {}
             sub_query = child_generator.generate(
                 metrics=model_metrics,
@@ -3643,6 +3701,17 @@ class SQLGenerator:
 
         return full_sql
 
+    def _query_join_paths(self, base_model_name: str, other_models: list[str]) -> list[JoinPath]:
+        """Select the ordered joins, adding each query instance only once."""
+        joined_models = {base_model_name}
+        joins = []
+        for other_model in other_models:
+            for hop in self.graph.find_relationship_path(base_model_name, other_model):
+                if hop.to_model not in joined_models:
+                    joins.append(hop)
+                    joined_models.add(hop.to_model)
+        return joins
+
     def _add_join_paths_to_query(
         self,
         query,
@@ -3651,44 +3720,30 @@ class SQLGenerator:
         models_with_filters: set[str],
     ):
         """Add the same multi-hop joins used by the main grouped query."""
-        if not other_models:
-            return query
-
-        joined_models = {base_model_name}
-        for other_model in other_models:
-            join_path = self.graph.find_relationship_path(base_model_name, other_model)
-            if not join_path:
+        for jp in self._query_join_paths(base_model_name, other_models):
+            right_table = self._quote_identifier(self._cte_name(jp.to_model))
+            if jp.relationship == "cross":
+                query = query.join(right_table, join_type="cross")
                 continue
 
-            for jp in join_path:
-                if jp.to_model in joined_models:
-                    continue
+            if jp.custom_condition:
+                join_cond = self._custom_join_condition(jp)
+            else:
+                if len(jp.from_columns) != len(jp.to_columns):
+                    raise ValueError(
+                        f"Join between {jp.from_model} and {jp.to_model} has mismatched key columns: "
+                        f"from_columns has {len(jp.from_columns)}, to_columns has {len(jp.to_columns)}"
+                    )
 
-                right_table = self._quote_identifier(self._cte_name(jp.to_model))
-                if jp.relationship == "cross":
-                    query = query.join(right_table, join_type="cross")
-                    joined_models.add(jp.to_model)
-                    continue
-
-                if jp.custom_condition:
-                    join_cond = self._custom_join_condition(jp)
-                else:
-                    if len(jp.from_columns) != len(jp.to_columns):
-                        raise ValueError(
-                            f"Join between {jp.from_model} and {jp.to_model} has mismatched key columns: "
-                            f"from_columns has {len(jp.from_columns)}, to_columns has {len(jp.to_columns)}"
-                        )
-
-                    join_conditions = [
-                        self._cte_ref(jp.from_model, fk) + " = " + self._cte_ref(jp.to_model, pk)
-                        for fk, pk in zip(jp.from_columns, jp.to_columns)
-                    ]
-                    join_cond = " AND ".join(join_conditions)
-                join_type = self._explicit_join_type_for_path(jp)
-                if join_type is None:
-                    join_type = "inner" if jp.to_model in models_with_filters else "left"
-                query = query.join(right_table, on=join_cond, join_type=join_type)
-                joined_models.add(jp.to_model)
+                join_conditions = [
+                    self._cte_ref(jp.from_model, fk) + " = " + self._cte_ref(jp.to_model, pk)
+                    for fk, pk in zip(jp.from_columns, jp.to_columns)
+                ]
+                join_cond = " AND ".join(join_conditions)
+            join_type = self._explicit_join_type_for_path(jp)
+            if join_type is None:
+                join_type = "inner" if jp.to_model in models_with_filters else "left"
+            query = query.join(right_table, on=join_cond, join_type=join_type)
 
         return query
 
@@ -4425,24 +4480,6 @@ class SQLGenerator:
             )
         # Detect if symmetric aggregates are needed
         symmetric_agg_needed = self._has_fanout_joins(base_model_name, other_models)
-
-        # A model introduced only by a query-level filter can multiply the metric
-        # model just like a selected dimension model can.
-        row_context_models = {base_model_name, *other_models}
-        metric_models = set()
-        for metric_ref in metrics:
-            metric_models.update(self._find_required_models([metric_ref], []))
-        for metric_model in metric_models:
-            for context_model in row_context_models:
-                if metric_model == context_model:
-                    continue
-                try:
-                    join_path = self.graph.find_relationship_path(metric_model, context_model)
-                except ValueError:
-                    continue
-                if any(jp.relationship in {"one_to_many", "many_to_many", "cross"} for jp in join_path):
-                    symmetric_agg_needed[metric_model] = True
-                    break
 
         fanout_safe_plan = self._fanout_safe_metric_plan(metrics, symmetric_agg_needed)
         if fanout_safe_plan is not None and not ungrouped:

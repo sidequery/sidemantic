@@ -6,9 +6,13 @@ import yaml
 
 from sidemantic import SemanticLayer
 from sidemantic.adapters.omni import OmniAdapter
+from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
 
 
-def test_native_layout_topics_and_non_equi_join_roundtrip(tmp_path):
+@pytest.mark.parametrize("engine", ["python", "rust"])
+def test_native_layout_topics_and_non_equi_join_roundtrip(tmp_path, engine):
+    if engine == "rust":
+        pytest.importorskip("sidemantic_rs", reason="Requires the native Rust extension")
     source = tmp_path / "source"
     files = {
         "warehouse/orders.view": "# Reference this view as orders\nschema: main\ntable_name: orders\ndimensions:\n  id: {primary_key: true}\nmeasures:\n  revenue: {aggregate_type: sum, sql: amount}\n",
@@ -35,8 +39,13 @@ def test_native_layout_topics_and_non_equi_join_roundtrip(tmp_path):
     assert relation["reversible"] is False
     assert relation["on_sql"] == "${orders.amount} > ${tiers.threshold} AND ${orders.region} = ${tiers.region}"
     for candidate in (graph, adapter.parse(destination)):
-        layer = SemanticLayer(auto_register=False)
+        layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
         layer.graph = candidate
+        if engine == "rust":
+            with pytest.raises(UnsupportedSemanticFeaturesError, match=r"relationship\.forward_only"):
+                layer.compile(metrics=["orders.revenue"], dimensions=["orders.id", "tiers.id"])
+            layer.adapter.close()
+            continue
         with duckdb.connect() as connection:
             connection.execute(
                 "CREATE TABLE orders AS SELECT * FROM (VALUES (1,5,'e'),(2,15,'e'),(3,30,'w'),(4,25,'e')) t(id,amount,region)"
@@ -48,6 +57,7 @@ def test_native_layout_topics_and_non_equi_join_roundtrip(tmp_path):
                 layer.compile(metrics=["orders.revenue"], dimensions=["orders.id", "tiers.id"])
             ).fetchall()
             assert set(rows) == {(2, 1, 15), (3, 2, 30), (4, 1, 25)}
+        layer.adapter.close()
 
 
 def test_restored_paths_cannot_escape_output(tmp_path):

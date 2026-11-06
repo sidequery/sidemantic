@@ -15,6 +15,7 @@ Detailed compatibility documents describe field-level limitations where they exi
 | `graphene` | `gsql` | `file_or_directory` | `.gsql` | Registered | No | 1 | [Detailed guide](graphene.md) |
 | `hex` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 7 | Registry summary only |
 | `holistics` | `aml` | `file_or_directory` | `.aml` | Registered | Yes | 5 | Registry summary only |
+| `lightdash` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 0 | [Detailed guide](lightdash.md) |
 | `lookml` | `looker` | `file_or_directory` | `.lkml` | Registered | Yes | 11 | [Detailed guide](lookml.md) |
 | `malloy` | — | `file_or_directory` | `.malloy` | Registered | Yes | 18 | [Detailed guide](malloy.md) |
 | `metricflow` | `dbt`, `dbt-semantic-layer` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 7 | [Detailed guide](metricflow.md) |
@@ -22,6 +23,7 @@ Detailed compatibility documents describe field-level limitations where they exi
 | `ossie` | `apache-ossie`, `osi`, `open-semantic-interchange` | `file_or_directory` | `.yml`, `.yaml`, `.json` | Registered | Yes | 5 | [Detailed guide](ossie.md) |
 | `rill` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 8 | Registry summary only |
 | `sidemantic` | `native` | `file` | `.yml`, `.yaml`, `.sql` | Registered | Yes | 2 | Registry summary only |
+| `sigma` | — | `file` | `.json` | Registered | Yes | 0 | [Detailed guide](sigma.md) |
 | `snowflake` | `cortex`, `snowflake-cortex` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 9 | [Detailed guide](snowflake.md) |
 | `superset` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 5 | Registry summary only |
 | `tableau` | — | `file_or_directory` | `.tds`, `.twb`, `.tdsx`, `.twbx` | Registered | No | 4 | Registry summary only |

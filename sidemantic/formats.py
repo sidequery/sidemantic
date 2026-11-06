@@ -124,6 +124,13 @@ _FORMATS = (
         output_kind=OutputKind.FILE_OR_DIRECTORY,
     ),
     SemanticFormat(
+        "lightdash",
+        "sidemantic.adapters.official",
+        "LightdashAdapter",
+        extensions=(".yml", ".yaml"),
+        output_kind=OutputKind.DIRECTORY,
+    ),
+    SemanticFormat(
         "lookml",
         "sidemantic.adapters.lookml",
         "LookMLAdapter",
@@ -174,6 +181,14 @@ _FORMATS = (
         "SidemanticAdapter",
         aliases=("native",),
         extensions=(".yml", ".yaml", ".sql"),
+        source_kind=SourceKind.FILE,
+        output_kind=OutputKind.FILE,
+    ),
+    SemanticFormat(
+        "sigma",
+        "sidemantic.adapters.official",
+        "SigmaAdapter",
+        extensions=(".json",),
         source_kind=SourceKind.FILE,
         output_kind=OutputKind.FILE,
     ),

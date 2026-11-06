@@ -1659,6 +1659,13 @@ def convert(
                 if ossie_input_schema_revision is not None:
                     source_adapter_options["schema_revision"] = ossie_input_schema_revision
 
+            if source_format != "auto" and get_semantic_format(source_format).name in {"lightdash", "sigma"}:
+                source_adapter_options = {}
+                if ossie_target_dialect is not None:
+                    source_adapter_options["target_dialect"] = ossie_target_dialect
+                if ossie_expression_dialect is not None:
+                    source_adapter_options["expression_dialect"] = ossie_expression_dialect
+
             if ossie_preserve_document:
                 if target_spec.name != "ossie" or (
                     source_format != "auto" and get_semantic_format(source_format).name != "ossie"
@@ -1697,6 +1704,12 @@ def convert(
 
             target_adapter_options = None
             target_export_options = None
+            if target_spec.name in {"lightdash", "sigma"}:
+                if ossie_expression_dialect is None:
+                    raise InvocationError("--ossie-expression-dialect is required for official bridge export")
+                target_adapter_options = {"expression_dialect": ossie_expression_dialect}
+                if ossie_scope is not None:
+                    target_adapter_options["export_scope_name"] = ossie_scope
             if target_spec.name == "ossie":
                 if ossie_scope is None:
                     raise InvocationError("--ossie-scope is required when exporting a runtime graph to Ossie")

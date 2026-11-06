@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from sidemantic.core.semantic_catalog import (
     SemanticScopeNotFoundError,
 )
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_export_feature, record_import_note
 from sidemantic.interchange.ossie import (
     OssieConsumerProfile,
     OssieDiagnostic,
@@ -176,9 +178,67 @@ class OssieAdapter(BaseAdapter):
                 diagnostics=project.diagnostics,
             )
         try:
-            return project.catalog.resolve_scope(self._scope_id).graph
+            graph = project.catalog.resolve_scope(self._scope_id).graph
+            for lowering in project.lowerings:
+                self._report_projection_losses(lowering.document.canonical_data, source=str(source))
+            return graph
         except (AmbiguousSemanticScopeError, SemanticScopeNotFoundError) as exc:
             raise OssieImportError(str(exc), diagnostics=project.diagnostics) from exc
+
+    @staticmethod
+    def _report_projection_losses(value: object, *, source: str, pointer: str = "") -> None:
+        """Document preservation is lossless; a runtime graph omits vendor annotations."""
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                location = f"{pointer}/{key}"
+                if key == "ai_context" and child:
+                    record_import_note(
+                        "ossie.ai_context",
+                        "AI context is retained only by document preservation, not graph conversion.",
+                        source=source,
+                        location=location,
+                    )
+                elif key == "custom_extensions" and isinstance(child, (list, tuple)):
+                    foreign = [
+                        item for item in child if isinstance(item, Mapping) and item.get("vendor_name") != "SIDEMANTIC"
+                    ]
+                    if foreign:
+                        record_import_note(
+                            "ossie.custom_extensions",
+                            "Foreign vendor extensions are retained only by document preservation, not graph conversion.",
+                            source=source,
+                            location=location,
+                        )
+                else:
+                    OssieAdapter._report_projection_losses(child, source=source, pointer=location)
+        elif isinstance(value, (list, tuple)):
+            for index, child in enumerate(value):
+                OssieAdapter._report_projection_losses(child, source=source, pointer=f"{pointer}/{index}")
+
+    def preserve_document(self, source: str | Path, output_path: str | Path) -> OssieSerializationResult:
+        """Validate and copy a logical document without lowering into a runtime graph.
+
+        Original bytes are reused when source and output serializations agree.
+        Changing JSON/YAML serialization preserves the canonical document data.
+        """
+        source_path = Path(source)
+        if not source_path.is_file():
+            raise ValueError("Document preservation requires one exact Ossie file")
+        from dataclasses import replace
+
+        options = replace(self._parse_options, preservation_policy=OssiePreservationPolicy.SOURCE_BYTES)
+        parsed = parse_ossie_document(source_path.read_bytes(), source_identifier=str(source_path), options=options)
+        if any(d.severity.value == "error" for d in parsed.diagnostics):
+            raise OssieImportError("Ossie document failed validation", diagnostics=parsed.diagnostics)
+        from sidemantic.interchange.ossie.semantic_validation import validate_ossie_semantics
+
+        semantics = validate_ossie_semantics(parsed.document, profile=parsed.profile)
+        if not semantics.valid:
+            raise OssieImportError("Ossie document failed semantic validation", diagnostics=semantics.diagnostics)
+        output_serialization = self._output_serialization(Path(output_path), self._serialization)
+        return self.export_document(
+            parsed, output_path, exact_source=output_serialization == parsed.document.serialization
+        )
 
     @staticmethod
     def _output_serialization(output_path: Path, explicit: OssieSerialization | str | None) -> OssieSerialization:
@@ -228,6 +288,7 @@ class OssieAdapter(BaseAdapter):
         schema_revision: str | None = None,
         serialization: OssieSerialization | str | None = None,
         portable_only: bool = False,
+        official_compatible: bool = False,
     ) -> None:
         """Synthesize and write one schema-valid logical Ossie document.
 
@@ -243,20 +304,52 @@ class OssieAdapter(BaseAdapter):
             raise ValueError("Ossie graph export requires an explicit scope_name")
         if selected_dialect is None:
             raise ValueError("Ossie graph export requires an explicit expression_dialect")
+        selected_revision = schema_revision or self._schema_revision or LATEST_OSSIE_SCHEMA_COMMIT
+        selected_version = schema_version or self._schema_version
+        if official_compatible:
+            if selected_version != "0.2.0.dev0":
+                raise ValueError("Official converter compatibility requires Ossie 0.2.0.dev0")
+            if (schema_revision or self._schema_revision) not in (
+                None,
+                LATEST_OSSIE_SCHEMA_COMMIT,
+                LATEST_OSSIE_SCHEMA_COMMIT[:7],
+            ):
+                raise ValueError("Official converter compatibility cannot be combined with a different schema revision")
+            selected_revision = LATEST_OSSIE_SCHEMA_COMMIT
+            portable_only = True
         synthesis = synthesize_ossie_document(
             graph,
             scope_name=selected_scope,
             expression_dialect=selected_dialect,
-            schema_version=schema_version or self._schema_version,
-            schema_revision=schema_revision or self._schema_revision or LATEST_OSSIE_SCHEMA_COMMIT,
+            schema_version=selected_version,
+            schema_revision=selected_revision,
             serialization=output_serialization,
             consumer_profile=self._parse_options.consumer_profile,
             portable_only=portable_only,
         )
         document = require_synthesized_document(synthesis)
+        if official_compatible:
+            from sidemantic.interchange.ossie.compatibility import for_official_converters
+
+            document = for_official_converters(document)
         if synthesis.diagnostics:
+            for diagnostic in synthesis.diagnostics:
+                record_export_feature(
+                    diagnostic.code,
+                    "partial",
+                    detail=diagnostic.message,
+                    source="ossie",
+                    location=diagnostic.json_pointer,
+                )
             import warnings
 
             for diagnostic in synthesis.diagnostics:
                 warnings.warn(diagnostic.message, UserWarning, stacklevel=2)
         self.export_document(document, destination, serialization=output_serialization)
+        if official_compatible:
+            record_export_feature(
+                "ossie.official_compatible",
+                "exact",
+                detail="Portable flat core with model-scoped metrics; vendor-specific feature support still varies.",
+                source="ossie",
+            )

@@ -292,7 +292,7 @@ def test_convert_renders_feature_only_fidelity_counts_details_and_readiness(tmp_
 
     def fake_convert(source_path, output_path, **kwargs):
         del source_path, kwargs
-        Path(output_path).write_text("models: []\n")
+        Path(output_path).write_text("models: [{name: orders, table: orders}]\n")
         record_import_feature(
             "measure.percentile",
             "partial",

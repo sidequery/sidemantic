@@ -292,7 +292,7 @@ def test_convert_renders_feature_only_fidelity_counts_details_and_readiness(tmp_
 
     def fake_convert(source_path, output_path, **kwargs):
         del source_path, kwargs
-        Path(output_path).write_text("models: []\n")
+        Path(output_path).write_text("models: [{name: orders, table: orders}]\n")
         record_import_feature(
             "measure.percentile",
             "partial",
@@ -386,7 +386,7 @@ def test_convert_force_directory_replaces_tree_without_stale_files(tmp_path, mon
     def fake_convert(source_path, output_path, **kwargs):
         del source_path, kwargs
         staged = Path(output_path)
-        staged.mkdir()
+        staged.mkdir(exist_ok=True)
         (staged / "replaced.yml").write_text("new\n")
         (staged / "fresh.yml").write_text("fresh\n")
         return FakeGraph()
@@ -418,7 +418,7 @@ def test_convert_force_directory_promotion_failure_restores_exact_prior_tree(tmp
     def fake_convert(source_path, output_path, **kwargs):
         del source_path, kwargs
         staged = Path(output_path)
-        staged.mkdir()
+        staged.mkdir(exist_ok=True)
         (staged / "new.yml").write_text("new\n")
         return FakeGraph()
 

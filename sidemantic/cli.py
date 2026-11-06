@@ -1538,6 +1538,11 @@ def convert(
         "--ossie-scope",
         help="Explicit semantic-model scope to select on Ossie import or name on Ossie export",
     ),
+    ossie_source_dialect: str = typer.Option(
+        None,
+        "--ossie-source-dialect",
+        help="Dialect used to interpret physical source names in an Ossie input",
+    ),
     ossie_target_dialect: str = typer.Option(
         None,
         "--ossie-target-dialect",
@@ -1577,6 +1582,16 @@ def convert(
         False,
         "--ossie-portable-only",
         help="Require portable Ossie core output instead of preserving native behavior in a Sidemantic extension",
+    ),
+    ossie_preserve_document: bool = typer.Option(
+        False,
+        "--ossie-preserve-document",
+        help="Preserve one valid Ossie document without runtime graph conversion",
+    ),
+    ossie_official_compatible: bool = typer.Option(
+        False,
+        "--ossie-official-compatible",
+        help="Export portable flat Ossie core with model-scoped metrics for official converters",
     ),
     force: bool = typer.Option(False, "--force", help="Allow writing to an existing destination"),
 ):
@@ -1623,7 +1638,10 @@ def convert(
                 # after parsing, so writing directly could publish a blocked
                 # conversion or overwrite a valid --force destination.
                 converted_output = temp_root / output.name
-            from sidemantic.fidelity import capture_import_report
+                # Carry the destination shape through both staging layers.
+                if output.is_dir():
+                    converted_output.mkdir(exist_ok=True)
+            from sidemantic.fidelity import capture_export_report, capture_import_report
 
             source_adapter_options = None
             if source_format == "auto" or get_semantic_format(source_format, operation="import").name == "ossie":
@@ -1632,12 +1650,50 @@ def convert(
                     source_adapter_options["scope_id"] = ossie_scope
                 if ossie_target_dialect is not None:
                     source_adapter_options["target_dialect"] = ossie_target_dialect
+                if ossie_source_dialect is not None:
+                    source_adapter_options["source_dialect"] = ossie_source_dialect
                 if ossie_consumer_profile is not None:
                     source_adapter_options["consumer_profile"] = ossie_consumer_profile
                 if ossie_permissive:
                     source_adapter_options["import_policy"] = "permissive"
                 if ossie_input_schema_revision is not None:
                     source_adapter_options["schema_revision"] = ossie_input_schema_revision
+
+            if ossie_preserve_document:
+                if target_spec.name != "ossie" or (
+                    source_format != "auto" and get_semantic_format(source_format).name != "ossie"
+                ):
+                    raise InvocationError("--ossie-preserve-document requires an Ossie source and --to ossie")
+                if any(
+                    (
+                        ossie_scope,
+                        ossie_expression_dialect,
+                        ossie_schema_version,
+                        ossie_schema_revision,
+                        ossie_portable_only,
+                        ossie_official_compatible,
+                        ossie_permissive,
+                    )
+                ):
+                    raise InvocationError(
+                        "Document preservation cannot be combined with graph synthesis or permissive options"
+                    )
+                from sidemantic.adapters.ossie import OssieAdapter
+                from sidemantic.formats import validate_conversion_output
+
+                OssieAdapter(**(source_adapter_options or {})).preserve_document(source, converted_output)
+                validate_conversion_output(converted_output, target_format=target_spec.name)
+                if output_to_stdout:
+                    write_text_output("-", converted_output.read_text())
+                else:
+                    _promote_converted_output(converted_output, output)
+                    emit_diagnostic(f"Preserved Ossie document: {output}")
+                emit_diagnostic(
+                    "Document fidelity: exact (canonical data; source bytes reused when serialization matches)"
+                )
+                return
+            if ossie_official_compatible and target_spec.name != "ossie":
+                raise InvocationError("--ossie-official-compatible requires --to ossie")
 
             target_adapter_options = None
             target_export_options = None
@@ -1652,6 +1708,7 @@ def convert(
                     "scope_name": ossie_scope,
                     "expression_dialect": ossie_expression_dialect,
                     "portable_only": ossie_portable_only,
+                    "official_compatible": ossie_official_compatible,
                 }
                 if ossie_consumer_profile is not None:
                     target_adapter_options = {"consumer_profile": ossie_consumer_profile}
@@ -1661,7 +1718,7 @@ def convert(
                     target_export_options["schema_revision"] = ossie_schema_revision
 
             with progress(f"Converting semantic definitions to {target_format}"):
-                with capture_import_report() as fidelity_report:
+                with capture_import_report() as fidelity_report, capture_export_report() as export_report:
                     graph = convert_semantic_source(
                         source,
                         converted_output,
@@ -1684,6 +1741,23 @@ def convert(
                 emit_fidelity(f"Import readiness: {fidelity_report.readiness}")
                 if fidelity_report.is_blocked:
                     raise typer.Exit(1)
+            if export_report.has_losses:
+                emit_export = emit_error if export_report.is_blocked else emit_warning
+                emit_export("Export fidelity:")
+                for line in (*export_report.summary_lines(), *export_report.feature_summary_lines()):
+                    emit_export(f"  {line}")
+                emit_export(f"Export readiness: {export_report.readiness}")
+                if export_report.is_blocked:
+                    raise typer.Exit(1)
+            elif not output_to_stdout:
+                for line in export_report.feature_summary_lines(include_exact=True):
+                    emit_diagnostic(f"  {line}")
+                emit_diagnostic("Export readiness: ready (no reported losses)")
+            from sidemantic.formats import validate_conversion_output
+
+            validate_conversion_output(converted_output, target_format=target_spec.name)
+            if not graph.models:
+                raise ValueError("No models were imported; refusing empty conversion")
             if output_to_stdout:
                 write_text_output("-", converted_output.read_text())
             else:
@@ -1703,56 +1777,9 @@ def convert(
 
 
 def _promote_converted_output(staged: Path, output: Path) -> None:
-    """Publish a fidelity-approved staged conversion to its destination."""
-    import shutil
-    import tempfile
+    from sidemantic.formats import promote_converted_output
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if staged.is_dir():
-        if output.exists() and not output.is_dir():
-            raise ValueError(f"Cannot replace file destination with directory output: {output}")
-
-        # Prepare the complete replacement on the destination filesystem before
-        # touching the current output. Renames below are then atomic, stale files
-        # cannot survive, and a failed promotion can restore the old tree.
-        transaction = Path(tempfile.mkdtemp(prefix=".sidemantic-promote-", dir=output.parent))
-        prepared = transaction / "next"
-        backup = transaction / "previous"
-        had_output = output.exists()
-        cleanup_transaction = True
-        try:
-            shutil.copytree(staged, prepared)
-            if had_output:
-                output.replace(backup)
-            try:
-                prepared.replace(output)
-            except Exception as promotion_error:
-                if had_output and backup.exists():
-                    try:
-                        backup.replace(output)
-                    except Exception as rollback_error:
-                        cleanup_transaction = False
-                        raise RuntimeError(
-                            f"Directory promotion failed and rollback also failed; "
-                            f"previous output is preserved at {backup}: {rollback_error}"
-                        ) from promotion_error
-                raise
-        finally:
-            if cleanup_transaction:
-                shutil.rmtree(transaction, ignore_errors=True)
-        return
-    if output.exists() and output.is_dir():
-        raise ValueError(f"Cannot replace directory destination with file output: {output}")
-    transaction = Path(tempfile.mkdtemp(prefix=".sidemantic-promote-", dir=output.parent))
-    prepared = transaction / "next"
-    try:
-        # The conversion staging directory may be on another filesystem. Copy
-        # beside the destination first, then use one same-filesystem atomic
-        # replacement so EXDEV cannot corrupt or remove an existing file.
-        shutil.copy2(staged, prepared)
-        prepared.replace(output)
-    finally:
-        shutil.rmtree(transaction, ignore_errors=True)
+    promote_converted_output(staged, output)
 
 
 def _stdin_source_extension(source_spec, content: str, *, requested: str | None) -> str:

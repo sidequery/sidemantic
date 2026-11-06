@@ -4203,15 +4203,27 @@ class LookMLAdapter(BaseAdapter):
                     if alias in used:
                         raise ValueError(f"Ambiguous LookML join alias {alias!r} in explore {root.name}")
                     used.add(alias)
-                    join_type = (rel.metadata or {}).get("join_type")
-                    if join_type is None:
-                        how = (rel.metadata or {}).get("bsl_how", "left")
-                        join_type = {
+                    metadata = rel.metadata or {}
+                    join_type = metadata.get("join_type")
+                    if "bsl_how" in metadata:
+                        runtime_type = {
                             "left": "left_outer",
                             "inner": "inner",
                             "outer": "full_outer",
                             "full": "full_outer",
-                        }.get(how)
+                            "cross": "cross",
+                        }.get(metadata["bsl_how"])
+                        if runtime_type is None:
+                            raise ValueError(f"Unsupported LookML join type {metadata['bsl_how']!r}")
+                        # Snowflake retains the imported value so edits to either hint
+                        # can be distinguished from an unchanged source declaration.
+                        original_type = metadata.get("snowflake", {}).get("source_join_type")
+                        if join_type is None or join_type == runtime_type or join_type == original_type:
+                            join_type = runtime_type
+                        elif runtime_type != original_type:
+                            raise ValueError(f"Conflicting LookML join types on {model.name}.{rel.name}")
+                    if join_type is None:
+                        join_type = "left_outer"
                     if rel.type == "cross":
                         join_type = "cross"
                     if join_type not in {"left_outer", "inner", "full_outer", "cross"}:

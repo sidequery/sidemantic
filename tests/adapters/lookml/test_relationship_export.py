@@ -3,9 +3,11 @@
 import duckdb
 import lkml
 import pytest
+import yaml
 
 from sidemantic import Dimension, Metric, Model, SemanticLayer
 from sidemantic.adapters.lookml import LookMLAdapter
+from sidemantic.adapters.snowflake import SnowflakeAdapter
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
 from sidemantic.fidelity import capture_import_report
@@ -165,3 +167,68 @@ def test_owned_metric_graph_alias_is_not_rejected(tmp_path):
     output = tmp_path / "owned.lkml"
     LookMLAdapter().export(graph, output)
     assert lkml.load(output.read_text())["views"][0]["measures"][0]["name"] == "amount"
+
+
+@pytest.mark.parametrize("edit", [None, "runtime", "declaration", "both", "conflict"])
+def test_snowflake_join_edits_survive_lookml_conversion(tmp_path, edit):
+    source = tmp_path / "source.yaml"
+    source.write_text(
+        yaml.safe_dump(
+            {
+                "name": "retail",
+                "tables": [
+                    {
+                        "name": "orders",
+                        "base_table": {"table": "orders"},
+                        "primary_key": {"columns": ["id"]},
+                        "dimensions": [{"name": "id", "expr": "id", "data_type": "NUMBER"}],
+                        "facts": [{"name": "amount", "expr": "amount", "default_aggregation": "sum"}],
+                    },
+                    {
+                        "name": "customers",
+                        "base_table": {"table": "customers"},
+                        "primary_key": {"columns": ["id"]},
+                        "dimensions": [{"name": "region", "expr": "region", "data_type": "TEXT"}],
+                    },
+                ],
+                "relationships": [
+                    {
+                        "left_table": "orders",
+                        "right_table": "customers",
+                        "join_type": "inner",
+                        "relationship_type": "many_to_one",
+                        "relationship_columns": [{"left_column": "customer_id", "right_column": "id"}],
+                    }
+                ],
+            }
+        )
+    )
+    graph = SnowflakeAdapter().parse(source)
+    metadata = graph.models["orders"].relationships[0].metadata
+    if edit in {"runtime", "both", "conflict"}:
+        metadata["bsl_how"] = "left"
+    if edit in {"declaration", "both", "conflict"}:
+        metadata["join_type"] = "full_outer" if edit == "conflict" else "left_outer"
+    output = tmp_path / "retail.lkml"
+    adapter = LookMLAdapter()
+    if edit == "conflict":
+        with pytest.raises(ValueError, match="Conflicting LookML join types"):
+            adapter.export(graph, output)
+        assert not output.exists()
+        return
+
+    adapter.export(graph, output)
+    explore = next(item for item in lkml.load(output.read_text())["explores"] if item["name"] == "orders")
+    assert explore["joins"][0]["type"] == ("left_outer" if edit else "inner")
+    restored = adapter.parse(output)
+    expected = [(1, "north", 10), (2, None, 20)] if edit else [(1, "north", 10)]
+    with duckdb.connect() as db:
+        db.execute("CREATE TABLE orders AS SELECT * FROM (VALUES (1,1,10), (2,2,20)) t(id,customer_id,amount)")
+        db.execute("CREATE TABLE customers AS SELECT 1 AS id, 'north' AS region")
+        # Runtime-only edits must produce the same results before and after export.
+        candidates = [restored] if edit == "declaration" else [graph, restored]
+        for candidate in candidates:
+            layer = SemanticLayer()
+            layer.graph = candidate
+            sql = layer.compile(dimensions=["orders.id", "customers.region"], metrics=["orders.amount"])
+            assert sorted(db.execute(sql).fetchall()) == expected

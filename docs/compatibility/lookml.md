@@ -274,4 +274,6 @@ Import lowers complete conjunctions of column equalities, including compound key
 
 Graph-level metrics without an owning view are rejected with an unsupported export diagnostic; model-owned metric aliases are allowed.
 
+When converting imported Snowflake relationships, edits to either the declared join type or the runtime join hint override the retained source value. Conflicting edits to both hints are rejected rather than silently changing the join's row inclusion behavior.
+
 The generated document still needs the Looker project's connection and include configuration and appropriate `.view.lkml` / `.model.lkml` file placement.

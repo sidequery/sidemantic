@@ -136,6 +136,21 @@ def test_native_unsupported_join_rejected_before_writing(tmp_path):
     assert not target.exists()
 
 
+def test_missing_join_target_rejected_before_writing(tmp_path):
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            relationships=[Relationship(name="customers", type="many_to_one", foreign_key="customer_id")],
+        )
+    )
+    target = tmp_path / "incomplete.lkml"
+    with pytest.raises(ValueError, match="targets a missing model"):
+        LookMLAdapter().export(graph, target)
+    assert not target.exists()
+
+
 def test_composite_key_encoding_prevents_concatenation_collisions():
     expression = LookMLAdapter._composite_key_sql(["a", "b"]).replace("${a}", "a").replace("${b}", "b")
     with duckdb.connect() as db:

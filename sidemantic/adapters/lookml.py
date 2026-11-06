@@ -4205,6 +4205,9 @@ class LookMLAdapter(BaseAdapter):
                     used.add(alias)
                     metadata = rel.metadata or {}
                     join_type = metadata.get("join_type")
+                    # Older Omni imports retain the vendor spelling directly.
+                    if join_type == "always_left":
+                        join_type = "left_outer"
                     if "bsl_how" in metadata:
                         runtime_type = {
                             "left": "left_outer",

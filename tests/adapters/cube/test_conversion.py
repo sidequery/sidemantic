@@ -13,6 +13,7 @@ from sidemantic.adapters.omni import OmniAdapter
 from sidemantic.adapters.rill import RillAdapter
 from sidemantic.adapters.sidemantic import SidemanticAdapter
 from sidemantic.adapters.superset import SupersetAdapter
+from sidemantic.core.model import Model
 
 
 def test_cube_to_metricflow_conversion():
@@ -48,6 +49,8 @@ def test_cube_to_lookml_conversion():
     """Test converting Cube format to LookML format."""
     cube_adapter = CubeAdapter()
     graph = cube_adapter.parse("tests/fixtures/cube/orders.yml")
+    # This single-cube fixture declares a join to a separately defined model.
+    graph.add_model(Model(name="customers", table="customers", primary_key="id"))
 
     lookml_adapter = LookMLAdapter()
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
@@ -59,6 +62,12 @@ def test_cube_to_lookml_conversion():
 
         assert "orders" in graph2.models
         orders = graph2.models["orders"]
+
+        assert "customers" in graph2.models
+        relationship = orders.relationships[0]
+        assert relationship.related_model == "customers"
+        assert relationship.foreign_key == "customer_id"
+        assert relationship.primary_key == "id"
 
         dim_names = [d.name for d in orders.dimensions]
         assert "status" in dim_names

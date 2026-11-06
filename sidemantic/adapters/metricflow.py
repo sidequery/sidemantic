@@ -1160,13 +1160,11 @@ class MetricFlowAdapter(BaseAdapter):
             )
         promoted = {"base_metric", "conversion_metric", "entity", "window", "calculation", "constant_properties"}
         result = {key: value for key, value in source.items() if key not in promoted}
-        result.update(
-            {
-                key: deepcopy(spec[key])
-                for key in ("name", "description", "label", "filter")
-                if spec.get(key) is not None
-            }
-        )
+        for key in ("name", "description", "label", "filter"):
+            if spec.get(key) is None:
+                result.pop(key, None)
+            else:
+                result[key] = deepcopy(spec[key])
         result.update(type="conversion", type_params={"conversion_type_params": params})
         return result
 

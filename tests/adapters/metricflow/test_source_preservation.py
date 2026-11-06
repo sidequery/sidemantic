@@ -299,3 +299,59 @@ def test_legacy_conversion_edits_overlay_source_and_preserve_reference_modifiers
     spec["window"] = None
     MetricFlowAdapter().export(graph, output)
     assert "window" not in yaml.safe_load(output.read_text())["metrics"][0]["type_params"]["conversion_type_params"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("filter", None),
+        ("description", None),
+        ("label", None),
+        ("filter", "country = 'CA'"),
+        ("description", "Edited description"),
+        ("label", "Edited label"),
+    ],
+)
+def test_latest_conversion_optional_field_edits_preserve_other_source_properties(tmp_path, field, value):
+    conversion = {
+        "name": "rate",
+        "type": "conversion",
+        "description": "Original description",
+        "label": "Original label",
+        "filter": "country = 'US'",
+        "config": {"meta": {"owner": "growth"}},
+        "base_metric": {"name": "orders_count", "filter": "is_valid"},
+        "conversion_metric": {"name": "orders_count", "filter": "is_paid"},
+        "entity": "user",
+        "window": "7 days",
+    }
+    source = {
+        "models": [
+            {
+                "name": "orders",
+                "semantic_model": {"enabled": True},
+                "columns": [{"name": "id", "entity": "primary"}],
+                "metrics": [{"name": "orders_count", "type": "simple", "agg": "count"}],
+            }
+        ],
+        "metrics": [conversion],
+    }
+    graph, original_export, _ = _roundtrip(tmp_path, source)
+    spec = graph.metadata["metricflow_conversion_metrics"]["rate"]
+    spec[field] = value
+    output = tmp_path / "edited.yml"
+    MetricFlowAdapter().export(graph, output)
+    exported = yaml.safe_load(output.read_text())["metrics"][-1]
+    expected = original_export["metrics"][-1]
+    if value is None:
+        expected.pop(field)
+    else:
+        expected[field] = value
+    assert exported == expected
+    assert exported["config"] == conversion["config"]
+    params = exported["type_params"]["conversion_type_params"]
+    assert params["base_measure"] == {"name": "orders_count_measure", "filter": "is_valid"}
+    assert params["conversion_measure"] == {"name": "orders_count_measure", "filter": "is_paid"}
+    restored = MetricFlowAdapter().parse(output).metadata["metricflow_conversion_metrics"]["rate"]
+    assert restored[field] == value
+    assert spec["source_definition"] == conversion

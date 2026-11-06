@@ -2115,6 +2115,35 @@ class SQLGenerator:
                 except SqlglotError:
                     logging.debug("Failed to parse filter for model extraction: %s", filter_expr, exc_info=True)
 
+        # Directed native relationships restrict which population may anchor a
+        # query. Keep dimension-first ordering for ordinary graphs, but choose
+        # a reachable anchor when that ordering would traverse a forbidden edge.
+        if (
+            not self.base_model
+            and len(models) > 1
+            and any(
+                (relationship.metadata or {}).get("reversible") is False
+                for model in self.graph.models.values()
+                for relationship in model.relationships
+            )
+        ):
+            if self.graph._adjacency_dirty:
+                self.graph.build_adjacency()
+            required = set(models)
+            for candidate in models:
+                reachable = {candidate}
+                pending = [candidate]
+                while pending:
+                    current = pending.pop()
+                    for edge in self.graph._adjacency.get(current, []):
+                        target = edge[0]
+                        if target not in reachable:
+                            reachable.add(target)
+                            pending.append(target)
+                if required <= reachable:
+                    models = [candidate, *(name for name in models if name != candidate)]
+                    break
+
         return models
 
     def _find_aggregate_metric_models(self, metric_refs: list[str]) -> set[str]:
@@ -2638,9 +2667,10 @@ class SQLGenerator:
 
         # Check if other models have has_many/has_one pointing to this model
         if needs_keyed_joins:
-            for other_model_name, other_model in self.graph.models.items():
-                if other_model_name not in all_models:
-                    continue
+            # Incoming relationships can originate at a nested role instance,
+            # whose canonical model need not participate in this query.
+            for other_model_name in sorted(all_models):
+                other_model = self.graph.get_model(other_model_name)
                 for other_join in other_model.relationships:
                     target_instance = self.graph.relationship_target_instance(other_model_name, other_join)
                     # Custom-SQL joins supply their key columns via the custom-join
@@ -3001,9 +3031,8 @@ class SQLGenerator:
             if target_instance in all_models and relationship.type != "cross":
                 return True
 
-        for other_model_name, other_model in self.graph.models.items():
-            if other_model_name not in all_models:
-                continue
+        for other_model_name in sorted(all_models):
+            other_model = self.graph.get_model(other_model_name)
             for relationship in other_model.relationships:
                 target_instance = self.graph.relationship_target_instance(other_model_name, relationship)
                 if target_instance == model_name and relationship.type != "cross":
@@ -3051,6 +3080,18 @@ class SQLGenerator:
         """
         models = [base_model_name, *other_models]
         needs_symmetric = dict.fromkeys(models, False)
+
+        def direct_many_to_many(hop) -> bool:
+            # Direct many-to-many edges use one_to_many adjacency in both
+            # directions. Their inverse multiplicity cannot be inferred from
+            # that normalized label alone.
+            return any(
+                relationship.type == "many_to_many"
+                and not relationship.through
+                and self.graph.relationship_target_instance(hop.from_model, relationship) == hop.to_model
+                for relationship in self.graph.get_model(hop.from_model).relationships
+            )
+
         # A dimension can anchor the query on the many side. Assess fanout from
         # each metric owner's perspective, not just the chosen FROM model.
         for model_name in models:
@@ -3063,7 +3104,19 @@ class SQLGenerator:
                         needs_symmetric[model_name] = True
                         break
                 except (ValueError, KeyError):
-                    pass
+                    # A forward-only relationship can still multiply rows of
+                    # its target in the permitted join. Reverse the perspective
+                    # for cardinality analysis without allowing reverse queries.
+                    try:
+                        reverse_path = self.graph.find_relationship_path(other_model, model_name)
+                        if any(
+                            hop.relationship in {"many_to_one", "cross"} or direct_many_to_many(hop)
+                            for hop in reverse_path
+                        ):
+                            needs_symmetric[model_name] = True
+                            break
+                    except (ValueError, KeyError):
+                        pass
 
         return needs_symmetric
 
@@ -3183,30 +3236,18 @@ class SQLGenerator:
         # Check if any pair of metric models would cause fan-out
         # Fan-out occurs when model A joins to model B via a path that includes
         # a many_to_one relationship from B's perspective (one_to_many from A's)
-        metric_model_list = list(metric_models)
+        metric_model_list = sorted(metric_models)
         for i, model_a in enumerate(metric_model_list):
             for model_b in metric_model_list[i + 1 :]:
-                try:
-                    # Check path from A to B
-                    join_path = self.graph.find_relationship_path(model_a, model_b)
-                    if join_path:
-                        # If any hop is many_to_one (from A's perspective), model_a metrics
-                        # would be replicated when joining to model_b
-                        for jp in join_path:
-                            if jp.relationship == "many_to_one":
-                                # model_a is on the "many" side, so its rows fan out
-                                # when we aggregate model_b metrics
-                                return True
-
-                    # Check reverse path
-                    join_path_reverse = self.graph.find_relationship_path(model_b, model_a)
-                    if join_path_reverse:
-                        for jp in join_path_reverse:
-                            if jp.relationship == "many_to_one":
-                                return True
-
-                except (ValueError, KeyError):
-                    pass
+                for source, target in ((model_a, model_b), (model_b, model_a)):
+                    try:
+                        join_path = self.graph.find_relationship_path(source, target)
+                    except (ValueError, KeyError):
+                        continue
+                    # Either orientation repeats the one side. A directed
+                    # relationship may expose only its one-to-many traversal.
+                    if any(hop.relationship in {"many_to_one", "one_to_many"} for hop in join_path):
+                        return True
 
         return False
 
@@ -3439,6 +3480,18 @@ class SQLGenerator:
             child_generator.base_model = self.base_model or (
                 None if model_name in complete_groups.values() else model_name
             )
+            if self.base_model is None and child_generator.base_model is not None:
+                for required_model in child_generator._find_required_models(model_metrics, dimensions, model_filters):
+                    try:
+                        self.graph.find_relationship_path(child_generator.base_model, required_model)
+                    except ValueError as error:
+                        if not str(error).startswith("No join path"):
+                            raise
+                        # The metric owner was only an implicit preference.
+                        # Reuse the ordinary directed-anchor selection instead
+                        # of treating it as an explicit user restriction.
+                        child_generator.base_model = None
+                        break
             child_generator._generate_cache = {}
             sub_query = child_generator.generate(
                 metrics=model_metrics,

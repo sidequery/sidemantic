@@ -112,6 +112,9 @@ def test_hex_to_lookml_conversion():
     # Import from Hex
     hex_adapter = HexAdapter()
     graph = hex_adapter.parse("tests/fixtures/hex/orders.yml")
+    from sidemantic.core.model import Model
+
+    graph.add_model(Model(name="customers", table="customers", primary_key="id"))
 
     # Export to LookML
     lookml_adapter = LookMLAdapter()

@@ -312,3 +312,67 @@ def record_import_feature(
     )
     for report in reports:
         report.features.append(diagnostic)
+
+
+@dataclass
+class ExportReport(ImportReport):
+    """Collected fidelity outcomes from one export, separate from import notes."""
+
+
+_active_export_reports: ContextVar[tuple[ExportReport, ...]] = ContextVar("_active_export_reports", default=())
+
+
+@contextmanager
+def capture_export_report() -> Iterator[ExportReport]:
+    """Capture export diagnostics without mixing them into import reports."""
+    report = ExportReport()
+    token = _active_export_reports.set(_active_export_reports.get() + (report,))
+    try:
+        yield report
+    finally:
+        _active_export_reports.reset(token)
+
+
+def record_export_note(
+    construct: str,
+    detail: str,
+    *,
+    severity: str = "dropped",
+    source: str | None = None,
+    location: str | None = None,
+) -> None:
+    """Record export loss using the same severities/readiness as import notes."""
+    note = FidelityNote(construct=construct, detail=detail, severity=severity, source=source, location=location)
+    for report in _active_export_reports.get():
+        report.notes.append(note)
+
+
+def record_export_feature(
+    feature: str,
+    status: FeatureStatus,
+    *,
+    detail: str | None = None,
+    source: str | None = None,
+    location: str | None = None,
+) -> None:
+    """Record exact, partial, unsupported, or rejected export behavior.
+
+    Unsupported and rejected outcomes block publication by shared conversion
+    orchestration. Direct adapter callers can inspect ``capture_export_report``.
+    """
+    reports = _active_export_reports.get()
+    if not reports:
+        return
+    diagnostic = FeatureDiagnostic(feature=feature, status=status, detail=detail, source=source, location=location)
+    for report in reports:
+        report.features.append(diagnostic)
+
+
+class ConversionFidelityError(ValueError):
+    """A blocked import or export that must not publish converted output."""
+
+    def __init__(self, phase: str, report: ImportReport) -> None:
+        self.phase = phase
+        self.report = report
+        details = "; ".join((*report.summary_lines(), *report.feature_summary_lines()))
+        super().__init__(f"{phase.capitalize()} readiness: blocked. {details}")

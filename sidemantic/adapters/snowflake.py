@@ -1,5 +1,6 @@
 """Snowflake Cortex Semantic Model adapter for importing/exporting semantic models."""
 
+import re
 from pathlib import Path
 
 import sqlglot
@@ -13,6 +14,7 @@ from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.segment import Segment
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_export_note
 from sidemantic.sql.fragment import parse_sql_fragment, rewrite_sql_column_spans
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
@@ -268,7 +270,7 @@ class SnowflakeAdapter(BaseAdapter):
         # Parse primary key
         primary_key_def = table_def.get("primary_key", {})
         primary_key_columns = primary_key_def.get("columns") or []
-        primary_key = primary_key_columns[0] if primary_key_columns else "id"
+        primary_key = self._key_value(primary_key_columns)
 
         # Parse dimensions (categorical attributes)
         dimensions = []
@@ -305,15 +307,71 @@ class SnowflakeAdapter(BaseAdapter):
             if segment:
                 segments.append(segment)
 
+        metadata = self._collect_metadata(table_def, ("synonyms",)) or {"snowflake": {}}
+        if base_table and not base_table.get("definition"):
+            metadata["snowflake"]["base_table"] = dict(base_table)
+            metadata["snowflake"]["source_table"] = table_name
+
         return Model(
             name=name,
             table=table_name,
+            sql=base_table.get("definition"),
+            metadata=metadata,
             description=table_def.get("description"),
             primary_key=primary_key,
+            unique_keys=[key["columns"] for key in table_def.get("unique_keys") or []] or None,
             dimensions=dimensions,
             metrics=metrics,
             segments=segments,
         )
+
+    @staticmethod
+    def _key_value(columns: list[str]) -> str | list[str] | None:
+        return columns[0] if len(columns) == 1 else columns or None
+
+    @staticmethod
+    def _dimension_type(data_type: str) -> str:
+        base_type = re.split(r"[\s(]", data_type.strip().upper(), maxsplit=1)[0]
+        if base_type in {
+            "NUMBER",
+            "INT",
+            "INTEGER",
+            "BIGINT",
+            "SMALLINT",
+            "TINYINT",
+            "BYTEINT",
+            "FLOAT",
+            "FLOAT4",
+            "FLOAT8",
+            "REAL",
+            "DECIMAL",
+            "DEC",
+            "NUMERIC",
+            "DOUBLE",
+        }:
+            return "numeric"
+        if base_type in {"BOOLEAN", "BOOL"}:
+            return "boolean"
+        if base_type in {"DATE", "TIME", "DATETIME", "TIMESTAMP", "TIMESTAMP_NTZ", "TIMESTAMP_LTZ", "TIMESTAMP_TZ"}:
+            return "time"
+        return "categorical"
+
+    def _export_data_type(self, dim: Dimension, default: str) -> str:
+        original = (dim.metadata or {}).get("snowflake", {}).get("data_type")
+        logical = {
+            "String": "TEXT",
+            "Integer": "NUMBER(38,0)",
+            "Decimal": "NUMBER",
+            "Float": "FLOAT",
+            "Boolean": "BOOLEAN",
+            "Date": "DATE",
+            "Time": "TIME",
+            "DateTime": "TIMESTAMP_NTZ",
+            "DateTimeTz": "TIMESTAMP_TZ",
+        }.get(dim.logical_data_type)
+        if logical and self._dimension_type(logical) == dim.type:
+            return logical
+        return original if original and self._dimension_type(original) == dim.type else default
 
     def _parse_dimension(self, dim_def: dict) -> Dimension | None:
         """Parse Snowflake dimension into Sidemantic dimension.
@@ -328,15 +386,11 @@ class SnowflakeAdapter(BaseAdapter):
         if not name:
             return None
 
-        data_type = dim_def.get("data_type", "TEXT").upper()
-
-        # Map Snowflake data types to Sidemantic dimension types
-        if data_type in ("NUMBER", "INT", "INTEGER", "FLOAT", "DECIMAL", "NUMERIC", "DOUBLE"):
-            dim_type = "numeric"
-        elif data_type in ("BOOLEAN", "BOOL"):
-            dim_type = "boolean"
-        else:
-            dim_type = "categorical"
+        dim_type = self._dimension_type(dim_def.get("data_type", "TEXT"))
+        metadata = self._dimension_metadata(dim_def)
+        if dim_type == "time":
+            metadata = metadata or {"snowflake": {}}
+            metadata["snowflake"]["dimension_section"] = "dimensions"
 
         return Dimension(
             name=name,
@@ -346,7 +400,7 @@ class SnowflakeAdapter(BaseAdapter):
             synonyms=dim_def.get("synonyms"),
             sample_values=self._sample_values(dim_def),
             cortex_search_service_name=self._cortex_search_service_name(dim_def),
-            metadata=self._dimension_metadata(dim_def),
+            metadata=metadata,
             public=self._public_from_access_modifier(dim_def),
         )
 
@@ -518,13 +572,13 @@ class SnowflakeAdapter(BaseAdapter):
     def _dimension_metadata(self, dim_def: dict) -> dict | None:
         return self._collect_metadata(
             dim_def,
-            ("unique", "is_enum", "access_modifier", "labels", "tags", "cortex_search_service"),
+            ("data_type", "unique", "is_enum", "access_modifier", "labels", "tags", "cortex_search_service"),
         )
 
     def _measure_metadata(self, measure_def: dict) -> dict | None:
         return self._collect_metadata(
             measure_def,
-            ("access_modifier", "is_enum", "labels", "tags", "non_additive_dimensions"),
+            ("data_type", "access_modifier", "is_enum", "labels", "tags", "non_additive_dimensions"),
         )
 
     def _metric_metadata(self, metric_def: dict) -> dict | None:
@@ -568,6 +622,9 @@ class SnowflakeAdapter(BaseAdapter):
             graph.module_custom_instructions = None
 
         snowflake_meta = graph.metadata.setdefault("snowflake", {})
+        for key in ("name", "description"):
+            if data.get(key) is not None:
+                snowflake_meta.setdefault(key, data[key])
         if existing:
             snowflake_meta["verified_queries"] = existing
         if graph.custom_instructions is not None:
@@ -622,7 +679,9 @@ class SnowflakeAdapter(BaseAdapter):
             existing_name = existing.metadata.get("snowflake", {}).get("name") if existing.metadata else None
             if snowflake_name and existing_name:
                 return existing_name == snowflake_name
-            return existing.foreign_key == left_column and existing.primary_key == right_column
+            return existing.foreign_key == (
+                right_column if rel_type in {"one_to_many", "one_to_one"} else left_column
+            ) and existing.primary_key == (left_column if rel_type in {"one_to_many", "one_to_one"} else right_column)
 
         for rel_def in relationships_def:
             left_table = rel_def.get("left_table")
@@ -636,14 +695,22 @@ class SnowflakeAdapter(BaseAdapter):
             if not rel_columns:
                 continue
 
-            first_col = rel_columns[0]
-            left_column = first_col.get("left_column")
-            right_column = first_col.get("right_column")
+            left_column = self._key_value([pair["left_column"] for pair in rel_columns])
+            right_column = self._key_value([pair["right_column"] for pair in rel_columns])
 
-            metadata = None
+            metadata = {"snowflake": {}}
             snowflake_name = rel_def.get("name")
             if snowflake_name:
-                metadata = {"snowflake": {"name": snowflake_name}}
+                metadata["snowflake"]["name"] = snowflake_name
+            join_type = rel_def.get("join_type", "left_outer")
+            if join_type not in {"left_outer", "inner"}:
+                raise ValueError(f"Unsupported Snowflake join_type {join_type!r}")
+            metadata["snowflake"]["source_join_type"] = join_type
+            metadata["join_type"] = join_type
+            if "join_type" in rel_def:
+                metadata["bsl_how"] = join_type.removesuffix("_outer")
+            else:
+                metadata["snowflake"]["implicit_join_type"] = True
 
             model = models.get(left_table)
             if model is None:
@@ -656,8 +723,8 @@ class SnowflakeAdapter(BaseAdapter):
                 Relationship(
                     name=right_table,
                     type=rel_type,
-                    foreign_key=left_column,
-                    primary_key=right_column,
+                    foreign_key=right_column if rel_type in {"one_to_many", "one_to_one"} else left_column,
+                    primary_key=left_column if rel_type in {"one_to_many", "one_to_one"} else right_column,
                     metadata=metadata,
                 )
             )
@@ -685,19 +752,27 @@ class SnowflakeAdapter(BaseAdapter):
             if not rel_columns:
                 continue
 
-            # Use first column pair for foreign key
-            first_col = rel_columns[0]
-            left_column = first_col.get("left_column")
-            right_column = first_col.get("right_column")
+            # Retain every column pair in a compound relationship.
+            left_column = self._key_value([pair["left_column"] for pair in rel_columns])
+            right_column = self._key_value([pair["right_column"] for pair in rel_columns])
 
             # The Snowflake relationship name is referenced by metric
             # `using_relationships`; preserve it so those references stay valid
             # after export. `Relationship.name` is the related-model identifier and
             # cannot hold it, so stash it in adapter metadata instead.
-            metadata = None
+            metadata = {"snowflake": {}}
             snowflake_name = rel_def.get("name")
             if snowflake_name:
-                metadata = {"snowflake": {"name": snowflake_name}}
+                metadata["snowflake"]["name"] = snowflake_name
+            join_type = rel_def.get("join_type", "left_outer")
+            if join_type not in {"left_outer", "inner"}:
+                raise ValueError(f"Unsupported Snowflake join_type {join_type!r}")
+            metadata["snowflake"]["source_join_type"] = join_type
+            metadata["join_type"] = join_type
+            if "join_type" in rel_def:
+                metadata["bsl_how"] = join_type.removesuffix("_outer")
+            else:
+                metadata["snowflake"]["implicit_join_type"] = True
 
             # In Snowflake, left_table is the "many" side, right_table is the "one" side
             # Add relationship to left_table pointing to right_table
@@ -706,8 +781,8 @@ class SnowflakeAdapter(BaseAdapter):
                 relationship = Relationship(
                     name=right_table,
                     type=rel_type,
-                    foreign_key=left_column,
-                    primary_key=right_column,
+                    foreign_key=right_column if rel_type in {"one_to_many", "one_to_one"} else left_column,
+                    primary_key=left_column if rel_type in {"one_to_many", "one_to_one"} else right_column,
                     metadata=metadata,
                 )
                 model.relationships.append(relationship)
@@ -737,7 +812,7 @@ class SnowflakeAdapter(BaseAdapter):
 
         # Build semantic model structure
         semantic_model = {
-            "name": output_path.stem,
+            "name": (graph.metadata.get("snowflake") or {}).get("name", output_path.stem),
             "tables": [],
             "relationships": [],
         }
@@ -750,13 +825,23 @@ class SnowflakeAdapter(BaseAdapter):
         # Export relationships
         for model in resolved_models.values():
             for rel in model.relationships:
-                if rel.type in ("many_to_one", "one_to_one"):
-                    rel_def = self._export_relationship(model, rel)
-                    semantic_model["relationships"].append(rel_def)
+                if not rel.active:
+                    record_export_note(
+                        "inactive_relationship",
+                        f"Inactive Snowflake relationship {model.name}.{rel.name} omitted",
+                        source="snowflake",
+                    )
+                    continue
+                rel_def = self._export_relationship(model, rel, resolved_models.get(rel.related_model))
+                semantic_model["relationships"].append(rel_def)
 
         # Remove empty relationships list
         if not semantic_model["relationships"]:
             del semantic_model["relationships"]
+
+        description = (graph.metadata.get("snowflake") or {}).get("description")
+        if description is not None:
+            semantic_model["description"] = description
 
         # Export graph-level (top-level) metrics. These have no owning table and
         # were parsed from the semantic model's top-level `metrics:` section, so
@@ -777,6 +862,12 @@ class SnowflakeAdapter(BaseAdapter):
             # Skip metric types Snowflake cannot represent (no `expr`) rather than
             # emitting an invalid stub that would fail to re-parse.
             if "expr" not in metric_def:
+                record_export_note(
+                    "unsupported_metric",
+                    f"Snowflake cannot represent graph metric {metric.name!r} of type {metric.type!r}",
+                    severity="unsupported",
+                    source="snowflake",
+                )
                 continue
             top_level_metrics.append(metric_def)
         if top_level_metrics:
@@ -819,32 +910,36 @@ class SnowflakeAdapter(BaseAdapter):
             table["description"] = model.description
 
         # Export base_table
-        if model.table:
-            parts = model.table.split(".")
-            if len(parts) >= 3:
-                table["base_table"] = {
-                    "database": parts[0],
-                    "schema": parts[1],
-                    "table": parts[2],
-                }
-            elif len(parts) == 2:
-                table["base_table"] = {
-                    "schema": parts[0],
-                    "table": parts[1],
-                }
-            else:
-                table["base_table"] = {"table": parts[0]}
+        if model.sql:
+            table["base_table"] = {"definition": model.sql}
+        elif model.table:
+            reference = sqlglot.parse_one(model.table, read="snowflake", into=exp.Table)
+            if not 1 <= len(reference.parts) <= 3:
+                raise ValueError(f"Snowflake table source {model.table!r} must contain at most three identifiers")
+            parts = [part.sql(dialect="snowflake") for part in reference.parts]
+            table["base_table"] = dict(zip(("database", "schema", "table")[-len(parts) :], parts))
+
+        original = (model.metadata or {}).get("snowflake", {})
+        if not model.sql and model.table == original.get("source_table") and original.get("base_table"):
+            table["base_table"] = dict(original["base_table"])
 
         # Export primary key
         if model.primary_key:
-            table["primary_key"] = {"columns": [model.primary_key]}
+            table["primary_key"] = {"columns": model.primary_key_columns}
+        if model.unique_keys:
+            table["unique_keys"] = [{"columns": key} for key in model.unique_keys]
+        if original.get("synonyms") is not None:
+            table["synonyms"] = original["synonyms"]
 
         # Separate dimensions by type
         dimensions = []
         time_dimensions = []
 
         for dim in model.dimensions:
-            if dim.type == "time":
+            if (
+                dim.type == "time"
+                and (dim.metadata or {}).get("snowflake", {}).get("dimension_section") != "dimensions"
+            ):
                 time_dim = self._export_time_dimension(dim)
                 time_dimensions.append(time_dim)
             else:
@@ -880,6 +975,12 @@ class SnowflakeAdapter(BaseAdapter):
                 # would fail to re-parse.
                 metric_def = self._export_metric(metric)
                 if "expr" not in metric_def:
+                    record_export_note(
+                        "unsupported_metric",
+                        f"Snowflake cannot represent metric {model.name}.{metric.name} of type {metric.type!r}",
+                        severity="unsupported",
+                        source="snowflake",
+                    )
                     continue
                 metrics.append(metric_def)
 
@@ -920,7 +1021,7 @@ class SnowflakeAdapter(BaseAdapter):
             "numeric": "NUMBER",
             "boolean": "BOOLEAN",
         }
-        dim_def["data_type"] = type_mapping.get(dim.type, "TEXT")
+        dim_def["data_type"] = self._export_data_type(dim, type_mapping.get(dim.type, "TEXT"))
 
         self._export_dimension_extras(dim, dim_def)
 
@@ -943,7 +1044,7 @@ class SnowflakeAdapter(BaseAdapter):
         if dim.sql:
             dim_def["expr"] = dim.sql
 
-        dim_def["data_type"] = "TIMESTAMP"
+        dim_def["data_type"] = self._export_data_type(dim, "TIMESTAMP")
 
         self._export_dimension_extras(dim, dim_def)
 
@@ -957,6 +1058,7 @@ class SnowflakeAdapter(BaseAdapter):
         if dim.sample_values:
             dim_def["sample_values"] = dim.sample_values
         snowflake_meta = dict((dim.metadata or {}).get("snowflake", {}))
+        snowflake_meta.pop("dimension_section", None)
         # Snowflake documents the nested ``cortex_search_service`` object as
         # replacing the deprecated flat ``cortex_search_service_name`` string, so
         # emit only one shape. Prefer the nested object (it can carry extra keys
@@ -1011,7 +1113,7 @@ class SnowflakeAdapter(BaseAdapter):
         }
         fact["default_aggregation"] = agg_mapping.get(metric.agg, "sum")
 
-        fact["data_type"] = "NUMBER"
+        fact["data_type"] = (metric.metadata or {}).get("snowflake", {}).get("data_type", "NUMBER")
 
         if metric.synonyms:
             fact["synonyms"] = metric.synonyms
@@ -1118,7 +1220,7 @@ class SnowflakeAdapter(BaseAdapter):
 
         return filter_def
 
-    def _export_relationship(self, model: Model, rel: Relationship) -> dict:
+    def _export_relationship(self, model: Model, rel: Relationship, target: Model | None = None) -> dict:
         """Export relationship to Snowflake relationship format.
 
         Args:
@@ -1128,18 +1230,53 @@ class SnowflakeAdapter(BaseAdapter):
         Returns:
             Relationship definition dictionary
         """
+        if rel.type not in {"many_to_one", "one_to_one"}:
+            raise ValueError(
+                f"Snowflake relationship {model.name}.{rel.name} has unsupported cardinality {rel.type!r}; export supports many_to_one and one_to_one"
+            )
+        if rel.sql or rel.through:
+            raise ValueError(f"Snowflake relationship {model.name}.{rel.name} requires explicit column pairs")
+        if rel.type in {"one_to_many", "one_to_one"}:
+            left = rel.primary_key_columns or model.primary_key_columns
+            right = rel.foreign_key_columns
+        else:
+            left = rel.foreign_key_columns
+            right = rel.primary_key_columns or (target.primary_key_columns if target else [])
+        if not left or not right or len(left) != len(right):
+            raise ValueError(f"Snowflake relationship {model.name}.{rel.name} has missing or mismatched join keys")
+        metadata = rel.metadata or {}
+        join_type = metadata.get("join_type")
+        if "bsl_how" in metadata:
+            runtime_type = {
+                "left": "left_outer",
+                "inner": "inner",
+                "right": "right_outer",
+                "outer": "full_outer",
+                "full": "full_outer",
+            }.get(metadata["bsl_how"])
+            if runtime_type is None:
+                raise ValueError(f"Unsupported Snowflake join type {metadata['bsl_how']!r}")
+            original_type = metadata.get("snowflake", {}).get("source_join_type")
+            if join_type is None or join_type == runtime_type or join_type == original_type:
+                join_type = runtime_type
+            elif runtime_type != original_type:
+                raise ValueError(f"Conflicting Snowflake join types on {model.name}.{rel.name}")
+        if join_type is None:
+            join_type = "left_outer"
+        if join_type not in {"left_outer", "inner"}:
+            raise ValueError(f"Unsupported Snowflake join type {join_type!r}")
         rel_def = {
             "left_table": model.name,
             "right_table": rel.related_model,
             "relationship_columns": [
-                {
-                    "left_column": rel.sql_expr,
-                    "right_column": rel.related_key,
-                }
+                {"left_column": local, "right_column": remote} for local, remote in zip(left, right)
             ],
             "relationship_type": rel.type,
-            "join_type": "left_outer",
+            "join_type": join_type,
         }
+
+        if join_type == "left_outer" and (rel.metadata or {}).get("snowflake", {}).get("implicit_join_type"):
+            del rel_def["join_type"]
 
         # Preserve the original Snowflake relationship name so metric
         # `using_relationships` references resolve after a round-trip.

@@ -12,6 +12,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_export_feature
 from sidemantic.paths import output_child
 
 if TYPE_CHECKING:
@@ -151,6 +152,16 @@ class TMDLAdapter(BaseAdapter):
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to a TMDL folder structure."""
+        owned_metrics = [metric for model in graph.models.values() for metric in model.metrics]
+        if any(not any(metric is owned for owned in owned_metrics) for metric in graph.metrics.values()):
+            record_export_feature("graph_metrics", "rejected", detail="TMDL measures require an explicit home table")
+            raise ValueError("TMDL export cannot place graph-level metrics; assign them to a model with explicit DAX")
+        # Reject unsupported SQL before creating a partially exported project.
+        for model in graph.models.values():
+            for metric in model.metrics:
+                _validate_metric_export(metric)
+                if not _dax_expression_for_export(metric):
+                    _metric_to_dax(metric, model.name, model.dimensions)
         output_path = Path(output_path)
         if output_path.suffix:
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -677,6 +688,7 @@ def _measure_to_metric(
         metric._tmdl_property_order = property_order
     if node.children:
         metric._tmdl_child_nodes = [_clone_tmdl_node(child) for child in node.children]
+    metric._tmdl_expression_witness = _metric_expression_state(metric)
     return [metric]
 
 
@@ -1003,11 +1015,68 @@ def _coerce_expression(value: Any) -> TmdlExpression | None:
 
 
 def _dax_expression_for_export(obj: Any) -> TmdlExpression | None:
+    if isinstance(obj, Metric):
+        witness = getattr(obj, "_tmdl_expression_witness", None)
+        if witness is not None:
+            if obj.dax != witness["dax"]:
+                # An explicit DAX edit (including clearing DAX to author SQL)
+                # supersedes the preserved syntax tree.
+                return _coerce_expression(obj.dax)
+            if _metric_expression_state(obj) != witness:
+                record_export_feature("dax_expression", "rejected", location=obj.name, detail="Preserved DAX is stale")
+                raise ValueError(
+                    f"TMDL metric '{obj.name}' has edited SQL semantics and preserved DAX; "
+                    "update dax explicitly or clear dax before exporting"
+                )
     for attr in ("_tmdl_expression_obj", "_tmdl_expression", "_dax_expression", "dax"):
         expression = _coerce_expression(getattr(obj, attr, None))
         if expression is not None and expression.text.strip():
             return expression
     return None
+
+
+def _metric_expression_state(metric: Metric) -> dict[str, Any]:
+    return {
+        key: getattr(metric, key) for key in ("agg", "sql", "dax", "type", "sql_is_complete", "expression_language")
+    }
+
+
+def _validate_metric_export(metric: Metric) -> None:
+    modifiers = (
+        "extends",
+        "filters",
+        "fill_nulls_with",
+        "non_additive_dimension",
+        "non_additive_window_groupings",
+        "numerator",
+        "denominator",
+        "offset_window",
+        "window",
+        "grain_to_date",
+        "window_expression",
+        "window_frame",
+        "window_order",
+        "base_metric",
+        "comparison_type",
+        "time_offset",
+        "calculation",
+        "entity",
+        "base_event",
+        "conversion_event",
+        "conversion_window",
+        "steps",
+        "cohort_event",
+        "activity_event",
+        "periods",
+        "retention_granularity",
+        "inner_metrics",
+        "entity_dimensions",
+        "having",
+    )
+    unsupported = [key for key in modifiers if getattr(metric, key) is not None and getattr(metric, key) != []]
+    if unsupported:
+        record_export_feature("metric_modifiers", "rejected", location=metric.name, detail=", ".join(unsupported))
+        raise ValueError(f"TMDL export cannot represent metric '{metric.name}' modifiers: {', '.join(unsupported)}")
 
 
 def _is_true(value: Any) -> bool:
@@ -1181,6 +1250,17 @@ def _extract_dax_agg(
 
     func, arg = match
     func_lower = func.lower()
+    if func_lower == "coalesce":
+        inner, separator, fallback = arg.rpartition(",")
+        inner_call = _match_single_function(inner.strip())
+        if (
+            separator
+            and fallback.strip() == "0"
+            and inner_call
+            and inner_call[0].lower() in {"counta", "countrows", "distinctcountnoblank"}
+        ):
+            return _extract_dax_agg(inner.strip(), table_name, None, column_sql_by_table, measure_names_by_table)
+        return None, None
     agg = {
         "sum": "sum",
         "average": "avg",
@@ -1770,7 +1850,7 @@ def _export_metric(model: Model, metric: Metric) -> list[str] | None:
     if expression_obj and expression_obj.text.strip():
         expression = expression_obj.text
     else:
-        expression = _metric_to_dax(metric, model.name)
+        expression = _metric_to_dax(metric, model.name, model.dimensions)
         expression_obj = _coerce_expression(expression)
     if not expression_obj or not expression_obj.text:
         return None
@@ -2274,9 +2354,20 @@ def _relationship_export_name(from_table: str, to_table: str, rel: Relationship)
     return _relationship_name(from_table, to_table)
 
 
-def _metric_to_dax(metric: Metric, table_name: str) -> str | None:
-    if metric.type == "derived" and metric.sql:
-        return metric.sql
+def _metric_to_dax(metric: Metric, table_name: str, dimensions: list[Dimension] | None = None) -> str | None:
+    from sqlglot import exp, parse, parse_one
+    from sqlglot.errors import ParseError
+
+    def unsupported() -> None:
+        record_export_feature("sql_to_dax", "rejected", location=f"{table_name}.{metric.name}")
+        raise ValueError(
+            f"TMDL export cannot translate SQL for metric '{table_name}.{metric.name}' to DAX; "
+            "provide an explicit dax expression or a supported aggregation over one column"
+        )
+
+    _validate_metric_export(metric)
+    if metric.type is not None:
+        unsupported()
 
     if metric.agg:
         func = {
@@ -2284,22 +2375,52 @@ def _metric_to_dax(metric: Metric, table_name: str) -> str | None:
             "avg": "AVERAGE",
             "min": "MIN",
             "max": "MAX",
-            "count": "COUNT",
-            "count_distinct": "DISTINCTCOUNT",
+            "count": "COUNTA",
+            "count_distinct": "DISTINCTCOUNTNOBLANK",
             "median": "MEDIAN",
         }.get(metric.agg)
         if not func:
-            return metric.sql
+            unsupported()
 
-        if metric.agg == "count" and not metric.sql:
-            return f"COUNTROWS({_format_identifier(table_name)})"
+        if metric.agg == "count" and (not metric.sql or metric.sql.strip() == "*"):
+            return f"COALESCE(COUNTROWS({_format_identifier(table_name)}), 0)"
 
         if metric.sql:
-            if _is_simple_identifier(metric.sql):
-                return f"{func}({_format_identifier(table_name)}[{_format_identifier(metric.sql)}])"
-            return f"{func}({metric.sql})"
-
-    return metric.sql
+            try:
+                expressions = parse(metric.sql)
+            except ParseError:
+                unsupported()
+            if len(expressions) != 1:
+                unsupported()
+            column = expressions[0]
+            if not isinstance(column, exp.Column) or column.table or not isinstance(column.this, exp.Identifier):
+                unsupported()
+            name = column.name
+            if dimensions is not None:
+                candidates = []
+                for dimension in dimensions:
+                    try:
+                        source = parse_one(dimension.sql or dimension.name)
+                    except ParseError:
+                        continue
+                    if (
+                        isinstance(source, exp.Column)
+                        and not source.table
+                        and source.name.casefold() == name.casefold()
+                    ):
+                        candidates.append(dimension.name)
+                if len(candidates) != 1:
+                    unsupported()
+                name = candidates[0]
+            # DAX bracket identifiers escape closing brackets, not SQL quotes.
+            name = name.replace("]", "]]")
+            expression = f"{func}({_format_identifier(table_name)}[{name}])"
+            # SQL counts return zero for empty/all-NULL input; DAX counts may
+            # return BLANK. Keep the source metric's empty-set behavior too.
+            return f"COALESCE({expression}, 0)" if metric.agg in {"count", "count_distinct"} else expression
+    if metric.sql or metric.agg:
+        unsupported()
+    return None
 
 
 def _is_simple_identifier(value: str) -> bool:

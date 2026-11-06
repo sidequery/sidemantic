@@ -199,6 +199,9 @@ Destination format
 \fB\-\-ossie\-scope TEXT\fR
 Explicit semantic\-model scope to select on Ossie import or name on Ossie export
 .TP
+\fB\-\-ossie\-source\-dialect TEXT\fR
+Dialect used to interpret physical source names in an Ossie input
+.TP
 \fB\-\-ossie\-target\-dialect TEXT\fR
 Execution dialect used when lowering an Ossie source (for example duckdb or bigquery)
 .TP
@@ -222,6 +225,12 @@ Preserve invalid Ossie source while lowering only independently safe constructs
 .TP
 \fB\-\-ossie\-portable\-only\fR
 Require portable Ossie core output instead of preserving native behavior in a Sidemantic extension
+.TP
+\fB\-\-ossie\-preserve\-document\fR
+Preserve one valid Ossie document without runtime graph conversion
+.TP
+\fB\-\-ossie\-official\-compatible\fR
+Export portable flat Ossie core with model\-scoped metrics for official converters
 .TP
 \fB\-\-force\fR
 Allow writing to an existing destination

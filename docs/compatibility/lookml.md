@@ -263,3 +263,15 @@ Sidemantic can export its semantic model back to LookML.
 | `drill_fields` | Supported (roundtrips on measures) |
 | `hidden`, `group_label`, `tags` | Supported (roundtrips via `meta` dict) |
 | Roundtrip fidelity | Supported (LookML -> parse -> export -> re-parse produces semantically equivalent graphs) |
+
+## Explore export and join fidelity
+
+Export includes views and explores. For native models, each concrete model gets an explore with transitive joins, all compound join-key pairs, supported join types, and aliases where a target is reached more than once. Missing exposed key dimensions are emitted as hidden dimensions. Composite primary keys become hidden, length-prefixed encodings so tuples such as `('ab', 'c')` and `('a', 'bc')` remain distinct. Their `VARCHAR` casts require review against the Looker connection dialect; the export report records this portability limitation.
+
+Imported explore definitions retain separate aliases, filters, and join declarations. Export refuses relationship edits that would conflict with those retained scopes. To generate a new explore graph after changing relationships, remove `graph.metadata['lookml']['explores']` and its `relationship_snapshot` in an advanced Python workflow.
+
+Import lowers complete conjunctions of column equalities, including compound keys and transitive joins. Non-equality predicates, functions around keys, and additional join filters are retained in the original explore for export, but produce an **unsupported** import diagnostic and are unavailable for native querying. They are never reduced to a weaker equality. Native exports reject missing or mismatched key pairs, custom SQL join predicates, and junction-model relationships. Cycles are cut with an export loss note.
+
+Graph-level metrics without an owning view are rejected with an unsupported export diagnostic; model-owned metric aliases are allowed.
+
+The generated document still needs the Looker project's connection and include configuration and appropriate `.view.lkml` / `.model.lkml` file placement.

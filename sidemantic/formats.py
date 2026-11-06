@@ -124,6 +124,13 @@ _FORMATS = (
         output_kind=OutputKind.FILE_OR_DIRECTORY,
     ),
     SemanticFormat(
+        "lightdash",
+        "sidemantic.adapters.official",
+        "LightdashAdapter",
+        extensions=(".yml", ".yaml"),
+        output_kind=OutputKind.DIRECTORY,
+    ),
+    SemanticFormat(
         "lookml",
         "sidemantic.adapters.lookml",
         "LookMLAdapter",
@@ -174,6 +181,14 @@ _FORMATS = (
         "SidemanticAdapter",
         aliases=("native",),
         extensions=(".yml", ".yaml", ".sql"),
+        source_kind=SourceKind.FILE,
+        output_kind=OutputKind.FILE,
+    ),
+    SemanticFormat(
+        "sigma",
+        "sidemantic.adapters.official",
+        "SigmaAdapter",
+        extensions=(".json",),
         source_kind=SourceKind.FILE,
         output_kind=OutputKind.FILE,
     ),
@@ -295,8 +310,29 @@ def export_semantic_graph(
     export_options: Mapping[str, object] | None = None,
 ) -> None:
     """Export a graph through a registered format adapter."""
+    import tempfile
+
+    from sidemantic.fidelity import ConversionFidelityError, capture_export_report, record_export_feature
+
     spec = get_semantic_format(target_format, operation="export")
-    spec.create_adapter(**dict(adapter_options or {})).export(graph, Path(output), **dict(export_options or {}))
+    destination = Path(output)
+    with capture_export_report() as report, tempfile.TemporaryDirectory(prefix="sidemantic-export-") as temp:
+        if not graph.models:
+            record_export_feature(
+                "empty_graph", "unsupported", detail="No models were imported; refusing empty export."
+            )
+            raise ConversionFidelityError("export", report)
+        staged = Path(temp) / destination.name
+        try:
+            spec.create_adapter(**dict(adapter_options or {})).export(graph, staged, **dict(export_options or {}))
+        except Exception as exc:
+            if report.is_blocked:
+                raise ConversionFidelityError("export", report) from exc
+            raise
+        if report.is_blocked:
+            raise ConversionFidelityError("export", report)
+        validate_conversion_output(staged, target_format=spec.name)
+        promote_converted_output(staged, destination)
 
 
 def convert_semantic_source(
@@ -310,7 +346,12 @@ def convert_semantic_source(
     target_export_options: Mapping[str, object] | None = None,
 ) -> SemanticGraph:
     """Load an exact source, export it, and return the intermediate graph."""
-    graph = load_semantic_source(source, source_format=source_format, adapter_options=source_adapter_options)
+    from sidemantic.fidelity import ConversionFidelityError, capture_import_report
+
+    with capture_import_report() as report:
+        graph = load_semantic_source(source, source_format=source_format, adapter_options=source_adapter_options)
+    if report.is_blocked:
+        raise ConversionFidelityError("import", report)
     export_semantic_graph(
         graph,
         output,
@@ -326,3 +367,88 @@ def _validate_source_kind(source: Path, spec: SemanticFormat) -> None:
         raise ValueError(f"Format '{spec.name}' requires a directory source")
     if source.is_dir() and spec.source_kind == SourceKind.FILE:
         raise ValueError(f"Format '{spec.name}' requires a file source")
+
+
+def validate_conversion_output(output: Path, *, target_format: str | None = None) -> None:
+    """Reject missing or structurally empty output before replacing a destination.
+
+    This is a minimum content gate, not vendor compilation or SQL equivalence.
+    """
+    import yaml
+
+    # The CLI's historical default filename ends in .yml for every format.
+    # Native source languages remain text even when the caller chooses that
+    # suffix; only structured exporters may use the YAML/JSON content gate.
+    native_text = target_format is not None and get_semantic_format(target_format).name in {
+        "holistics",
+        "lookml",
+        "malloy",
+        "tmdl",
+    }
+    files = [output] if output.is_file() else sorted(output.rglob("*")) if output.is_dir() else []
+    for path in files:
+        if not path.is_file() or not path.read_bytes().strip():
+            continue
+        if not native_text and path.suffix.lower() in {".yaml", ".yml", ".json"}:
+            data = yaml.safe_load(path.read_text())
+            if not data:
+                continue
+            if isinstance(data, dict):
+                containers = {"models", "cubes", "views", "datasets", "semantic_models", "semantic_model"} & data.keys()
+                if containers and not any(data[key] for key in containers):
+                    continue
+        return
+    raise ValueError("Export produced no non-empty model output; destination was not changed")
+
+
+def promote_converted_output(staged: Path, output: Path) -> None:
+    """Publish a fidelity-approved staged conversion to its destination."""
+    import shutil
+    import tempfile
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if staged.is_dir():
+        if output.exists() and not output.is_dir():
+            raise ValueError(f"Cannot replace file destination with directory output: {output}")
+
+        # Prepare the complete replacement on the destination filesystem before
+        # touching the current output. Renames below are then atomic, stale files
+        # cannot survive, and a failed promotion can restore the old tree.
+        transaction = Path(tempfile.mkdtemp(prefix=".sidemantic-promote-", dir=output.parent))
+        prepared = transaction / "next"
+        backup = transaction / "previous"
+        had_output = output.exists()
+        cleanup_transaction = True
+        try:
+            shutil.copytree(staged, prepared)
+            if had_output:
+                output.replace(backup)
+            try:
+                prepared.replace(output)
+            except Exception as promotion_error:
+                if had_output and backup.exists():
+                    try:
+                        backup.replace(output)
+                    except Exception as rollback_error:
+                        cleanup_transaction = False
+                        raise RuntimeError(
+                            f"Directory promotion failed and rollback also failed; "
+                            f"previous output is preserved at {backup}: {rollback_error}"
+                        ) from promotion_error
+                raise
+        finally:
+            if cleanup_transaction:
+                shutil.rmtree(transaction, ignore_errors=True)
+        return
+    if output.exists() and output.is_dir():
+        raise ValueError(f"Cannot replace directory destination with file output: {output}")
+    transaction = Path(tempfile.mkdtemp(prefix=".sidemantic-promote-", dir=output.parent))
+    prepared = transaction / "next"
+    try:
+        # The conversion staging directory may be on another filesystem. Copy
+        # beside the destination first, then use one same-filesystem atomic
+        # replacement so EXDEV cannot corrupt or remove an existing file.
+        shutil.copy2(staged, prepared)
+        prepared.replace(output)
+    finally:
+        shutil.rmtree(transaction, ignore_errors=True)

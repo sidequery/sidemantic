@@ -12,6 +12,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_export_feature, record_import_note
 from sidemantic.paths import output_child
 from sidemantic.sql.fragment import parse_sql_fragment
 from sidemantic.yaml_compat import safe_load_all as _yaml_safe_load_all
@@ -220,7 +221,7 @@ class HexAdapter(BaseAdapter):
             "timestamp_tz": "time",
             "timestamp_naive": "time",
             "date": "time",
-            "boolean": "categorical",
+            "boolean": "boolean",
             "other": "categorical",
         }
 
@@ -249,7 +250,9 @@ class HexAdapter(BaseAdapter):
 
         # Visibility: public/internal/private. Only "public" stays visible.
         visibility = dim_def.get("visibility")
-        meta = {"visibility": visibility} if visibility is not None else None
+        meta = {"hex_type": dim_type}
+        if visibility is not None:
+            meta["visibility"] = visibility
         public = visibility is None or visibility == "public"
 
         return Dimension(
@@ -302,7 +305,12 @@ class HexAdapter(BaseAdapter):
                 "variance_pop": "variance_pop",
             }
 
-            agg_type = type_mapping.get(func, "count")
+            if func not in type_mapping:
+                record_import_note(
+                    "aggregation", f"Unsupported Hex aggregation {func!r}", source="hex", location=measure_id
+                )
+                raise ValueError(f"Unsupported Hex aggregation {func!r} on measure {measure_id!r}")
+            agg_type = type_mapping[func]
 
             # Get the dimension being aggregated
             of_dim = measure_def.get("of")
@@ -434,7 +442,9 @@ class HexAdapter(BaseAdapter):
             "one_to_one": "one_to_one",
         }
 
-        sidemantic_type = type_mapping.get(rel_type, "many_to_one")
+        if rel_type not in type_mapping:
+            raise ValueError(f"Unsupported Hex relationship type {rel_type!r} on {relation_id!r}")
+        sidemantic_type = type_mapping[rel_type]
 
         # Hex predicates orient keys by local/target operands, independently
         # of equality operand order. Native one-to-many keys point back from
@@ -442,7 +452,11 @@ class HexAdapter(BaseAdapter):
         join_sql = relation_def.get("join_sql", "")
         foreign_key = None
         primary_key = None
-        normalized = re.sub(rf"\$\{{(?:{re.escape(relation_id)}|{re.escape(target)})\}}", "__hex_target", join_sql)
+        normalized = re.sub(
+            rf"('(?:''|[^'])*')|\$\{{(?:{re.escape(relation_id)}|{re.escape(target)})(\.[^}}]+)?\}}",
+            lambda match: match[0] if match[1] else "__hex_target" + (match[2] or ""),
+            join_sql,
+        )
         predicate = parse_sql_fragment(normalized) if normalized else None
         if isinstance(predicate, exp.EQ):
             left, right = predicate.left, predicate.right
@@ -456,12 +470,28 @@ class HexAdapter(BaseAdapter):
                     else:
                         foreign_key, primary_key = local_key, target_key
 
+        sql = None
+        if join_sql:
+            if predicate is None:
+                raise ValueError(f"Invalid Hex join_sql on relation {relation_id!r}: {join_sql}")
+
+            def rewrite_column(node):
+                if isinstance(node, exp.Column):
+                    if node.table not in ("", "__hex_target"):
+                        raise ValueError(f"Unsupported Hex join reference {node.sql()!r} on {relation_id!r}")
+                    side = "{to}" if node.table else "{from}"
+                    return exp.Var(this=f"{side}.{node.this.sql()}")
+                return node
+
+            sql = predicate.transform(rewrite_column).sql()
+
         return Relationship(
             name=relation_id,
             target_model=target if target != relation_id else None,
             type=sidemantic_type,
             foreign_key=foreign_key,
             primary_key=primary_key,
+            sql=sql if foreign_key is None else None,
         )
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
@@ -478,10 +508,27 @@ class HexAdapter(BaseAdapter):
 
         resolved_models = resolve_model_inheritance(graph.models)
 
+        local_metrics = [metric for model in resolved_models.values() for metric in model.metrics]
+        graph_only = [name for name, metric in graph.metrics.items() if metric not in local_metrics]
+        if graph_only:
+            detail = "Graph-level metrics have no hex model placement: " + ", ".join(graph_only)
+            record_export_feature("graph_metrics", "rejected", source="hex", detail=detail)
+            raise ValueError(detail)
+
         # If output_path is a file, export all models to that file (non-standard)
         # If it's a directory, export one file per model
         if output_path.suffix in [".yml", ".yaml"]:
-            # Single file - export first model only
+            if len(resolved_models) > 1:
+                record_export_feature(
+                    "multiple_models",
+                    "rejected",
+                    source="hex",
+                    detail="Single-file export would omit models; use a directory",
+                )
+                raise ValueError(
+                    "Hex single-file export requires exactly one model; use a directory for multiple models"
+                )
+            # Single-resource output.
             if resolved_models:
                 model = next(iter(resolved_models.values()))
                 model_data = self._export_model(model, graph)
@@ -558,6 +605,23 @@ class HexAdapter(BaseAdapter):
             else:
                 dim_def["type"] = type_mapping.get(dim.type, "string")
 
+            original_type = (dim.meta or {}).get("hex_type")
+            if (
+                original_type
+                and {
+                    "string": "categorical",
+                    "number": "numeric",
+                    "boolean": "boolean",
+                    "date": "time",
+                    "timestamp_naive": "time",
+                    "timestamp_tz": "time",
+                    "other": "categorical",
+                }.get(original_type)
+                == dim.type
+                and (dim.type != "time" or (original_type == "date") == (dim.granularity == "day"))
+            ):
+                dim_def["type"] = original_type
+
             # Only add expr_sql if it's different from id
             if dim.sql and dim.sql != dim.name:
                 # Replace {model} placeholder with column reference
@@ -569,7 +633,7 @@ class HexAdapter(BaseAdapter):
 
             # Visibility: prefer recorded value, otherwise derive from public flag.
             dim_visibility = (dim.meta or {}).get("visibility")
-            if dim_visibility:
+            if dim_visibility and dim.public == (dim_visibility == "public"):
                 dim_def["visibility"] = dim_visibility
             elif not dim.public:
                 dim_def["visibility"] = "internal"
@@ -610,8 +674,22 @@ class HexAdapter(BaseAdapter):
                         "avg": "avg",
                         "min": "min",
                         "max": "max",
+                        "median": "median",
+                        "stddev": "stddev",
+                        "stddev_pop": "stddev_pop",
+                        "variance": "variance",
+                        "variance_pop": "variance_pop",
                     }
-                    measure_def["func"] = type_mapping.get(metric.agg, "count")
+                    if metric.agg not in type_mapping:
+                        record_export_feature(
+                            "aggregation",
+                            "rejected",
+                            source="hex",
+                            location=metric.name,
+                            detail=f"Unsupported aggregate {metric.agg}",
+                        )
+                        raise ValueError(f"Unsupported Hex aggregation {metric.agg!r} on {metric.name!r}")
+                    measure_def["func"] = type_mapping[metric.agg]
 
                     # Add 'of' dimension if specified
                     if metric.sql:
@@ -632,14 +710,17 @@ class HexAdapter(BaseAdapter):
             # ``pick``/``groupings`` intact on round-trip), otherwise emit the
             # minimal form derived from ``non_additive_dimension``.
             preserved_semi_additive = (metric.meta or {}).get("hex_semi_additive")
-            if preserved_semi_additive:
+            if (
+                preserved_semi_additive
+                and self._parse_semi_additive(preserved_semi_additive) == metric.non_additive_dimension
+            ):
                 measure_def["semi_additive"] = preserved_semi_additive
             elif metric.non_additive_dimension:
                 measure_def["semi_additive"] = {"over": [{"dimension": metric.non_additive_dimension}]}
 
             # Visibility: prefer recorded value, otherwise derive from public flag.
             measure_visibility = (metric.meta or {}).get("visibility")
-            if measure_visibility:
+            if measure_visibility and metric.public == (measure_visibility == "public"):
                 measure_def["visibility"] = measure_visibility
             elif not metric.public:
                 measure_def["visibility"] = "internal"
@@ -660,7 +741,28 @@ class HexAdapter(BaseAdapter):
                 relation_def["target"] = rel.related_model
 
             # Build join_sql
-            if rel.foreign_key:
+            if rel.sql:
+                if "{from}" not in rel.sql and "{to}" not in rel.sql:
+                    raise ValueError(f"Hex relation {rel.name!r} requires placeholder-based join SQL")
+                normalized = re.sub(
+                    r"('(?:''|[^'])*')|\{(from|to)\}",
+                    lambda match: match[0] if match[1] else f"__hex_{match[2]}",
+                    rel.sql,
+                )
+                predicate = parse_sql_fragment(normalized)
+                if predicate is None:
+                    raise ValueError(f"Invalid Hex join SQL on {rel.name!r}")
+
+                def rewrite_join(node):
+                    if isinstance(node, exp.Column):
+                        if node.table not in ("__hex_from", "__hex_to"):
+                            raise ValueError(f"Unsupported Hex join reference {node.sql()!r}")
+                        prefix = f"${{{rel.name}}}." if node.table == "__hex_to" else ""
+                        return exp.Var(this=prefix + node.this.sql())
+                    return node
+
+                relation_def["join_sql"] = predicate.transform(rewrite_join).sql()
+            elif rel.foreign_key:
                 if rel.type in ("one_to_many", "one_to_one"):
                     local_key = rel.primary_key or model.primary_key
                     target_key = rel.foreign_key
@@ -668,7 +770,13 @@ class HexAdapter(BaseAdapter):
                     local_key = rel.foreign_key
                     target_model = graph.models.get(rel.related_model)
                     target_key = rel.primary_key or (target_model.primary_key if target_model else "id")
-                relation_def["join_sql"] = f"{local_key} = ${{{rel.name}}}.{target_key}"
+                local_keys = local_key if isinstance(local_key, list) else [local_key]
+                target_keys = target_key if isinstance(target_key, list) else [target_key]
+                if len(local_keys) != len(target_keys):
+                    raise ValueError(f"Mismatched Hex join key counts on {rel.name!r}")
+                relation_def["join_sql"] = " AND ".join(
+                    f"{local} = ${{{rel.name}}}.{target}" for local, target in zip(local_keys, target_keys)
+                )
 
             relations.append(relation_def)
 

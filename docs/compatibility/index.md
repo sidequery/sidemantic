@@ -10,25 +10,25 @@ Detailed compatibility documents describe field-level limitations where they exi
 |---|---|---|---|---:|---:|---:|---|
 | `atscale-sml` | `atscale`, `sml` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 4 | Registry summary only |
 | `bsl` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 2 | Registry summary only |
-| `cube` | `cubejs`, `cube-js` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 10 | [Detailed guide](cube.md) |
-| `gooddata` | `good-data` | `file_or_directory` | `.json` | Registered | Yes | 2 | Registry summary only |
+| `cube` | `cubejs`, `cube-js` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 11 | [Detailed guide](cube.md) |
+| `gooddata` | `good-data` | `file_or_directory` | `.json` | Registered | Yes | 3 | Registry summary only |
 | `graphene` | `gsql` | `file_or_directory` | `.gsql` | Registered | No | 1 | [Detailed guide](graphene.md) |
-| `hex` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 6 | Registry summary only |
-| `holistics` | `aml` | `file_or_directory` | `.aml` | Registered | Yes | 4 | Registry summary only |
+| `hex` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 7 | Registry summary only |
+| `holistics` | `aml` | `file_or_directory` | `.aml` | Registered | Yes | 5 | Registry summary only |
 | `lightdash` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 0 | [Detailed guide](lightdash.md) |
-| `lookml` | `looker` | `file_or_directory` | `.lkml` | Registered | Yes | 10 | [Detailed guide](lookml.md) |
+| `lookml` | `looker` | `file_or_directory` | `.lkml` | Registered | Yes | 11 | [Detailed guide](lookml.md) |
 | `malloy` | — | `file_or_directory` | `.malloy` | Registered | Yes | 18 | [Detailed guide](malloy.md) |
-| `metricflow` | `dbt`, `dbt-semantic-layer` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 6 | Registry summary only |
-| `omni` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 4 | Registry summary only |
+| `metricflow` | `dbt`, `dbt-semantic-layer` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 7 | [Detailed guide](metricflow.md) |
+| `omni` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 5 | [Detailed guide](omni.md) |
 | `ossie` | `apache-ossie`, `osi`, `open-semantic-interchange` | `file_or_directory` | `.yml`, `.yaml`, `.json` | Registered | Yes | 5 | [Detailed guide](ossie.md) |
 | `rill` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 8 | Registry summary only |
 | `sidemantic` | `native` | `file` | `.yml`, `.yaml`, `.sql` | Registered | Yes | 2 | Registry summary only |
 | `sigma` | — | `file` | `.json` | Registered | Yes | 0 | [Detailed guide](sigma.md) |
-| `snowflake` | `cortex`, `snowflake-cortex` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 8 | Registry summary only |
+| `snowflake` | `cortex`, `snowflake-cortex` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 9 | [Detailed guide](snowflake.md) |
 | `superset` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 5 | Registry summary only |
 | `tableau` | — | `file_or_directory` | `.tds`, `.twb`, `.tdsx`, `.twbx` | Registered | No | 4 | Registry summary only |
-| `thoughtspot` | `thought-spot`, `tml` | `file_or_directory` | `.tml`, `.yml`, `.yaml` | Registered | Yes | 3 | Registry summary only |
-| `tmdl` | `powerbi`, `power-bi` | `file_or_directory` | `.tmdl` | Registered | Yes | 4 | Registry summary only |
+| `thoughtspot` | `thought-spot`, `tml` | `file_or_directory` | `.tml`, `.yml`, `.yaml` | Registered | Yes | 4 | Registry summary only |
+| `tmdl` | `powerbi`, `power-bi` | `file_or_directory` | `.tmdl` | Registered | Yes | 5 | Registry summary only |
 | `yardstick` | `yardstick-sql` | `file_or_directory` | `.sql` | Registered | No | 1 | [Detailed guide](yardstick.md) |
 
 The native `sidemantic` adapter is included because it participates in the same conversion registry.

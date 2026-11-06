@@ -3,6 +3,7 @@
 import os
 import re
 import warnings
+from copy import deepcopy
 from pathlib import Path
 
 import yaml
@@ -15,7 +16,7 @@ from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.security import SecurityPolicy
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.fidelity import record_import_note
+from sidemantic.fidelity import record_export_note, record_import_note
 from sidemantic.sql.fragment import replace_outside_sql_protected, rewrite_sql_column_spans
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
@@ -30,6 +31,12 @@ class CubeImportWarning(UserWarning):
 
 def _warn_inert(member: str, feature: str, detail: str) -> None:
     """Warn that an imported Cube construct is preserved but has no query effect."""
+    record_import_note(
+        "inert_cube_feature",
+        f"{member}: {feature} is retained for export but not executed: {detail}",
+        severity="unsupported",
+        source="Cube",
+    )
     warnings.warn(
         f"{member}: {feature} is preserved for round-trip but not executed by sidemantic ({detail}).",
         CubeImportWarning,
@@ -75,6 +82,33 @@ def _set_cube_internal(meta: dict | None, **markers) -> dict:
     if internal:
         out["cube_internal"] = internal
     return out
+
+
+def _source_metadata(definition: dict, keys: tuple[str, ...], demotions: dict[str, str] | None = None) -> dict:
+    """Keep source syntax separately from user metadata and executable fields."""
+    properties = {key: deepcopy(definition[key]) for key in keys if key in definition}
+    if not properties:
+        return {}
+    user_meta = definition.get("meta") or {}
+    generated_meta = {
+        meta_key: deepcopy(definition[source_key])
+        for source_key, meta_key in (demotions or {}).items()
+        if source_key in definition and meta_key not in user_meta
+    }
+    return {"cube_source": {"properties": properties, "generated_meta": generated_meta}}
+
+
+def _source_properties(member) -> dict:
+    return (member.metadata or {}).get("cube_source", {}).get("properties", {})
+
+
+def _remove_generated_meta(member, exported: dict) -> dict:
+    """Remove only compatibility mirrors that still match our imported values."""
+    result = dict(exported)
+    for key, value in (member.metadata or {}).get("cube_source", {}).get("generated_meta", {}).items():
+        if result.get(key) == value:
+            result.pop(key, None)
+    return result
 
 
 # Matches a Cube member reference: ${cube.col}, {cube.col}, ${CUBE}.col, {cube}.col, etc.
@@ -331,6 +365,12 @@ class CubeAdapter(BaseAdapter):
         # Apply hierarchies after inheritance so inherited dimensions are available.
         # Also propagate parent hierarchies to child cubes via extends_map.
         def _apply_hierarchies(model: Model, h_defs: list[dict]) -> None:
+            metadata = deepcopy(model.metadata or {})
+            properties = metadata.setdefault("cube_source", {}).setdefault("properties", {})
+            retained = properties.setdefault("hierarchies", [])
+            names = {hierarchy.get("name") for hierarchy in retained}
+            retained.extend(deepcopy(h) for h in h_defs if h.get("name") not in names)
+            model.metadata = metadata
             for h_def in h_defs:
                 levels = h_def.get("levels", [])
                 for i in range(1, len(levels)):
@@ -665,6 +705,7 @@ class CubeAdapter(BaseAdapter):
             "metrics": measures,
             "segments": segments,
             "pre_aggregations": pre_aggregations,
+            "metadata": _source_metadata(cube_def, ("hierarchies",)),
         }
         if primary_key is not None:
             model_kwargs["primary_key"] = primary_key
@@ -740,11 +781,11 @@ class CubeAdapter(BaseAdapter):
             parts = []
             for w in whens:
                 cond = _normalize_cube_sql(w.get("sql"), cube_name)
-                lbl = w.get("label", "").replace("'", "''")
-                parts.append(f"WHEN {cond} THEN '{lbl}'")
+                label = self._case_label_sql(w.get("label", ""), cube_name)
+                parts.append(f"WHEN {cond} THEN {label}")
             if else_clause:
-                else_label = else_clause.get("label", "Unknown").replace("'", "''")
-                parts.append(f"ELSE '{else_label}'")
+                else_label = self._case_label_sql(else_clause.get("label", "Unknown"), cube_name)
+                parts.append(f"ELSE {else_label}")
             dim_sql = "CASE " + " ".join(parts) + " END"
 
         # Read additional metadata fields
@@ -760,11 +801,11 @@ class CubeAdapter(BaseAdapter):
         if switch_values is not None or mask is not None or currency is not None:
             meta = dict(meta) if isinstance(meta, dict) else {}
             if switch_values is not None:
-                meta["switch_values"] = switch_values
+                meta.setdefault("switch_values", switch_values)
             if mask is not None:
-                meta["mask"] = mask
+                meta.setdefault("mask", mask)
             if currency is not None:
-                meta["currency"] = currency
+                meta.setdefault("currency", currency)
 
         # Cube dimension features with no first-class Sidemantic equivalent: preserve in
         # meta and warn so the loss is visible rather than silent.
@@ -787,6 +828,13 @@ class CubeAdapter(BaseAdapter):
             )
 
         sub_query = dim_def.get("sub_query")
+        if sub_query:
+            record_import_note(
+                "sub_query",
+                f"Cube dimension '{cube_name}.{name}' retains sub_query for export; correlated aggregation is not executed",
+                severity="unsupported",
+                source="Cube",
+            )
         if sub_query is not None:
             # Stash under the adapter-owned namespace so export lifts it back to the top-level
             # Cube `sub_query` property (a plain meta key would round-trip to meta.sub_query and
@@ -805,7 +853,13 @@ class CubeAdapter(BaseAdapter):
             and any(isinstance(g, dict) and ("sql" in g or "interval" in g or "origin" in g) for g in custom_grans)
         ):
             meta = dict(meta) if isinstance(meta, dict) else {}
-            meta["custom_granularities"] = custom_grans
+            meta.setdefault("custom_granularities", custom_grans)
+            record_import_note(
+                "custom_granularities",
+                f"Cube dimension '{cube_name}.{name}' retains custom granularities for export; their intervals/origins are not executed",
+                severity="unsupported",
+                source="Cube",
+            )
             warnings.warn(
                 f"Cube dimension '{cube_name}.{name}' defines custom granularities with sql/interval/origin; "
                 f"Sidemantic keeps the names but preserves their definitions only in meta.",
@@ -813,8 +867,24 @@ class CubeAdapter(BaseAdapter):
                 stacklevel=2,
             )
 
+        source_metadata = _source_metadata(
+            dim_def,
+            ("case", "granularities", "mask", "currency", "values", "propagate_filters_to_sub_query"),
+            {
+                "granularities": "custom_granularities",
+                "mask": "mask",
+                "currency": "currency",
+                "values": "switch_values",
+            },
+        )
+        if "case" in dim_def:
+            source_metadata["cube_source"]["imported_sql"] = dim_sql
+        if dim_type == "switch":
+            source_metadata.setdefault("cube_source", {}).setdefault("properties", {})["type"] = "switch"
+            _warn_inert(f"{cube_name}.{name}", "switch dimension", "dynamic value selection is not executed")
         return Dimension(
             name=name,
+            metadata=source_metadata,
             type=sidemantic_type,
             sql=dim_sql,
             granularity=granularity,
@@ -825,6 +895,15 @@ class CubeAdapter(BaseAdapter):
             meta=meta,
             public=public,
         )
+
+    @staticmethod
+    def _case_label_sql(label: object, cube_name: str) -> str:
+        if isinstance(label, dict):
+            sql = label.get("sql")
+            if not isinstance(sql, str) or not sql.strip():
+                raise ValueError(f"Cube '{cube_name}': a CASE label mapping requires non-empty sql")
+            return _normalize_cube_sql(sql, cube_name)
+        return _sql_literal(label)
 
     def _parse_measure(self, measure_def: dict, cube_name: str) -> Metric | None:
         """Parse Cube measure into Sidemantic measure.
@@ -867,7 +946,7 @@ class CubeAdapter(BaseAdapter):
         case_def = measure_def.get("case")
         if case_def:
             meta = dict(meta) if meta else {}
-            meta["case"] = case_def
+            meta.setdefault("case", case_def)
             _warn_inert(
                 f"{cube_name}.{name}",
                 "measure-level case/switch",
@@ -883,6 +962,12 @@ class CubeAdapter(BaseAdapter):
         # Handle unknown measure types explicitly
         if agg_type is None and measure_type not in ("number",):
             if measure_type == "rank":
+                record_import_note(
+                    "rank_measure",
+                    f"Cube measure '{cube_name}.{name}' uses a COUNT fallback; rank is not executed",
+                    severity="unsupported",
+                    source="Cube",
+                )
                 # Rank measures: use count as executable fallback, store rank metadata under
                 # the internal namespace so consumers (and export) can handle them specially.
                 agg_type = "count"
@@ -951,6 +1036,12 @@ class CubeAdapter(BaseAdapter):
             rw_leading = rolling_window.get("leading")
             rw_offset = rolling_window.get("offset")
             if rw_leading is not None or rw_offset is not None:
+                record_import_note(
+                    "rolling_window_modifiers",
+                    f"Cube measure '{cube_name}.{name}' retains leading/offset for export; they are not executed",
+                    severity="unsupported",
+                    source="Cube",
+                )
                 meta = _set_cube_internal(meta, rolling_window_leading=rw_leading, rolling_window_offset=rw_offset)
                 warnings.warn(
                     f"Cube measure '{cube_name}.{name}' uses rolling_window leading/offset, which "
@@ -980,9 +1071,12 @@ class CubeAdapter(BaseAdapter):
             ts_type = ts.get("type")
             if ts_type == "prior" and ts_interval and measure_sql:
                 # Extract base_metric from sql like "{measure_name}"
-                base_match = re.match(r"^\s*\{(\w+)\}\s*$", measure_sql)
+                base_match = re.match(r"^\s*\$?\{(?:(\w+)\.)?(\w+)\}\s*$", measure_sql)
                 if base_match:
-                    base_metric = f"{cube_name}.{base_match.group(1)}"
+                    owner = base_match.group(1) or cube_name
+                    if owner == "CUBE":
+                        owner = cube_name
+                    base_metric = f"{owner}.{base_match.group(2)}"
                     measure_sql = None  # Clear sql, base_metric carries the reference
                     metric_type = "time_comparison"
                     time_offset = str(ts_interval)
@@ -1084,13 +1178,13 @@ class CubeAdapter(BaseAdapter):
         if any(v is not None for v in (mask, currency, group_by, add_group_by)):
             meta = dict(meta) if isinstance(meta, dict) else {}
             if mask is not None:
-                meta["mask"] = mask
+                meta.setdefault("mask", mask)
             if currency is not None:
-                meta["currency"] = currency
+                meta.setdefault("currency", currency)
             if group_by is not None:
-                meta["group_by"] = group_by
+                meta.setdefault("group_by", group_by)
             if add_group_by is not None:
-                meta["add_group_by"] = add_group_by
+                meta.setdefault("add_group_by", add_group_by)
 
         if group_by is not None or add_group_by is not None or measure_def.get("multi_stage"):
             _warn_inert(
@@ -1099,8 +1193,37 @@ class CubeAdapter(BaseAdapter):
                 "percent-of-total / nested-aggregate semantics are not reproduced",
             )
 
+        source_metadata = _source_metadata(
+            measure_def,
+            (
+                "case",
+                "mask",
+                "currency",
+                "multi_stage",
+                "group_by",
+                "add_group_by",
+                "reduce_by",
+                "order_by",
+                "time_shift",
+            ),
+            {
+                "case": "case",
+                "mask": "mask",
+                "currency": "currency",
+                "group_by": "group_by",
+                "add_group_by": "add_group_by",
+            },
+        )
+        if time_shift_def and metric_type != "time_comparison":
+            _warn_inert(f"{cube_name}.{name}", "time_shift", "the period shift is not executed")
+        elif time_shift_def:
+            source_metadata["cube_source"]["imported_time_comparison"] = {
+                "comparison_type": comparison_type,
+                "time_offset": time_offset,
+            }
         return Metric(
             name=name,
+            metadata=source_metadata,
             type=metric_type,
             agg=agg_type,
             sql=measure_sql,
@@ -1436,13 +1559,18 @@ class CubeAdapter(BaseAdapter):
         if view_title is not None:
             meta["title"] = view_title
 
-        return Model(
+        model = Model(
             name=name,
             description=view_def.get("description"),
             dimensions=dimensions,
             metrics=metrics,
             meta=meta,
         )
+        model.metadata = {
+            "cube_view_definition": deepcopy(view_def),
+            "cube_view_projection": model.model_dump(exclude={"metadata"}),
+        }
+        return model
 
     @staticmethod
     def _model_sql_to_cube(sql: str | None) -> str | None:
@@ -1517,13 +1645,30 @@ class CubeAdapter(BaseAdapter):
 
         # Convert models to cubes (skip view-type models)
         cubes = []
+        views = []
         for model in resolved_models.values():
             if model.meta and model.meta.get("cube_type") == "view":
+                metadata = model.metadata or {}
+                definition = metadata.get("cube_view_definition")
+                if definition is None or model.model_dump(exclude={"metadata"}) != metadata.get("cube_view_projection"):
+                    raise ValueError(f"Cube view '{model.name}' has no unchanged source projection to export")
+                views.append(deepcopy(definition))
                 continue
             cube = self._export_cube(model, resolved_models)
             cubes.append(cube)
 
         data = {"cubes": cubes}
+        if views:
+            data["views"] = views
+        if graph.metadata.get("cube_view_groups"):
+            data["view_groups"] = deepcopy(graph.metadata["cube_view_groups"])
+        for name in graph.metrics:
+            record_export_note(
+                "graph_metric",
+                f"Graph-level metric '{name}' cannot be placed in a Cube; omitted",
+                severity="unsupported",
+                source="Cube",
+            )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1540,7 +1685,7 @@ class CubeAdapter(BaseAdapter):
         Returns:
             Cube definition dictionary
         """
-        cube = {"name": model.name}
+        cube = {"name": model.name, **deepcopy(_source_properties(model))}
 
         if model.sql:
             cube["sql"] = model.sql
@@ -1608,7 +1753,16 @@ class CubeAdapter(BaseAdapter):
             if sub_query is not None:
                 dim_def["sub_query"] = sub_query
 
-            dim_meta = self._exported_meta(dim.meta)
+            properties = deepcopy(_source_properties(dim))
+            if properties.get("type") == "switch" and dim.type != "categorical":
+                properties.pop("type")
+                properties.pop("values", None)
+            case = properties.pop("case", None)
+            if case is not None and dim.sql == (dim.metadata or {}).get("cube_source", {}).get("imported_sql"):
+                dim_def.pop("sql", None)
+                dim_def["case"] = case
+            dim_def.update(properties)
+            dim_meta = _remove_generated_meta(dim, self._exported_meta(dim.meta))
             if dim_meta:
                 dim_def["meta"] = dim_meta
 
@@ -1695,7 +1849,7 @@ class CubeAdapter(BaseAdapter):
                 measure_def["type"] = "number"
                 if measure.base_metric:
                     # Convert qualified name (cube.metric) to Cube reference (${metric})
-                    base_ref = measure.base_metric.split(".")[-1] if "." in measure.base_metric else measure.base_metric
+                    base_ref = measure.base_metric.removeprefix(f"{model.name}.")
                     measure_def["sql"] = f"${{{base_ref}}}"
                     measure_def["description"] = (measure.description or "") + f" (Time comparison of {base_ref})"
             else:
@@ -1746,7 +1900,7 @@ class CubeAdapter(BaseAdapter):
                 # Strip only the adapter-owned cube_internal markers (re-emitted as real Cube
                 # fields above); user-supplied meta -- including their own cube_internal keys --
                 # is preserved.
-                exported_meta = self._exported_meta(measure.meta)
+                exported_meta = _remove_generated_meta(measure, self._exported_meta(measure.meta))
                 if exported_meta:
                     measure_def["meta"] = exported_meta
 
@@ -1759,6 +1913,29 @@ class CubeAdapter(BaseAdapter):
                 valid_drill = [f for f in measure.drill_fields if f in [d.name for d in model.dimensions]]
                 measure_def["drill_members"] = valid_drill or measure.drill_fields
 
+            properties = deepcopy(_source_properties(measure))
+            imported_comparison = (measure.metadata or {}).get("cube_source", {}).get("imported_time_comparison")
+            if imported_comparison is not None:
+                if measure.type != "time_comparison":
+                    properties.pop("time_shift", None)
+                elif any(getattr(measure, key) != value for key, value in imported_comparison.items()):
+                    shifts = properties.get("time_shift")
+                    if not isinstance(shifts, list) or len(shifts) != 1:
+                        raise ValueError(
+                            f"Cube measure '{measure.name}': reconcile multiple source time shifts before editing its comparison"
+                        )
+                    intervals = {"yoy": "1 year", "mom": "1 month", "wow": "1 week", "dod": "1 day", "qoq": "1 quarter"}
+                    interval = measure.time_offset or intervals.get(measure.comparison_type)
+                    if not interval or (
+                        measure.comparison_type != imported_comparison["comparison_type"]
+                        and measure.comparison_type in intervals
+                        and interval != intervals[measure.comparison_type]
+                    ):
+                        raise ValueError(
+                            f"Cube measure '{measure.name}': reconcile time_offset and comparison_type before export"
+                        )
+                    shifts[0]["interval"] = interval
+            measure_def.update(properties)
             measures.append(measure_def)
 
         if measures:

@@ -150,7 +150,7 @@ measures:
     description: MRR from enterprise plans only
 
   - id: high_value_count
-    func: count_if
+    func: count
     of: mrr
     filters:
       - expr_sql: mrr >= 1000

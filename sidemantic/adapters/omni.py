@@ -1,9 +1,12 @@
 """Omni adapter for importing/exporting Omni Analytics semantic models."""
 
+import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 import yaml
+from sqlglot import exp
 
 from sidemantic.adapters.base import BaseAdapter
 from sidemantic.core.dimension import Dimension
@@ -11,7 +14,9 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_export_feature, record_import_note
 from sidemantic.paths import output_child
+from sidemantic.sql.fragment import parse_sql_fragment
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
@@ -50,6 +55,7 @@ class OmniAdapter(BaseAdapter):
         # Topics are an Omni concept with no native graph slot; expose as attribute.
         graph.topics = []
         source_path = Path(source)
+        project = graph.metadata.setdefault("omni", {"view_paths": {}, "topics": {}})
 
         # Collect view, topic and relationship files.
         view_files: list[Path] = []
@@ -58,18 +64,14 @@ class OmniAdapter(BaseAdapter):
         model_files: list[Path] = []
 
         if source_path.is_dir():
-            # Prefer the conventional subdirectory layout, fall back to recursive.
-            views_dir = source_path / "views"
-            if views_dir.exists():
-                candidate_views = list(views_dir.glob("*.yaml")) + list(views_dir.glob("*.yml"))
-            else:
-                candidate_views = list(source_path.rglob("*.yaml")) + list(source_path.rglob("*.yml"))
-
-            topics_dir = source_path / "topics"
-            if topics_dir.exists():
-                topic_files = self._glob_topics(topics_dir)
-            else:
-                topic_files = self._glob_topics(source_path)
+            candidate_views = sorted(
+                path
+                for path in source_path.rglob("*")
+                if path.is_file()
+                and path.suffix in {".yaml", ".yml", ".view"}
+                and self._belongs_to_project(path, source_path)
+            )
+            topic_files = self._glob_topics(source_path)
 
             # Relationships and model files live at the project root.
             for candidate in ("relationships.yaml", "relationships.yml"):
@@ -106,7 +108,12 @@ class OmniAdapter(BaseAdapter):
         for view_file in view_files:
             model = self._parse_view(view_file)
             if model:
+                if model.name in graph.models:
+                    raise ValueError(f"Duplicate Omni view name {model.name!r}")
                 graph.add_model(model)
+                project["view_paths"][model.name] = (
+                    str(view_file.relative_to(source_path)) if source_path.is_dir() else view_file.name
+                )
 
         # Parse a global relationships file (bare list of joins).
         for relationships_file in relationships_files:
@@ -114,28 +121,49 @@ class OmniAdapter(BaseAdapter):
 
         # Parse relationships nested inside a model file (older Omni layout).
         for model_file in model_files:
+            with model_file.open() as handle:
+                project["model"] = _yaml_safe_load(handle) or {}
             self._parse_relationships(model_file, graph)
 
         # Parse topics (base view + nested joins).
         for topic_file in topic_files:
+            topic_path = str(topic_file.relative_to(source_path)) if source_path.is_dir() else topic_file.name
+            with topic_file.open() as handle:
+                project["topics"][topic_path] = _yaml_safe_load(handle)
             self._parse_topic(topic_file, graph)
+            record_import_note(
+                "topic_configuration",
+                "Omni topic configuration is retained for native export; query curation is not enforced.",
+                severity="approximated",
+                source="omni",
+                location=topic_path,
+            )
 
         return graph
+
+    @staticmethod
+    def _belongs_to_project(path: Path, root: Path) -> bool:
+        """A nested directory with its own model config is a separate project."""
+        return not any(
+            (parent / "model.yaml").exists() or (parent / "model.yml").exists()
+            for parent in path.parents
+            if parent != root and root in parent.parents
+        )
 
     @staticmethod
     def _is_topic_file(path: Path) -> bool:
         """Whether a path is an Omni topic file (``*.topic.yaml``/``*.topic.yml``)."""
         name = path.name.lower()
-        return name.endswith(".topic.yaml") or name.endswith(".topic.yml")
+        return name.endswith((".topic.yaml", ".topic.yml", ".topic"))
 
     @classmethod
     def _glob_topics(cls, directory: Path) -> list[Path]:
         """Find all topic files under a directory."""
-        topics = list(directory.glob("*.topic.yaml")) + list(directory.glob("*.topic.yml"))
-        if directory.name != "topics":
-            # When scanning recursively also pick up nested topic files.
-            topics = list(directory.rglob("*.topic.yaml")) + list(directory.rglob("*.topic.yml"))
-        return topics
+        return sorted(
+            path
+            for path in directory.rglob("*")
+            if path.is_file() and cls._is_topic_file(path) and cls._belongs_to_project(path, directory)
+        )
 
     @classmethod
     def _is_model_or_relationships_file(cls, path: Path) -> bool:
@@ -170,11 +198,16 @@ class OmniAdapter(BaseAdapter):
         Returns:
             Model instance or None
         """
-        with open(file_path) as f:
-            view = _yaml_safe_load(f)
+        text = file_path.read_text()
+        view = _yaml_safe_load(text)
 
         if not view or not isinstance(view, dict):
             return None
+
+        if "query" in view or ("extends" in view and not any(view.get(key) for key in ("sql", "table", "table_name"))):
+            detail = "Omni query and extends-only views require vendor query semantics; materialize the view or provide explicit SQL"
+            record_import_note("query_view", detail, severity="unsupported", source="omni", location=str(file_path))
+            raise ValueError(detail)
 
         # Get table reference
         schema = view.get("schema")
@@ -195,28 +228,26 @@ class OmniAdapter(BaseAdapter):
         # (e.g. ``views/orders.yaml`` with ``table_name: fact_orders`` is the ``orders``
         # view, not ``fact_orders``). Using ``table_name`` there would silently drop any
         # ``join_from_view: orders`` relationship.
-        name = view.get("name")
+        header = re.search(r"^\s*#\s*Reference this view as\s+[`\"']?([\w]+)", text, re.MULTILINE)
+        name = view.get("name") or (header.group(1) if header else None)
         if not name:
             if schema and table_name:
                 name = f"{schema}__{table_name}"
             else:
                 # Strip the ``.view`` suffix Omni adds to view filenames.
                 stem = file_path.name
-                for suffix in (".view.yaml", ".view.yml", ".yaml", ".yml"):
+                for suffix in (".view.yaml", ".view.yml", ".yaml", ".yml", ".view"):
                     if stem.lower().endswith(suffix):
                         stem = stem[: -len(suffix)]
                         break
                 name = stem
 
+        if table is None and schema:
+            implicit_table = re.sub(r"\.view(?:\.ya?ml)?$|\.ya?ml$", "", file_path.name)
+            table = f"{schema}.{implicit_table}"
+
         # Get SQL for query-based views
         sql = view.get("sql")
-        if not sql and "query" in view:
-            # Query-based views - we'll use the base view reference
-            query_def = view["query"]
-            base_view = query_def.get("base_view")
-            if base_view:
-                # For now, treat query views as references to base view
-                table = base_view
 
         # Parse dimensions
         dimensions = []
@@ -257,6 +288,7 @@ class OmniAdapter(BaseAdapter):
             primary_key=primary_key,
             dimensions=dimensions,
             metrics=metrics,
+            metadata={"omni_view": deepcopy(view)},
         )
 
     def _parse_dimension(self, name: str, dim_def: dict[str, Any]) -> Dimension | None:
@@ -325,6 +357,11 @@ class OmniAdapter(BaseAdapter):
             metadata["order_by_field"] = dim_def["order_by_field"]
         if timeframes:
             metadata["timeframes"] = timeframes
+            metadata["omni_timeframes"] = {
+                "source": deepcopy(dim_def["timeframes"]),
+                "granularity": granularity,
+                "supported_granularities": deepcopy(supported_granularities),
+            }
 
         return Dimension(
             name=name,
@@ -377,6 +414,14 @@ class OmniAdapter(BaseAdapter):
                             calculation="difference",  # Omni defaults to difference
                             label=measure_def.get("label"),
                             description=measure_def.get("description"),
+                            metadata={
+                                "omni_time_comparison": {
+                                    "definition": deepcopy(measure_def),
+                                    "time_offset": offset_str,
+                                    "comparison_type": comparison_type,
+                                    "base_metric": base_metric,
+                                }
+                            },
                         )
 
         # Map Omni aggregate types to Sidemantic aggregations. Omni has several
@@ -429,6 +474,8 @@ class OmniAdapter(BaseAdapter):
         metadata: dict[str, Any] = {}
         if agg_type_str:
             metadata["aggregate_type"] = agg_type_str
+        if filter_defs:
+            metadata["omni_filters"] = {"source": deepcopy(filter_defs), "lowered": filters or None}
         if measure_def.get("synonyms") is not None:
             metadata["synonyms"] = measure_def["synonyms"]
         if measure_def.get("percentile") is not None:
@@ -598,13 +645,27 @@ class OmniAdapter(BaseAdapter):
             rel_type = type_mapping.get(rel_type_str, "many_to_one")
 
             # Extract foreign/primary keys from on_sql: ${from.col} = ${to.col}
-            foreign_key, primary_key = self._keys_from_on_sql(rel_def.get("on_sql", ""), from_view, to_view, rel_type)
+            on_sql = rel_def.get("on_sql", "")
+            foreign_key, primary_key = self._keys_from_on_sql(on_sql, from_view, to_view, rel_type)
+            join_sql = self._join_sql(on_sql, from_view, to_view) if on_sql else None
 
             # Preserve Omni join metadata with no first-class field.
             metadata: dict[str, Any] = {}
             if rel_def.get("join_type") is not None:
-                metadata["join_type"] = rel_def["join_type"]
+                metadata["omni_join_type"] = rel_def["join_type"]
+                join_types = {
+                    "always_left": "left",
+                    "left": "left",
+                    "inner": "inner",
+                    "full_outer": "full",
+                    "right": "right",
+                }
+                if rel_def["join_type"] not in join_types:
+                    raise ValueError(f"Unsupported Omni join_type {rel_def['join_type']!r}")
+                metadata["bsl_how"] = join_types[rel_def["join_type"]]
             if rel_def.get("reversible") is not None:
+                if not isinstance(rel_def["reversible"], bool):
+                    raise ValueError("Omni relationship reversible must be a boolean")
                 metadata["reversible"] = rel_def["reversible"]
             if rel_type_str == "assumed_many_to_one":
                 metadata["assumed"] = True
@@ -615,6 +676,7 @@ class OmniAdapter(BaseAdapter):
                     type=rel_type,
                     foreign_key=foreign_key,
                     primary_key=primary_key,
+                    sql=join_sql if foreign_key is None or primary_key is None else None,
                     metadata=metadata or None,
                 )
                 graph.models[from_view].relationships.append(relationship)
@@ -638,21 +700,51 @@ class OmniAdapter(BaseAdapter):
         """
         from_column = None
         to_column = None
-        if on_sql:
-            import re
-
-            matches = re.findall(r"\$\{([^.]+)\.([^}]+)\}", on_sql)
-            for view, column in matches:
-                if view == from_view and from_column is None:
-                    from_column = column
-                elif view == to_view and to_column is None:
-                    to_column = column
+        match = re.fullmatch(r"\s*\$\{([^}.]+)\.([^}]+)\}\s*=\s*\$\{([^}.]+)\.([^}]+)\}\s*", on_sql)
+        if match:
+            columns = {match[1]: match[2], match[3]: match[4]}
+            from_column, to_column = columns.get(from_view), columns.get(to_view)
 
         if rel_type in ("one_to_many", "one_to_one"):
             # to_view (related model) holds the foreign key; from_view contributes its key.
             return to_column, from_column
         # many_to_one (and default): from_view holds the foreign key.
         return from_column, to_column
+
+    @staticmethod
+    def _join_sql(on_sql: str, from_view: str, to_view: str) -> str:
+        """Translate the full predicate, including non-equi and compound joins."""
+        if "{{" in on_sql:
+            raise ValueError("Templated Omni join predicates cannot be imported as executable SQL")
+        normalized = re.sub(
+            r"('(?:''|[^'])*')|\$\{([^}]+)\}",
+            lambda match: match[0] if match[1] else match[2],
+            on_sql,
+        )
+        predicate = parse_sql_fragment(normalized)
+        if predicate is None:
+            raise ValueError(f"Invalid Omni on_sql: {on_sql}")
+
+        def rewrite(node):
+            if isinstance(node, exp.Column):
+                if node.table not in (from_view, to_view):
+                    raise ValueError(f"Unsupported Omni join reference {node.sql()!r}")
+                side = "{from}" if node.table == from_view else "{to}"
+                return exp.Var(this=f"{side}.{node.this.sql()}")
+            return node
+
+        return predicate.transform(rewrite).sql()
+
+    @staticmethod
+    def _project_path(directory: Path, relative: str) -> Path:
+        """Restore nested source paths without accepting traversal or symlink escapes."""
+        parts = Path(relative).parts
+        if not parts or Path(relative).is_absolute():
+            raise ValueError(f"Unsafe Omni output path: {relative!r}")
+        path = directory
+        for part in parts:
+            path = output_child(path, part)
+        return path
 
     def _parse_topic(self, topic_file: Path, graph: SemanticGraph) -> None:
         """Parse an Omni topic file (base view + nested joins).
@@ -691,7 +783,7 @@ class OmniAdapter(BaseAdapter):
         walk(base_view, joins)
 
         topic_record = {
-            "name": topic_file.name.lower().split(".topic.")[0] or topic_file.stem,
+            "name": re.sub(r"\.topic(?:\.ya?ml)?$", "", topic_file.name, flags=re.IGNORECASE).lower(),
             "label": topic_def.get("label"),
             "description": topic_def.get("description"),
             "base_view": base_view,
@@ -728,6 +820,13 @@ class OmniAdapter(BaseAdapter):
 
         resolved_models = resolve_model_inheritance(graph.models)
 
+        local_metrics = [metric for model in resolved_models.values() for metric in model.metrics]
+        graph_only = [name for name, metric in graph.metrics.items() if metric not in local_metrics]
+        if graph_only:
+            detail = "Graph-level metrics have no omni model placement: " + ", ".join(graph_only)
+            record_export_feature("graph_metrics", "rejected", source="omni", detail=detail)
+            raise ValueError(detail)
+
         for model in resolved_models.values():
             for rel in model.relationships:
                 if rel.name != rel.related_model:
@@ -735,6 +834,9 @@ class OmniAdapter(BaseAdapter):
                         "Omni export cannot represent relationship role "
                         f"'{rel.name}' independently of target view '{rel.related_model}'"
                     )
+
+        project = graph.metadata.get("omni", {})
+        self._validate_topics(project.get("topics", {}), resolved_models)
 
         output_path.mkdir(parents=True, exist_ok=True)
 
@@ -745,13 +847,62 @@ class OmniAdapter(BaseAdapter):
         # Export each model as a view file
         for model in resolved_models.values():
             view = self._export_view(model)
-            file_path = output_child(views_dir, f"{model.name}.yaml")
+            relative = project.get("view_paths", {}).get(model.name)
+            file_path = (
+                self._project_path(output_path, relative)
+                if relative
+                else output_child(views_dir, f"{model.name}.view.yaml")
+            )
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, "w") as f:
                 yaml.dump(view, f, default_flow_style=False, sort_keys=False)
 
-        # Export relationships to model file
-        if any(model.relationships for model in resolved_models.values()):
-            self._export_relationships(resolved_models, output_path)
+        # Keep model-wide configuration and topics independent of join definitions.
+        model_config = deepcopy(project.get("model", {}))
+        model_config.pop("relationships", None)
+        # An imported legacy model may contain only relationships. Still replace
+        # that file after moving its joins, otherwise in-place export leaves the
+        # original definitions behind and import reads both versions.
+        if model_config or "model" in project:
+            output_child(output_path, "model.yaml").write_text(yaml.safe_dump(model_config, sort_keys=False))
+        legacy_model_file = output_child(output_path, "model.yml")
+        if legacy_model_file.exists():
+            legacy_config = _yaml_safe_load(legacy_model_file.read_text()) or {}
+            if isinstance(legacy_config, dict) and "relationships" in legacy_config:
+                legacy_config.pop("relationships")
+                legacy_model_file.write_text(yaml.safe_dump(legacy_config, sort_keys=False))
+        for relative, topic in project.get("topics", {}).items():
+            topic_path = self._project_path(output_path, relative)
+            topic_path.parent.mkdir(parents=True, exist_ok=True)
+            topic_path.write_text(yaml.safe_dump(topic, sort_keys=False))
+        self._export_relationships(resolved_models, output_path)
+
+    @staticmethod
+    def _validate_topics(topics: dict, models: dict[str, Model]) -> None:
+        """Do not replay topic references that conflict with edited graph topology."""
+
+        def reject(path: str, detail: str) -> None:
+            message = f"Omni topic {path!r} {detail}; update or remove retained topic metadata before exporting"
+            record_export_feature("topic_configuration", "rejected", source="omni", detail=message)
+            raise ValueError(message)
+
+        def walk(path: str, parent: str, joins: Any) -> None:
+            if not isinstance(joins, dict):
+                return
+            for target, nested in joins.items():
+                if target not in models:
+                    reject(path, f"references missing view {target!r}")
+                if not any(rel.active and rel.related_model == target for rel in models[parent].relationships):
+                    reject(path, f"references removed or inactive relationship {parent}.{target}")
+                walk(path, target, nested)
+
+        for path, topic in topics.items():
+            if not isinstance(topic, dict) or not topic.get("base_view"):
+                continue
+            base = topic["base_view"]
+            if base not in models:
+                reject(path, f"references missing base view {base!r}")
+            walk(path, base, topic.get("joins"))
 
     def _export_view(self, model: Model) -> dict[str, Any]:
         """Export model to Omni view definition.
@@ -762,12 +913,22 @@ class OmniAdapter(BaseAdapter):
         Returns:
             View definition dictionary
         """
-        view: dict[str, Any] = {
-            "name": model.name,
-        }
+        view: dict[str, Any] = deepcopy((model.metadata or {}).get("omni_view", {}))
+        view["name"] = model.name
+        original_dimensions = view.pop("dimensions", {}) or {}
+        original_measures = view.pop("measures", {}) or {}
 
         if model.description:
-            view["label"] = model.description
+            if "description" in view:
+                view["description"] = model.description
+            elif "label" not in view:
+                view["label"] = model.description
+
+        for key in ("schema", "catalog", "table_name", "table", "sql"):
+            view.pop(key, None)
+        if not model.description:
+            view.pop("description", None)
+            view.pop("label", None)
 
         # Extract schema and table
         if model.table and "." in model.table:
@@ -785,7 +946,9 @@ class OmniAdapter(BaseAdapter):
         # Export dimensions
         dimensions: dict[str, Any] = {}
         for dim in model.dimensions:
-            dim_def: dict[str, Any] = {}
+            dim_def: dict[str, Any] = deepcopy(original_dimensions.get(dim.name) or {})
+            for key in ("type", "sql", "label", "description", "format", "primary_key", "timeframes"):
+                dim_def.pop(key, None)
 
             # Map Sidemantic types to Omni types
             type_mapping = {
@@ -807,10 +970,24 @@ class OmniAdapter(BaseAdapter):
 
             if dim.description:
                 dim_def["description"] = dim.description
+            if dim.format:
+                dim_def["format"] = dim.format
+            for key in (
+                "synonyms",
+                "all_values",
+                "sample_values",
+                "suggestion_list",
+                "bin_boundaries",
+                "order_by_field",
+            ):
+                if key in (dim.metadata or {}):
+                    dim_def[key] = deepcopy(dim.metadata[key])
 
-            # Handle timeframes for time dimensions
-            if dim.type == "time" and dim.granularity:
+            # Only replay source timeframes while the native time properties match.
+            if dim.type == "time":
                 granularity_mapping = {
+                    "second": "second",
+                    "minute": "minute",
                     "hour": "hour",
                     "day": "date",
                     "week": "week",
@@ -818,8 +995,24 @@ class OmniAdapter(BaseAdapter):
                     "quarter": "quarter",
                     "year": "year",
                 }
-                timeframe = granularity_mapping.get(dim.granularity, "date")
-                dim_def["timeframes"] = [timeframe]
+                original = (dim.metadata or {}).get("omni_timeframes")
+                if original and all(
+                    original[key] == getattr(dim, key) for key in ("granularity", "supported_granularities")
+                ):
+                    dim_def["timeframes"] = deepcopy(original["source"])
+                else:
+                    grains = list(dim.supported_granularities or [])
+                    if dim.granularity:
+                        if grains and dim.granularity not in grains:
+                            raise ValueError(
+                                f"Omni dimension {model.name}.{dim.name} granularity must be included in supported_granularities"
+                            )
+                        grains = [dim.granularity, *(grain for grain in grains if grain != dim.granularity)]
+                    unsupported = set(grains) - granularity_mapping.keys()
+                    if unsupported:
+                        raise ValueError(f"Unsupported Omni time granularities: {sorted(unsupported)!r}")
+                    if grains:
+                        dim_def["timeframes"] = [granularity_mapping[grain] for grain in grains]
 
             # Mark primary key
             if dim.name == model.primary_key:
@@ -833,27 +1026,31 @@ class OmniAdapter(BaseAdapter):
         # Export measures
         measures: dict[str, Any] = {}
         for metric in model.metrics:
-            measure_def: dict[str, Any] = {}
+            measure_def: dict[str, Any] = deepcopy(original_measures.get(metric.name) or {})
+            for key in ("aggregate_type", "sql", "label", "description", "format", "filters"):
+                measure_def.pop(key, None)
 
             # Handle time_comparison metrics specially
             if metric.type == "time_comparison":
-                # Get the base metric to determine aggregate type
-                # For now, use count as default (would need graph context to resolve properly)
-                measure_def["aggregate_type"] = "count"
-
-                # Convert time_comparison to Omni's filter-based format
-                time_offset = metric.time_offset or self._comparison_type_to_offset(metric.comparison_type)
-
-                # Find the time dimension to apply the offset to
-                # Use the model's default time dimension
-                time_field = model.default_time_dimension or "created_at"
-
-                measure_def["filters"] = {
-                    time_field: {
-                        "date_offset_from_query": time_offset,
-                        "cancel_query_filter": True,
+                original = (metric.metadata or {}).get("omni_time_comparison")
+                if original and all(
+                    original[key] == getattr(metric, key) for key in ("time_offset", "comparison_type", "base_metric")
+                ):
+                    measure_def.update(deepcopy(original["definition"]))
+                    measure_def.pop("label", None)
+                    measure_def.pop("description", None)
+                else:
+                    base = model.get_metric((metric.base_metric or "").split(".")[-1])
+                    if base is None or base.agg is None:
+                        raise ValueError(f"Omni time comparison {metric.name!r} requires a local aggregate base metric")
+                    measure_def["aggregate_type"] = "average" if base.agg == "avg" else base.agg
+                    if base.sql:
+                        measure_def["sql"] = base.sql.replace("{model}", "${TABLE}")
+                    time_offset = metric.time_offset or self._comparison_type_to_offset(metric.comparison_type)
+                    time_field = model.default_time_dimension or "created_at"
+                    measure_def["filters"] = {
+                        time_field: {"date_offset_from_query": time_offset, "cancel_query_filter": True}
                     }
-                }
 
                 if metric.label:
                     measure_def["label"] = metric.label
@@ -873,8 +1070,29 @@ class OmniAdapter(BaseAdapter):
                     "avg": "average",
                     "min": "min",
                     "max": "max",
+                    "median": "median",
+                    "stddev": "stddev",
+                    "stddev_pop": "stddev_pop",
+                    "variance": "variance",
+                    "variance_pop": "variance_pop",
                 }
-                measure_def["aggregate_type"] = type_mapping.get(metric.agg, "sum")
+                if metric.agg not in type_mapping:
+                    raise ValueError(f"Unsupported Omni aggregation {metric.agg!r}")
+                measure_def["aggregate_type"] = type_mapping[metric.agg]
+
+            elif (metric.metadata or {}).get("aggregate_type") not in (
+                None,
+                "",
+                "count",
+                "count_distinct",
+                "sum",
+                "average",
+                "avg",
+                "min",
+                "max",
+                "median",
+            ):
+                measure_def["aggregate_type"] = metric.metadata["aggregate_type"]
 
             if metric.sql:
                 # Convert {model} references
@@ -887,27 +1105,59 @@ class OmniAdapter(BaseAdapter):
             if metric.description:
                 measure_def["description"] = metric.description
 
-            # Export filters
-            if metric.filters:
-                filters_dict = {}
-                for filter_str in metric.filters:
-                    # Parse "field = 'value'" format
-                    if "=" in filter_str:
-                        parts = filter_str.split("=", 1)
-                        field = parts[0].strip()
-                        value = parts[1].strip().strip("'\"")
-                        filters_dict[field] = {"is": value}
-                    elif ">=" in filter_str:
-                        parts = filter_str.split(">=", 1)
-                        field = parts[0].strip()
-                        value = parts[1].strip()
-                        try:
-                            filters_dict[field] = {"greater_than_or_equal_to": int(value)}
-                        except ValueError:
-                            filters_dict[field] = {"greater_than_or_equal_to": value}
+            if metric.format:
+                measure_def["format"] = metric.format
+            for key in ("synonyms", "percentile", "custom_primary_key_sql"):
+                if key in (metric.metadata or {}):
+                    measure_def[key] = deepcopy(metric.metadata[key])
 
-                if filters_dict:
-                    measure_def["filters"] = filters_dict
+            # Preserve the original structured filters for an unedited imported measure.
+            original_filters = (metric.metadata or {}).get("omni_filters")
+            if original_filters and metric.filters == original_filters["lowered"]:
+                measure_def["filters"] = deepcopy(original_filters["source"])
+            # Export filters
+            elif metric.filters:
+                filters_dict = {}
+                operators = {
+                    exp.EQ: "is",
+                    exp.NEQ: "is_not",
+                    exp.GT: "greater_than",
+                    exp.GTE: "greater_than_or_equal_to",
+                    exp.LT: "less_than",
+                    exp.LTE: "less_than_or_equal_to",
+                }
+                for filter_str in metric.filters:
+                    normalized = re.sub(
+                        r"('(?:''|[^'])*')|\{model\}\.",
+                        lambda match: match[0] if match[1] else "",
+                        filter_str,
+                    )
+                    predicate = parse_sql_fragment(normalized)
+                    if type(predicate) not in operators or not isinstance(predicate.left, exp.Column):
+                        raise ValueError(f"Unsupported Omni metric filter {filter_str!r}")
+                    value = predicate.right
+                    if isinstance(value, exp.Boolean):
+                        value = value.this
+                    elif isinstance(value, exp.Literal):
+                        value = (
+                            value.this
+                            if value.is_string
+                            else float(value.this)
+                            if "." in value.this
+                            else int(value.this)
+                        )
+                    elif (
+                        isinstance(value, exp.Neg) and isinstance(value.this, exp.Literal) and not value.this.is_string
+                    ):
+                        value = -float(value.this.this)
+                    else:
+                        raise ValueError(f"Unsupported Omni metric filter value in {filter_str!r}")
+                    field = predicate.left.sql()
+                    operator = operators[type(predicate)]
+                    if operator in filters_dict.get(field, {}):
+                        raise ValueError(f"Repeated Omni metric filter operator for {field!r}")
+                    filters_dict.setdefault(field, {})[operator] = value
+                measure_def["filters"] = filters_dict
 
             measures[metric.name] = measure_def
 
@@ -938,7 +1188,7 @@ class OmniAdapter(BaseAdapter):
         return mapping.get(comparison_type, "1 year")
 
     def _export_relationships(self, models: dict[str, Model], output_dir: Path) -> None:
-        """Export relationships to model.yaml file.
+        """Export relationships to relationships.yaml, clearing removed joins.
 
         Args:
             models: Dictionary of resolved models
@@ -948,11 +1198,35 @@ class OmniAdapter(BaseAdapter):
 
         for model in models.values():
             for rel in model.relationships:
+                metadata = rel.metadata or {}
+                join_type = metadata.get("omni_join_type", "always_left")
+                runtime_type = metadata.get("bsl_how") or metadata.get("join_type")
+                if runtime_type is not None:
+                    join_types = {
+                        "left": "always_left",
+                        "left_outer": "always_left",
+                        "inner": "inner",
+                        "full": "full_outer",
+                        "outer": "full_outer",
+                        "full_outer": "full_outer",
+                        "right": "right",
+                    }
+                    if runtime_type not in join_types:
+                        raise ValueError(f"Unsupported Omni join type {runtime_type!r}")
+                    mapped_type = join_types[runtime_type]
+                    if not (join_type == "left" and mapped_type == "always_left"):
+                        join_type = mapped_type
                 rel_def = {
                     "join_from_view": model.name,
                     "join_to_view": rel.name,
-                    "join_type": "always_left",
+                    "join_type": join_type,
                 }
+
+                if (rel.metadata or {}).get("source") == "topic" and not rel.sql and not rel.foreign_key:
+                    # Topic curation supplies no join predicate; do not invent one.
+                    continue
+                if "reversible" in (rel.metadata or {}):
+                    rel_def["reversible"] = rel.metadata["reversible"]
 
                 # Map relationship type
                 type_mapping = {
@@ -973,12 +1247,42 @@ class OmniAdapter(BaseAdapter):
                 else:
                     from_key = rel.foreign_key or f"{rel.name}_id"
                     to_key = rel.primary_key or "id"
-                rel_def["on_sql"] = f"${{{model.name}.{from_key}}} = ${{{rel.name}.{to_key}}}"
+                if rel.sql:
+                    normalized = re.sub(
+                        r"('(?:''|[^'])*')|\{(from|to)\}",
+                        lambda match: match[0] if match[1] else f"__omni_{match[2]}",
+                        rel.sql,
+                    )
+                    predicate = parse_sql_fragment(normalized)
+                    if predicate is None:
+                        raise ValueError(f"Invalid Omni relationship SQL on {rel.name!r}")
+
+                    def rewrite(node):
+                        if isinstance(node, exp.Column):
+                            names = {"__omni_from": model.name, "__omni_to": rel.related_model}
+                            if node.table not in names:
+                                raise ValueError(f"Unsupported Omni join reference {node.sql()!r}")
+                            return exp.Var(this=f"${{{names[node.table]}.{node.name}}}")
+                        return node
+
+                    rel_def["on_sql"] = predicate.transform(rewrite).sql()
+                else:
+                    from_keys = from_key if isinstance(from_key, list) else [from_key]
+                    to_keys = to_key if isinstance(to_key, list) else [to_key]
+                    if len(from_keys) != len(to_keys):
+                        raise ValueError(f"Mismatched Omni join key counts on {rel.name!r}")
+                    rel_def["on_sql"] = " AND ".join(
+                        f"${{{model.name}.{left}}} = ${{{rel.name}.{right}}}" for left, right in zip(from_keys, to_keys)
+                    )
 
                 relationships.append(rel_def)
 
-        if relationships:
-            model_file = output_child(output_dir, "model.yaml")
-            model_def = {"relationships": relationships}
+        model_file = output_child(output_dir, "relationships.yaml")
+        if relationships or model_file.exists():
             with open(model_file, "w") as f:
-                yaml.dump(model_def, f, default_flow_style=False, sort_keys=False)
+                yaml.safe_dump(relationships, f, default_flow_style=False, sort_keys=False)
+        # The importer accepts both suffixes; old .yml joins must not coexist
+        # with the authoritative .yaml output after an in-place export.
+        alternate_file = output_child(output_dir, "relationships.yml")
+        if alternate_file.exists():
+            alternate_file.write_text("[]\n")

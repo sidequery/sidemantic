@@ -323,6 +323,10 @@ def export_semantic_graph(
             )
             raise ConversionFidelityError("export", report)
         staged = Path(temp) / destination.name
+        # Some adapters select file or directory output from the existing path,
+        # including directories whose names have a suffix (for example data.v1).
+        if destination.is_dir():
+            staged.mkdir(exist_ok=True)
         try:
             spec.create_adapter(**dict(adapter_options or {})).export(graph, staged, **dict(export_options or {}))
         except Exception as exc:

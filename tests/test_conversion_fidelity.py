@@ -22,7 +22,7 @@ from sidemantic.fidelity import (
     record_export_note,
     record_import_feature,
 )
-from sidemantic.formats import convert_semantic_source, export_semantic_graph, load_semantic_source
+from sidemantic.formats import convert_semantic_source, export_semantic_graph, get_semantic_format, load_semantic_source
 from sidemantic.interchange.ossie.compatibility import for_official_converters
 from sidemantic.interchange.ossie.documents import OssieLogicalDocument
 from sidemantic.interchange.ossie.profiles import LATEST_OSSIE_SCHEMA_COMMIT, OssieSerialization
@@ -91,6 +91,53 @@ def test_shared_export_does_not_publish_blocked_adapter_output(tmp_path, monkeyp
         export_semantic_graph(native_graph(), destination)
     assert report.is_blocked
     assert destination.read_text() == "prior valid output"
+
+
+@pytest.mark.parametrize("target,suffix", [("bsl", ".yml"), ("superset", ".yaml"), ("thoughtspot", ".table.tml")])
+@pytest.mark.parametrize("entrypoint", ["api", "cli"])
+@pytest.mark.parametrize("blocked", [False, True])
+def test_existing_suffixed_directory_keeps_shape_and_publication_gate(
+    tmp_path, monkeypatch, target, suffix, entrypoint, blocked
+):
+    output = tmp_path / "datasets.v1"
+    (output / "nested").mkdir(parents=True)
+    (output / "stale.yml").write_bytes(b"prior output\n")
+    (output / "nested" / "keep.yml").write_bytes(b"preserve on failure\n")
+    before = {path.relative_to(output): path.read_bytes() for path in output.rglob("*") if path.is_file()}
+    graph = native_graph()
+    graph.add_model(Model(name="customers", table="customers"))
+
+    if blocked:
+        adapter_type = type(get_semantic_format(target).create_adapter())
+        original_export = adapter_type.export
+
+        def blocked_export(self, graph, staged):
+            original_export(self, graph, staged)
+            record_export_feature("test.blocked", "rejected", detail="Injected export loss")
+
+        monkeypatch.setattr(adapter_type, "export", blocked_export)
+
+    if entrypoint == "cli":
+        source = tmp_path / "source.yml"
+        get_semantic_format("sidemantic").create_adapter().export(graph, source)
+        result = RUNNER.invoke(app, ["convert", str(source), "--to", target, "--output", str(output), "--force"])
+        assert result.exit_code == (1 if blocked else 0), result.output
+        if blocked:
+            assert "Injected export loss" in result.stderr
+    elif blocked:
+        with pytest.raises(ConversionFidelityError, match="Injected export loss"):
+            export_semantic_graph(graph, output, target_format=target)
+    else:
+        export_semantic_graph(graph, output, target_format=target)
+
+    after = {path.relative_to(output): path.read_bytes() for path in output.rglob("*") if path.is_file()}
+    assert output.is_dir()
+    if blocked:
+        assert after == before
+    else:
+        assert set(after) == {Path(f"{name}{suffix}") for name in graph.models}
+        assert all(after.values())
+    assert not list(tmp_path.glob(".sidemantic-promote-*"))
 
 
 @pytest.mark.parametrize("contents", ["", " \n", "{}", "[]", "models: []", "datasets: []"])

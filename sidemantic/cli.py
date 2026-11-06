@@ -1638,6 +1638,9 @@ def convert(
                 # after parsing, so writing directly could publish a blocked
                 # conversion or overwrite a valid --force destination.
                 converted_output = temp_root / output.name
+                # Carry the destination shape through both staging layers.
+                if output.is_dir():
+                    converted_output.mkdir(exist_ok=True)
             from sidemantic.fidelity import capture_export_report, capture_import_report
 
             source_adapter_options = None

@@ -306,6 +306,14 @@ def test_cli_official_compatible(tmp_path):
     assert "metrics" not in yaml.safe_load(output.read_text())["datasets"][0]
 
 
+@pytest.mark.parametrize("target", ["lightdash", "sigma"])
+def test_cli_bridge_export_requires_explicit_dialect(tmp_path, target):
+    source = write_document(tmp_path)
+    rejected = RUNNER.invoke(app, ["convert", str(source), "--to", target, "--output", str(tmp_path / target)])
+    assert rejected.exit_code == 2
+    assert "--ossie-expression-dialect is required" in rejected.stderr
+
+
 def test_auto_projection_also_reports_foreign_metadata(tmp_path):
     data = document()
     data["custom_extensions"] = [{"vendor_name": "OTHER", "data": "opaque"}]

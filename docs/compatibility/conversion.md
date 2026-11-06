@@ -58,3 +58,25 @@ sidemantic convert source.ossie.yaml --from ossie --to sidemantic \
   --ossie-source-dialect bigquery --ossie-target-dialect bigquery \
   --output models.yml
 ```
+
+## Optional reference-converter bridges
+
+Lightdash and Sigma are explicitly selected formats backed by separately installed
+`ossie-lightdash` and `ossie-sigma` executables. Sidemantic does not download or
+install them automatically. Lightdash accepts native model YAML, not arbitrary dbt
+schema metadata. Sigma accepts native JSON. The bridge validates its supported
+subset and rejects unsupported semantics before publishing output.
+
+```sh
+sidemantic convert models.yml --from sidemantic --to lightdash \
+  --ossie-expression-dialect ANSI_SQL --output lightdash-project
+sidemantic convert models.yml --from sidemantic --to sigma \
+  --ossie-expression-dialect ANSI_SQL --output sigma.json
+```
+
+The expression dialect must be explicit for exports and Lightdash imports; Sigma
+export currently accepts ANSI_SQL. These are file conversions, not live vendor
+connections. Export diagnostics can also be captured from Python with
+`capture_export_report`, alongside the existing `capture_import_report` API.
+
+Detailed supported subsets and known limits: [Lightdash](lightdash.md) and [Sigma](sigma.md).

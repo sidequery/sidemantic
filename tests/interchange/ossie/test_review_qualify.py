@@ -42,9 +42,12 @@ def test_qualify_preserves_measure_lineage_through_cte(route):
         "SELECT empno FROM scott_model.emp WINDOW w AS(ORDER BY empno) QUALIFY ROW_NUMBER() OVER w=1",
     ],
 )
-def test_unimplemented_qualify_shapes_fail_explicitly(route, query):
-    with pytest.raises(ValueError, match="QUALIFY"):
-        _execute(route, query)
+def test_grouped_and_named_qualify_match_physical_sql(route, query):
+    reference = query.replace("scott_model.", "scott.").replace("AGG(sum_sal)", "SUM(sal)")
+    with duckdb.connect() as connection:
+        connection.execute((FIXTURES / "scott/scott.sql").read_text())
+        expected = connection.execute(reference).fetchall()
+    assert _execute(route, query) == expected
 
 
 @pytest.mark.parametrize("route", ROUTES)

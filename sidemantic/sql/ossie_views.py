@@ -6,8 +6,8 @@ from copy import copy, deepcopy
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 
-from sidemantic.interchange.ossie.identifier import normalize_identifier
 from sidemantic.semantic_handoff import RustBackendUnavailableError, UnsupportedSemanticFeaturesError
 
 
@@ -15,7 +15,10 @@ def _view_key(table, dialect="duckdb"):
     if dialect == "duckdb":
         # DuckDB compares identifiers case insensitively, including quoted ones.
         return tuple(part.name.lower() for part in table.parts)
-    return tuple(normalize_identifier(part.sql()) for part in table.parts)
+    # Stored identities are quoted database names. Match authored unquoted names
+    # using the database's folding rules (lowercase in PostgreSQL, uppercase in
+    # Snowflake), rather than Ossie's portable identifier normalization.
+    return tuple(normalize_identifiers(part.copy(), dialect=dialect).name for part in table.parts)
 
 
 def resolve_view_name(graph, table, dialect="duckdb"):
@@ -50,6 +53,10 @@ class _ViewCatalog:
     def __init__(self, layer):
         self.dialect = layer.dialect
         context = "SELECT CURRENT_CATALOG, CURRENT_SCHEMA"
+        if self.dialect == "clickhouse":
+            # ClickHouse exposes its database as both catalog and schema in
+            # information_schema, and has no CURRENT_CATALOG/SCHEMA keywords.
+            context = "SELECT currentDatabase() AS catalog, currentDatabase() AS schema"
         if self.dialect == "duckdb":
             context += ", current_setting('search_path')"
         row = layer.adapter.execute(context).fetchone()
@@ -60,7 +67,8 @@ class _ViewCatalog:
         self.relations = {
             tuple(row)
             for row in layer.adapter.execute(
-                "SELECT table_catalog, table_schema, table_name FROM information_schema.tables"
+                "SELECT table_catalog, table_schema, table_name FROM information_schema.tables "
+                "UNION ALL SELECT table_catalog, table_schema, table_name FROM information_schema.views"
             ).fetchall()
         }
         self.paths = []
@@ -80,6 +88,7 @@ class _ViewCatalog:
         return _view_key(_qualified(identity), self.dialect)
 
     def candidates(self, table, *, create=False, temporary=False):
+        table = normalize_identifiers(table.copy(), dialect=self.dialect)
         if temporary:
             return [("temp", "main", table.name)]
         if table.catalog:
@@ -148,10 +157,14 @@ def _relation_references(query):
                 yield source
 
 
-def _set_identity(table, identity):
+def _set_identity(table, identity, dialect):
     qualified = _qualified(identity)
+    if dialect == "clickhouse":
+        # The catalog/schema pair in INFORMATION_SCHEMA denotes one database;
+        # ClickHouse SQL accepts database.table, not catalog.schema.table.
+        qualified.set("catalog", None)
     for part in ("catalog", "db", "this"):
-        table.set(part, qualified.args[part])
+        table.set(part, qualified.args.get(part))
 
 
 def _refresh_bindings(layer, snapshot):
@@ -231,16 +244,7 @@ def execute_ossie_view_ddl(layer, sql, *, user_attributes=None):
         None,
     )
     if statement.args.get("exists"):
-        catalog_query = (
-            exp.select("table_name")
-            .from_("information_schema.tables")
-            .where(
-                exp.column("table_name").eq(identity[2]),
-                exp.column("table_schema").eq(identity[1]),
-                exp.column("table_catalog").eq(identity[0]),
-            )
-        )
-        if layer.adapter.execute(catalog_query.sql(dialect=layer.dialect)).fetchall():
+        if any(snapshot.key(relation) == key for relation in snapshot.relations):
             # Preserve the database's no-op semantics and never register a recipe
             # that did not replace the existing physical definition.
             statement.set("expression", exp.select("1"))
@@ -290,7 +294,7 @@ def execute_ossie_view_ddl(layer, sql, *, user_attributes=None):
                 continue
         if not reference.args.get("alias"):
             reference.set("alias", exp.TableAlias(this=reference.this.copy()))
-        _set_identity(reference, resolved)
+        _set_identity(reference, resolved, layer.dialect)
     definition_sql = definition.sql(dialect=layer.dialect)
     proposed_views[name] = definition_sql
     if not RelationalCompiler(compilation_graph, layer.dialect).relevant(definition):
@@ -325,7 +329,7 @@ def execute_ossie_view_ddl(layer, sql, *, user_attributes=None):
     for reference in _relation_references(physical_query):
         resolved = snapshot.resolve(reference)
         if resolved in snapshot.relations:
-            _set_identity(reference, resolved)
+            _set_identity(reference, resolved, layer.dialect)
     statement.set("expression", physical_query)
     result = layer.adapter.execute(statement.sql(dialect=layer.dialect))
     if layer.graph.metadata is None:

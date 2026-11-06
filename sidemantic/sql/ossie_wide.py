@@ -21,7 +21,7 @@ from sidemantic.interchange.ossie.identifier import (
 )
 from sidemantic.interchange.ossie.portable import lower_ossie_sql, parse_portable_expression
 from sidemantic.interchange.ossie.profiles import LATEST_OSSIE_SCHEMA_COMMIT
-from sidemantic.sql.rendering import render_sql
+from sidemantic.sql.rendering import render_ossie_sql as render_sql
 
 
 class OssieWideQueryError(ValueError):
@@ -42,6 +42,21 @@ def is_latest_ossie_graph(graph) -> bool:
 
 def _fail(code, message, **details):
     raise OssieWideQueryError(code, message, **details)
+
+
+def _backend_query_semantics(tree, dialect):
+    if dialect == "clickhouse":
+        # These are query-local requirements: unmatched rows stay NULL and
+        # aggregates keep SQL empty-input values, independent of server defaults.
+        tree.set(
+            "settings",
+            [
+                exp.EQ(this=exp.column("join_use_nulls"), expression=exp.Literal.number(1)),
+                exp.EQ(this=exp.column("aggregate_functions_null_for_empty"), expression=exp.Literal.number(1)),
+                exp.EQ(this=exp.column("join_default_strictness"), expression=exp.Literal.string("ALL")),
+            ],
+        )
+    return tree
 
 
 def _key(identifier):
@@ -546,7 +561,7 @@ class _Planner:
                 )
                 spine = f"SELECT {', '.join(typed_columns)} FROM {typed_sources} WHERE FALSE"
             elif dimension_keys:
-                spine = " UNION ".join(
+                spine = " UNION DISTINCT ".join(
                     f"SELECT {', '.join(dimension_keys)} FROM {self.q(branch)}" for branch in branches
                 )
             else:
@@ -588,7 +603,9 @@ class _Planner:
             final = f"SELECT {', '.join(outputs)} {joins}"
         ctes = ",\n".join(f"{self.q(name)} AS ({sql})" for name, sql in self.ctes)
         return render_sql(
-            sqlglot.parse_one(f"WITH {ctes}\n{final}", read=self.dialect), dialect=self.dialect, pretty=True
+            _backend_query_semantics(sqlglot.parse_one(f"WITH {ctes}\n{final}", read=self.dialect), self.dialect),
+            dialect=self.dialect,
+            pretty=True,
         )
 
 
@@ -638,7 +655,9 @@ def compile_ossie_wide_extended(
     sql = compile_ossie_wide_query(graph, query, dialect)
     if not order_by and limit is None and offset is None:
         return sql
-    tree = sqlglot.select("*").from_(sqlglot.parse_one(sql, read=dialect).subquery("__ow_result"))
+    inner = sqlglot.parse_one(sql, read=dialect)
+    inner.set("settings", None)
+    tree = sqlglot.select("*").from_(inner.subquery("__ow_result"))
     orders = []
     for item in order_by or []:
         try:
@@ -668,4 +687,4 @@ def compile_ossie_wide_extended(
         if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
             _fail("E_INVALID_QUERY", "offset must be a nonnegative integer")
         tree = tree.offset(offset)
-    return render_sql(tree, dialect=dialect, pretty=True)
+    return render_sql(_backend_query_semantics(tree, dialect), dialect=dialect, pretty=True)

@@ -260,11 +260,19 @@ population. The provisional measure-definition spellings are `TO_MEASURE(expr)`
 and `expr TO MEASURE`. Set operations and DISTINCT reject unevaluated measures;
 ordinary scalar results after `AGG()` retain normal SQL behavior. Using a measure
 as a scalar, filter predicate, join key, or grouping key fails during binding.
-Unaggregated inline-window `QUALIFY` preserves aliases and clause ordering;
-combined aggregation or named-window `QUALIFY` shapes reject explicitly.
-Wildcard `EXCLUDE`, `REPLACE`, and `RENAME` retain their projection semantics.
-Native Rust rejects quoted wildcard `RENAME` operands because its pinned parser
-loses their quoted-name identity; ordinary aliases remain supported.
+`QUALIFY` supports both unaggregated and grouped relations, including named
+windows, inherited window definitions, aggregate aliases, grouping sets, and
+window frame expressions. Aggregation and HAVING run before windows and QUALIFY;
+DISTINCT, ordering, and pagination run afterward. Hidden measure inputs retain
+their source-row identity through the window stage.
+Wildcard `EXCLUDE`, `REPLACE`, and `RENAME` retain their projection semantics,
+including quoted rename operands, escaped quotes, and schema-qualified stars in
+native Rust. Authored SQL uses the layer's SQL dialect, including its identifier
+quoting syntax (for example, backticks for BigQuery).
+
+ClickHouse semantic queries include query-local settings for NULL-preserving
+joins, SQL empty-aggregate results, and all matching join rows. They do not depend
+on the server's default join or aggregate settings.
 
 `DESCRIBE` and `information_schema.columns` identify measure columns using a
 `MEASURE` type marker. The metadata overlay includes semantic relations while

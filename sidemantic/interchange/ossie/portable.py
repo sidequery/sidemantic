@@ -15,7 +15,7 @@ from sqlglot.errors import ErrorLevel, SqlglotError
 from sqlglot.tokens import TokenType
 
 from sidemantic.interchange.ossie.expression_validation import is_aggregate_filter
-from sidemantic.sql.rendering import render_sql
+from sidemantic.sql.rendering import render_ossie_sql as render_sql
 
 _TARGETS = {"postgresql": "postgres", "ansi_sql": "duckdb", "ansi": "duckdb"}
 _SUPPORTED_TARGETS = {"duckdb", "postgres", "snowflake", "bigquery", "databricks", "clickhouse"}

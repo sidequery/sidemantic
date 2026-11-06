@@ -171,6 +171,17 @@ struct Planner<'a, 'g> {
 impl SqlGenerator<'_> {
     /// Strict JSON binding for Apache Ossie Layer 3 (wide-table semantics §3.7).
     pub fn generate_ossie_wide(&self, query: &Value) -> Result<String> {
+        self.compile_ossie_wide(query)
+            .map(|sql| self.finish_ossie_wide(sql))
+    }
+    fn finish_ossie_wide(&self, sql: String) -> String {
+        if self.dialect == DialectType::ClickHouse {
+            format!("{sql} SETTINGS join_use_nulls = 1, aggregate_functions_null_for_empty = 1, join_default_strictness = 'ALL'")
+        } else {
+            sql
+        }
+    }
+    fn compile_ossie_wide(&self, query: &Value) -> Result<String> {
         if !self.uses_latest_ossie() {
             return Err(fail(
                 "E_INVALID_QUERY",
@@ -245,15 +256,18 @@ impl SqlGenerator<'_> {
                 .join(" AND ")
                 .into();
         }
-        let mut sql = self.generate_ossie_wide(&request)?;
+        let mut sql = self.compile_ossie_wide(&request)?;
         if !query.order_by.is_empty() {
             let mut orders = vec![];
+            let known_names = query
+                .metrics
+                .iter()
+                .chain(&query.dimensions)
+                .chain(query.aliases.values())
+                .map(String::as_str)
+                .collect::<Vec<_>>();
             for order in &query.order_by {
-                let (name, direction) = order
-                    .strip_suffix(" DESC")
-                    .map(|n| (n, " DESC"))
-                    .or_else(|| order.strip_suffix(" ASC").map(|n| (n, " ASC")))
-                    .unwrap_or((order.as_str(), ""));
+                let (name, suffix) = crate::sql::split_order_field(order, &known_names);
                 let selected =
                     query
                         .metrics
@@ -270,7 +284,12 @@ impl SqlGenerator<'_> {
                             }
                         });
                 let output = output_name(selected.map(String::as_str).unwrap_or(name));
-                orders.push(format!("{}{direction}", self.quote_identifier(&output)));
+                let rendered = self.quote_identifier(&output);
+                orders.push(if suffix.is_empty() {
+                    rendered
+                } else {
+                    format!("{rendered} {suffix}")
+                });
             }
             sql.push_str(&format!(" ORDER BY {}", orders.join(", ")));
         }
@@ -280,7 +299,7 @@ impl SqlGenerator<'_> {
         if let Some(offset) = query.offset {
             sql.push_str(&format!(" OFFSET {offset}"));
         }
-        Ok(sql)
+        Ok(self.finish_ossie_wide(sql))
     }
 }
 impl<'a, 'g> Planner<'a, 'g> {
@@ -909,11 +928,23 @@ impl<'a, 'g> Planner<'a, 'g> {
         paths
     }
     fn rebind(&self, sql: &str, alias: &str) -> Result<String> {
+        self.rebind_inputs(sql, alias, &HashMap::new())
+    }
+    fn rebind_inputs(
+        &self,
+        sql: &str,
+        alias: &str,
+        fields: &HashMap<String, String>,
+    ) -> Result<String> {
         let mut replacements = HashMap::new();
         for c in semantic_column_references(sql)? {
             replacements.insert(
                 (c.model, c.field.clone()),
-                format!("{}.{}", self.q(alias), self.q(&c.field)),
+                format!(
+                    "{}.{}",
+                    self.q(alias),
+                    self.q(fields.get(&c.field).unwrap_or(&c.field))
+                ),
             );
         }
         self.emit_final(replace_semantic_columns(
@@ -1186,6 +1217,30 @@ impl<'a, 'g> Planner<'a, 'g> {
                 self.q(home),
                 row_ids[home]
             ));
+            // Carry measure inputs with their identity through the population. A
+            // second source scan cannot join by ROW_NUMBER: nonmaterialized CTEs
+            // can assign different numbers to the same physical rows.
+            let mut home_fields = inputs
+                .get(home)
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>();
+            home_fields.sort();
+            let carried = home_fields
+                .into_iter()
+                .enumerate()
+                .map(|(index, field)| {
+                    let slot = format!("__ossie_input{index}");
+                    fields.push(format!(
+                        "{}.{} AS {}",
+                        self.q(home),
+                        self.q(&field),
+                        self.q(&slot)
+                    ));
+                    (field, slot)
+                })
+                .collect::<HashMap<_, _>>();
             ctes.push(format!(
                 "__ossie_population{branch} AS (SELECT DISTINCT {} FROM {relation}{where_sql})",
                 fields.join(", ")
@@ -1193,7 +1248,11 @@ impl<'a, 'g> Planner<'a, 'g> {
             let keys = (0..dimensions.len())
                 .map(|i| format!("p.__ossie_d{i}"))
                 .collect::<Vec<_>>();
-            let mut selections = keys.clone();
+            let mut selections = keys
+                .iter()
+                .enumerate()
+                .map(|(i, key)| format!("{key} AS __ossie_d{i}"))
+                .collect::<Vec<_>>();
             selections.push("1 AS __ossie_present".into());
             for (index, component) in self
                 .components
@@ -1203,7 +1262,7 @@ impl<'a, 'g> Planner<'a, 'g> {
             {
                 selections.push(format!(
                     "{} AS __ossie_c{index}",
-                    self.rebind(&component.sql, "h")?
+                    self.rebind_inputs(&component.sql, "p", &carried)?
                 ));
             }
             let group = if keys.is_empty() {
@@ -1211,7 +1270,10 @@ impl<'a, 'g> Planner<'a, 'g> {
             } else {
                 format!(" GROUP BY {}", keys.join(", "))
             };
-            ctes.push(format!("__ossie_branch{branch} AS (SELECT {} FROM __ossie_population{branch} p JOIN {} h ON p.__ossie_row_id = h.{}{group})",selections.join(", "),source_names[home], row_ids[home]));
+            ctes.push(format!(
+                "__ossie_branch{branch} AS (SELECT {} FROM __ossie_population{branch} p{group})",
+                selections.join(", ")
+            ));
             branches.push(format!("__ossie_branch{branch}"));
         }
         let keys = (0..dimensions.len())
@@ -1226,10 +1288,13 @@ impl<'a, 'g> Planner<'a, 'g> {
                     .iter()
                     .map(|b| format!("SELECT {} FROM {b}", keys.join(", ")))
                     .collect::<Vec<_>>()
-                    .join(" UNION ")
+                    .join(" UNION DISTINCT ")
             ));
         }
-        let mut combined = keys.iter().map(|k| format!("k.{k}")).collect::<Vec<_>>();
+        let mut combined = keys
+            .iter()
+            .map(|key| format!("k.{key} AS {key}"))
+            .collect::<Vec<_>>();
         let mut relation = "__ossie_keys k".to_owned();
         for (branch, home) in homes.iter().enumerate() {
             let condition = if keys.is_empty() {

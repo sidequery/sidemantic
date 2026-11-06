@@ -290,6 +290,7 @@ pub(crate) fn generate_preserving_null_order(
 
 fn transpile(sql: &str, source: DialectType, target: DialectType) -> Result<String> {
     let sql = super::literals::source_sql(sql, source)?;
+    let sql = explicit_seed_aliases(&sql, source)?;
     #[cfg(target_arch = "wasm32")]
     crate::wasm_sql_guard::check(&sql, source)?;
     let mut statements = Dialect::get(source)
@@ -305,6 +306,7 @@ fn transpile(sql: &str, source: DialectType, target: DialectType) -> Result<Stri
 
 pub(crate) fn parse(sql: &str, source: DialectType) -> Result<Expression> {
     let sql = super::literals::source_sql(sql, source)?;
+    let sql = explicit_seed_aliases(&sql, source)?;
     #[cfg(target_arch = "wasm32")]
     crate::wasm_sql_guard::check(&sql, source)?;
     let mut statements = parse_many(&sql, source)?;
@@ -314,6 +316,63 @@ pub(crate) fn parse(sql: &str, source: DialectType) -> Result<Expression> {
         ));
     }
     Ok(statements.remove(0))
+}
+
+/// The pinned parser treats SEED after a derived table as a sampling clause,
+/// even where the warehouse accepts it as an implicit alias. Insert only the
+/// optional AS token in that exact lexer-confirmed relation context. Strings,
+/// quoted identifiers, comments, and actual sampling clauses remain untouched.
+fn explicit_seed_aliases(sql: &str, dialect: DialectType) -> Result<String> {
+    use polyglot_sql::tokens::TokenType;
+    if !sql.to_ascii_uppercase().contains("SEED") {
+        return Ok(sql.to_owned());
+    }
+    let tokens = Dialect::get(dialect)
+        .tokenize(sql)
+        .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
+    let offsets = sql
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain([sql.len()])
+        .collect::<Vec<_>>();
+    let mut opens = Vec::new();
+    let mut closes = HashMap::new();
+    let mut insertions = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        match token.token_type {
+            TokenType::LParen => opens.push(index),
+            TokenType::RParen => {
+                if let Some(open) = opens.pop() {
+                    closes.insert(index, open);
+                }
+            }
+            TokenType::Seed if index > 0 => {
+                let Some(&open) = closes.get(&(index - 1)) else {
+                    continue;
+                };
+                if open == 0 {
+                    continue;
+                }
+                let relation = matches!(
+                    tokens[open - 1].token_type,
+                    TokenType::From | TokenType::Join | TokenType::Comma | TokenType::Lateral
+                );
+                let query = matches!(
+                    tokens[open + 1].token_type,
+                    TokenType::Select | TokenType::With | TokenType::Values
+                );
+                if relation && query {
+                    insertions.push(offsets[token.span.start]);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut output = sql.to_owned();
+    for offset in insertions.into_iter().rev() {
+        output.insert_str(offset, "AS ");
+    }
+    Ok(output)
 }
 
 /// QUANTILE_CONT/DISC are absent from the pinned parser's aggregate registry.
@@ -395,6 +454,7 @@ pub(crate) fn parse_many(sql: &str, dialect: DialectType) -> Result<Vec<Expressi
         }
         prepared.push_str(&sql[cursor..]);
     }
+    let prepared = explicit_seed_aliases(&prepared, dialect)?;
     let statements = polyglot_sql::parse(&prepared, dialect)
         .map_err(|error| SidemanticError::SqlParse(error.to_string()))?;
     let complete_conditionals =
@@ -482,6 +542,7 @@ pub(crate) fn query_batch(sql: &str, source: DialectType) -> Result<String> {
         return Ok(sql.to_owned());
     }
     let sql = super::literals::source_sql(sql, source)?;
+    let sql = explicit_seed_aliases(&sql, source)?;
     #[cfg(target_arch = "wasm32")]
     crate::wasm_sql_guard::check(&sql, source)?;
     Dialect::get(source)
@@ -781,6 +842,54 @@ pub(super) fn normalize(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_transpilation_keeps_seed_alias_and_empty_predicate() {
+        let source = "SELECT amount FROM (SELECT 1 AS amount) seed WHERE FALSE";
+        for dialect in [
+            DialectType::DuckDB,
+            DialectType::PostgreSQL,
+            DialectType::Snowflake,
+            DialectType::ClickHouse,
+            DialectType::BigQuery,
+        ] {
+            for sql in [
+                query(source, dialect).unwrap(),
+                query_batch(source, dialect).unwrap(),
+            ] {
+                let Expression::Select(select) = parse(&sql, DialectType::DuckDB).unwrap() else {
+                    panic!("expected SELECT");
+                };
+                assert!(select.where_clause.is_some(), "{dialect:?}: {sql}");
+                assert!(sql.contains("FALSE"), "{dialect:?}: {sql}");
+            }
+        }
+    }
+
+    #[test]
+    fn derived_seed_aliases_do_not_rewrite_sampling_or_quoted_text() {
+        for sql in [
+            "SELECT amount FROM (SELECT 1 AS amount) seed WHERE FALSE",
+            "SELECT seed.amount FROM (SELECT 1 AS amount) /* é seed */ seed",
+            "WITH x AS (SELECT 1 AS amount) SELECT amount FROM (SELECT * FROM x) seed",
+            "SELECT seed.amount FROM (VALUES (1)) seed(amount)",
+        ] {
+            let rewritten = explicit_seed_aliases(sql, DialectType::DuckDB).unwrap();
+            assert!(rewritten.contains("AS seed"), "{rewritten}");
+            assert!(parse_many(sql, DialectType::DuckDB).is_ok(), "{sql}");
+        }
+        for sql in [
+            "SELECT 'seed' FROM (SELECT 1) AS seed",
+            "SELECT * FROM (SELECT 1) \"seed\"",
+            "SELECT * FROM t USING SAMPLE 10 PERCENT (bernoulli, 42)",
+            "SELECT * FROM t TABLESAMPLE BERNOULLI (10) SEED (42)",
+        ] {
+            assert_eq!(
+                explicit_seed_aliases(sql, DialectType::DuckDB).unwrap(),
+                sql
+            );
+        }
+    }
 
     #[test]
     fn ossie_physical_and_expression_dialects_normalize_independently_once() {

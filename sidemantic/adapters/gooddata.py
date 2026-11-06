@@ -10,6 +10,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_export_feature
 from sidemantic.paths import output_child
 
 GOODDATA_METADATA_KEY = "gooddata"
@@ -66,6 +67,12 @@ class GoodDataAdapter(BaseAdapter):
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
         """Export semantic graph to GoodData LDM JSON format (cloud style)."""
+        owned_metrics = [metric for model in graph.models.values() for metric in model.metrics]
+        if any(not any(metric is owned for owned in owned_metrics) for metric in graph.metrics.values()):
+            record_export_feature(
+                "graph_metrics", "rejected", detail="GoodData LDM cannot represent analytical metrics"
+            )
+            raise ValueError("GoodData LDM export cannot represent graph-level metrics; MAQL metrics are unsupported")
         output_path = Path(output_path)
 
         from sidemantic.core.inheritance import resolve_model_inheritance
@@ -165,7 +172,6 @@ class GoodDataAdapter(BaseAdapter):
             table = None
 
         grain_ids = self._parse_grain_ids(dataset_def)
-        primary_key = grain_ids[0] if grain_ids else "id"
 
         attributes = self._as_list(dataset_def.get("attributes"))
         facts = self._as_list(dataset_def.get("facts"))
@@ -197,15 +203,25 @@ class GoodDataAdapter(BaseAdapter):
             if metric:
                 metrics.append(metric)
 
-        if primary_key and not any(dim.name == primary_key for dim in dimensions):
-            dimensions.append(
-                Dimension(
-                    name=primary_key,
-                    type="categorical",
-                    sql=primary_key,
-                    metadata={GOODDATA_METADATA_KEY: {"generated": True}},
+        for key in grain_ids or ["id"]:
+            if not any(dim.name == key for dim in dimensions):
+                dimensions.append(
+                    Dimension(
+                        name=key,
+                        type="categorical",
+                        sql=key,
+                        metadata={GOODDATA_METADATA_KEY: {"generated": True}},
+                    )
                 )
-            )
+
+        # Planner keys name physical source columns. Display labels can use a
+        # different source column, so use the attribute's own sourceColumn.
+        key_columns = []
+        for key in grain_ids or ["id"]:
+            dimension = next(dim for dim in dimensions if dim.name == key)
+            native = (dimension.metadata or {}).get(GOODDATA_METADATA_KEY, {})
+            key_columns.append(native.get("key_source_column") or dimension.sql or key)
+        primary_key = key_columns if len(key_columns) > 1 else key_columns[0]
 
         relationships = []
         for ref_def in self._as_list(dataset_def.get("references")):
@@ -282,6 +298,7 @@ class GoodDataAdapter(BaseAdapter):
                 "description": attr_def.get("description"),
                 "tags": attr_def.get("tags"),
                 "source_column": source_column,
+                "key_source_column": self._get_first(attr_def, "sourceColumn", "source_column"),
                 "data_type": data_type,
                 "labels": labels,
                 "default_view": default_view_id,
@@ -407,6 +424,8 @@ class GoodDataAdapter(BaseAdapter):
         sources = self._get_first(ref_def, "sources")
         source_objects = None
         if isinstance(sources, list) and sources:
+            if any(not isinstance(item, dict) or not item.get("column") for item in sources):
+                raise GoodDataParseError(f"Reference to {target_id!r} has a source without a column")
             source_objects = sources
             source_columns = [s.get("column") for s in sources if isinstance(s, dict) and s.get("column")]
         else:
@@ -740,20 +759,39 @@ class GoodDataAdapter(BaseAdapter):
         if wdf_columns:
             dataset["workspaceDataFilterColumns"] = wdf_columns
 
-        grain_ids = gd_meta.get("grain") or [model.primary_key]
+        grain_ids = gd_meta.get("grain") or model.primary_key_columns
         dataset["grain"] = [{"id": grain_id, "type": "attribute"} for grain_id in grain_ids if grain_id]
 
         attributes = []
         for dim in model.dimensions:
             attr_meta = (dim.metadata or {}).get(GOODDATA_METADATA_KEY, {})
             labels = attr_meta.get("labels")
+            source_column = attr_meta.get("key_source_column") or dim.sql or dim.name
             if not labels:
+                # Without native labels there was only one physical binding.
+                # Honor edits to it rather than inventing a separate display
+                # column backed by the old attribute key.
+                original_column = attr_meta.get("source_column")
+                source_column = dim.sql or dim.name
+                if original_column:
+                    bindings = [source_column, attr_meta.get("key_source_column")]
+                    attribute_id = attr_meta.get("id") or dim.name
+                    if attribute_id in grain_ids and len(grain_ids) == len(model.primary_key_columns):
+                        bindings.append(model.primary_key_columns[grain_ids.index(attribute_id)])
+                    edited_columns = {binding for binding in bindings if binding and binding != original_column}
+                    if len(edited_columns) > 1:
+                        record_export_feature("attribute_binding", "rejected", location=f"{model.name}.{dim.name}")
+                        raise ValueError(
+                            f"GoodData attribute '{model.name}.{dim.name}' has conflicting SQL and key source edits"
+                        )
+                    if edited_columns:
+                        source_column = edited_columns.pop()
                 label_id = f"{dim.name}_label"
                 labels = [
                     {
                         "id": label_id,
                         "title": dim.label or dim.name,
-                        "sourceColumn": dim.sql or dim.name,
+                        "sourceColumn": source_column,
                         "dataType": self._map_dimension_to_data_type(dim),
                     }
                 ]
@@ -766,7 +804,7 @@ class GoodDataAdapter(BaseAdapter):
             attr_def: dict[str, Any] = {
                 "id": attr_meta.get("id") or dim.name,
                 "title": dim.label or dim.name,
-                "sourceColumn": dim.sql or dim.name,
+                "sourceColumn": source_column,
                 "labels": labels,
                 "defaultView": {"id": default_view_id, "type": "label"},
             }
@@ -921,6 +959,35 @@ class GoodDataAdapter(BaseAdapter):
                 if relationship.primary_key:
                     continue
                 target = graph.models.get(relationship.related_model)
+                sources = (relationship.metadata or {}).get(GOODDATA_METADATA_KEY, {}).get("sources")
+                if sources:
+                    target_keys = []
+                    for source in sources:
+                        reference = source.get("target") or {}
+                        if not isinstance(reference, dict):
+                            raise GoodDataParseError(f"Invalid GoodData reference target {reference!r}")
+                        target_id = reference.get("id")
+                        if reference.get("type") == "attribute":
+                            if target is None or target.get_dimension(target_id) is None:
+                                raise GoodDataParseError(
+                                    f"Reference {model.name} -> {relationship.related_model}: "
+                                    f"target attribute {target_id!r} does not exist"
+                                )
+                            dimension = target.get_dimension(target_id)
+                            native = (dimension.metadata or {}).get(GOODDATA_METADATA_KEY, {})
+                            # Preserve each explicit target, in source order, using
+                            # its physical key rather than its display label column.
+                            target_keys.append(native.get("key_source_column") or dimension.sql or target_id)
+                        elif reference.get("type") == "date":
+                            if target is None or not target.primary_key:
+                                raise GoodDataParseError(
+                                    f"Unknown date reference target {relationship.related_model!r}"
+                                )
+                            target_keys.extend(target.primary_key_columns)
+                        else:
+                            raise GoodDataParseError(f"Unsupported GoodData reference target {reference!r}")
+                    relationship.primary_key = target_keys[0] if len(target_keys) == 1 else target_keys
+                    continue
                 if target and target.primary_key:
                     relationship.primary_key = target.primary_key
 

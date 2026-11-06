@@ -1476,6 +1476,7 @@ def test_tmdl_export_simple_model():
             Dimension(name="id", type="numeric", sql="id"),
             Dimension(name="status", type="categorical", sql="status"),
             Dimension(name="order_date", type="time", sql="order_date", granularity="day"),
+            Dimension(name="amount", type="numeric", sql="amount"),
         ],
         metrics=[
             Metric(name="count", agg="count"),

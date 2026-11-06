@@ -44,8 +44,8 @@ follow-up scope is:
   empty aggregate filter over nonempty and empty relations across both interfaces
   and all three routes.
 - Preserve unaggregated inline-window QUALIFY predicates before DISTINCT, ordering
-  and pagination, including aliases and CTE measure lineage. Unsupported grouped
-  or named-window QUALIFY shapes reject explicitly.
+  and pagination, including aliases and CTE measure lineage. Grouped and named
+  windows were initially rejected; the runtime follow-up below implements them.
 - Bind view identities to catalog, schema and name; respect session search paths
   and physical shadowing; keep discovery and cache invalidation consistent.
 
@@ -87,10 +87,64 @@ native policy tests pass, including intermediate and unselected model policies.
 
 CI follow-ups regenerate the CLI manpage at each stage, support the minimum
 SQLGlot version without requiring its newer AGG node class, and fix Rust Clippy
-warnings. Native quoted wildcard RENAME operands now fail explicitly because the
-pinned parser loses quote identity; other aliases and wildcard modifiers remain
-supported. Regression tests cover ordinary physical SQL and quoted text/comments
-to keep the rejection confined to semantic wildcard queries.
+warnings. Native quoted wildcard RENAME operands initially failed explicitly
+because the pinned parser lost quote identity; the runtime follow-up below
+preserves that identity before parsing and supports these operands.
+
+## Runtime and database follow-up
+
+The follow-up closes the three previously reported limits:
+
+- Grouped and named-window QUALIFY now supports inherited definitions, dynamic
+  frames, aggregate aliases, grouping sets, and hidden measure lineage. Aggregate
+  evaluation precedes windows; QUALIFY precedes DISTINCT, ordering, and pagination.
+- Native wildcard RENAME preserves quoted names, dots, case, escaped quotes, and
+  Unicode. Qualified stars and stored view recipes retain the same identity.
+- Native logical import evaluates all four immutable JSON Schemas offline and
+  reports `pinned_json_schema`. Both importers validate recognized SQL variants,
+  including unselected variants. Portable expressions use the portable source
+  parser, including its typed timestamp literals. Unknown vendor languages remain
+  opaque. Preservation/export and ontology/mapping operations remain in the shared
+  interchange API available with either public engine.
+
+Real database execution found additional dialect problems that DuckDB-only checks
+did not expose: materialized CTE syntax, PostgreSQL zero-row measure placeholders,
+database-specific view name folding, ClickHouse view qualification and NULL/empty
+aggregate defaults, native wide-query output aliases, and ClickHouse's restriction
+on correlated aggregation over source identity windows. Grouped ClickHouse measures
+now deduplicate and aggregate independently before joining their results to the
+group domain. Query-local settings preserve standard NULL and join behavior.
+The public Rust transport also retains explicit NULL ordering and lowers nested
+QUALIFY for PostgreSQL. Snowflake named windows are resolved before dialect
+normalization, and inactive BigQuery grouping-set keys retain their SQL types.
+Native parsing accepts valid implicit `seed` aliases on derived source queries
+without changing sampling clauses or quoted text.
+
+The integration workflow explicitly runs the maintained Ossie suite on DuckDB,
+PostgreSQL 16, ClickHouse 25.8, BigQuery emulator 0.8.1, and fakesnow 0.11.11.
+Python, public Rust with fallback disabled, and native Rust import/compilation
+execute emitted SQL directly. Expected results use physical SQL or explicit row
+populations, including NULL/empty boundaries; compiler output is never transpiled
+back to DuckDB as an execution shortcut. PostgreSQL and DuckDB also exercise the
+CLI. BigQuery emulator view discovery and non-core CLI checks are explicitly outside
+this suite's scope. A selected backend with missing dependencies or an unreachable
+service fails the run.
+
+The database matrix records 382 passing cases: 78 each on DuckDB and PostgreSQL,
+76 each on ClickHouse and fakesnow, and 74 on the BigQuery emulator. The excluded
+cases are the two core-only CLI checks on other targets and two BigQuery view
+lifecycle checks. Each target runs Python, public Rust with fallback disabled,
+and direct native Rust import/compilation. Filtered counts cover matched,
+nonmatching, and empty populations, including DISTINCT and all-NULL inputs.
+
+The follow-up also removes a native wide-query identity bug: independently
+numbering a rescanned population could associate measures with the wrong group.
+Measure inputs now travel with the deduplicated population. The original
+ClickHouse reproducer returned incorrect values in 6 of 25 executions; the
+corrected query passed all 25, with permanent permutation and duplicate-row
+regressions. FILTER wrappers on ordinary Python window aggregates preserve row
+cardinality. Filtered COUNT rendering is verified on SQLGlot 30.1, 30.12, and 30.23
+to preserve DISTINCT, NULL, and empty-population semantics.
 
 ## Recorded pre-review verification
 
@@ -127,14 +181,16 @@ RUST_MIN_STACK=16777216 CARGO_BUILD_JOBS=2 \
 
 ## Coverage limits
 
-Execution checks use DuckDB, including target-dialect SQL converted back for
-execution. Live warehouse integration and the full unrelated repository suite
-were not exercised. Native Rust remains a forward-import structural subset;
-ontology and mapping preservation do not imply ontology reasoning or execution.
-Unsupported security contexts fail closed.
+The initial assessment used DuckDB, including target-dialect SQL converted back
+for execution. The follow-up adds direct execution on the databases listed above.
+BigQuery and Snowflake coverage uses emulators and does not establish live-cloud
+behavior. Native logical schema validation does not imply native preservation or
+export APIs; ontology and mapping preservation do not imply ontology reasoning or
+execution. Unsupported security contexts fail closed.
 
-The pinned specification's deferred features remain deferred, including measure
-evaluation controls/windowing and unsupported Layer 3 path/filter shapes.
+The pinned specification's deferred features remain deferred, including
+measure-definition evaluation/window controls and unsupported Layer 3 path/filter
+shapes. These are separate from the SQL window and QUALIFY support described above.
 Passing the official validator does not prove all normative rules: it reports
 some model-reference issues as warnings. The implementation combines pinned
 upstream assets, official fixtures and independently authored runtime tests.

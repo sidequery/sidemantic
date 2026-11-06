@@ -9,6 +9,7 @@ from sidemantic.adapters.cube import CubeAdapter
 from sidemantic.adapters.hex import HexAdapter
 from sidemantic.adapters.lookml import LookMLAdapter
 from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sidemantic.core.model import Model
 
 
 def test_hex_to_cube_conversion():
@@ -112,8 +113,7 @@ def test_hex_to_lookml_conversion():
     # Import from Hex
     hex_adapter = HexAdapter()
     graph = hex_adapter.parse("tests/fixtures/hex/orders.yml")
-    from sidemantic.core.model import Model
-
+    # This resource fixture declares a relation to a separately defined model.
     graph.add_model(Model(name="customers", table="customers", primary_key="id"))
 
     # Export to LookML
@@ -129,6 +129,12 @@ def test_hex_to_lookml_conversion():
 
         assert "orders" in graph2.models
         orders = graph2.models["orders"]
+
+        assert "customers" in graph2.models
+        relationship = orders.relationships[0]
+        assert relationship.related_model == "customers"
+        assert relationship.foreign_key == "customer_id"
+        assert relationship.primary_key == "id"
 
         # Verify dimensions converted
         dim_names = [d.name for d in orders.dimensions]

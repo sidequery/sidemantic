@@ -67,6 +67,12 @@ def test_cube_to_lookml_conversion():
         assert "orders" in graph2.models
         orders = graph2.models["orders"]
 
+        assert "customers" in graph2.models
+        relationship = orders.relationships[0]
+        assert relationship.related_model == "customers"
+        assert relationship.foreign_key == "customer_id"
+        assert relationship.primary_key == "id"
+
         dim_names = [d.name for d in orders.dimensions]
         assert "status" in dim_names
 

@@ -161,6 +161,73 @@ def test_target_side_measure_is_not_duplicated_by_permitted_join(reversible, kin
         assert connection.execute(sql).fetchall() == [("east", 200)]
 
 
+@pytest.mark.parametrize("filter_only", [False, True])
+def test_directed_cycle_deduplicates_the_actual_join_target(filter_only):
+    graph = SemanticGraph()
+    graph.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="region", type="categorical")],
+            relationships=[
+                Relationship(
+                    name="customers", type="many_to_one", foreign_key="customer_id", metadata={"reversible": False}
+                )
+            ],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="customers",
+            table="customers",
+            primary_key="id",
+            metrics=[
+                Metric(name="credit", agg="sum", sql="credit"),
+                Metric(name="count", agg="count"),
+                Metric(name="double_credit", type="derived", sql="credit * 2"),
+            ],
+            relationships=[
+                Relationship(
+                    name="accounts", type="many_to_one", foreign_key="account_id", metadata={"reversible": False}
+                )
+            ],
+        )
+    )
+    graph.add_model(
+        Model(
+            name="accounts",
+            table="accounts",
+            primary_key="id",
+            relationships=[
+                Relationship(name="orders", type="many_to_one", foreign_key="order_id", metadata={"reversible": False})
+            ],
+        )
+    )
+    # The allowed return route has no one-to-many hops, but is not the inverse
+    # of the orders -> customers join that actually determines this population.
+    assert [hop.relationship for hop in graph.find_relationship_path("customers", "orders")] == [
+        "many_to_one",
+        "many_to_one",
+    ]
+    generator = SQLGenerator(graph, base_model="orders" if filter_only else None)
+    sql = generator.generate(
+        metrics=["customers.credit", "customers.count", "customers.double_credit"],
+        dimensions=[] if filter_only else ["orders.region"],
+        filters=["orders.region = 'east'"] if filter_only else None,
+    )
+    with duckdb.connect() as connection:
+        connection.execute(
+            "CREATE TABLE orders AS SELECT * FROM (VALUES (1,10,'east'),(2,10,'east'),(3,20,'east')) t(id,customer_id,region)"
+        )
+        connection.execute(
+            "CREATE TABLE customers AS SELECT * FROM (VALUES (10,100,1),(20,100,1)) t(id,credit,account_id)"
+        )
+        # Equal-valued customer entities both count; only repeated keys collapse.
+        expected = (200, 2, 400) if filter_only else ("east", 200, 2, 400)
+        assert connection.execute(sql).fetchall() == [expected]
+
+
 @pytest.mark.parametrize("metrics", [["orders.amount", "customers.credit"], ["customers.credit", "orders.amount"]])
 def test_multiple_metric_grains_use_permitted_anchor_in_each_population(metrics):
     graph = SemanticGraph()

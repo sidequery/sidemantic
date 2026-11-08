@@ -165,9 +165,15 @@ def test_http_queue_deadline_includes_worker_pool_wait(monkeypatch, queue_timeou
 
     monkeypatch.setattr(api_server, "_execute_to_table", execute)
 
+    # The worker stays occupied until the burst finishes, so a request that
+    # queued behind it would stall for the full hold. The burst guard below is
+    # well under the hold but loose enough to absorb CI scheduler/GC pauses.
+    worker_hold_seconds = 10
+    burst_guard_seconds = 3
+
     def occupy_worker():
         entered.set()
-        assert release.wait(3)
+        assert release.wait(worker_hold_seconds)
 
     async def run(layer):
         limiter = anyio.to_thread.current_default_thread_limiter()
@@ -194,7 +200,7 @@ def test_http_queue_deadline_includes_worker_pool_wait(monkeypatch, queue_timeou
                     ]
                     for _ in range(4)
                 ]
-                responses = await asyncio.wait_for(asyncio.gather(*requests), timeout=0.7)
+                responses = await asyncio.wait_for(asyncio.gather(*requests), timeout=burst_guard_seconds)
                 assert all(response.status_code == 503 for response in responses)
                 assert all(response.headers["Retry-After"] == "1" for response in responses)
                 assert (await client.get("/readyz")).status_code == 200

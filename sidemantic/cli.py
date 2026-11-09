@@ -6,8 +6,8 @@ import json
 import sys
 from pathlib import Path
 
-import click
 import typer
+from typer.core import TyperGroup
 
 from sidemantic import __version__
 from sidemantic.cli_contract import (
@@ -48,6 +48,7 @@ from sidemantic.cli_polish import (
     emit_long_output,
     emit_next_step,
 )
+from sidemantic.click_compat import Context, ParameterSource
 from sidemantic.config import SidemanticConfig
 from sidemantic.project import ProjectContext, ProjectResolutionError
 
@@ -354,8 +355,8 @@ def main(
         if output_format not in OUTPUT_FORMATS:
             raise InvocationError(f"--format must be one of: {', '.join(OUTPUT_FORMATS)}")
 
-    format_explicit = ctx.get_parameter_source("output_format") is click.core.ParameterSource.COMMANDLINE
-    plain_explicit = ctx.get_parameter_source("plain") is click.core.ParameterSource.COMMANDLINE
+    format_explicit = ctx.get_parameter_source("output_format") is ParameterSource.COMMANDLINE
+    plain_explicit = ctx.get_parameter_source("plain") is ParameterSource.COMMANDLINE
 
     cli_state().reset(
         debug=bool(debug),
@@ -391,9 +392,9 @@ def main(
 
     def source_priority(name: str, configured_value: object) -> int:
         source = ctx.get_parameter_source(name)
-        if source is click.core.ParameterSource.COMMANDLINE:
+        if source is ParameterSource.COMMANDLINE:
             return 3
-        if source is click.core.ParameterSource.ENVIRONMENT:
+        if source is ParameterSource.ENVIRONMENT:
             return 2
         return 1 if configured_value else 0
 
@@ -453,9 +454,9 @@ def help_command(
     from typer.main import get_command
 
     current = get_command(app)
-    context = click.Context(current, info_name="sidemantic")
+    context = Context(current, info_name="sidemantic")
     for index, part in enumerate(command or []):
-        if not isinstance(current, click.Group):
+        if not isinstance(current, TyperGroup):
             raise InvocationError(f"{' '.join(command)} does not name a command")
         child = current.get_command(context, part)
         if child is None:
@@ -471,7 +472,7 @@ def help_command(
                 f"Run 'sidemantic help {corrected_path}' to review it."
             )
         current = child
-        context = click.Context(current, info_name=part, parent=context)
+        context = Context(current, info_name=part, parent=context)
     emit_result(current.get_help(context))
 
 

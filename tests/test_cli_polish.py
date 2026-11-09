@@ -7,7 +7,8 @@ from pathlib import Path
 
 import click
 import pytest
-from click.testing import CliRunner
+import typer
+from typer.testing import CliRunner
 
 from sidemantic.cli_polish import (
     DEPRECATIONS,
@@ -53,14 +54,22 @@ class PipeBuffer(StringIO):
         return False
 
 
-def _suggestion_cli() -> click.Group:
-    @click.group(cls=SuggestionGroup)
-    def cli() -> None:
-        pass
+def _suggestion_cli() -> typer.Typer:
+    # Build through Typer so the group runs on whichever Click implementation
+    # the installed Typer uses (standalone or vendored).
+    cli = typer.Typer(cls=SuggestionGroup)
+
+    @cli.callback()
+    def root(
+        quiet: bool = typer.Option(False, "--quiet"),
+        plain: bool = typer.Option(False, "--plain"),
+        output_format: str = typer.Option(None, "--format"),
+    ) -> None:
+        del quiet, plain, output_format
 
     @cli.command()
     def validate() -> None:
-        click.echo("valid")
+        typer.echo("valid")
 
     return cli
 
@@ -69,8 +78,10 @@ def test_close_command_name_suggests_reviewable_correction() -> None:
     result = CliRunner().invoke(_suggestion_cli(), ["vlaidate"])
 
     assert result.exit_code == 2
+    assert result.stderr.count("Did you mean") == 1
     assert "Did you mean 'validate'?" in result.stderr
     assert "validate --help" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -86,6 +97,7 @@ def test_machine_invocations_do_not_add_command_hints(args: list[str]) -> None:
     result = CliRunner().invoke(_suggestion_cli(), args)
 
     assert result.exit_code == 2
+    assert "No such command 'vlaidate'" in result.stderr
     assert "Did you mean" not in result.stderr
 
 

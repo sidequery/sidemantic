@@ -1,9 +1,11 @@
 """Tests for generated terminal documentation."""
 
+import importlib.metadata
 import tomllib
 from pathlib import Path
 
 import click
+import pytest
 from typer.main import get_command
 
 from sidemantic import __version__
@@ -57,6 +59,23 @@ def test_checked_in_manpage_exists() -> None:
     assert path.exists()
 
 
+def _locked_version(package: str) -> str:
+    lock = tomllib.loads((Path(__file__).parents[1] / "uv.lock").read_text())
+    return next(entry["version"] for entry in lock["package"] if entry["name"] == package)
+
+
+def test_live_cli_manpage_renders_nested_commands_and_options() -> None:
+    rendered = render_manpage(get_command(app), version=__version__)
+
+    assert '.SH "SIDEMANTIC MIGRATE GENERATE"' in rendered
+    assert '.SH "SIDEMANTIC SERVER API"' in rendered
+    assert r"\fB\-\-format table|csv|json|jsonl\fR" in rendered
+
+
+@pytest.mark.skipif(
+    any(importlib.metadata.version(package) != _locked_version(package) for package in ("typer", "click")),
+    reason="the checked-in page records the metavar spelling of the locked Typer and Click releases",
+)
 def test_checked_in_manpage_matches_live_cli() -> None:
     path = Path(__file__).parents[1] / "sidemantic" / "man" / "sidemantic.1"
     assert path.read_text() == render_manpage(get_command(app), version=__version__)

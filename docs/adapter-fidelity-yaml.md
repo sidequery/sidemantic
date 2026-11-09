@@ -6,6 +6,18 @@ before writing. They no longer select the first model implicitly.
 All three adapters also reject graph-only metrics without a model placement;
 attach those metrics to a model before exporting instead of dropping them.
 
+A primary key that is not one of the model's dimensions is exported as a hidden
+key dimension (Hex `unique`, Holistics and Omni `primary_key`), typed as text
+because the native model does not record the column type. On import, a model
+without a flagged key dimension has no primary key unless it declares an `id`
+column; the importers do not assume a column the source never names.
+Holistics measures have no filter property, so a filtered aggregate is written
+as `CASE WHEN <filter> THEN <value> END` inside the measure definition; a filter
+that reads another model's columns is rejected. Omni joins without their own key
+use the related view's primary key. Directory auto-detection reads Omni
+`relationships.yaml`/`model.yaml` joins and parses Holistics AML as one project,
+so joins declared in a separate file are kept.
+
 Hex retains Boolean and timestamp types and exports median, standard deviation
 and variance aggregates under their original aggregation names. An unknown
 aggregation fails explicitly instead of becoming a count. Hex relationships

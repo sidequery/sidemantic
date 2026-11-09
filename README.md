@@ -7,7 +7,7 @@ Sidemantic is an open-source semantic runtime. Define governed metrics once—or
 - **Run on your warehouse:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL, and ADBC sources
 - **Consume metrics anywhere:** semantic SQL, CLI, Python, HTTP/Arrow, PostgreSQL wire protocol, MCP, notebooks, TypeScript/WASM, and embedded analytics
 
-[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Docker Hub](https://hub.docker.com/repository/docker/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
+[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Docker Hub](https://hub.docker.com/r/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
 
 ![Jupyter Widget Preview](preview.png)
 
@@ -28,12 +28,12 @@ Start from your own data — Sidemantic introspects it and generates models with
 inferred dimensions, metrics, and relationships:
 
 ```bash
-uvx sidemantic init analytics --from data/*.csv     # also Parquet, JSON, DuckDB
+uvx sidemantic init analytics --from 'data/*.csv'   # also Parquet, JSON, DuckDB
 cd analytics
-sidemantic query "SELECT orders.record_count FROM orders"
-sidemantic test              # golden-query assertions
-sidemantic validate --live   # models vs. actual database schema
-sidemantic serve             # web UI + HTTP API + MCP on one port
+uvx sidemantic query "SELECT orders.record_count FROM orders"
+uvx sidemantic test              # golden-query assertions
+uvx sidemantic validate --live   # models vs. actual database schema
+uvx --from "sidemantic[api,mcp]" sidemantic serve   # web UI + HTTP API + MCP on one port
 ```
 
 Or write a model by hand. Create `models/orders.yml`:
@@ -96,7 +96,13 @@ uvx --from "sidemantic[workbench]" sidemantic workbench ./models
 - **Explore data:** launch the terminal workbench, notebook widget, or browser UI.
 - **Serve other tools:** expose models over the HTTP API, PostgreSQL wire protocol, or MCP server.
 
-Install Sidemantic in a project with `uv add sidemantic`. Optional features are packaged as extras: `malloy`, `dax`, `workbench`, `widget`, `api`, `serve`, and `rust`.
+Install Sidemantic in a project with `uv add sidemantic`. Optional features are packaged as extras:
+
+- **Interfaces:** `api` (HTTP API and `sidemantic serve`), `mcp` (MCP server), `apps` (MCP apps with charts), `serve` (PostgreSQL wire protocol server), `workbench` (terminal UI), `widget` (Jupyter widget), `charts` (Altair charts for MCP chart tools), and `lsp` (language server)
+- **Model formats:** `lookml`, `metricflow`, `malloy`, `dax` (Power BI TMDL/DAX), and `ossie` (Apache Ossie schema validation)
+- **Databases:** `postgres`, `bigquery`, `snowflake`, `clickhouse`, `databricks`, `spark`, and `adbc`, or `all-databases` for all of them
+- **Engine:** `rust` (Rust engine) and `fast` (compiled SQLGlot)
+- **Bundle:** `full` (every interface, format, and engine extra except `serve`, `fast`, and the databases)
 
 Python is the default engine. To use the optional Rust engine, install `uv tool install "sidemantic[rust]"` (CLI) or `uv add "sidemantic[rust]"` (project), then select `--engine rust`. See [Rust engine mode](docs/rust-engine-mode.md).
 
@@ -108,7 +114,7 @@ DAX/TMDL support lives behind the `dax` extra because it includes a native Rust 
 uv add "sidemantic[dax]"
 ```
 
-Native Sidemantic YAML can preserve DAX expression source text for Power BI interoperability:
+Native Sidemantic YAML can preserve DAX expression source text next to the SQL definition Sidemantic queries, for Power BI interoperability:
 
 ```yaml
 models:
@@ -118,9 +124,14 @@ models:
     dimensions:
       - name: doubled_amount
         type: numeric
+        sql: amount * 2
+        expression_language: dax
         dax: "'sales'[amount] * 2"
     metrics:
       - name: revenue
+        agg: sum
+        sql: amount
+        expression_language: dax
         dax: "SUM('sales'[amount])"
 ```
 
@@ -129,7 +140,7 @@ Power BI TMDL projects can be loaded from a project root or `definition/` folder
 ```python
 from sidemantic import SemanticLayer, load_from_directory
 
-layer = SemanticLayer(connection="duckdb:///warehouse.duckdb")
+layer = SemanticLayer(connection="duckdb://warehouse.duckdb")
 load_from_directory(layer, "powerbi_project/")
 print(layer.describe_models(["Sales"]))
 ```
@@ -180,8 +191,9 @@ sidemantic validate models/ --live --db data.duckdb
 # Model info
 sidemantic info models/
 
-# Pre-aggregation recommendations
-sidemantic preagg recommend --db data.duckdb
+# Pre-aggregation recommendations from a log of compiled queries
+# (or --connection for Snowflake, BigQuery, Databricks, or ClickHouse query history)
+sidemantic preagg recommend --queries queries.sql
 
 # Migrate SQL queries to semantic layer
 sidemantic migrate generate legacy/ --output output/
@@ -286,7 +298,7 @@ sidemantic query "SELECT revenue FROM orders" --models ./my_models
 ```python
 from sidemantic import SemanticLayer, load_from_directory
 
-layer = SemanticLayer(connection="duckdb:///data.duckdb")
+layer = SemanticLayer(connection="duckdb://data.duckdb")  # duckdb:///abs/path.duckdb for absolute paths
 load_from_directory(layer, "my_models/")  # Auto-detects formats
 ```
 
@@ -313,12 +325,12 @@ pinned schema profiles, validation policies, scope rules, and round-trip limits.
 |----------|:------:|--------------|
 | DuckDB | ✅ | built-in |
 | MotherDuck | ✅ | built-in |
-| PostgreSQL | ✅ | `uv add sidemantic[postgres]` |
-| BigQuery | ✅ | `uv add sidemantic[bigquery]` |
-| Snowflake | ✅ | `uv add sidemantic[snowflake]` |
-| ClickHouse | ✅ | `uv add sidemantic[clickhouse]` |
-| Databricks | ✅ | `uv add sidemantic[databricks]` |
-| Spark SQL | ✅ | `uv add sidemantic[spark]` |
+| PostgreSQL | ✅ | `uv add "sidemantic[postgres]"` |
+| BigQuery | ✅ | `uv add "sidemantic[bigquery]"` |
+| Snowflake | ✅ | `uv add "sidemantic[snowflake]"` |
+| ClickHouse | ✅ | `uv add "sidemantic[clickhouse]"` |
+| Databricks | ✅ | `uv add "sidemantic[databricks]"` |
+| Spark SQL | ✅ | `uv add "sidemantic[spark]"` |
 
 ## Docker
 
@@ -340,35 +352,38 @@ For Cloudflare Worker + Container deployment, see [`examples/cloudflare_containe
 
 ## HTTP API
 
-Start the API server:
+These examples use the project created by `uvx sidemantic demo`. Create a
+bearer token file, then start the API server:
 
 ```bash
-uvx --from "sidemantic[api]" sidemantic server api models/ --db data.duckdb --port 4400 --auth-token-file .secrets/api-token
+cd sidemantic-demo
+mkdir -p .secrets && openssl rand -hex 32 > .secrets/api-token
+uvx --from "sidemantic[api]" sidemantic server api models/ --db data/demo.duckdb --port 4400 --auth-token-file .secrets/api-token
 ```
 
-Compile a structured semantic query:
+In another terminal in `sidemantic-demo`, compile a structured semantic query:
 
 ```bash
 curl -s http://localhost:4400/compile \
-  -H "Authorization: Bearer secret" \
+  -H "Authorization: Bearer $(cat .secrets/api-token)" \
   -H "Content-Type: application/json" \
-  -d '{"dimensions":["orders.status"],"metrics":["orders.total_amount"]}'
+  -d '{"dimensions":["orders.status"],"metrics":["orders.revenue"]}'
 ```
 
 Run a structured query as JSON:
 
 ```bash
 curl -s http://localhost:4400/query \
-  -H "Authorization: Bearer secret" \
+  -H "Authorization: Bearer $(cat .secrets/api-token)" \
   -H "Content-Type: application/json" \
-  -d '{"dimensions":["orders.status"],"metrics":["orders.total_amount","orders.order_count"]}'
+  -d '{"dimensions":["orders.status"],"metrics":["orders.revenue","orders.order_count"]}'
 ```
 
 Run a structured query as Arrow IPC:
 
 ```bash
 curl -s http://localhost:4400/query \
-  -H "Authorization: Bearer secret" \
+  -H "Authorization: Bearer $(cat .secrets/api-token)" \
   -H "Accept: application/vnd.apache.arrow.stream" \
   -H "Content-Type: application/json" \
   -d '{"metrics":["orders.order_count"]}' \
@@ -379,9 +394,9 @@ Execute rewritten SQL over HTTP:
 
 ```bash
 curl -s http://localhost:4400/sql \
-  -H "Authorization: Bearer secret" \
+  -H "Authorization: Bearer $(cat .secrets/api-token)" \
   -H "Content-Type: application/json" \
-  -d '{"query":"SELECT status, total_amount FROM orders ORDER BY status"}'
+  -d '{"query":"SELECT status, revenue FROM orders ORDER BY status"}'
 ```
 
 ## Agent Plugin

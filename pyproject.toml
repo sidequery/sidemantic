@@ -73,7 +73,8 @@ ossie = [
     "jsonschema>=4.23,<5",
 ]
 serve = [
-    "riffq>=0.1.0",
+    # riffq changes its handler API in minor releases; 0.4 is the tested series.
+    "riffq>=0.4.1,<0.5",
     "pyarrow>=14.0.0",
     "lkml>=1.3.7",  # The bundled --demo models include LookML.
 ]

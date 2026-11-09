@@ -256,6 +256,86 @@ def bootstrap_models(connection: str, init_sql: list[str] | None = None, *, prof
     return BootstrapResult(tables=tables, model_dicts=model_dicts, notes=notes)
 
 
+_SECRET_QUERY_MARKERS = ("password", "secret", "token", "key")
+CONNECTION_PASSWORD_FILE = ".secrets/db-password"
+
+
+def redact_connection_url(connection: str) -> str:
+    """Mask the password and secret-looking query values of a connection URL."""
+
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(connection)
+    redacted = connection
+    if parts.password is not None:
+        userinfo, _, host = parts.netloc.rpartition("@")
+        username = userinfo.split(":", 1)[0]
+        redacted = redacted.replace(f"//{parts.netloc}", f"//{username}:****@{host}", 1)
+    if parts.query:
+        masked_pairs = []
+        for pair in parts.query.split("&"):
+            key = pair.split("=", 1)[0]
+            secret = any(marker in key.lower() for marker in _SECRET_QUERY_MARKERS)
+            masked_pairs.append(f"{key}=****" if secret else pair)
+        redacted = redacted.replace(f"?{parts.query}", "?" + "&".join(masked_pairs), 1)
+    return redacted
+
+
+def connection_config_example(connection: str) -> dict | None:
+    """Express a connection URL as a ``sidemantic.yaml`` connection block without secrets.
+
+    A password in the URL becomes a ``password_file`` reference so the block can
+    be committed. Returns None when project config cannot express the URL.
+    """
+
+    from urllib.parse import parse_qs, unquote, urlsplit
+
+    parts = urlsplit(connection)
+    scheme = parts.scheme.lower()
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    username = unquote(parts.username) if parts.username else None
+    path_parts = [unquote(part) for part in parts.path.split("/") if part]
+    query = {key: values[-1] for key, values in parse_qs(parts.query).items()}
+    credentials = {"password_file": CONNECTION_PASSWORD_FILE} if parts.password is not None else {}
+
+    if scheme == "duckdb":
+        path = parts.netloc + parts.path
+        if parts.query or path.startswith("md:") or path in {"", "/", ":memory:", "/:memory:"}:
+            return None
+        return {"type": "duckdb", "path": path}
+    if scheme == "bigquery":
+        block = {"type": "bigquery", "project_id": parts.netloc}
+        return {**block, "dataset_id": path_parts[0]} if path_parts else block
+    if scheme == "snowflake":
+        block = {"type": "snowflake", "account": parts.hostname, "username": username or "<username>"}
+        block["password_file"] = CONNECTION_PASSWORD_FILE
+        for key, value in zip(("database", "schema"), path_parts):
+            block[key] = value
+        for key in ("warehouse", "role"):
+            if key in query:
+                block[key] = query[key]
+        return block
+    defaults = {
+        "postgres": ("postgres", "postgres", "<username>"),
+        "postgresql": ("postgres", "postgres", "<username>"),
+        "clickhouse": ("clickhouse", "default", "default"),
+        "spark": ("spark", "default", None),
+    }
+    if scheme not in defaults:
+        return None
+    config_type, default_database, default_username = defaults[scheme]
+    block = {"type": config_type, "host": parts.hostname or "localhost"}
+    if port is not None:
+        block["port"] = port
+    block["database"] = path_parts[0] if path_parts else default_database
+    if username or default_username:
+        block["username"] = username or default_username
+    return {**block, **credentials}
+
+
 def write_model_files(result: BootstrapResult, models_dir: Path, *, force: bool = False) -> list[Path]:
     """Write one native YAML file per generated model."""
 

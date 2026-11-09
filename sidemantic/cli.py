@@ -499,8 +499,105 @@ def _scaffold_payload(root: Path, created: list[Path]) -> dict[str, object]:
     return {"root": str(root), "created": [_relative_to_root(path, root) for path in sorted(created)]}
 
 
-@app.command(epilog=GROUP_EPILOG)
+def _cd_hint(root: Path) -> str:
+    """Return a ``cd`` line for next-step guidance when the project is not the cwd."""
+
+    cwd = Path.cwd().resolve()
+    return "" if root == cwd else f"  cd {_relative_to_root(root, cwd)}\n"
+
+
+def _expand_from_sources(sources: list[Path]) -> list[Path]:
+    """Resolve ``init --from`` values from the cwd, expanding glob patterns like ``data/*.csv``."""
+
+    import glob
+
+    resolved: list[Path] = []
+    for source in sources:
+        candidate = source.expanduser()
+        if glob.has_magic(str(candidate)):
+            # Match relative patterns under the cwd without treating the cwd itself as a pattern.
+            if candidate.is_absolute():
+                matches = [Path(match) for match in glob.glob(str(candidate))]
+            else:
+                matches = [Path.cwd() / match for match in glob.glob(str(candidate), root_dir=Path.cwd())]
+            if not matches:
+                raise InvocationError(f"--from pattern matched no files: {source}")
+            resolved.extend(sorted(match.resolve() for match in matches))
+            continue
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        candidate = candidate.resolve()
+        if not candidate.exists():
+            raise InvocationError(f"--from source not found: {candidate}")
+        resolved.append(candidate)
+    # A file named twice (a glob plus an explicit path) is still one source.
+    return list(dict.fromkeys(resolved))
+
+
+def _portable_config_path(path: Path, root: Path) -> str:
+    """Spell a data source path for the generated ``sidemantic.yaml``.
+
+    Sources under or beside the project root are written relative to it, which
+    the config loader resolves from the config file's directory, so the project
+    keeps working after it is moved or cloned together with its data. Sources
+    elsewhere stay absolute.
+    """
+
+    import os
+
+    from sidemantic.paths import is_within
+
+    if is_within(path, root.parent):
+        return Path(os.path.relpath(path.resolve(), root.resolve())).as_posix()
+    return str(path)
+
+
+def _absolute_duckdb_url(connection: str) -> str:
+    """Pin a cwd-relative DuckDB URL (duckdb://data.duckdb) to an absolute path.
+
+    Next-step commands run after ``cd`` into the new project, where the
+    original relative path would open a different (new, empty) database.
+    """
+
+    if not connection.startswith("duckdb://") or connection.startswith(("duckdb:///", "duckdb://md:")):
+        return connection
+    location, separator, query = connection.removeprefix("duckdb://").partition("?")
+    if location in {"", ":memory:"}:
+        return connection
+    return f"duckdb://{(Path.cwd() / Path(location).expanduser()).resolve()}{separator}{query}"
+
+
+def _unsaved_connection_comment(connection: str, root: Path) -> str:
+    """Explain, in the generated config, how to supply an unsaved --from-connection URL."""
+
+    import yaml
+
+    from sidemantic.bootstrap import connection_config_example
+
+    lines = [
+        "# `sidemantic init --from-connection` does not save the connection here because",
+        "# connection URLs can contain credentials. Pass --connection to query, test, and",
+        "# validate --live, or save the connection by uncommenting this block",
+    ]
+    example = connection_config_example(connection)
+    if example is None:
+        lines[-1] = "# validate --live, or add a `connection:` block (see the docs; keep passwords in a password_file)."
+        return "\n".join(lines) + "\n"
+    if example["type"] == "duckdb":
+        database = Path(example["path"]).expanduser()
+        example["path"] = _portable_config_path(database if database.is_absolute() else Path.cwd() / database, root)
+    if "password_file" in example:
+        lines[-1] += f" and writing the password to {example['password_file']}:"
+    else:
+        lines[-1] += ":"
+    block = yaml.dump({"connection": example}, sort_keys=False, default_flow_style=False)
+    lines.extend(f"# {line}" for line in block.splitlines())
+    return "\n".join(lines) + "\n"
+
+
+@app.command(epilog=GROUP_EPILOG, context_settings={"allow_extra_args": True})
 def init(
+    ctx: typer.Context,
     directory: Path = typer.Argument(None, help="Project directory to create (defaults to the current directory)"),
     from_sources: list[Path] = typer.Option(
         None,
@@ -530,6 +627,25 @@ def init(
     try:
         import yaml as yaml_module
 
+        extra_args = [Path(arg) for arg in ctx.args]
+        if from_sources:
+            # An unquoted glob (--from data/*.csv) reaches the CLI as one --from
+            # value followed by bare file arguments. A project directory is never
+            # an existing file, so existing files among the positionals are
+            # further sources and at most one other positional is the directory.
+            positionals = ([directory] if directory is not None else []) + extra_args
+            shell_expanded = [path for path in positionals if path.expanduser().is_file()]
+            directories = [path for path in positionals if not path.expanduser().is_file()]
+            from_sources = [*from_sources, *shell_expanded]
+            directory = directories[0] if directories else None
+            extra_args = directories[1:]
+        if extra_args:
+            listing = " ".join(str(arg) for arg in extra_args)
+            raise InvocationError(
+                f"Got unexpected extra argument(s): {listing}. sidemantic init takes one project directory; "
+                "to generate models from several files, repeat --from, pass a directory (--from data/), "
+                "or quote the glob (--from 'data/*.csv')"
+            )
         if from_sources and from_connection:
             raise InvocationError("--from and --from-connection are mutually exclusive")
 
@@ -549,9 +665,10 @@ def init(
                 emit_diagnostic(f"  {_relative_to_root(path, root)}")
             emit_guidance(
                 "Next:\n"
+                f"{_cd_hint(root)}"
                 '  sidemantic query "SELECT orders.status, orders.revenue FROM orders"\n'
                 "  sidemantic test\n"
-                "  sidemantic init --from data/*.csv   # regenerate models from real data"
+                "  sidemantic init --from 'data/*.csv'   # regenerate models from real data"
             )
             return
 
@@ -562,15 +679,7 @@ def init(
             connection_str = from_connection
             init_sql = None
         else:
-            sources = []
-            for source in from_sources:
-                resolved = source.expanduser()
-                if not resolved.is_absolute():
-                    resolved = Path.cwd() / resolved
-                resolved = resolved.resolve()
-                if not resolved.exists():
-                    raise InvocationError(f"--from source not found: {resolved}")
-                sources.append(resolved)
+            sources = _expand_from_sources(from_sources)
 
             from sidemantic.datafiles import build_file_views, discover_data_files, is_data_file
 
@@ -597,13 +706,13 @@ def init(
             if db_files:
                 connection_str = f"duckdb:///{db_files[0]}"
                 init_sql = None
-                connection_config = {"type": "duckdb", "path": _relative_to_root(db_files[0], root)}
+                connection_config = {"type": "duckdb", "path": _portable_config_path(db_files[0], root)}
             else:
                 connection_str = "duckdb:///:memory:"
                 init_sql = build_file_views(data_files)
                 connection_config = {
                     "type": "files",
-                    "paths": [_relative_to_root(path, root) for path in data_files],
+                    "paths": [_portable_config_path(path, root) for path in data_files],
                 }
 
         with progress("Introspecting data and generating models"):
@@ -622,10 +731,8 @@ def init(
             if connection_config:
                 config_data["connection"] = connection_config
             header = "# Sidemantic project configuration.\n# Docs: https://sidemantic.com/sidemantic/cli\n"
-            if connection_config is None:
-                header += (
-                    "# Add a `connection:` block for your database (see docs), or pass --connection at query time.\n"
-                )
+            if from_connection:
+                header += _unsaved_connection_comment(from_connection, root)
             config_path.write_text(header + yaml_module.dump(config_data, sort_keys=False, default_flow_style=False))
             created.append(config_path)
 
@@ -662,12 +769,29 @@ def init(
         for note in bootstrap.notes:
             emit_diagnostic(f"  {note}")
         first_model = sorted(bootstrap.model_dicts)[0]
+        connection_option = ""
+        connection_note = ""
+        if from_connection:
+            import shlex
+
+            from sidemantic.bootstrap import redact_connection_url
+
+            displayed_connection = redact_connection_url(_absolute_duckdb_url(from_connection))
+            connection_option = f" --connection {shlex.quote(displayed_connection)}"
+            connection_note = (
+                "The connection was not saved to sidemantic.yaml because connection URLs can contain credentials.\n"
+                "Pass it with --connection as shown, or add the connection block suggested in sidemantic.yaml.\n"
+            )
+            if "****" in displayed_connection:
+                connection_note += "(**** marks a value hidden from this output.)\n"
         emit_guidance(
             "Generated models are a starting point; review and rename before sharing.\n"
+            f"{connection_note}"
             "Next:\n"
-            f'  sidemantic query "SELECT {first_model}.record_count FROM {first_model}"\n'
-            "  sidemantic test\n"
-            "  sidemantic validate --live"
+            f"{_cd_hint(root)}"
+            f'  sidemantic query "SELECT {first_model}.record_count FROM {first_model}"{connection_option}\n'
+            f"  sidemantic test{connection_option}\n"
+            f"  sidemantic validate --live{connection_option}"
         )
     except typer.Exit:
         raise

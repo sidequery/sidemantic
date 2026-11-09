@@ -111,7 +111,7 @@ class HexAdapter(BaseAdapter):
 
         # Parse dimensions and find primary key
         dimensions = []
-        primary_key = "id"  # default
+        primary_key = None
 
         for dim_def in model_def.get("dimensions") or []:
             dim = self._parse_dimension(dim_def)
@@ -121,6 +121,11 @@ class HexAdapter(BaseAdapter):
                 # Check if this is unique (could be primary key)
                 if dim_def.get("unique"):
                     primary_key = dim.name
+
+        # Without a unique dimension the key is unknown. Assume the conventional
+        # ``id`` only when the model declares that column; never invent one.
+        if primary_key is None and any(dim.name == "id" for dim in dimensions):
+            primary_key = "id"
 
         # Parse measures
         measures = []
@@ -643,6 +648,13 @@ class HexAdapter(BaseAdapter):
                 dim_def["unique"] = True
 
             dimensions.append(dim_def)
+
+        # Hex marks the key with ``unique`` on a dimension. Declare a key column
+        # that is not already a dimension so import does not assume ``id``.
+        if len(model.primary_key_columns) == 1 and not model.get_dimension(model.primary_key_columns[0]):
+            dimensions.append(
+                {"id": model.primary_key_columns[0], "type": "string", "visibility": "internal", "unique": True}
+            )
 
         if dimensions:
             model_def["dimensions"] = dimensions

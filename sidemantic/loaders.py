@@ -416,6 +416,7 @@ def load_from_directory(
 
     # Find and parse all files (just the requested one in single-file mode).
     scan_files = [only_file] if only_file is not None else project_files
+    holistics_project_parsed = False
     for file_path in scan_files:
         if not file_path.is_file():
             continue
@@ -509,6 +510,13 @@ def load_from_directory(
             from sidemantic.adapters.holistics import HolisticsAdapter
 
             adapter = HolisticsAdapter()
+            # AML relationships and partial models name definitions in other
+            # files, so a directory is parsed once as a project, not per file.
+            if only_file is None:
+                if holistics_project_parsed:
+                    continue
+                holistics_project_parsed = True
+                file_path = directory
         elif suffix == ".tml":
             adapter = ThoughtSpotAdapter()
         elif suffix in (".tds", ".twb", ".tdsx", ".twbx"):
@@ -660,6 +668,11 @@ def load_from_directory(
     # so an explicit Cortex join takes precedence over a guessed one for the same
     # table pair.
     _apply_snowflake_pending_relationships(all_models, all_pending_relationships)
+
+    # Omni keeps joins in project-level relationships/model files, while its
+    # views were parsed one file at a time above. Attach them before inference.
+    if only_file is None:
+        _apply_omni_relationship_files(project_files, all_models, strict=strict)
 
     # Drop non-queryable template models (LookML `extension: required` abstract bases /
     # unsupported derived tables) BEFORE inference + registration, so FK inference never
@@ -1645,6 +1658,28 @@ def _apply_snowflake_pending_relationships(all_models: dict, pending: list) -> N
 
     SnowflakeAdapter().apply_pending_relationships(pending, all_models)
     pending.clear()
+
+
+def _apply_omni_relationship_files(project_files: list[Path], all_models: dict, *, strict: bool) -> None:
+    """Attach joins from Omni relationships/model files to the loaded Omni views."""
+    views = {name: model for name, model in all_models.items() if getattr(model, "_source_format", None) == "Omni"}
+    if not views:
+        return
+    from types import SimpleNamespace
+
+    from sidemantic.adapters.omni import OmniAdapter
+
+    adapter = OmniAdapter()
+    loaded = SimpleNamespace(models=views)
+    for file_path in project_files:
+        name = file_path.name.lower()
+        try:
+            if name in ("relationships.yaml", "relationships.yml"):
+                adapter._parse_relationships_list(adapter._load_relationships_list(file_path), loaded)
+            elif name in ("model.yaml", "model.yml"):
+                adapter._parse_relationships(file_path, loaded)
+        except Exception as e:
+            _handle_parse_error(file_path, e, strict=strict)
 
 
 def _deep_merge_metadata(target: dict, source: dict) -> None:

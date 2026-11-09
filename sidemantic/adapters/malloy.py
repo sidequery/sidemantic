@@ -10,7 +10,7 @@ import warnings
 from decimal import Decimal
 from pathlib import Path
 
-from sidemantic.adapters.base import BaseAdapter
+from sidemantic.adapters.base import BaseAdapter, graph_only_metric_names, reject_unsupported_export
 from sidemantic.adapters.malloy_expressions import MalloyExpressionBuilder, MalloyExpressionLoweringError
 from sidemantic.adapters.malloy_modules import (
     MalloyExportStatement,
@@ -3801,6 +3801,19 @@ class MalloyAdapter(BaseAdapter):
         from sidemantic.core.inheritance import resolve_model_inheritance
 
         resolved_models = resolve_model_inheritance(graph.models)
+        # A Malloy measure lives inside a source; a metric no model owns has
+        # nowhere to go and must not disappear from the output.
+        reject_unsupported_export(
+            "malloy",
+            [
+                (
+                    "graph_metrics",
+                    name,
+                    f"Graph-level metric '{name}' has no owning Malloy source; attach it to a model before exporting",
+                )
+                for name in graph_only_metric_names(graph, resolved_models)
+            ],
+        )
 
         # Generate Malloy content
         lines = []

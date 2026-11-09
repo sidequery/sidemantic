@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+# /// script
+# dependencies = ["sidemantic", "duckdb", "pandas"]
+# ///
 """Example: DuckDB pre-aggregation layer on top of Hive-partitioned parquet.
 
 This builds on the basic hive_parquet_example.py by adding a pre-aggregation

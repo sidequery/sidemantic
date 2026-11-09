@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+# /// script
+# dependencies = ["sidemantic", "duckdb", "pandas"]
+# ///
 """Example: Using Sidemantic with Hive-partitioned parquet files.
 
 DuckDB natively supports reading Hive-partitioned parquet directories.

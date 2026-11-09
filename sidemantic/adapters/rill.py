@@ -10,10 +10,12 @@ from typing import Any
 
 import yaml
 
+from sidemantic.adapters.base import filtered_aggregate_sql, graph_only_metric_names, reject_unsupported_export
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_export_note
 from sidemantic.paths import output_child
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
@@ -760,6 +762,24 @@ class RillAdapter:
         from sidemantic.core.inheritance import resolve_model_inheritance
 
         resolved_models = resolve_model_inheritance(graph.models)
+        reject_unsupported_export("rill", self._unsupported_constructs(graph, resolved_models))
+        # Each model is written as a standalone single-table definition: the
+        # numbers it reports stay correct, but joins and keys are not carried.
+        for model in resolved_models.values():
+            for rel in model.relationships:
+                record_export_note(
+                    "relationship",
+                    f"A Rill metrics view reads one table and has no joins; "
+                    f"relationship '{model.name}.{rel.name}' is not exported",
+                    source="rill",
+                )
+            if model.primary_key_columns:
+                record_export_note(
+                    "primary_key",
+                    f"A Rill metrics view has no key; key {', '.join(model.primary_key_columns)} "
+                    f"of '{model.name}' is not exported",
+                    source="rill",
+                )
 
         if full_project:
             # Generate rill.yaml
@@ -788,6 +808,36 @@ class RillAdapter:
             # Legacy behavior: only export metrics_views to output_path
             for model in resolved_models.values():
                 self._export_model(model, output_dir, graph)
+
+    def _unsupported_constructs(self, graph: SemanticGraph, models: dict[str, Model]) -> list[tuple[str, str, str]]:
+        """Constructs a Rill metrics view cannot carry, as ``(feature, location, detail)``."""
+        problems = [
+            (
+                "graph_metrics",
+                name,
+                f"Graph-level metric '{name}' has no owning metrics view; attach it to a model before exporting",
+            )
+            for name in graph_only_metric_names(graph, models)
+        ]
+        for model in models.values():
+            for metric in model.metrics:
+                location = f"{model.name}.{metric.name}"
+                if self._measure_expression(metric, model.name) is None:
+                    feature = "metric_filter" if metric.filters else "metric_type"
+                    problems.append((feature, location, f"'{location}' has no Rill measure expression"))
+        return problems
+
+    @staticmethod
+    def _measure_expression(metric: Metric, model_name: str) -> str | None:
+        """SQL expression for a Rill measure, or None when the metric cannot be written."""
+        if metric.agg and not metric.type:
+            return filtered_aggregate_sql(metric, model_name)
+        if metric.filters:
+            return None
+        if metric.type == "ratio" and metric.numerator and metric.denominator and not metric.sql:
+            # A derived Rill measure references other measures of the view by name.
+            return f"{metric.numerator.split('.')[-1]} / NULLIF({metric.denominator.split('.')[-1]}, 0)"
+        return metric.sql or None
 
     def _export_project_config(self, output_dir: Path, project_name: str | None) -> None:
         """Export rill.yaml project configuration.
@@ -949,13 +999,8 @@ class RillAdapter:
         # Export measures
         measures = []
         for metric in model.metrics:
-            # Build expression from agg + sql or just sql
-            if metric.agg and metric.sql:
-                expression = f"{metric.agg.upper()}({metric.sql})"
-            elif metric.agg:
-                expression = f"{metric.agg.upper()}(*)"
-            else:
-                expression = metric.sql or ""
+            # export() has already refused metrics without an expression.
+            expression = self._measure_expression(metric, model.name) or ""
 
             measure_def: dict[str, Any] = {
                 "name": metric.name,
@@ -977,7 +1022,7 @@ class RillAdapter:
                     measure_def["format_preset"] = format_preset
 
             # Map metric type to Rill measure type
-            if metric.type == "derived":
+            if metric.type in ("derived", "ratio"):
                 measure_def["type"] = "derived"
             elif metric.type == "cumulative":
                 # Export window function definition

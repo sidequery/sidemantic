@@ -36,13 +36,26 @@ def test_cube_to_gooddata_conversion():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         output_path = Path(tmpdir)
+        # An LDM fact is a physical column that imports as SUM. Counts, averages,
+        # filtered measures and ratios need MAQL metrics, so the export names
+        # them instead of writing facts that would import as different metrics.
+        with pytest.raises(ValueError) as rejected:
+            gooddata_adapter.export(graph, output_path)
+        for metric in ("orders.count", "orders.completed_revenue", "orders.avg_order_value", "orders.conversion_rate"):
+            assert metric in str(rejected.value)
+        assert "orders.revenue" not in str(rejected.value).replace("orders.completed_revenue", "")
+        assert not (output_path / "ldm.json").exists()
+
+        orders = graph.models["orders"]
+        orders.metrics = [metric for metric in orders.metrics if metric.name == "revenue"]
         gooddata_adapter.export(graph, output_path)
 
         ldm_path = output_path / "ldm.json"
         assert ldm_path.exists()
 
         gd_graph = gooddata_adapter.parse(ldm_path)
-        assert "orders" in gd_graph.models
+        revenue = gd_graph.models["orders"].get_metric("revenue")
+        assert (revenue.agg, revenue.sql) == ("sum", "amount")
 
 
 if __name__ == "__main__":

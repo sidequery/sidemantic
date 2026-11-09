@@ -9,13 +9,13 @@ from typing import Any
 
 import yaml
 
-from sidemantic.adapters.base import BaseAdapter
+from sidemantic.adapters.base import BaseAdapter, reject_unsupported_export
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.fidelity import record_export_feature, record_import_feature
+from sidemantic.fidelity import record_export_feature, record_export_note, record_import_feature
 from sidemantic.paths import output_child
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
@@ -854,7 +854,9 @@ class ThoughtSpotAdapter(BaseAdapter):
                 default_grain = dim.granularity
                 break
 
-        primary_key = "id"
+        # TML has no primary-key property. Assume the conventional ``id`` only
+        # when that column is declared; never invent one.
+        primary_key = None
         if any(d.name.lower() == "id" for d in dimensions):
             primary_key = next(d.name for d in dimensions if d.name.lower() == "id")
 
@@ -1001,9 +1003,25 @@ class ThoughtSpotAdapter(BaseAdapter):
                 default_grain = dim.granularity
                 break
 
-        primary_key = "id"
+        # TML has no primary-key property. Assume the conventional ``id`` only
+        # when that column is declared; never invent one.
+        primary_key = None
         if any(d.name.lower() == "id" for d in dimensions):
             primary_key = next(d.name for d in dimensions if d.name.lower() == "id")
+
+        if sql:
+            # A joined worksheet becomes a derived table, so its `table.column`
+            # references and relationship join keys must be projected under
+            # names that stay in scope (same handling as joined Model TML).
+            known_tables = set(table_name_lookup.values()) | set(table_path_lookup.values())
+            key_names = {column for rel in relationships for column in rel.foreign_key_columns}
+            key_refs: dict[str, tuple[str, str]] = {}
+            for join_def in joins:
+                for left, right in _extract_all_join_refs(join_def.get("on"), table_path_lookup or table_name_lookup):
+                    for ref in (left, right):
+                        if ref and ref[1] in key_names and ref[0] in known_tables:
+                            key_refs.setdefault(ref[1], ref)
+            sql = _expose_joined_columns(sql, known_tables, dimensions, metrics, base_table, primary_key, key_refs)
 
         model = Model(
             name=name,
@@ -1635,6 +1653,15 @@ class ThoughtSpotAdapter(BaseAdapter):
         from sidemantic.core.inheritance import resolve_model_inheritance
 
         resolved_models = resolve_model_inheritance(graph.models)
+        reject_unsupported_export("thoughtspot", self._unsupported_constructs(resolved_models))
+        for model in resolved_models.values():
+            key = model.primary_key_columns
+            if key and not (len(key) == 1 and key[0].lower() == "id" and model.get_dimension(key[0])):
+                record_export_note(
+                    "primary_key",
+                    f"TML has no primary-key property; key {', '.join(key)} of '{model.name}' is not exported",
+                    source="thoughtspot",
+                )
 
         if output_path.suffix and not output_path.is_dir() and len(resolved_models) > 1:
             record_export_feature(
@@ -1643,7 +1670,7 @@ class ThoughtSpotAdapter(BaseAdapter):
             raise ValueError("ThoughtSpot export needs an output directory for multiple models")
         # Prepare all documents before creating output; a rejected edit must not
         # leave a partially written document set.
-        documents = [(model.name, self._export_model(model)) for model in resolved_models.values()]
+        documents = [(model.name, self._export_model(model, resolved_models)) for model in resolved_models.values()]
 
         if output_path.is_dir() or not output_path.suffix:
             output_path.mkdir(parents=True, exist_ok=True)
@@ -1658,9 +1685,63 @@ class ThoughtSpotAdapter(BaseAdapter):
                 with open(output_path, "w") as f:
                     yaml.safe_dump(tml["data"], f, sort_keys=False)
 
-    def _export_model(self, model: Model) -> dict[str, Any]:
+    def _unsupported_constructs(self, models: dict[str, Model]) -> list[tuple[str, str, str]]:
+        """Constructs TML columns cannot carry, as ``(feature, location, detail)``."""
+        problems: list[tuple[str, str, str]] = []
+        for model in models.values():
+            native_table = (model.metadata or {}).get("thoughtspot", {}).get("kind") == "table"
+            for metric in model.metrics:
+                location = f"{model.name}.{metric.name}"
+                if metric.filters:
+                    problems.append(
+                        (
+                            "metric_filter",
+                            location,
+                            f"Filter on '{location}' needs a conditional formula (sum_if/count_if), "
+                            "which this exporter does not write",
+                        )
+                    )
+                elif (
+                    metric.agg == "count"
+                    and not metric.sql
+                    and not native_table
+                    and len(model.primary_key_columns) != 1
+                ):
+                    problems.append(
+                        (
+                            "metric_aggregation",
+                            location,
+                            f"Row count '{location}' needs a column to count; declare a single-column primary key",
+                        )
+                    )
+            for rel in model.relationships:
+                target = models.get(rel.related_model)
+                if not native_table and not self._join_keys(model, rel, target):
+                    problems.append(
+                        (
+                            "relationship",
+                            f"{model.name}.{rel.name}",
+                            f"Relationship '{model.name}.{rel.name}' has no resolvable single-column join keys",
+                        )
+                    )
+        return problems
+
+    @staticmethod
+    def _join_keys(model: Model, rel: Relationship, target: Model | None) -> tuple[str, str] | None:
+        """``(base column, related column)`` for a single-column join, or None."""
+        if rel.type in {"one_to_many", "one_to_one"}:
+            base_columns = rel.primary_key_columns or model.primary_key_columns
+            related_columns = rel.foreign_key_columns
+        else:
+            base_columns = rel.foreign_key_columns
+            related_columns = rel.primary_key_columns or (target.primary_key_columns if target else [])
+        if len(base_columns) != 1 or len(related_columns) != 1:
+            return None
+        return base_columns[0], related_columns[0]
+
+    def _export_model(self, model: Model, models: dict[str, Model] | None = None) -> dict[str, Any]:
         if self._should_export_worksheet(model):
-            return {"__type": "worksheet", "data": self._export_worksheet(model)}
+            return {"__type": "worksheet", "data": self._export_worksheet(model, models or {})}
         return {"__type": "table", "data": self._export_table(model)}
 
     def _should_export_worksheet(self, model: Model) -> bool:
@@ -1756,9 +1837,17 @@ class ThoughtSpotAdapter(BaseAdapter):
 
         for metric in model.metrics:
             data_type = "DOUBLE"
+            # TML counts a column, not rows; the non-null key counts every row.
+            row_count_column = (
+                model.primary_key_columns[0]
+                if metric.agg == "count" and not metric.sql and len(model.primary_key_columns) == 1
+                else None
+            )
             col_def: dict[str, Any] = {
                 "name": metric.name,
-                "db_column_name": _preserved_column_binding(metric) or _simple_column(metric.sql, metric.name),
+                "db_column_name": _preserved_column_binding(metric)
+                or row_count_column
+                or _simple_column(metric.sql, metric.name),
                 "data_type": data_type,
                 "properties": {
                     "column_type": "MEASURE",
@@ -1796,7 +1885,7 @@ class ThoughtSpotAdapter(BaseAdapter):
             "table": table_def,
         }
 
-    def _export_worksheet(self, model: Model) -> dict[str, Any]:
+    def _export_worksheet(self, model: Model, models: dict[str, Model] | None = None) -> dict[str, Any]:
         base_table = getattr(model, "_worksheet_base_table", None)
         if not base_table:
             base_table = model.table or model.name
@@ -1809,16 +1898,18 @@ class ThoughtSpotAdapter(BaseAdapter):
             tables.append({"name": rel.related_model})
             join_name = f"{base_table}_{rel.name}"
             join_type = "LEFT_OUTER" if rel.type in {"many_to_one", "one_to_one"} else "OUTER"
+            # A relationship without its own key joins on the related model's key.
+            keys = self._join_keys(model, rel, (models or {}).get(rel.related_model))
             if rel.type in {"one_to_many", "one_to_one"}:
                 left_table = rel.related_model
-                left_key = rel.sql_expr
+                left_key = keys[1] if keys else rel.sql_expr
                 right_table = base_table
-                right_key = model.primary_key
+                right_key = keys[0] if keys else model.primary_key
             else:
                 left_table = base_table
-                left_key = rel.sql_expr
+                left_key = keys[0] if keys else rel.sql_expr
                 right_table = rel.related_model
-                right_key = rel.related_key
+                right_key = keys[1] if keys else rel.related_key
             on_expr = f"[{left_table}::{left_key}] = [{right_table}::{right_key}]"
             joins.append(
                 {
@@ -1895,6 +1986,9 @@ class ThoughtSpotAdapter(BaseAdapter):
 
         for metric in model.metrics:
             metric_sql = metric.sql or metric.name
+            # TML counts a column, not rows; the non-null key counts every row.
+            if metric.agg == "count" and not metric.sql and len(model.primary_key_columns) == 1:
+                metric_sql = model.primary_key_columns[0]
             table_ref, col_ref = _split_sql_identifier(metric_sql)
             if not table_ref and col_ref:
                 table_ref = base_table

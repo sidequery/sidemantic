@@ -7,7 +7,7 @@ import sqlglot
 import yaml
 from sqlglot import exp
 
-from sidemantic.adapters.base import BaseAdapter
+from sidemantic.adapters.base import BaseAdapter, filtered_measure_sql
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -862,6 +862,14 @@ class SnowflakeAdapter(BaseAdapter):
             # Skip metric types Snowflake cannot represent (no `expr`) rather than
             # emitting an invalid stub that would fail to re-parse.
             if "expr" not in metric_def:
+                if metric.filters:
+                    record_export_note(
+                        "metric_filter",
+                        f"Snowflake cannot represent the filter on graph metric {metric.name!r}",
+                        severity="unsupported",
+                        source="snowflake",
+                    )
+                    continue
                 record_export_note(
                     "unsupported_metric",
                     f"Snowflake cannot represent graph metric {metric.name!r} of type {metric.type!r}",
@@ -963,7 +971,7 @@ class SnowflakeAdapter(BaseAdapter):
         for metric in model.metrics:
             snowflake_meta = (metric.metadata or {}).get("snowflake", {})
             has_metric_only_key = any(key in snowflake_meta for key in metric_only_keys)
-            if metric.agg and not metric.type and not has_metric_only_key:
+            if metric.agg and not metric.type and not has_metric_only_key and not metric.filters:
                 # Simple aggregation -> fact
                 fact = self._export_fact(metric)
                 facts.append(fact)
@@ -972,8 +980,17 @@ class SnowflakeAdapter(BaseAdapter):
                 # representation for metric types like time_comparison or
                 # conversion, so _export_metric() cannot build an `expr` for
                 # them; skip those rather than emitting an invalid stub that
-                # would fail to re-parse.
-                metric_def = self._export_metric(metric)
+                # would fail to re-parse. A fact has no filter slot, so a
+                # filtered aggregation is also written as a metric expression.
+                metric_def = self._export_metric(metric, model_name=model.name)
+                if "expr" not in metric_def and metric.filters:
+                    record_export_note(
+                        "metric_filter",
+                        f"Snowflake cannot represent the filter on metric {model.name}.{metric.name}",
+                        severity="unsupported",
+                        source="snowflake",
+                    )
+                    continue
                 if "expr" not in metric_def:
                     record_export_note(
                         "unsupported_metric",
@@ -1142,7 +1159,7 @@ class SnowflakeAdapter(BaseAdapter):
             return None
         return sql.replace("{model}.", "").replace("{model}", "")
 
-    def _export_metric(self, metric: Metric, *, top_level: bool = False) -> dict:
+    def _export_metric(self, metric: Metric, *, top_level: bool = False, model_name: str | None = None) -> dict:
         """Export metric to Snowflake metric format.
 
         Args:
@@ -1152,6 +1169,8 @@ class SnowflakeAdapter(BaseAdapter):
                 needs to resolve cross-table references, so they are preserved.
                 When False the metric is table-scoped and ``{model}`` placeholders
                 are stripped to bare column references.
+            model_name: Owning table of a table-scoped metric. Row filters are
+                folded into the aggregated expression against this table's rows.
 
         Returns:
             Metric definition dictionary
@@ -1162,7 +1181,17 @@ class SnowflakeAdapter(BaseAdapter):
             metric_def["description"] = metric.description
 
         # Build expression based on metric type
-        if metric.type == "ratio" and metric.numerator and metric.denominator:
+        if metric.filters:
+            # Snowflake metrics have no filter key. A simple aggregate carries its
+            # filters inside the aggregated expression; anything else is left
+            # without an `expr` so the caller reports the loss.
+            folded = filtered_measure_sql(metric, model_name) if metric.agg and not metric.type and model_name else None
+            if folded is not None:
+                agg_func = metric.agg.upper()
+                metric_def["expr"] = (
+                    f"COUNT(DISTINCT {folded})" if agg_func == "COUNT_DISTINCT" else f"{agg_func}({folded})"
+                )
+        elif metric.type == "ratio" and metric.numerator and metric.denominator:
             if top_level:
                 # Graph-level metric: keep qualified references so Snowflake can
                 # resolve cross-table members (e.g. ``orders.revenue``).

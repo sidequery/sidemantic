@@ -1,12 +1,269 @@
 """PostgreSQL wire protocol connection handler for semantic layer."""
 
 import logging
+import re
 
 import riffq
 
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.core.transport_security import controls_are_active, rewrite_transport_sql
-from sidemantic.server.common import result_to_record_batch_reader
+from sidemantic.server.common import result_to_record_batch_reader, to_json_compatible
+from sidemantic.server.pg_catalog import (
+    PG_VERSION,
+    SEMANTIC_SCHEMA,
+    PgCatalog,
+    is_catalog_query,
+    postgres_column_names,
+)
+
+# Transaction and session statements that clients send but that have nothing to
+# do on a read-only, autocommit server. They are acknowledged with their tag.
+_SESSION_COMMAND = re.compile(
+    r"^\s*(begin|start\s+transaction|commit|end|rollback|abort|savepoint|release|discard|deallocate|reset)\b",
+    re.IGNORECASE,
+)
+_SESSION_COMMAND_TAGS = {
+    "begin": "BEGIN",
+    "start transaction": "START TRANSACTION",
+    "commit": "COMMIT",
+    "end": "COMMIT",
+    "rollback": "ROLLBACK",
+    "abort": "ROLLBACK",
+    "savepoint": "SAVEPOINT",
+    "release": "RELEASE",
+    "discard": "DISCARD ALL",
+    "deallocate": "DEALLOCATE",
+    "reset": "RESET",
+}
+
+# Settings drivers read with SHOW while connecting.
+_SHOW_STATEMENT = re.compile(r"^\s*show\s+(.+?)\s*;?\s*$", re.IGNORECASE | re.DOTALL)
+_SESSION_SETTINGS = {
+    "server_version": PG_VERSION,
+    "server_encoding": "UTF8",
+    "client_encoding": "UTF8",
+    "standard_conforming_strings": "on",
+    "integer_datetimes": "on",
+    "datestyle": "ISO, MDY",
+    "max_identifier_length": "63",
+    "search_path": SEMANTIC_SCHEMA,
+    "transaction_isolation": "read committed",
+    "default_transaction_isolation": "read committed",
+}
+_SESSION_SETTING_ALIASES = {"transaction isolation level": "transaction_isolation"}
+
+# SQLSTATE codes by exception class name, so clients can tell failures apart.
+_SQLSTATE_BY_EXCEPTION = {
+    "SecurityError": "42501",
+    "ReadOnlyError": "25006",
+    "ParameterError": "08P01",
+    "UnsupportedStatementError": "42601",
+    "ParseError": "42601",
+    "TokenError": "42601",
+    "ParserException": "42601",
+    "CatalogException": "42P01",
+    "BinderException": "42703",
+}
+
+
+class ReadOnlyError(ValueError):
+    """The statement would change data or database state."""
+
+
+class UnsupportedStatementError(ValueError):
+    """The text is not a statement this server recognizes."""
+
+
+class ParameterError(ValueError):
+    """A statement placeholder has no usable bound value."""
+
+
+def error_response(exc: BaseException) -> tuple[str, str, str]:
+    """Describe an exception as a PostgreSQL ``(severity, sqlstate, message)`` error."""
+    sqlstate = "XX000"
+    for cls in type(exc).__mro__:
+        if cls.__name__ in _SQLSTATE_BY_EXCEPTION:
+            sqlstate = _SQLSTATE_BY_EXCEPTION[cls.__name__]
+            break
+    else:
+        if isinstance(exc, (ValueError, KeyError)) and "not found" in str(exc):
+            sqlstate = "42703"
+    return ("ERROR", sqlstate, str(exc) or type(exc).__name__)
+
+
+def _parameter_literal(value, dialect: str) -> str:
+    """Render one bound parameter as a SQL literal in the executing dialect."""
+    import math
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    from sqlglot import exp
+
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, (int, Decimal)) or (isinstance(value, float) and math.isfinite(value)):
+        # Parenthesized so "x-$1" cannot turn into a "--" comment.
+        return f"({value})" if value < 0 else str(value)
+    if isinstance(value, float):
+        return exp.cast(exp.Literal.string(str(value)), "double").sql(dialect=dialect)
+    if isinstance(value, datetime):
+        target = "timestamptz" if value.tzinfo is not None else "timestamp"
+        return exp.cast(exp.Literal.string(value.isoformat(sep=" ")), target).sql(dialect=dialect)
+    if isinstance(value, date):
+        return exp.cast(exp.Literal.string(value.isoformat()), "date").sql(dialect=dialect)
+    if isinstance(value, str):
+        if "\x00" in value:
+            # Text never contains NUL: riffq handed over the raw bytes of a binary-format
+            # value (date, numeric, uuid, ...) whose type it does not decode.
+            raise ParameterError("A parameter was sent in a binary format this server cannot decode; send it as text")
+        return exp.Literal.string(value).sql(dialect=dialect)
+    raise ParameterError(f"Unsupported parameter type: {type(value).__name__}")
+
+
+def inline_parameters(sql: str, query_args, *, dialect: str, describe: bool = False) -> str:
+    """Replace ``$n`` placeholders with the values a client bound to them.
+
+    Extended-protocol clients (JDBC, psycopg, most BI drivers) send the statement
+    and its parameters separately. Values are inlined as escaped literals so the
+    semantic rewriter and security checks see one ordinary statement. While a
+    statement is only being described no values exist yet; NULL stands in.
+    """
+    if "$" not in sql:
+        return sql
+    import sqlglot
+    from sqlglot.errors import SqlglotError
+    from sqlglot.tokens import TokenType
+
+    try:
+        tokens = sqlglot.tokenize(sql, read="postgres")
+    except SqlglotError:
+        return sql
+    values = list(query_args or [])
+    pieces: list[str] = []
+    position = 0
+    for marker, number in zip(tokens, tokens[1:]):
+        if (
+            marker.token_type is not TokenType.PARAMETER
+            or number.token_type is not TokenType.NUMBER
+            or number.start != marker.end + 1
+            or not number.text.isdigit()
+        ):
+            continue
+        index = int(number.text)
+        if 1 <= index <= len(values):
+            literal = _parameter_literal(values[index - 1], dialect)
+        elif describe:
+            literal = "NULL"
+        else:
+            raise ParameterError(f"No value was bound for parameter ${index}")
+        pieces.append(sql[position : marker.start])
+        pieces.append(literal)
+        position = number.end + 1
+    pieces.append(sql[position:])
+    return "".join(pieces)
+
+
+def _is_read_statement(statement) -> bool:
+    from sqlglot import exp
+
+    if isinstance(statement, exp.Command):
+        keyword = statement.name.upper()
+        if keyword == "SHOW":
+            return True
+        if keyword == "EXPLAIN":
+            import sqlglot
+            from sqlglot.errors import SqlglotError
+
+            explained = re.sub(r"^\s*analyze\b", "", statement.expression.name, flags=re.IGNORECASE)
+            try:
+                inner = [parsed for parsed in sqlglot.parse(explained) if parsed is not None]
+            except SqlglotError:
+                return False
+            return len(inner) == 1 and isinstance(inner[0], exp.Query) and _is_read_statement(inner[0])
+        return False
+    if not isinstance(statement, (exp.Query, exp.Values, exp.Describe, exp.Show, exp.Summarize)):
+        return False
+    return not any(isinstance(node, (exp.DML, exp.DDL, exp.Into, exp.Command)) for node in statement.walk())
+
+
+def require_read_only(sql: str, dialect: str) -> None:
+    """Reject statements that could change the database behind the semantic layer.
+
+    The server exposes a semantic layer for querying. Like the HTTP API it does
+    not run DDL, DML, or administrative statements against the user's database.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    statements = [statement for statement in sqlglot.parse(sql, dialect=dialect) if statement is not None]
+    for statement in statements:
+        if _is_read_statement(statement):
+            continue
+        words = statement.sql(dialect=dialect).split(None, 1)
+        keyword = words[0].upper() if words else "statement"
+        if isinstance(statement, (exp.Condition, exp.Alias)):
+            # sqlglot found an expression rather than a statement: a typo or a command it does not know.
+            raise UnsupportedStatementError(
+                f'syntax error or unsupported statement at "{keyword}": '
+                "the Sidemantic PostgreSQL server only runs SELECT queries"
+            )
+        raise ReadOnlyError(
+            f"cannot execute {keyword}: the Sidemantic PostgreSQL server is read-only and only runs SELECT queries"
+        )
+
+
+def wire_safe_table(table):
+    """Convert columns riffq cannot encode into text.
+
+    riffq sends NULL for Arrow types it has no PostgreSQL encoding for (time,
+    interval, enum/dictionary, struct, map, UUID). Text keeps the value visible.
+    """
+    import json
+
+    import pyarrow as pa
+    import pyarrow.types as pat
+
+    def encodable(data_type) -> bool:
+        if isinstance(data_type, pa.ExtensionType):
+            return False
+        if pat.is_list(data_type) or pat.is_large_list(data_type) or pat.is_fixed_size_list(data_type):
+            return encodable(data_type.value_type)
+        return (
+            pat.is_null(data_type)
+            or pat.is_boolean(data_type)
+            or pat.is_integer(data_type)
+            or pat.is_float32(data_type)
+            or pat.is_float64(data_type)
+            or pat.is_decimal(data_type)
+            or pat.is_string(data_type)
+            or pat.is_large_string(data_type)
+            or pat.is_binary(data_type)
+            or pat.is_large_binary(data_type)
+            or pat.is_fixed_size_binary(data_type)
+            or pat.is_date(data_type)
+            or pat.is_timestamp(data_type)
+        )
+
+    def as_text(value):
+        if value is None:
+            return None
+        # Exact types only: named tuples such as Arrow intervals read better as str().
+        if type(value) in (dict, list, tuple):
+            return json.dumps(to_json_compatible(value), default=str)
+        return str(value)
+
+    for index, field in enumerate(table.schema):
+        if encodable(field.type):
+            continue
+        column = table.column(index)
+        if pat.is_dictionary(field.type) and encodable(field.type.value_type):
+            converted = column.cast(field.type.value_type)
+        else:
+            converted = pa.array([as_text(value) for value in column.to_pylist()], type=pa.string())
+        table = table.set_column(index, pa.field(field.name, converted.type, field.nullable), converted)
+    return table
 
 
 class SemanticLayerConnection(riffq.BaseConnection):
@@ -32,6 +289,8 @@ class SemanticLayerConnection(riffq.BaseConnection):
         # connecting username is captured in handle_auth and looked up here.
         self.user_attrs_map = user_attrs_map or {}
         self.session_user: str | None = None
+        # start_server replaces this with one catalog shared by all connections.
+        self.catalog: PgCatalog | None = None
 
     def _user_attributes(self) -> dict | None:
         """Resolve security user attributes for the current session.
@@ -60,17 +319,50 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # Partial auth config must fail closed.
             callback(False)
 
-    def handle_connect(self, ip, port, callback=callable):
-        """Handle connection."""
+    def handle_connect(self, ip, port, callback=callable, **kwargs):
+        """Handle connection.
+
+        riffq adds keyword arguments here across releases (``server_name``,
+        ``metadata``); accept and ignore the ones this server does not use.
+        """
         callback(True)
 
-    def handle_disconnect(self, ip, port, callback=callable):
+    def handle_disconnect(self, ip, port, callback=callable, **kwargs):
         """Handle disconnection."""
         callback(True)
+
+    def _send_table(self, table, callback):
+        """Send a fully fetched result, so late execution errors reach the client."""
+        import pyarrow as pa
+
+        table = wire_safe_table(table)
+        self.send_reader(pa.RecordBatchReader.from_batches(table.schema, table.to_batches()), callback)
+
+    def _send_result(self, result, callback):
+        reader = result_to_record_batch_reader(result, self.layer.adapter)
+        self._send_table(reader.read_all(), callback)
+
+    def _execute_for_describe(self, cursor, rendered_sql: str):
+        """Fetch only the result shape for a Describe, which precedes every Execute."""
+        import sqlglot
+        from sqlglot import exp
+        from sqlglot.errors import SqlglotError
+
+        try:
+            statements = [parsed for parsed in sqlglot.parse(rendered_sql, dialect=self.layer.dialect) if parsed]
+            if len(statements) == 1 and isinstance(statements[0], exp.Query):
+                return cursor.execute(statements[0].limit(0).sql(dialect=self.layer.dialect))
+        except SqlglotError:
+            pass
+        except Exception:
+            logging.debug("Schema-only execution failed; describing with the full query", exc_info=True)
+        return cursor.execute(rendered_sql)
 
     def _handle_query(self, sql, callback, **kwargs):
         """Handle a SQL query."""
         try:
+            query_args = kwargs.get("query_args")
+            describe = bool(kwargs.get("do_describe"))
             sql_lower = sql.lower().strip()
 
             user_attributes = self._user_attributes()
@@ -81,17 +373,39 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # to a lock-guarded wrapper preserving today's behavior.
             cursor = self.layer.adapter.cursor()
 
-            # Check for DML commands first (before multi-statement check)
-            # These are often PostgreSQL session config and should just succeed
-            if sql_lower.startswith(("set ", "update ", "insert ", "delete ")):
+            # Session configuration is acknowledged without touching the database.
+            if sql_lower.startswith("set "):
                 result = cursor.execute("SELECT 1 as ok WHERE FALSE")
-                reader = result_to_record_batch_reader(result, self.layer.adapter)
-                self.send_reader(reader, callback)
+                self._send_result(result, callback)
                 return
 
-            # Only parsed single statements qualify for compatibility responses.
-            if self._try_handle_system_query(sql, sql_lower, callback, cursor):
+            session_command = _SESSION_COMMAND.match(sql)
+            if session_command:
+                keyword = " ".join(session_command.group(1).lower().split())
+                callback(_SESSION_COMMAND_TAGS[keyword], is_tag=True)
                 return
+
+            show_statement = _SHOW_STATEMENT.match(sql)
+            if show_statement:
+                setting = " ".join(show_statement.group(1).lower().split())
+                setting = _SESSION_SETTING_ALIASES.get(setting, setting)
+                if setting in _SESSION_SETTINGS:
+                    import pyarrow as pa
+
+                    self._send_table(pa.table({setting: [_SESSION_SETTINGS[setting]]}), callback)
+                    return
+
+            # Only parsed single statements qualify for compatibility responses.
+            if self._try_handle_system_query(
+                sql, sql_lower, callback, cursor, query_args=query_args, describe=describe
+            ):
+                return
+
+            sql = inline_parameters(sql, query_args, dialect=self.layer.dialect, describe=describe)
+
+            # Active controls already restrict the transport to one SELECT.
+            if not controls_are_active(self.layer):
+                require_read_only(sql, self.layer.dialect)
 
             rendered_sql = rewrite_transport_sql(
                 self.layer,
@@ -102,15 +416,17 @@ class SemanticLayerConnection(riffq.BaseConnection):
             )
 
             # Execute the query
-            result = cursor.execute(rendered_sql)
+            if describe:
+                result = self._execute_for_describe(cursor, rendered_sql)
+            else:
+                result = cursor.execute(rendered_sql)
 
-            # Convert to Arrow record batch
-            reader = result_to_record_batch_reader(result, self.layer.adapter)
-            self.send_reader(reader, callback)
+            # Convert to Arrow and send
+            self._send_result(result, callback)
 
         except Exception:
             logging.exception("Error executing query")
-            # Raise to let riffq send a proper PG ErrorResponse to the client.
+            # Raise so _run_query reports a PG ErrorResponse to the client.
             # Returning errors as data rows confuses BI tools that expect PG protocol errors.
             raise
 
@@ -135,14 +451,21 @@ class SemanticLayerConnection(riffq.BaseConnection):
             if model.security is None or (attrs is not None and evaluate_access(model.security.access, attrs))
         ]
 
-    def _try_handle_system_query(self, sql: str, sql_lower: str, callback, cursor) -> bool:
-        """Try to handle PostgreSQL system queries. Returns True if handled."""
+    def _catalog(self) -> PgCatalog:
+        catalog = getattr(self, "catalog", None)
+        if catalog is None:
+            catalog = self.catalog = PgCatalog(self.layer)
+        return catalog
+
+    def _try_handle_system_query(
+        self, sql: str, sql_lower: str, callback, cursor, query_args=None, describe: bool = False
+    ) -> bool:
+        """Answer PostgreSQL catalog queries from the session's catalog. Returns True if handled."""
 
         import sqlglot
         from sqlglot import exp
 
         # Dispatch on parsed references, never on strings or comments in caller SQL.
-        # Compatibility handlers execute only server-owned SQL, not modified input.
         statements = [statement for statement in sqlglot.parse(sql, dialect=self.layer.dialect) if statement]
         if len(statements) != 1:
             if controls_are_active(self.layer):
@@ -150,72 +473,34 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
                 raise SecurityError("PostgreSQL requires a single statement while security controls are active.")
             return False
-        if not isinstance(statements[0], exp.Select):
-            return False
         statement = statements[0]
-        tables = {(table.db.lower(), table.name.lower()) for table in statement.find_all(exp.Table)}
-        functions = {node.name.lower() for node in statement.find_all(exp.Anonymous)}
-        controlled = controls_are_active(self.layer)
+        if not isinstance(statement, (exp.Select, exp.SetOperation)):
+            return False
+        semantic_names = {name.lower() for name in self.layer.graph.models}
+        if not is_catalog_query(statement, semantic_names):
+            return False
 
-        def send(query: str) -> bool:
-            reader = result_to_record_batch_reader(cursor.execute(query), self.layer.adapter)
-            self.send_reader(reader, callback)
-            return True
+        # The catalog holds only what this session may discover: its accessible
+        # semantic models, plus physical tables when no control is active.
+        table = self._catalog().query(
+            inline_parameters(sql, query_args, dialect="duckdb", describe=describe),
+            self._visible_model_names(),
+            include_sources=not controls_are_active(self.layer),
+        )
+        self._send_table(postgres_column_names(statement, table), callback)
+        return True
 
-        if "pg_get_keywords" in functions:
-            return send("SELECT keyword_name as word, 'U' as catcode FROM duckdb_keywords()")
-        if "pg_my_temp_schema" in functions:
-            return send("SELECT NULL::INTEGER as oid")
+    def _run_query(self, sql, callback, **kwargs):
+        """Run a query on a worker thread and report failures as PostgreSQL errors.
 
-        if ("information_schema", "tables") in tables or ("pg_catalog", "pg_class") in tables:
-            visible_models = self._visible_model_names()
-            rows = ["('semantic_layer', '" + name.replace("'", "''") + "')" for name in visible_models]
-            # The synthetic metrics relation spans the entire graph; do not advertise
-            # its global field list to a partially authorized session.
-            if self.layer.graph.metrics and len(visible_models) == len(self.layer.graph.models):
-                rows.append("('semantic_layer', 'metrics')")
-            semantic_sql = (
-                "SELECT schema AS table_schema, table_name FROM (VALUES "
-                + ", ".join(rows)
-                + ") AS t(schema, table_name)"
-                if rows
-                else "SELECT NULL::VARCHAR AS table_schema, NULL::VARCHAR AS table_name WHERE FALSE"
-            )
-            catalog_sql = semantic_sql
-            if not controlled:
-                catalog_sql += (
-                    " UNION ALL SELECT table_schema, table_name FROM information_schema.tables "
-                    "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
-                )
-            if ("information_schema", "tables") in tables:
-                return send(f"SELECT table_schema, table_name, 'BASE TABLE' AS table_type FROM ({catalog_sql})")
-            return send(f"SELECT table_name AS relname, table_schema AS relnamespace FROM ({catalog_sql})")
-
-        if any(name == "pg_settings" for _, name in tables):
-            return send("SELECT NULL::VARCHAR AS name, NULL::VARCHAR AS setting, NULL::VARCHAR AS source WHERE FALSE")
-
-        if ("pg_catalog", "pg_namespace") in tables:
-            if controlled:
-                return send(
-                    "SELECT 0::BIGINT AS oid, 'semantic_layer' AS nspname, true AS is_on_search_path, "
-                    "NULL::VARCHAR AS comment" + ("" if self._visible_model_names() else " WHERE FALSE")
-                )
-            return send(
-                "SELECT oid, schema_name as nspname, true as is_on_search_path, comment "
-                "FROM duckdb_schemas() WHERE schema_name NOT IN ('pg_catalog', 'information_schema')"
-            )
-
-        if any(schema == "pg_catalog" for schema, _ in tables):
-            return send("SELECT NULL WHERE FALSE")
-        if controlled and any(schema == "information_schema" for schema, _ in tables):
-            return send("SELECT NULL WHERE FALSE")
-
-        # A source-free description probe is safe. Queries involving real sources
-        # must proceed through semantic authorization, including obj_description().
-        if "obj_description" in functions and not tables:
-            return send("SELECT NULL::VARCHAR AS obj_description")
-        return False
+        An exception raised on the executor thread never reaches riffq, which
+        would then answer with an empty result. The callback carries the error.
+        """
+        try:
+            self._handle_query(sql, callback, **kwargs)
+        except Exception as exc:
+            callback(error_response(exc), is_error=True)
 
     def handle_query(self, sql, callback=callable, **kwargs):
         """Handle query in executor thread pool."""
-        self.executor.submit(self._handle_query, sql, callback, **kwargs)
+        self.executor.submit(self._run_query, sql, callback, **kwargs)

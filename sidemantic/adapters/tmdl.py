@@ -12,7 +12,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.fidelity import record_export_feature
+from sidemantic.fidelity import record_export_feature, record_export_note
 from sidemantic.paths import output_child
 
 if TYPE_CHECKING:
@@ -154,7 +154,12 @@ class TMDLAdapter(BaseAdapter):
         """Export semantic graph to a TMDL folder structure."""
         owned_metrics = [metric for model in graph.models.values() for metric in model.metrics]
         if any(not any(metric is owned for owned in owned_metrics) for metric in graph.metrics.values()):
-            record_export_feature("graph_metrics", "rejected", detail="TMDL measures require an explicit home table")
+            unplaced = ", ".join(
+                name for name, metric in graph.metrics.items() if not any(metric is owned for owned in owned_metrics)
+            )
+            record_export_feature(
+                "graph_metrics", "rejected", detail=f"TMDL measures require an explicit home table: {unplaced}"
+            )
             raise ValueError("TMDL export cannot place graph-level metrics; assign them to a model with explicit DAX")
         # Reject unsupported SQL before creating a partially exported project.
         for model in graph.models.values():
@@ -162,6 +167,16 @@ class TMDLAdapter(BaseAdapter):
                 _validate_metric_export(metric)
                 if not _dax_expression_for_export(metric):
                     _metric_to_dax(metric, model.name, model.dimensions)
+        # isKey is a column property, and only dimensions are exported as columns.
+        for model in graph.models.values():
+            unexported = [key for key in model.primary_key_columns if not model.get_dimension(key)]
+            if unexported:
+                record_export_note(
+                    "primary_key",
+                    f"TMDL marks a key on a column; key {', '.join(unexported)} of '{model.name}' "
+                    "is not a dimension and is not exported",
+                    source="tmdl",
+                )
         output_path = Path(output_path)
         if output_path.suffix:
             output_path.parent.mkdir(parents=True, exist_ok=True)

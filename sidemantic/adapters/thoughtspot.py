@@ -1644,7 +1644,12 @@ class ThoughtSpotAdapter(BaseAdapter):
         """Export semantic graph to ThoughtSpot table TML files."""
         owned_metrics = [metric for model in graph.models.values() for metric in model.metrics]
         if any(not any(metric is owned for owned in owned_metrics) for metric in graph.metrics.values()):
-            record_export_feature("graph_metrics", "rejected", detail="ThoughtSpot formulas require an owning model")
+            unplaced = ", ".join(
+                name for name, metric in graph.metrics.items() if not any(metric is owned for owned in owned_metrics)
+            )
+            record_export_feature(
+                "graph_metrics", "rejected", detail=f"ThoughtSpot formulas require an owning model: {unplaced}"
+            )
             raise ValueError(
                 "ThoughtSpot export cannot place graph-level metrics; model formulas require an owning model"
             )
@@ -1721,23 +1726,27 @@ class ThoughtSpotAdapter(BaseAdapter):
                         (
                             "relationship",
                             f"{model.name}.{rel.name}",
-                            f"Relationship '{model.name}.{rel.name}' has no resolvable single-column join keys",
+                            f"Relationship '{model.name}.{rel.name}' has no resolvable join keys",
                         )
                     )
         return problems
 
     @staticmethod
-    def _join_keys(model: Model, rel: Relationship, target: Model | None) -> tuple[str, str] | None:
-        """``(base column, related column)`` for a single-column join, or None."""
+    def _join_keys(model: Model, rel: Relationship, target: Model | None) -> list[tuple[str, str]]:
+        """``(base column, related column)`` pairs of a join; empty when they cannot be resolved.
+
+        A relationship without its own key joins on the primary key of the model
+        on that side.
+        """
         if rel.type in {"one_to_many", "one_to_one"}:
             base_columns = rel.primary_key_columns or model.primary_key_columns
             related_columns = rel.foreign_key_columns
         else:
             base_columns = rel.foreign_key_columns
             related_columns = rel.primary_key_columns or (target.primary_key_columns if target else [])
-        if len(base_columns) != 1 or len(related_columns) != 1:
-            return None
-        return base_columns[0], related_columns[0]
+        if len(base_columns) != len(related_columns):
+            return []
+        return list(zip(base_columns, related_columns))
 
     def _export_model(self, model: Model, models: dict[str, Model] | None = None) -> dict[str, Any]:
         if self._should_export_worksheet(model):
@@ -1898,19 +1907,16 @@ class ThoughtSpotAdapter(BaseAdapter):
             tables.append({"name": rel.related_model})
             join_name = f"{base_table}_{rel.name}"
             join_type = "LEFT_OUTER" if rel.type in {"many_to_one", "one_to_one"} else "OUTER"
-            # A relationship without its own key joins on the related model's key.
+            # export() has already refused relationships without resolvable keys.
             keys = self._join_keys(model, rel, (models or {}).get(rel.related_model))
             if rel.type in {"one_to_many", "one_to_one"}:
-                left_table = rel.related_model
-                left_key = keys[1] if keys else rel.sql_expr
-                right_table = base_table
-                right_key = keys[0] if keys else model.primary_key
+                pairs = [(rel.related_model, related, base_table, base) for base, related in keys]
             else:
-                left_table = base_table
-                left_key = keys[0] if keys else rel.sql_expr
-                right_table = rel.related_model
-                right_key = keys[1] if keys else rel.related_key
-            on_expr = f"[{left_table}::{left_key}] = [{right_table}::{right_key}]"
+                pairs = [(base_table, base, rel.related_model, related) for base, related in keys]
+            on_expr = " AND ".join(
+                f"[{left_table}::{left_key}] = [{right_table}::{right_key}]"
+                for left_table, left_key, right_table, right_key in pairs
+            )
             joins.append(
                 {
                     "name": join_name,

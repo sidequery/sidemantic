@@ -1918,6 +1918,16 @@ def convert(
     except typer.Exit:
         raise
     except Exception as e:
+        from sidemantic.fidelity import ConversionFidelityError
+
+        if isinstance(e, ConversionFidelityError):
+            # The exception message joins every blocking construct into one
+            # line; name each lost construct on its own line instead.
+            emit_error(f"{e.phase.capitalize()} fidelity:")
+            for line in (*e.report.summary_lines(), *e.report.feature_summary_lines()):
+                emit_error(f"  {line}")
+            emit_error(f"{e.phase.capitalize()} readiness: blocked; nothing was written")
+            raise typer.Exit(1) from e
         fail(e)
 
 

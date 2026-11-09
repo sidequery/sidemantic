@@ -837,6 +837,10 @@ class RillAdapter:
         if metric.type == "ratio" and metric.numerator and metric.denominator and not metric.sql:
             # A derived Rill measure references other measures of the view by name.
             return f"{metric.numerator.split('.')[-1]} / NULLIF({metric.denominator.split('.')[-1]}, 0)"
+        if metric.type == "time_comparison" and metric.base_metric and metric.comparison_type == "prior_period":
+            # A Rill time_comparison measure names its base measure and compares
+            # against the prior period, which is how import reads it back.
+            return metric.base_metric.split(".")[-1]
         return metric.sql or None
 
     def _export_project_config(self, output_dir: Path, project_name: str | None) -> None:
@@ -1024,6 +1028,8 @@ class RillAdapter:
             # Map metric type to Rill measure type
             if metric.type in ("derived", "ratio"):
                 measure_def["type"] = "derived"
+            elif metric.type == "time_comparison":
+                measure_def["type"] = "time_comparison"
             elif metric.type == "cumulative":
                 # Export window function definition
                 if metric.window_frame or metric.window_order:

@@ -99,7 +99,9 @@ class SupersetAdapter(BaseAdapter):
 
         # Parse columns
         dimensions = []
-        primary_key = "id"  # default
+        # A dataset declares no key. Assume the conventional ``id`` only when
+        # that column exists; never invent one.
+        primary_key = None
         main_dttm_col = dataset.get("main_dttm_col")
 
         for col_def in dataset.get("columns") or []:
@@ -466,7 +468,9 @@ class SupersetAdapter(BaseAdapter):
 
             if dim.type == "time":
                 col_def["is_dttm"] = True
-                col_def["type"] = "TIMESTAMP WITHOUT TIME ZONE"
+                # The column type is the only place a grain can live: import
+                # reads DATE as day-level and any timestamp as finer.
+                col_def["type"] = "DATE" if dim.granularity == "day" else "TIMESTAMP WITHOUT TIME ZONE"
             elif dim.type == "numeric":
                 col_def["type"] = "NUMERIC"
             elif dim.type == "boolean":

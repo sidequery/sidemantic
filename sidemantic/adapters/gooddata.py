@@ -70,8 +70,11 @@ class GoodDataAdapter(BaseAdapter):
         """Export semantic graph to GoodData LDM JSON format (cloud style)."""
         owned_metrics = [metric for model in graph.models.values() for metric in model.metrics]
         if any(not any(metric is owned for owned in owned_metrics) for metric in graph.metrics.values()):
+            unplaced = ", ".join(
+                name for name, metric in graph.metrics.items() if not any(metric is owned for owned in owned_metrics)
+            )
             record_export_feature(
-                "graph_metrics", "rejected", detail="GoodData LDM cannot represent analytical metrics"
+                "graph_metrics", "rejected", detail=f"GoodData LDM cannot represent analytical metrics: {unplaced}"
             )
             raise ValueError("GoodData LDM export cannot represent graph-level metrics; MAQL metrics are unsupported")
         output_path = Path(output_path)

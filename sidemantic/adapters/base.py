@@ -41,7 +41,8 @@ def filtered_measure_sql(metric: Metric, model_name: str) -> str | None:
     conditions = [own_row_sql(predicate) for predicate in metric.filters or []]
     if not conditions or any(condition is None for condition in conditions):
         return None
-    if metric.agg == "count" and not metric.sql:
+    if metric.agg == "count" and (metric.sql or "*").strip() == "*":
+        # A row count has no column; count one marker per matching row.
         value = "1"
     else:
         value = own_row_sql(metric.sql or metric.name)
@@ -56,16 +57,13 @@ def filtered_aggregate_sql(metric: Metric, model_name: str) -> str | None:
 
     Returns ``None`` when the metric has filters that cannot be folded.
     """
-    if not metric.filters:
-        return (
-            metric.model_copy(update={"sql": metric.sql.replace("{model}.", "")}).to_sql()
-            if metric.sql
-            else metric.to_sql()
-        )
-    folded = filtered_measure_sql(metric, model_name)
-    if folded is None:
-        return None
-    return metric.model_copy(update={"sql": folded}).to_sql()
+    if metric.filters:
+        sql = filtered_measure_sql(metric, model_name)
+        if sql is None:
+            return None
+    else:
+        sql = metric.sql.replace("{model}.", "") if metric.sql else None
+    return metric.model_copy(update={"sql": sql}).to_sql()
 
 
 def reject_unsupported_export(format_name: str, problems: list[tuple[str, str, str]]) -> None:

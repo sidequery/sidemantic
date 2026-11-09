@@ -2570,6 +2570,19 @@ impl<'a> SqlGenerator<'a> {
         Ok(false)
     }
 
+    /// NULL-safe equality that the target can plan as a FULL JOIN condition.
+    fn full_join_null_safe_equality(&self, left: &str, right: &str) -> String {
+        if self.dialect == DialectType::PostgreSQL {
+            // PostgreSQL only plans FULL JOIN on hash- or merge-joinable
+            // operators, which excludes IS NOT DISTINCT FROM. Array equality
+            // is both, keeps the column type's own comparison, and treats
+            // NULL elements as equal.
+            format!("ARRAY[{left}] = ARRAY[{right}]")
+        } else {
+            format!("{left} IS NOT DISTINCT FROM {right}")
+        }
+    }
+
     fn generate_with_preaggregation(
         &self,
         query: &SemanticQuery,
@@ -2711,7 +2724,7 @@ impl<'a> SqlGenerator<'a> {
         sql.push('\n');
         sql.push_str(&format!("FROM {}", cte_names[0]));
 
-        for cte_name in cte_names.iter().skip(1) {
+        for (index, cte_name) in cte_names.iter().enumerate().skip(1) {
             if dimension_refs.is_empty() {
                 sql.push_str(&format!("\nCROSS JOIN {cte_name}"));
             } else {
@@ -2719,9 +2732,19 @@ impl<'a> SqlGenerator<'a> {
                     .iter()
                     .map(|dim_ref| {
                         let dim_alias = self.quote_identifier(&dim_ref.alias);
-                        format!(
-                            "{}.{} IS NOT DISTINCT FROM {cte_name}.{dim_alias}",
-                            cte_names[0], dim_alias
+                        // A group can first appear in any preceding source.
+                        let previous = cte_names[..index]
+                            .iter()
+                            .map(|previous| format!("{previous}.{dim_alias}"))
+                            .collect::<Vec<_>>();
+                        let previous = if previous.len() == 1 {
+                            previous[0].clone()
+                        } else {
+                            format!("COALESCE({})", previous.join(", "))
+                        };
+                        self.full_join_null_safe_equality(
+                            &previous,
+                            &format!("{cte_name}.{dim_alias}"),
                         )
                     })
                     .collect::<Vec<_>>();
@@ -8471,6 +8494,72 @@ models:
         let sql = generator.generate(&query).unwrap();
 
         assert!(sql.contains("WHERE status = 'completed'"));
+    }
+
+    #[test]
+    fn independent_sources_join_on_null_safe_keys_from_every_preceding_source() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("customers", "id")
+                    .with_table("customers")
+                    .with_dimension(Dimension::categorical("country"))
+                    .with_metric(Metric::count("customer_count")),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("orders")
+                    .with_metric(Metric::sum("revenue", "amount"))
+                    .with_relationship(Relationship::many_to_one("customers")),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("order_items", "id")
+                    .with_table("order_items")
+                    .with_metric(Metric::sum("quantity", "qty"))
+                    .with_relationship(Relationship::many_to_one("orders")),
+            )
+            .unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec![
+                "orders.revenue".into(),
+                "order_items.quantity".into(),
+                "customers.customer_count".into(),
+            ])
+            .with_dimensions(vec!["customers.country".into()]);
+
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN customers_preagg ON COALESCE(orders_preagg.country, \
+                 order_items_preagg.country) IS NOT DISTINCT FROM customers_preagg.country"
+            ),
+            "{sql}"
+        );
+
+        // PostgreSQL rejects FULL JOIN ... ON a IS NOT DISTINCT FROM b.
+        let sql = SqlGenerator::new(&graph)
+            .with_dialect(DialectType::PostgreSQL)
+            .generate(&query)
+            .unwrap();
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN order_items_preagg ON ARRAY[orders_preagg.country] \
+                 = ARRAY[order_items_preagg.country]"
+            ),
+            "{sql}"
+        );
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN customers_preagg ON ARRAY[COALESCE(orders_preagg.country, \
+                 order_items_preagg.country)] = ARRAY[customers_preagg.country]"
+            ),
+            "{sql}"
+        );
+        assert!(!sql.contains("IS NOT DISTINCT FROM"), "{sql}");
     }
 
     #[test]

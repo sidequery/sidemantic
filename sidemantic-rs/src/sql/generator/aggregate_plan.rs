@@ -1005,6 +1005,7 @@ pub(super) fn try_generate(
     }
     let mut public_names = HashSet::new();
     let mut order_names = HashMap::new();
+    let mut output_aliases = Vec::new();
     let mut selections = Vec::new();
     for (reference, dimension) in query.dimensions.iter().zip(&dimensions) {
         let alias = generator.output_alias(&dimension.model, &dimension.alias, &names);
@@ -1020,6 +1021,7 @@ pub(super) fn try_generate(
             dimension_expressions[reference],
             generator.quote_identifier(&alias)
         ));
+        output_aliases.push(alias);
     }
     for (reference, resolved, expression) in outputs {
         let name = &resolved.metric.name;
@@ -1043,6 +1045,7 @@ pub(super) fn try_generate(
             "{expression} AS {}",
             generator.quote_identifier(&alias)
         ));
+        output_aliases.push(alias);
     }
     if query.with_totals && !dimensions.is_empty() {
         let markers: Vec<_> = plan
@@ -1092,7 +1095,7 @@ pub(super) fn try_generate(
                     } else {
                         format!("COALESCE({})", previous.join(", "))
                     };
-                    format!("{previous} IS NOT DISTINCT FROM {table}.{name}")
+                    generator.full_join_null_safe_equality(&previous, &format!("{table}.{name}"))
                 })
                 .collect::<Vec<_>>();
             if query.with_totals {
@@ -1135,9 +1138,18 @@ pub(super) fn try_generate(
         let mut order = Vec::new();
         for item in &query.order_by {
             let (reference, suffix) = crate::sql::split_order_field(item, &known_names);
-            let alias = order_names
-                .get(reference)
-                .ok_or_else(|| unsupported("unprojected_order_by"))?;
+            let alias = match order_names.get(reference) {
+                Some(alias) => alias,
+                // A position selects an output column, as in a single-source
+                // query; it is not a field named by that number.
+                None if reference.bytes().all(|byte| byte.is_ascii_digit()) => reference
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|position| position.checked_sub(1))
+                    .and_then(|index| output_aliases.get(index))
+                    .ok_or_else(|| unsupported("unprojected_order_by"))?,
+                None => return Err(unsupported("unprojected_order_by")),
+            };
             // Source splitting must retain the ordinary query's NULL ordering.
             let suffix = if suffix.contains("NULLS") {
                 suffix
@@ -1619,6 +1631,55 @@ mod tests {
         assert!(sql.contains("IS NOT DISTINCT FROM"));
         assert!(sql.contains("COALESCE(orders_preagg.__sidemantic_dimension_0, customers_preagg.__sidemantic_dimension_0)"));
         assert!(sql.contains("ORDER BY region DESC"));
+    }
+
+    #[test]
+    fn postgres_combines_sources_on_hash_joinable_null_safe_keys() {
+        let graph = graph();
+        let query = SemanticQuery::new()
+            .with_metrics(vec![
+                "orders.revenue".into(),
+                "customers.customer_count".into(),
+            ])
+            .with_dimensions(vec!["customers.region".into()]);
+        let generator = SqlGenerator::new(&graph).with_dialect(DialectType::PostgreSQL);
+        let sql = try_generate(&generator, &query).unwrap().unwrap();
+        // PostgreSQL rejects FULL JOIN ... ON a IS NOT DISTINCT FROM b.
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN customers_preagg ON ARRAY[orders_preagg.__sidemantic_dimension_0] \
+                 = ARRAY[customers_preagg.__sidemantic_dimension_0]"
+            ),
+            "{sql}"
+        );
+        assert!(!sql.contains("IS NOT DISTINCT FROM"), "{sql}");
+    }
+
+    #[test]
+    fn order_position_selects_the_output_column() {
+        let graph = graph();
+        let query = SemanticQuery::new()
+            .with_metrics(vec![
+                "orders.revenue".into(),
+                "customers.customer_count".into(),
+            ])
+            .with_dimensions(vec!["customers.region".into()])
+            .with_order_by(vec!["3 DESC".into(), "1".into()]);
+        let sql = try_generate(&SqlGenerator::new(&graph), &query)
+            .unwrap()
+            .unwrap();
+        assert!(
+            sql.contains("ORDER BY customer_count DESC NULLS LAST, region ASC NULLS FIRST"),
+            "{sql}"
+        );
+        assert_valid_sql(&sql);
+
+        let query = query.with_order_by(vec!["4".into()]);
+        assert!(matches!(
+            try_generate(&SqlGenerator::new(&graph), &query),
+            Err(SidemanticError::UnsupportedSemanticFeatures { capabilities })
+                if capabilities == vec!["aggregation.unprojected_order_by"]
+        ));
     }
 
     #[test]

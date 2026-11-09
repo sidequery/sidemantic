@@ -3290,6 +3290,18 @@ class SQLGenerator:
 
         return False
 
+    def _full_join_null_safe_equality(self, left: exp.Expression, right: exp.Expression) -> str:
+        """Render a NULL-safe equality the dialect can plan as a FULL JOIN condition."""
+        if self.dialect == "postgres":
+            # PostgreSQL only plans FULL JOIN on hash- or merge-joinable
+            # operators, which excludes IS NOT DISTINCT FROM. Array equality
+            # is both, keeps the column type's own comparison, and treats
+            # NULL elements as equal.
+            condition = exp.EQ(this=exp.Array(expressions=[left]), expression=exp.Array(expressions=[right]))
+        else:
+            condition = exp.NullSafeEQ(this=left, expression=right)
+        return condition.sql(dialect=self._dialect_instance)
+
     def _generate_with_preaggregation(
         self,
         metrics: list[str],
@@ -3654,7 +3666,7 @@ class SQLGenerator:
                         previous[0] if len(previous) == 1 else exp.Coalesce(this=previous[0], expressions=previous[1:])
                     )
                     rhs = exp.Column(this=col_name, table=cte_name)
-                    join_conditions.append(exp.NullSafeEQ(this=lhs, expression=rhs).sql(dialect=self._dialect_instance))
+                    join_conditions.append(self._full_join_null_safe_equality(lhs, rhs))
 
                 join_clause = " AND ".join(join_conditions)
                 join_clauses.append(f"FULL OUTER JOIN {cte_name} ON {join_clause}")
@@ -3709,9 +3721,15 @@ class SQLGenerator:
                     suffix = f"{suffix} NULLS {nulls}".strip()
                 field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
                 output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
+                if field_ref not in output_names and field_ref.isdecimal():
+                    # A position selects an output column, as in the
+                    # single-model query; it is not a column named "1".
+                    order_target = exp.Literal.number(field_ref)
+                else:
+                    order_target = exp.column(output_name, quoted=True)
                 order_clauses.append(
                     exp.Ordered(
-                        this=exp.column(output_name, quoted=True),
+                        this=order_target,
                         desc=suffix.startswith("DESC"),
                         nulls_first=suffix.endswith("NULLS FIRST"),
                     )

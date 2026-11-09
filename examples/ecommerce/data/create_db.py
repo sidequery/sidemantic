@@ -41,11 +41,14 @@ PAYMENT_METHODS = ["credit_card", "debit_card", "paypal", "apple_pay", "google_p
 def create_database():
     """Create and populate the ecommerce database."""
     db_path = Path(__file__).parent / "ecommerce.db"
+    # Start from an empty database so re-running replaces the sample data
+    # (including the pre-built ecommerce.db) instead of colliding with it.
+    db_path.unlink(missing_ok=True)
     conn = duckdb.connect(str(db_path))
 
     # Create customers table
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS customers (
+        CREATE TABLE customers (
             customer_id INTEGER PRIMARY KEY,
             email VARCHAR,
             first_name VARCHAR,
@@ -87,7 +90,7 @@ def create_database():
 
     # Create products table
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS products (
+        CREATE TABLE products (
             product_id INTEGER PRIMARY KEY,
             name VARCHAR,
             category VARCHAR,
@@ -113,7 +116,7 @@ def create_database():
 
     # Create orders table
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
+        CREATE TABLE orders (
             order_id INTEGER PRIMARY KEY,
             customer_id INTEGER,
             status VARCHAR,
@@ -158,7 +161,7 @@ def create_database():
 
     # Create order_items table
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS order_items (
+        CREATE TABLE order_items (
             order_item_id INTEGER PRIMARY KEY,
             order_id INTEGER,
             product_id INTEGER,

@@ -6,10 +6,11 @@
 #   "pandas",
 # ]
 # ///
-"""Example demonstrating symmetric aggregates for fan-out joins.
+"""Example demonstrating fan-out-safe (symmetric) aggregation.
 
-Symmetric aggregates prevent double-counting when a query joins a base model
-to multiple "many" side tables, creating a fan-out effect.
+A naive join from a base model to several "many" side tables multiplies the
+base rows (fan-out) and double-counts their measures. Sidemantic avoids this by
+aggregating each model on its own before joining the results.
 
 Run with: uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/features/symmetric_aggregates_example.py
 """
@@ -113,9 +114,9 @@ graph.add_model(shipments)
 
 generator = SQLGenerator(graph)
 
-# Example 1: Single join (no fan-out, no symmetric aggregates needed)
+# Example 1: Metrics from a base model and one "many" side model
 print("=" * 80)
-print("Example 1: Single one-to-many join (no symmetric aggregates)")
+print("Example 1: Single one-to-many join")
 print("=" * 80)
 print()
 
@@ -127,7 +128,7 @@ sql = generator.generate(
 
 print("Query: orders + order_items")
 print()
-print("Generated SQL (note: regular SUM, no HASH):")
+print("Generated SQL (note: each model is aggregated in its own CTE, then joined on order_date):")
 print(sql)
 print()
 
@@ -139,15 +140,15 @@ for row in result:
     print(f"  {row[0]!s:<12} | {row[1]:>7} | {row[2]:>14}")
 print()
 
-# Example 2: Multiple joins (fan-out, symmetric aggregates applied)
+# Example 2: Multiple joins (fan-out)
 print("=" * 80)
-print("Example 2: Multiple one-to-many joins (symmetric aggregates)")
+print("Example 2: Multiple one-to-many joins (fan-out)")
 print("=" * 80)
 print()
 
 print("The Problem:")
 print("  Order 1 has 2 items × 2 shipments = 4 rows in joined result")
-print("  Without symmetric aggregates: revenue = 100 × 4 = 400 (WRONG!)")
+print("  A naive join sums revenue = 100 × 4 = 400 (WRONG!)")
 print()
 
 sql = generator.generate(
@@ -158,7 +159,7 @@ sql = generator.generate(
 
 print("Query: orders + order_items + shipments")
 print()
-print("Generated SQL (note: HASH function for symmetric aggregates):")
+print("Generated SQL (note: one pre-aggregated CTE per model, so no rows are multiplied before summing):")
 print(sql)
 print()
 
@@ -203,25 +204,25 @@ print()
 print("Notice: Order 1 revenue is inflated by the fan-out!")
 print()
 
-# With symmetric aggregates
-print("With symmetric aggregates (sidemantic):")
-print("  Order 1: revenue = 100 (correct)")
-print("  Order 2: revenue = 200 (correct)")
+# With fan-out-safe aggregation (the Example 2 results above)
+print("With fan-out-safe aggregation (sidemantic, Example 2):")
+for row in result:
+    print(f"  {row[0]!s}: revenue = {row[1]}")
 print()
 
 print("=" * 80)
-print("How Symmetric Aggregates Work:")
+print("How Sidemantic Avoids Fan-Out:")
 print("=" * 80)
 print("""
-For each row in the base model (orders), we:
-1. Hash the primary key to get a unique large number
-2. Add the measure value to this hash
-3. Use SUM(DISTINCT ...) to sum only unique hash+value combinations
-4. Subtract SUM(DISTINCT hash) to remove the hash offset
-5. Result: each base row is counted exactly once!
+When a query uses metrics from several models, Sidemantic:
+1. Aggregates each model separately at the requested grain (one CTE per model),
+   joining only the models it needs for the dimensions
+2. Joins the aggregated rows on the shared dimensions (FULL OUTER JOIN)
+3. Result: each order, item and shipment is counted exactly once!
 
-Formula:
-  SUM(DISTINCT HASH(pk) * 2^20 + value) - SUM(DISTINCT HASH(pk) * 2^20)
+When a measure is grouped by a dimension on the "many" side of a join (for
+example, order revenue by an item attribute), Sidemantic instead deduplicates
+the joined rows by the measure model's primary key before aggregating.
 
 This ensures correct aggregation even when joins create duplicate rows.
 """)

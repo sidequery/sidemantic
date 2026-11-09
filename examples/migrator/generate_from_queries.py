@@ -456,6 +456,9 @@ for model_name, model_def in models.items():
         Model(
             name=model_def["name"],
             table=model_def["table"],
+            # Models have no default primary key, and a model must declare one to be
+            # the target of a many_to_one join. Every sample table is keyed on `id`.
+            primary_key=model_def.get("primary_key", "id"),
             dimensions=dimensions,
             metrics=metrics,
             relationships=relationships,

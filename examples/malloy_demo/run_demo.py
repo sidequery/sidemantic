@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic", "duckdb", "antlr4-python3-runtime"]
+# dependencies = ["sidemantic[lookml,malloy]", "duckdb"]
 # ///
 """Malloy Demo: Convert LookML to Malloy format.
 
@@ -19,12 +19,7 @@ Usage:
 """
 
 import shutil
-import sys
 from pathlib import Path
-
-# Add project root to path for local development
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 # Sample data SQL - simple e-commerce schema
 SAMPLE_DATA_SQL = """

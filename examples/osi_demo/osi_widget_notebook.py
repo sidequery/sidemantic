@@ -3,7 +3,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "sidemantic[widget]",
+#   "sidemantic[widget,ossie]",
 #   "duckdb",
 #   "pandas",
 # ]
@@ -29,21 +29,18 @@ Use as notebook:
 # %%
 from __future__ import annotations
 
-import sys
 import tempfile
 from pathlib import Path
 
 import duckdb
-
-# Add project root to path for local development
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 # %% [markdown]
 # ## 1) Define an OSI semantic model (inline YAML)
 
 # %%
 OSI_MODEL_YAML = """
+version: "0.2.0.dev0"
+
 semantic_model:
   - name: osi_adtech_notebook
     description: Self-contained OSI adtech notebook model
@@ -355,13 +352,6 @@ for metric in [
         comparison_type="wow",
         calculation="percent_change",
     ),
-    Metric(
-        name="roas_wow_pct",
-        type="time_comparison",
-        base_metric="roas",
-        comparison_type="wow",
-        calculation="percent_change",
-    ),
 ]:
     layer.add_metric(metric)
 
@@ -382,6 +372,11 @@ conn.execute(sql).fetchdf()
 
 # %% [markdown]
 # ## 5) Week-over-week comparison (native semantic metrics)
+#
+# Each comparison is bucketed by the time dimension of the events it counts:
+# delivery and conversions by impression week, spend by spend week. Spend rows
+# have their own date and no link to individual impressions, so bucketing spend
+# by impression week would repeat a campaign's full spend in every week.
 
 # %%
 weekly_sql = layer.compile(
@@ -389,15 +384,11 @@ weekly_sql = layer.compile(
         "impression_count",
         "click_count",
         "conversion_count",
-        "spend_usd",
         "conversion_revenue_usd",
         "ctr",
-        "roas",
         "impression_count_wow_pct",
         "click_count_wow_pct",
         "conversion_count_wow_pct",
-        "spend_usd_wow_pct",
-        "roas_wow_pct",
     ],
     dimensions=["campaigns.campaign_name", "impressions.impression_time__week"],
     order_by=["campaigns.campaign_name", "impressions.impression_time__week"],
@@ -405,6 +396,16 @@ weekly_sql = layer.compile(
 
 weekly_df = conn.execute(weekly_sql).fetchdf()
 weekly_df
+
+# %%
+weekly_spend_sql = layer.compile(
+    metrics=["spend_usd", "spend_usd_wow_pct"],
+    dimensions=["campaigns.campaign_name", "spend.spend_date__week"],
+    order_by=["campaigns.campaign_name", "spend.spend_date__week"],
+)
+
+weekly_spend_df = conn.execute(weekly_spend_sql).fetchdf()
+weekly_spend_df
 
 # %% [markdown]
 # ## 6) Launch Sidemantic widget

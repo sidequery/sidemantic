@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic", "duckdb", "pandas"]
+# dependencies = ["sidemantic[ossie]", "duckdb", "pandas"]
 # ///
 """OSI demo with a complex adtech semantic layer.
 
@@ -8,21 +8,16 @@ This demo:
 1. Loads a complex OSI semantic model (10 datasets, 25 metrics)
 2. Creates realistic adtech sample data in DuckDB
 3. Runs multi-hop and cross-model metric queries
-4. Runs week-over-week campaign comparisons
+4. Runs week-over-week campaign comparisons for delivery and spend
 
 Run with:
     uv run examples/osi_demo/run_demo.py
 """
 
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import duckdb
-
-# Add project root to path for local development
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 if TYPE_CHECKING:
     from sidemantic import SemanticLayer
@@ -270,13 +265,6 @@ def load_osi_layer(conn: duckdb.DuckDBPyConnection) -> "SemanticLayer":
             comparison_type="wow",
             calculation="percent_change",
         ),
-        Metric(
-            name="roas_wow_pct",
-            type="time_comparison",
-            base_metric="roas",
-            comparison_type="wow",
-            calculation="percent_change",
-        ),
     ]:
         layer.add_metric(metric)
 
@@ -305,38 +293,38 @@ def run_query(
     print()
 
 
-def run_week_over_week_query(layer: "SemanticLayer") -> None:
-    """Run weekly semantic query with native WoW metrics."""
-    print("=" * 90)
-    print("Query 4: Week-over-week campaign comparison")
-    print("=" * 90)
+def run_week_over_week_queries(layer: "SemanticLayer") -> None:
+    """Run weekly semantic queries with native WoW metrics.
 
-    sql = layer.compile(
+    Each WoW comparison is bucketed by the time dimension of the events it
+    counts: delivery and conversions by impression week, spend by spend week.
+    Spend rows have their own date and no link to individual impressions, so
+    they are not bucketed by impression week.
+    """
+    run_query(
+        layer=layer,
+        title="Query 4: Week-over-week delivery and conversions by campaign",
         metrics=[
             "impression_count",
             "click_count",
             "conversion_count",
-            "spend_usd",
             "conversion_revenue_usd",
             "ctr",
-            "roas",
             "impression_count_wow_pct",
             "click_count_wow_pct",
             "conversion_count_wow_pct",
-            "spend_usd_wow_pct",
-            "roas_wow_pct",
         ],
         dimensions=["campaigns.campaign_name", "impressions.impression_time__week"],
         order_by=["campaigns.campaign_name", "impressions.impression_time__week"],
     )
-    print("\nGenerated SQL:")
-    print(sql)
-    wow_df = layer.conn.execute(sql).fetchdf()
-    if wow_df.empty:
-        raise RuntimeError("Query returned no rows: Query 4: Week-over-week campaign comparison")
-    print("\nWeek-over-week results (native semantic metrics):")
-    print(wow_df.to_string(index=False))
-    print()
+
+    run_query(
+        layer=layer,
+        title="Query 5: Week-over-week spend by campaign",
+        metrics=["spend_usd", "spend_usd_wow_pct"],
+        dimensions=["campaigns.campaign_name", "spend.spend_date__week"],
+        order_by=["campaigns.campaign_name", "spend.spend_date__week"],
+    )
 
 
 def main() -> None:
@@ -383,9 +371,12 @@ def main() -> None:
         order_by=["publishers.publisher_name", "devices.device_type"],
     )
 
+    # Spend rows carry a campaign and a publisher but no geo or device, so cost
+    # metrics are broken down by a campaign attribute here. Conversions reach
+    # campaigns through clicks -> impressions.
     run_query(
         layer=layer,
-        title="Query 3: Geo and objective profitability (multi-hop joins)",
+        title="Query 3: Objective profitability (multi-hop joins)",
         metrics=[
             "unique_reach",
             "frequency",
@@ -396,11 +387,11 @@ def main() -> None:
             "effective_cost_per_mille",
             "post_view_conversion_count",
         ],
-        dimensions=["geos.country", "campaigns.objective"],
-        order_by=["geos.country", "campaigns.objective"],
+        dimensions=["campaigns.objective"],
+        order_by=["campaigns.objective"],
     )
 
-    run_week_over_week_query(layer)
+    run_week_over_week_queries(layer)
 
     print("Done: OSI adtech example executed successfully.")
 

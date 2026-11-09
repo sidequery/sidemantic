@@ -61,6 +61,10 @@ pub struct SemanticQuery {
     pub preagg_database: Option<String>,
     pub preagg_schema: Option<String>,
     pub skip_default_time_dimensions: bool,
+    /// The caller's projection is complete, as in a SQL SELECT list. A model's
+    /// default time dimension is then added only for a metric that needs a
+    /// time axis, never as a grouping key for ordinary aggregates.
+    pub explicit_projection: bool,
     pub aliases: HashMap<String, String>,
     pub timezone: Option<String>,
     pub with_totals: bool,
@@ -274,7 +278,11 @@ impl<'a> SqlGenerator<'a> {
         let effective_dimensions = if query.skip_default_time_dimensions {
             query.dimensions.clone()
         } else {
-            self.apply_default_time_dimensions(&query.metrics, &query.dimensions)?
+            self.apply_default_time_dimensions(
+                &query.metrics,
+                &query.dimensions,
+                query.explicit_projection,
+            )?
         };
 
         // Parse all references
@@ -1165,7 +1173,11 @@ impl<'a> SqlGenerator<'a> {
         let effective_dimensions = if query.skip_default_time_dimensions {
             query.dimensions.clone()
         } else {
-            self.apply_default_time_dimensions(&query.metrics, &query.dimensions)?
+            self.apply_default_time_dimensions(
+                &query.metrics,
+                &query.dimensions,
+                query.explicit_projection,
+            )?
         };
         let dimension_refs = self.parse_dimension_refs(&effective_dimensions)?;
         let metric_refs = self.parse_metric_refs(&query.metrics)?;
@@ -4397,11 +4409,21 @@ impl<'a> SqlGenerator<'a> {
         value.replace('\'', "''")
     }
 
+    /// Add each selected metric model's default time dimension, at its default
+    /// grain, unless a time dimension of that model is already selected.
+    ///
+    /// A metrics-only query takes its grain from the default. A query that
+    /// names its own dimensions, or whose projection is fixed by the caller
+    /// (`explicit_projection`), keeps exactly that grain for ordinary
+    /// aggregates: grouping them by a time dimension nobody selected splits
+    /// their totals. Metrics that need a time axis always receive it.
     fn apply_default_time_dimensions(
         &self,
         metrics: &[String],
         dimensions: &[String],
+        explicit_projection: bool,
     ) -> Result<Vec<String>> {
+        let grain_is_explicit = explicit_projection || !dimensions.is_empty();
         let mut result = dimensions.to_vec();
         let mut models_with_time_dims: HashSet<String> = HashSet::new();
 
@@ -4425,22 +4447,34 @@ impl<'a> SqlGenerator<'a> {
             // Graph calculations are scalar unless dimensions were requested.
             // Only cumulative graph metrics inherit a dependency's time grain
             // because their window needs an ordering dimension.
-            if self
-                .graph
-                .get_metric(metric_ref)
-                .is_some_and(|metric| metric.r#type != MetricType::Cumulative)
-            {
+            let graph_metric = self.graph.get_metric(metric_ref);
+            if graph_metric.is_some_and(|metric| metric.r#type != MetricType::Cumulative) {
                 continue;
             }
-            let model_name =
-                if let Some((model_name, _, _)) = self.exact_metric_reference(metric_ref)? {
-                    model_name
-                } else {
-                    if !metric_ref.contains('.') {
-                        continue;
-                    }
-                    self.graph.parse_reference(metric_ref)?.0
-                };
+            let (model_name, metric_name) = if let Some((model_name, metric_name, _)) =
+                self.exact_metric_reference(metric_ref)?
+            {
+                (model_name, metric_name)
+            } else {
+                if !metric_ref.contains('.') {
+                    continue;
+                }
+                let (model_name, metric_name, _) = self.graph.parse_reference(metric_ref)?;
+                (model_name, metric_name)
+            };
+
+            // Checked per metric, before the model is marked as handled: an
+            // ordinary aggregate must not hide a sibling that needs the axis.
+            if grain_is_explicit {
+                let metric = graph_metric.or_else(|| {
+                    self.graph
+                        .get_model(&model_name)
+                        .and_then(|model| model.get_metric(&metric_name))
+                });
+                if !metric.is_some_and(Metric::requires_time_axis) {
+                    continue;
+                }
+            }
 
             if !seen_models.insert(model_name.clone()) {
                 continue;
@@ -7148,12 +7182,12 @@ mod tests {
         graph.set_metric_scopes(HashMap::new()).unwrap();
         let generator = SqlGenerator::new(&graph);
         assert!(generator
-            .apply_default_time_dimensions(&["total_revenue".into()], &[])
+            .apply_default_time_dimensions(&["total_revenue".into()], &[], false)
             .unwrap()
             .is_empty());
         assert_eq!(
             generator
-                .apply_default_time_dimensions(&["orders.revenue".into()], &[])
+                .apply_default_time_dimensions(&["orders.revenue".into()], &[], false)
                 .unwrap(),
             vec!["orders.day__day"]
         );
@@ -7162,6 +7196,52 @@ mod tests {
             .unwrap();
         assert!(!sql.contains("GROUP BY"), "{sql}");
         assert!(!sql.contains("DATE_TRUNC"), "{sql}");
+    }
+
+    #[test]
+    fn default_time_dimension_never_regroups_an_explicit_grain() {
+        let mut graph = SemanticGraph::new();
+        let mut model = Model::new("orders", "id")
+            .with_table("orders")
+            .with_dimension(Dimension::time("day"))
+            .with_dimension(Dimension::categorical("status"))
+            .with_metric(Metric::sum("revenue", "amount"))
+            .with_metric(Metric::cumulative("running_revenue", "revenue"));
+        model.default_time_dimension = Some("day".into());
+        graph.add_model(model).unwrap();
+        let generator = SqlGenerator::new(&graph);
+        let status = vec!["orders.status".to_string()];
+        let defaults = |metrics: &[&str], dimensions: &[String], explicit_projection| {
+            let metrics: Vec<String> = metrics.iter().map(|metric| metric.to_string()).collect();
+            generator
+                .apply_default_time_dimensions(&metrics, dimensions, explicit_projection)
+                .unwrap()
+        };
+
+        // Selected dimensions are the whole grain of an ordinary aggregate.
+        assert_eq!(defaults(&["orders.revenue"], &status, false), status);
+        // A SQL projection is complete even when it lists no dimension.
+        assert!(defaults(&["orders.revenue"], &[], true).is_empty());
+        // A running total still needs its time axis, also behind a sibling.
+        for metrics in [
+            vec!["orders.running_revenue"],
+            vec!["orders.revenue", "orders.running_revenue"],
+        ] {
+            assert_eq!(
+                defaults(&metrics, &status, false),
+                vec!["orders.status", "orders.day"]
+            );
+            assert_eq!(defaults(&metrics, &[], true), vec!["orders.day"]);
+        }
+
+        let sql = generator
+            .generate(
+                &SemanticQuery::new()
+                    .with_metrics(vec!["orders.revenue".into()])
+                    .with_dimensions(status),
+            )
+            .unwrap();
+        assert!(!sql.contains("day"), "{sql}");
     }
 
     #[test]

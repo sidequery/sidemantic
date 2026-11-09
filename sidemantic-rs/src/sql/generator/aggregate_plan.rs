@@ -681,8 +681,11 @@ pub(super) fn try_generate(
         // Defaults belong to selected model metric references, not every source
         // discovered while expanding graph calculations. Resolve them once for
         // the whole query before creating independent aggregate children.
-        effective_query.dimensions =
-            generator.apply_default_time_dimensions(&query.metrics, &query.dimensions)?;
+        effective_query.dimensions = generator.apply_default_time_dimensions(
+            &query.metrics,
+            &query.dimensions,
+            query.explicit_projection,
+        )?;
         effective_query.skip_default_time_dimensions = true;
         &effective_query
     } else {
@@ -1778,12 +1781,14 @@ mod tests {
                 true,
                 true,
             ),
+            // Selected dimensions are the whole grain: no other source's
+            // default joins them.
             (
                 vec!["orders.revenue", "customers.customer_count"],
                 vec!["orders.ordered_at__day"],
                 false,
                 false,
-                true,
+                false,
             ),
             (
                 vec!["orders.revenue", "customers.customer_count"],

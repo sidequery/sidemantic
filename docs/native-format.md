@@ -137,7 +137,7 @@ At least one of `table`, `sql`, or `source_uri` should be present unless the mod
 | `required_filters` | No | Fields that every query using the model must filter. Enforced by Python-hosted clients before Python or Rust compilation. |
 | `required_filters_or_groups` | No | Fields that every query using the model must filter or group by, independently for each listed field. |
 | `pre_aggregations` | No | List of pre-aggregation definitions. |
-| `default_time_dimension` | No | Time dimension the Python generator adds to every query of this model's metrics that does not already group by one of the model's time dimensions. |
+| `default_time_dimension` | No | Time dimension a structured query is grouped by when it selects metrics and no dimensions, and the time axis of cumulative, time-comparison and offset-ratio metrics that select none. Ordinary aggregates in a query with its own dimensions, or in a SQL `SELECT`, are never grouped by it. |
 | `default_grain` | No | Default time grain for the default time dimension. |
 | `freshness` | No | Source freshness policy for live chart/dashboard runtimes. |
 | `security` | No | Row/access `SecurityPolicy` (`access` gate + `row_filters`) enforced per query when `user_attributes` are supplied. See [Security](security.md). |

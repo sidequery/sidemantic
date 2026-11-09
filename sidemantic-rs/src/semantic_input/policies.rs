@@ -534,7 +534,28 @@ fn check_visibility(
             }
         }
     }
-    if !query.skip_default_time_dimensions {
+    // A query that names its own grain receives a default time dimension only
+    // for metrics needing a time axis. Stay conservative: once any selected
+    // metric needs one, check every metric model's default.
+    let grain_is_explicit = query.explicit_projection || !query.dimensions.is_empty();
+    let selects_time_axis_metric = || {
+        query.metrics.iter().any(|reference| {
+            if let Some(metric) = graph.get_metric(reference) {
+                return metric.requires_time_axis();
+            }
+            let (owners, name): (Vec<&str>, &str) = match reference.split_once('.') {
+                Some((model, name)) => (vec![model], name),
+                None => (candidates.iter().map(String::as_str).collect(), reference),
+            };
+            owners.into_iter().any(|model| {
+                graph
+                    .get_model(model)
+                    .and_then(|model| model.get_metric(name))
+                    .is_some_and(|metric| metric.requires_time_axis())
+            })
+        })
+    };
+    if !query.skip_default_time_dimensions && (!grain_is_explicit || selects_time_axis_metric()) {
         for model in metric_models {
             if let Some(default_time) = graph
                 .get_model(model)

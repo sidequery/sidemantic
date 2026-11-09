@@ -465,9 +465,15 @@ impl QueryRewriter<'_> {
             vec![(base.clone(), alias.unwrap_or_else(|| base.clone()))]
         });
         let join_filters = self.bind_explicit_joins(&select.joins, &mut sources)?;
+        // The SELECT list is the whole projection; a model's default time
+        // dimension must not become a grouping key the result never shows.
+        let query = SemanticQuery {
+            explicit_projection: true,
+            ..SemanticQuery::new()
+        };
         let mut bindings = Bindings {
             graph: self.graph.clone(),
-            query: SemanticQuery::new(),
+            query,
             sources,
             base,
             references: HashMap::new(),

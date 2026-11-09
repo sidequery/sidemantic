@@ -32,7 +32,11 @@ impl SqlGenerator<'_> {
                 }
                 default_metrics.push(reference.clone());
             }
-            self.apply_default_time_dimensions(&default_metrics, &query.dimensions)?
+            self.apply_default_time_dimensions(
+                &default_metrics,
+                &query.dimensions,
+                query.explicit_projection,
+            )?
         };
         let mut fields = Vec::new();
         for (reference, dimension) in dimensions

@@ -317,6 +317,33 @@ mod tests {
     }
 
     #[test]
+    fn default_time_dimension_is_not_a_hidden_group_key() {
+        let mut graph = SemanticGraph::new();
+        let mut orders = Model::new("orders", "order_id")
+            .with_table("public.orders")
+            .with_dimension(Dimension::categorical("status"))
+            .with_dimension(Dimension::time("order_date").with_sql("created_at"))
+            .with_metric(Metric::sum("revenue", "amount"));
+        orders.default_time_dimension = Some("order_date".into());
+        graph.add_model(orders).unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+
+        // The SELECT list is the whole projection, so neither query may be
+        // grouped by a default time dimension that it does not return.
+        let scalar = rewriter
+            .rewrite("SELECT orders.revenue FROM orders")
+            .unwrap();
+        assert!(!scalar.contains("GROUP BY"), "{scalar}");
+        assert!(!scalar.contains("created_at"), "{scalar}");
+
+        let grouped = rewriter
+            .rewrite("SELECT orders.status, orders.revenue FROM orders")
+            .unwrap();
+        assert!(grouped.contains("GROUP BY"), "{grouped}");
+        assert!(!grouped.contains("created_at"), "{grouped}");
+    }
+
+    #[test]
     fn source_normalization_and_rewrite_work_on_standard_test_stack() {
         // This test deliberately uses the ordinary harness thread. The input
         // normalization stage must use the production parser worker too.

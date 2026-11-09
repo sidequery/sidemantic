@@ -144,7 +144,9 @@ Reports which queries can be rewritten, which cannot, and what's missing.
 All database adapters implement `get_tables()` and `get_columns()`:
 
 ```python
-layer = SemanticLayer(connection="duckdb:///data.duckdb")
+from pathlib import Path
+
+layer = SemanticLayer(connection=f"duckdb:///{Path('data.duckdb').resolve()}")
 tables = layer.adapter.get_tables()       # [{"table_name": "orders", "schema": "main"}, ...]
 columns = layer.adapter.get_columns("orders")  # [{"column_name": "id", "data_type": "INTEGER"}, ...]
 ```
@@ -217,17 +219,23 @@ for rec in recommender.get_recommendations(top_n=5):
     print(definition)
 ```
 
-CLI: `sidemantic preagg recommend` and `sidemantic preagg apply`.
+CLI: `sidemantic preagg recommend` and `sidemantic preagg apply`. Query-history import
+works on Snowflake, BigQuery, Databricks, and ClickHouse; for DuckDB and other
+databases pass a log of Sidemantic-generated SQL with `--queries queries.sql`. Only
+queries carrying the `-- sidemantic:` instrumentation comment are analyzed.
 
 ## End-to-End Example: Queries to Semantic Layer
 
 ```python
+from pathlib import Path
+
 from sidemantic import SemanticLayer, Model, Dimension, Metric, Relationship
 from sidemantic.loaders import load_from_directory
 from sidemantic.core.migrator import Migrator
 
-# 1. Connect to database
-layer = SemanticLayer(connection="duckdb:///warehouse.duckdb", auto_register=False)
+# 1. Connect to database (DuckDB URLs need an absolute path)
+connection = f"duckdb:///{Path('warehouse.duckdb').resolve()}"
+layer = SemanticLayer(connection=connection, auto_register=False)
 
 # 2. Collect existing queries
 queries = [
@@ -256,7 +264,7 @@ migrator.write_model_files(models, "output/models/")
 migrator.write_graph_metrics_file(graph_metrics, "output/models/")
 
 # 6. Load refined models and query
-layer2 = SemanticLayer(connection="duckdb:///warehouse.duckdb", auto_register=False)
+layer2 = SemanticLayer(connection=connection, auto_register=False)
 load_from_directory(layer2, "output/models/")
 result = layer2.sql("SELECT revenue, status FROM orders")
 

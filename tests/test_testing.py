@@ -269,6 +269,59 @@ def test_check_schema_drift_reports_missing_relationship_fk():
     assert any("foreign key" in error and "customer_id" in error for error in report.errors)
 
 
+def _orders_layer_with(metrics: list[Metric]) -> SemanticLayer:
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE orders (id INTEGER, status VARCHAR, amount DOUBLE, created_at DATE)")
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[
+                Dimension(name="status", type="categorical"),
+                Dimension(name="created_at", type="time", granularity="day"),
+            ],
+            metrics=[
+                Metric(name="revenue", agg="sum", sql="amount"),
+                Metric(name="completed_revenue", agg="sum", sql="amount", filters=["status = 'completed'"]),
+                *metrics,
+            ],
+        )
+    )
+    return layer
+
+
+def test_check_schema_drift_accepts_metric_references_in_derived_and_cumulative_metrics():
+    layer = _orders_layer_with(
+        [
+            Metric(name="completion_share", type="derived", sql="completed_revenue / revenue"),
+            Metric(name="cumulative_revenue", type="cumulative", sql="revenue"),
+            Metric(name="cumulative_amount", type="cumulative", agg="sum", sql="amount"),
+        ]
+    )
+
+    report = check_schema_drift(layer)
+
+    assert report.errors == []
+    assert report.checked_models == 1
+
+
+def test_check_schema_drift_reports_unknown_name_in_derived_metric():
+    layer = _orders_layer_with([Metric(name="bad_share", type="derived", sql="completed_revenue / revnue")])
+
+    report = check_schema_drift(layer)
+
+    assert report.errors == ["Model 'orders': metric 'bad_share' references missing column 'revnue'"]
+
+
+def test_check_schema_drift_still_checks_columns_of_cumulative_aggregations():
+    layer = _orders_layer_with([Metric(name="cumulative_qty", type="cumulative", agg="sum", sql="quantity")])
+
+    report = check_schema_drift(layer)
+
+    assert report.errors == ["Model 'orders': metric 'cumulative_qty' references missing column 'quantity'"]
+
+
 def test_check_schema_drift_missing_table_is_an_error():
     layer = SemanticLayer(connection="duckdb:///:memory:")
     layer.add_model(Model(name="orders", table="orders", primary_key="id", metrics=[Metric(name="c", agg="count")]))

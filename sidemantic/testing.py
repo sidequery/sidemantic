@@ -257,19 +257,34 @@ def check_schema_drift(layer) -> DriftReport:
             continue
         report.checked_models += 1
 
-        def check(kind: str, label: str, expression: str | None, columns=live_columns, name=model_name):
+        def check(
+            kind: str,
+            label: str,
+            expression: str | None,
+            columns=live_columns,
+            name=model_name,
+            known_names: frozenset[str] = frozenset(),
+        ):
             for column in _referenced_columns(expression, dialect) if expression else set():
-                if column.lower() not in columns:
+                if column.lower() not in columns and column.lower() not in known_names:
                     report.errors.append(f"Model '{name}': {kind} '{label}' references missing column '{column}'")
 
+        # Aggregations read a column expression. Derived, cumulative, and other
+        # metrics without an aggregation reference other metrics by name, which
+        # are semantic names rather than table columns.
+        metric_names = frozenset(
+            [metric.name.lower() for metric in model.metrics] + [name.lower() for name in layer.graph.metrics]
+        )
         for column in model.primary_key_columns:
             if column.lower() not in live_columns:
                 report.errors.append(f"Model '{model_name}': primary key column '{column}' not found in database")
         for dimension in model.dimensions:
             check("dimension", dimension.name, dimension.sql or dimension.name)
         for metric in model.metrics:
-            if metric.sql:
+            if metric.sql and metric.agg:
                 check("metric", metric.name, metric.sql)
+            elif metric.sql:
+                check("metric", metric.name, metric.sql, known_names=metric_names)
         for relationship in model.relationships:
             for column in relationship.foreign_key_columns:
                 if column.lower() not in live_columns:

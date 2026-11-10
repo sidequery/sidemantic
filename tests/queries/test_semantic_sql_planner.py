@@ -2438,8 +2438,8 @@ def test_fanout_join_key_preaggregation_rolls_orders_to_customer_region(semantic
     assert candidates["join_key_preaggregation"].details["preaggregation_dimensions"] == ["customer_id"]
     assert candidates["join_key_preaggregation"].details["join_keys"][0]["relationship"] == "many_to_one"
     assert "orders_preagg_by_customer" in explanation.rewritten_sql
-    assert "FROM customers AS customers" in explanation.rewritten_sql
-    assert "LEFT JOIN orders_preagg_by_customer AS orders_rollup" in explanation.rewritten_sql
+    assert "FROM orders_preagg_by_customer AS orders_rollup" in explanation.rewritten_sql
+    assert "LEFT JOIN customers AS customers" in explanation.rewritten_sql
     assert "FROM orders\n" not in explanation.rewritten_sql
 
 
@@ -2535,21 +2535,24 @@ def test_join_key_preaggregation_joins_remote_sql_source(semantic_layer):
         FROM orders
         GROUP BY customer_id
     """)
+    # Orders of non-premium customers match no row of the filtered source and
+    # form a NULL region group. Its placement is stated explicitly because the
+    # engines' SQL rewriters order NULLs differently by default.
     sql = """
         SELECT orders.revenue, customers.region
         FROM orders
-        ORDER BY customers.region
+        ORDER BY customers.region NULLS FIRST
     """
     baseline_sql = _compiled_semantic_sql(semantic_layer, sql, use_preaggregations=False)
 
     explanation = _assert_query_matches_baseline(semantic_layer, sql, baseline_sql, ordered=True)
 
     assert explanation.chosen_plan == "join_key_preaggregation"
-    assert "FROM (SELECT id, region, tier FROM customers WHERE tier = 'premium') AS customers" in (
+    assert "LEFT JOIN (SELECT id, region, tier FROM customers WHERE tier = 'premium') AS customers" in (
         explanation.rewritten_sql
     )
     assert "LEFT JOIN customers AS customers" not in explanation.rewritten_sql
-    assert "LEFT JOIN orders_preagg_by_customer AS orders_rollup" in explanation.rewritten_sql
+    assert "FROM orders_preagg_by_customer AS orders_rollup" in explanation.rewritten_sql
 
 
 def test_fanout_join_key_preaggregation_rejects_missing_join_key_rollup(semantic_layer):

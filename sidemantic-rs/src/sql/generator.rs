@@ -437,8 +437,8 @@ impl<'a> SqlGenerator<'a> {
             }
         }
 
-        // Ordinary queries preserve the dimension domain, including zero-count
-        // related rows. Aggregate children instead retain their source domain.
+        // The measure owner is the preserved side, as in each aggregate child:
+        // dimension models are LEFT JOINed onto it.
         let base_model = query
             .consumption_base_model
             .as_deref()
@@ -1759,15 +1759,14 @@ impl<'a> SqlGenerator<'a> {
         dimensions: &[DimensionRef],
         metrics: &[MetricRef],
     ) -> Option<String> {
-        // A role describes rows of its owner when that owner supplies the measures.
-        // Otherwise preserve dimension-first domain selection.
+        // The model that owns every selected measure is the preserved side:
+        // dimension models are LEFT JOINed onto it, so facts without a matching
+        // dimension row land in a NULL group and a breakdown adds up to the
+        // ungrouped total. Without a single owner, dimensions come first.
         if let Some(metric) = metrics.first() {
             if metrics
                 .iter()
                 .all(|candidate| candidate.model == metric.model)
-                && dimensions.iter().any(|dimension| {
-                    self.graph.role_root_owner(&dimension.model) == Some(metric.model.as_str())
-                })
             {
                 return Some(metric.model.clone());
             }
@@ -4591,7 +4590,9 @@ impl<'a> SqlGenerator<'a> {
             return Ok(None);
         }
         let remote_name = remote_names.iter().next().expect("one remote model");
-        if explicit_anchor.is_some_and(|anchor| anchor != remote_name) {
+        // The rollup stands in for the measure model, which this route keeps
+        // as the preserved side. Any other explicit anchor needs raw planning.
+        if explicit_anchor.is_some_and(|anchor| anchor != model_name) {
             return Ok(None);
         }
         let Some(remote) = self.graph.get_model(remote_name) else {
@@ -4743,14 +4744,15 @@ impl<'a> SqlGenerator<'a> {
                 self.emit_expression(&target)?
             ));
         }
-        // Match Python's dimension domain: retain remote members without facts.
+        // Same population as raw planning: every stored fact group is kept and
+        // an unmatched join key lands in a NULL dimension group.
         let source = self.preaggregation_source(
             model,
             preagg,
             query.preagg_database.as_deref(),
             query.preagg_schema.as_deref(),
         )?;
-        let mut sql = format!("SELECT\n  {}\nFROM {} AS {remote_alias}\nLEFT JOIN {source} AS {rollup_alias}\n  ON {}\nGROUP BY {}",
+        let mut sql = format!("SELECT\n  {}\nFROM {source} AS {rollup_alias}\nLEFT JOIN {} AS {remote_alias}\n  ON {}\nGROUP BY {}",
             select_parts.join(",\n  "), self.model_from_clause(remote, None), conditions.join(" AND "),
             (1..=dimension_refs.len()).map(|index| index.to_string()).collect::<Vec<_>>().join(", "));
         if !query.order_by.is_empty() {
@@ -4785,10 +4787,14 @@ impl<'a> SqlGenerator<'a> {
                 let Some(output) = output else {
                     return Ok(None);
                 };
+                // Unmatched join keys add a NULL dimension group; order it as
+                // raw planning does instead of by the database default.
+                let nulls = if direction == "DESC" { "LAST" } else { "FIRST" };
                 order_parts.push(
                     format!("{} {direction}", self.quote_identifier(output))
                         .trim()
-                        .to_owned(),
+                        .to_owned()
+                        + &format!(" NULLS {nulls}"),
                 );
             }
             sql.push_str(&format!("\nORDER BY {}", order_parts.join(", ")));
@@ -7386,18 +7392,24 @@ mod tests {
             .with_metrics(vec!["orders.revenue".into()])
             .with_dimensions(vec!["customers.name".into()])
             .with_use_preaggregations(true);
-        assert!(generator
-            .generate(&query)
-            .unwrap()
-            .contains("orders_preagg_daily"));
+        // The rollup stands in for orders, the preserved side of this query.
+        for source in [None, Some("orders")] {
+            let sql = generator.generate_from_model(&query, source).unwrap();
+            assert!(
+                sql.contains("FROM orders_preagg_daily AS sidemantic_join_rollup"),
+                "{sql}"
+            );
+            assert!(sql.contains("LEFT JOIN customers AS"), "{sql}");
+        }
+        // Any other anchor needs every row of that model, so it reads raw data.
         let sql = generator
-            .generate_from_model(&query, Some("orders"))
+            .generate_from_model(&query, Some("customers"))
             .unwrap();
         assert!(!sql.contains("orders_preagg_daily"), "{sql}");
         let local_first =
             query.with_dimensions(vec!["orders.status".into(), "customers.name".into()]);
         let sql = generator.generate(&local_first).unwrap();
-        assert!(!sql.contains("orders_preagg_daily"), "{sql}");
+        assert!(sql.contains("orders_preagg_daily"), "{sql}");
     }
 
     #[test]
@@ -8370,8 +8382,8 @@ models:
 
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("LEFT JOIN orders_cte AS orders_cte"));
-        assert!(sql.contains("customers_cte.id = orders_cte.customers_id"));
+        assert!(sql.contains("LEFT JOIN customers_cte AS customers_cte"));
+        assert!(sql.contains("orders_cte.customers_id = customers_cte.id"));
     }
 
     #[test]
@@ -8428,8 +8440,8 @@ models:
 
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("order_items_cte.order_id = shipments_cte.order_id"));
-        assert!(sql.contains("order_items_cte.item_id = shipments_cte.item_id"));
+        assert!(sql.contains("shipments_cte.order_id = order_items_cte.order_id"));
+        assert!(sql.contains("shipments_cte.item_id = order_items_cte.item_id"));
         assert!(sql.contains(" AND "));
     }
 
@@ -8488,10 +8500,14 @@ models:
 
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("products_cte.tenant_id = order_items_cte.tenant_id"));
-        assert!(sql.contains("products_cte.product_id = order_items_cte.product_id"));
-        assert!(sql.contains("order_items_cte.tenant_id = orders_cte.tenant_id"));
-        assert!(sql.contains("order_items_cte.order_id = orders_cte.order_id"));
+        for condition in [
+            "orders_cte.tenant_id = order_items_cte.tenant_id",
+            "orders_cte.order_id = order_items_cte.order_id",
+            "order_items_cte.tenant_id = products_cte.tenant_id",
+            "order_items_cte.product_id = products_cte.product_id",
+        ] {
+            assert!(sql.contains(condition), "{condition}: {sql}");
+        }
     }
 
     #[test]

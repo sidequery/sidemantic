@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sidemantic import Dimension, Explore, Metric, Model, Relationship, SemanticLayer
 
 
 @pytest.fixture(params=["python", "rust"])
@@ -82,14 +82,17 @@ def test_complete_sql_and_wrappers_run_after_entity_dedup(layer):
 
 def test_complete_aggregates_keep_groups_without_source_entities(layer):
     layer.adapter.execute("insert into raw_items values (5, 99, 'orphan'), (6, 99, 'orphan')")
-    cursor = layer.query(
-        metrics=["orders.opaque_count", "orders.average"],
-        dimensions=["items.category"],
-        order_by=["items.category"],
-    )
+    query = {"metrics": ["orders.opaque_count", "orders.average"], "order_by": ["items.category"]}
+    # Orders own the measures, so a category without any order is not a group.
+    cursor = layer.query(**query, dimensions=["items.category"])
     assert [field[0] for field in cursor.description] == ["category", "opaque_count", "average"]
-    # Authored COUNT(*) counts the deduplicated null-extended SQL row. Ordinary
-    # semantic counts instead count source entities and return zero here.
+    assert cursor.fetchall() == [("all", 3, 30.0)]
+    # Anchored at the dimension model, the group is kept. Authored COUNT(*)
+    # counts the deduplicated null-extended SQL row. Ordinary semantic counts
+    # instead count source entities and return zero here.
+    layer.graph.add_explore(Explore(name="by_item", model="items"))
+    cursor = layer.query(**query, explore="by_item", dimensions=["category"])
+    assert [field[0] for field in cursor.description] == ["category", "opaque_count", "average"]
     assert cursor.fetchall() == [("all", 3, 30.0), ("orphan", 1, None)]
 
 

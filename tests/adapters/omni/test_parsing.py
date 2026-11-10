@@ -312,8 +312,9 @@ def test_omni_one_to_many_join_sql_not_reversed(tmp_path):
     # Normalize whitespace so we can match the join condition regardless of layout.
     flat = " ".join(sql.split())
 
-    # Correct join pairs customers.id with orders.customer_id.
-    assert "customers_cte.id = orders_cte.customer_id" in flat
+    # Correct join pairs customers.id with orders.customer_id; orders owns the
+    # measure, so it is the left side of the join.
+    assert "orders_cte.customer_id = customers_cte.id" in flat
     # The reversed (buggy) pairing joins the customers FK to the orders PK, and
     # even references a customer_id column that customers does not have.
     assert "customers_cte.customer_id = orders_cte.id" not in flat

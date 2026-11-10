@@ -202,7 +202,7 @@ mod tests {
         );
         // Both aggregates read the same CTEs and join edge. The region filter
         // may be pushed into the shared customers CTE, so it need not repeat.
-        assert_eq!(sql.matches("JOIN orders_cte").count(), 2, "{sql}");
+        assert_eq!(sql.matches("JOIN customers_cte").count(), 2, "{sql}");
         assert!(sql.contains("'EU'"), "{sql}");
         polyglot_sql::parse_one(&sql, DialectType::DuckDB).unwrap();
     }

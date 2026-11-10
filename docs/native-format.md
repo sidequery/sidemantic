@@ -515,6 +515,72 @@ Relationship types:
 - `one_to_many`
 - `many_to_many`
 
+### Which rows a joined query keeps
+
+The model that owns the selected metrics is the preserved side of the join. Models
+that only supply dimensions are `LEFT JOIN`ed onto it, across every hop:
+
+- A metric row whose key is `NULL` or matches no dimension row is counted in a
+  `NULL` dimension group, so a breakdown adds up to the ungrouped total.
+- A dimension row that no metric row references is not a group. `orders.revenue`
+  by `customers.region` lists no region without orders.
+- A filter or segment on a dimension model's column keeps only metric rows that
+  have a matching dimension row, so it removes the `NULL` group. That includes
+  `IS NULL` predicates; filter on the metric model's own key column to inspect
+  unmatched rows.
+- The same holds when the metric sits on the "one" side: `customers.customer_count`
+  by `orders.status` keeps every customer once, with customers without orders in a
+  `NULL` status group.
+
+Metrics from several models keep each model's own rows, so their groups are the
+union of those populations. A query with dimensions and no metric starts from its
+first dimension's model.
+
+To list every dimension member, including those without metric rows, either query
+through an Explore whose base `model` is the dimension model, or also select a
+metric owned by that model:
+
+```yaml
+models:
+  - name: customers
+    table: customers
+    primary_key: id
+    dimensions:
+      - name: region
+        type: categorical
+    metrics:
+      - name: customer_count
+        agg: count
+  - name: orders
+    table: orders
+    primary_key: id
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+
+explores:
+  - name: by_customer
+    model: customers
+```
+
+```bash
+# Every customer region; regions without orders have NULL revenue and a zero count.
+sidemantic query --explore by_customer --metric orders.revenue --metric orders.order_count --dimension region
+# Both populations: regions without orders and orders without a region.
+sidemantic query --metric orders.revenue --metric customers.customer_count --dimension customers.region
+```
+
+Releases through 0.13.1 anchored a single-model metric query on its first
+dimension's model instead: it listed dimension members without metric rows and
+dropped metric rows without a matching dimension row.
+
 Composite relationship:
 
 ```yaml

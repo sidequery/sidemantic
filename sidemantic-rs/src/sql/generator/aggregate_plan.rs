@@ -1648,7 +1648,9 @@ mod tests {
         assert!(
             sql.contains(
                 "FULL OUTER JOIN customers_preagg ON ARRAY[orders_preagg.__sidemantic_dimension_0] \
-                 = ARRAY[customers_preagg.__sidemantic_dimension_0]"
+                 = ARRAY[customers_preagg.__sidemantic_dimension_0] \
+                 AND (orders_preagg.__sidemantic_dimension_0 IS NULL) \
+                 = (customers_preagg.__sidemantic_dimension_0 IS NULL)"
             ),
             "{sql}"
         );

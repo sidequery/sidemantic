@@ -120,6 +120,7 @@ impl SqlGenerator<'_> {
         let generator = SqlGenerator {
             graph: self.graph,
             dialect: self.dialect,
+            emitted_dialect: self.emitted_dialect,
             timezone: query.timezone.clone().or_else(|| self.timezone.clone()),
         };
         let mut inner = query.clone();

@@ -206,11 +206,6 @@ fn emit_transformed(
     target: DialectType,
 ) -> Result<String> {
     let expression = super::literals::target_expression(expression, target)?;
-    let expression = if target == DialectType::PostgreSQL {
-        postgres_full_join_keys(expression)?
-    } else {
-        expression
-    };
     // Generated ASTs can contain target SQL leaves. Keep them as ASTs instead
     // of reparsing target-quoted identifiers as source SQL. Authored input uses
     // the complete transpile pipeline below before reaching this boundary.
@@ -219,72 +214,6 @@ fn emit_transformed(
         .transform(expression)
         .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
     generate_preserving_null_order(&expression, target, source)
-}
-
-/// PostgreSQL only plans FULL JOIN on hash- or merge-joinable operators, which
-/// excludes IS NOT DISTINCT FROM. Array equality is both, keeps the column
-/// type's own comparison, and treats NULL elements as equal, so the NULL-safe
-/// key match of independently aggregated sources survives unchanged.
-fn postgres_full_join_keys(expression: Expression) -> Result<Expression> {
-    use polyglot_sql::expressions::{ArrayConstructor, BinaryOp};
-
-    fn array(element: Expression) -> Expression {
-        Expression::ArrayFunc(Box::new(ArrayConstructor {
-            expressions: vec![element],
-            bracket_notation: true,
-            use_list_keyword: false,
-        }))
-    }
-    // Only top-level conjuncts are join keys; anything else keeps its meaning.
-    fn lower(condition: Expression) -> Expression {
-        match condition {
-            Expression::And(operands) => {
-                let mut operands = *operands;
-                operands.left = lower(operands.left);
-                operands.right = lower(operands.right);
-                Expression::And(Box::new(operands))
-            }
-            Expression::Paren(inner) => {
-                let mut inner = *inner;
-                inner.this = lower(inner.this);
-                Expression::Paren(Box::new(inner))
-            }
-            Expression::NullSafeEq(operands) => Expression::Eq(Box::new(BinaryOp::new(
-                array(operands.left),
-                array(operands.right),
-            ))),
-            other => other,
-        }
-    }
-    fn visit(value: &mut Value) -> Result<()> {
-        match value {
-            Value::Object(fields) => {
-                for child in fields.values_mut() {
-                    visit(child)?;
-                }
-                // Joins are plain structs in the serialized AST, not tagged nodes.
-                let full_join = fields.get("kind").and_then(Value::as_str) == Some("Full")
-                    && fields.contains_key("using");
-                if let Some(on) = fields.get_mut("on").filter(|on| full_join && !on.is_null()) {
-                    let condition: Expression = serde_json::from_value(on.take())
-                        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
-                    *on = serde_json::to_value(lower(condition))
-                        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
-                }
-            }
-            Value::Array(values) => {
-                for child in values {
-                    visit(child)?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    let mut value = serde_json::to_value(expression)
-        .map_err(|error| SidemanticError::SqlGeneration(error.to_string()))?;
-    visit(&mut value)?;
-    serde_json::from_value(value).map_err(|error| SidemanticError::SqlGeneration(error.to_string()))
 }
 
 /// Preserve explicit NULL placement even when the warehouse's mutable session
@@ -915,35 +844,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn postgres_full_join_uses_hash_joinable_null_safe_keys() {
+    fn authored_full_join_conditions_are_emitted_as_written() {
+        // Lowering an authored NULL-safe comparison would change its meaning:
+        // an array-valued operand compares NULL and the empty array as equal
+        // once wrapped. Only generated combine keys are lowered, at generation.
         let source = "SELECT * FROM a FULL OUTER JOIN b \
-                      ON a.x IS NOT DISTINCT FROM b.x AND a.total = b.total \
-                      FULL OUTER JOIN c ON COALESCE(a.x, b.x) IS NOT DISTINCT FROM c.x \
-                      LEFT JOIN d ON c.x IS NOT DISTINCT FROM d.x";
-        let emitted = |target| {
+                      ON a.id = b.id AND a.tags IS NOT DISTINCT FROM b.tags";
+        for target in [
+            DialectType::PostgreSQL,
+            DialectType::DuckDB,
+            DialectType::Snowflake,
+        ] {
             let expression = parse(source, DialectType::DuckDB).unwrap();
-            emit(expression, DialectType::DuckDB, target).unwrap()
-        };
-        let postgres = emitted(DialectType::PostgreSQL);
-        assert!(
-            postgres.contains("ON ARRAY[a.x] = ARRAY[b.x] AND a.total = b.total"),
-            "{postgres}"
-        );
-        assert!(
-            postgres.contains("ON ARRAY[COALESCE(a.x, b.x)] = ARRAY[c.x]"),
-            "{postgres}"
-        );
-        // Other join kinds accept the operator as written.
-        assert!(
-            postgres.contains("LEFT JOIN d ON c.x IS NOT DISTINCT FROM d.x"),
-            "{postgres}"
-        );
-        for target in [DialectType::DuckDB, DialectType::Snowflake] {
-            let sql = emitted(target);
-            assert!(!sql.contains("ARRAY["), "{target:?}: {sql}");
-            assert_eq!(
-                sql.matches("IS NOT DISTINCT FROM").count(),
-                3,
+            let sql = emit(expression, DialectType::DuckDB, target).unwrap();
+            assert!(
+                sql.contains("ON a.id = b.id AND a.tags IS NOT DISTINCT FROM b.tags"),
                 "{target:?}: {sql}"
             );
         }

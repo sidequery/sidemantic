@@ -3296,8 +3296,19 @@ class SQLGenerator:
             # PostgreSQL only plans FULL JOIN on hash- or merge-joinable
             # operators, which excludes IS NOT DISTINCT FROM. Array equality
             # is both, keeps the column type's own comparison, and treats
-            # NULL elements as equal.
-            condition = exp.EQ(this=exp.Array(expressions=[left]), expression=exp.Array(expressions=[right]))
+            # NULL elements as equal. Wrapping an array-valued key turns both
+            # NULL and the empty array into the empty array, so the keys must
+            # also agree on being NULL.
+            condition = exp.and_(
+                exp.EQ(
+                    this=exp.Array(expressions=[left.copy()]),
+                    expression=exp.Array(expressions=[right.copy()]),
+                ),
+                exp.EQ(
+                    this=exp.paren(exp.Is(this=left.copy(), expression=exp.null())),
+                    expression=exp.paren(exp.Is(this=right.copy(), expression=exp.null())),
+                ),
+            )
         else:
             condition = exp.NullSafeEQ(this=left, expression=right)
         return condition.sql(dialect=self._dialect_instance)

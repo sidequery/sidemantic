@@ -741,3 +741,78 @@ def test_semantic_layer_postgres_multi_fact_shared_dimensions(clean_postgres):
     finally:
         postgres.adapter.close()
         duckdb.adapter.close()
+
+
+def _array_keyed_layer() -> SemanticLayer:
+    """Groups keyed by an array column whose values include NULL and the empty array."""
+    layer = SemanticLayer(connection=POSTGRES_URL)
+    for statement in (
+        "CREATE TABLE mf_groups (id INT PRIMARY KEY, tags INT[])",
+        "CREATE TABLE mf_sales (id INT PRIMARY KEY, group_id INT, amount INT)",
+        "CREATE TABLE mf_returns (id INT PRIMARY KEY, group_id INT, qty INT)",
+        "CREATE TABLE mf_labels (id INT PRIMARY KEY, tags INT[])",
+        "INSERT INTO mf_groups VALUES (1, '{1,2}'), (2, NULL), (3, '{}'), (4, '{1}')",
+        # Sale 4 has no group, and group 4 has no sales.
+        "INSERT INTO mf_sales VALUES (1, 1, 10), (2, 2, 20), (3, 3, 30), (4, NULL, 5)",
+        "INSERT INTO mf_returns VALUES (1, 1, 1), (2, 2, 2), (3, 3, 3), (4, 4, 4)",
+        # Labels 2 and 3 swap the NULL and empty tags of groups 2 and 3.
+        "INSERT INTO mf_labels VALUES (1, '{1,2}'), (2, '{}'), (3, NULL), (4, '{{1}}')",
+    ):
+        layer.adapter.execute(statement)
+    layer.add_model(
+        Model(
+            name="mf_groups",
+            table="mf_groups",
+            primary_key="id",
+            dimensions=[Dimension(name="id", type="categorical"), Dimension(name="tags", type="categorical")],
+            metrics=[Metric(name="group_count", agg="count")],
+        )
+    )
+    for name, column in (("mf_sales", "amount"), ("mf_returns", "qty")):
+        layer.add_model(
+            Model(
+                name=name,
+                table=name,
+                primary_key="id",
+                relationships=[Relationship(name="mf_groups", type="many_to_one", foreign_key="group_id")],
+                metrics=[Metric(name="total", agg="sum", sql=column)],
+            )
+        )
+    return layer
+
+
+def test_semantic_layer_postgres_multi_fact_array_valued_dimension(clean_postgres):
+    """An array-valued shared dimension keeps its NULL and empty-array groups apart."""
+    layer = _array_keyed_layer()
+    try:
+        rows = layer.sql("SELECT mf_groups.tags, mf_sales.total, mf_returns.total FROM mf_sales").fetchall()
+        assert sorted(rows, key=repr) == sorted(
+            [
+                ([1, 2], 10, 1),
+                # Sales 2 and 4 have NULL tags; only sale 3 has empty tags.
+                (None, 25, 2),
+                ([], 30, 3),
+                ([1], None, 4),
+            ],
+            key=repr,
+        )
+    finally:
+        layer.adapter.close()
+
+
+def test_semantic_layer_postgres_authored_full_join_keeps_array_comparison(clean_postgres):
+    """A FULL JOIN written in the query is PostgreSQL's to evaluate, not a combine to lower."""
+    layer = _array_keyed_layer()
+    try:
+        rows = layer.sql(
+            "SELECT s.id, s.group_count, labels.id AS label_id"
+            " FROM (SELECT mf_groups.id, mf_groups.tags, mf_groups.group_count FROM mf_groups) AS s"
+            " FULL OUTER JOIN mf_labels AS labels ON s.id = labels.id AND s.tags IS NOT DISTINCT FROM labels.tags"
+        ).fetchall()
+        # NULL tags are distinct from empty tags, and {1} from {{1}}.
+        assert sorted(rows, key=repr) == sorted(
+            [(1, 1, 1)] + [(group, 1, None) for group in (2, 3, 4)] + [(None, None, label) for label in (2, 3, 4)],
+            key=repr,
+        )
+    finally:
+        layer.adapter.close()

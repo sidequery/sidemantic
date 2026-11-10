@@ -575,7 +575,11 @@ impl QueryRewriter<'_> {
             prepare(&bindings.graph, &mut bindings.query)?;
             bindings.query.order_by.clear();
         }
-        let sql = SqlGenerator::new(&bindings.graph).generate(&bindings.query)?;
+        let mut generator = SqlGenerator::new(&bindings.graph);
+        if let Some(dialect) = self.emitted_dialect.get() {
+            generator = generator.with_emitted_dialect(dialect);
+        }
+        let sql = generator.generate(&bindings.query)?;
         // Preserve routing metadata outside the parsed subquery: trailing SQL
         // comments are discarded by the parser and can consume its closing ')'.
         let sql = if let Some(inner) = sql.strip_suffix("\n-- used_preagg=true") {

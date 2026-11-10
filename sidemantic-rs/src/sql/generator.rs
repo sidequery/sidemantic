@@ -178,6 +178,8 @@ struct RollupFilters {
 pub struct SqlGenerator<'a> {
     graph: &'a SemanticGraph,
     dialect: DialectType,
+    /// Where a caller re-emits this generator's SQL, when not in `dialect`.
+    emitted_dialect: Option<DialectType>,
     timezone: Option<String>,
 }
 
@@ -186,12 +188,21 @@ impl<'a> SqlGenerator<'a> {
         Self {
             graph,
             dialect: SOURCE_DIALECT,
+            emitted_dialect: None,
             timezone: None,
         }
     }
 
     pub fn with_dialect(mut self, dialect: DialectType) -> Self {
         self.dialect = dialect;
+        self
+    }
+
+    /// The semantic SQL rewriter generates leaves in the source dialect and
+    /// emits the whole statement in another. Constructs that the emitted
+    /// dialect cannot plan must already be generated in a form it accepts.
+    pub(crate) fn with_emitted_dialect(mut self, dialect: DialectType) -> Self {
+        self.emitted_dialect = Some(dialect);
         self
     }
 
@@ -2572,12 +2583,14 @@ impl<'a> SqlGenerator<'a> {
 
     /// NULL-safe equality that the target can plan as a FULL JOIN condition.
     fn full_join_null_safe_equality(&self, left: &str, right: &str) -> String {
-        if self.dialect == DialectType::PostgreSQL {
+        if self.emitted_dialect.unwrap_or(self.dialect) == DialectType::PostgreSQL {
             // PostgreSQL only plans FULL JOIN on hash- or merge-joinable
             // operators, which excludes IS NOT DISTINCT FROM. Array equality
             // is both, keeps the column type's own comparison, and treats
-            // NULL elements as equal.
-            format!("ARRAY[{left}] = ARRAY[{right}]")
+            // NULL elements as equal. Wrapping an array-valued key turns both
+            // NULL and the empty array into the empty array, so the keys must
+            // also agree on being NULL.
+            format!("ARRAY[{left}] = ARRAY[{right}] AND ({left} IS NULL) = ({right} IS NULL)")
         } else {
             format!("{left} IS NOT DISTINCT FROM {right}")
         }
@@ -8548,14 +8561,17 @@ models:
         assert!(
             sql.contains(
                 "FULL OUTER JOIN order_items_preagg ON ARRAY[orders_preagg.country] \
-                 = ARRAY[order_items_preagg.country]"
+                 = ARRAY[order_items_preagg.country] \
+                 AND (orders_preagg.country IS NULL) = (order_items_preagg.country IS NULL)"
             ),
             "{sql}"
         );
         assert!(
             sql.contains(
                 "FULL OUTER JOIN customers_preagg ON ARRAY[COALESCE(orders_preagg.country, \
-                 order_items_preagg.country)] = ARRAY[customers_preagg.country]"
+                 order_items_preagg.country)] = ARRAY[customers_preagg.country] \
+                 AND (COALESCE(orders_preagg.country, order_items_preagg.country) IS NULL) \
+                 = (customers_preagg.country IS NULL)"
             ),
             "{sql}"
         );

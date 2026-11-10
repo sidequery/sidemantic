@@ -80,13 +80,30 @@ def shop(request):
     layer.adapter.close()
 
 
-def _full_join_conditions(sql: str, dialect: str) -> list[exp.Expression]:
-    conditions = []
+def _full_join_conditions(sql: str, dialect: str) -> dict[str, list[exp.Expression]]:
+    """Conjuncts of every FULL JOIN condition, keyed by the joined relation."""
+    conditions = {}
     for join in sqlglot.parse_one(sql, read=dialect).find_all(exp.Join):
         if join.side == "FULL":
             condition = join.args["on"]
-            conditions.extend(condition.flatten() if isinstance(condition, exp.And) else [condition])
+            conditions[join.alias_or_name] = (
+                list(condition.flatten()) if isinstance(condition, exp.And) else [condition]
+            )
     return conditions
+
+
+def _is_null_safe_combine_key(conjuncts: list[exp.Expression]) -> bool:
+    """One generated key: equal as array elements, and equally NULL."""
+    if len(conjuncts) != 2 or not all(type(conjunct) is exp.EQ for conjunct in conjuncts):
+        return False
+    elements, null_flags = conjuncts
+    wrapped = [side.expressions[0] for side in (elements.left, elements.right) if isinstance(side, exp.Array)]
+    flagged = [
+        side.unnest().this
+        for side in (null_flags.left, null_flags.right)
+        if isinstance(side.unnest(), exp.Is) and isinstance(side.unnest().expression, exp.Null)
+    ]
+    return len(wrapped) == 2 and wrapped == flagged
 
 
 @pytest.mark.parametrize("engine", ENGINES)
@@ -110,11 +127,45 @@ def test_postgres_full_join_uses_only_equality_conditions(engine, metrics, dimen
         semantic_sql = f"SELECT {', '.join(dimensions + metrics)} FROM orders"
         rewritten = layer.explain_sql(semantic_sql).rewritten_sql
         for sql in (structured, rewritten):
-            conditions = _full_join_conditions(sql, "postgres")
-            assert len(conditions) == full_joins * len(dimensions), sql
-            assert all(type(condition) is exp.EQ for condition in conditions), sql
-            # A bare column equality would drop the NULL dimension bucket.
-            assert all(isinstance(side, exp.Array) for c in conditions for side in (c.left, c.right)), sql
+            joins = _full_join_conditions(sql, "postgres")
+            assert len(joins) == full_joins, sql
+            for conjuncts in joins.values():
+                assert all(type(conjunct) is exp.EQ for conjunct in conjuncts), sql
+                # A bare column equality would drop the NULL dimension bucket.
+                keys = [conjuncts[index : index + 2] for index in range(0, len(conjuncts), 2)]
+                assert len(keys) == len(dimensions), sql
+                assert all(_is_null_safe_combine_key(key) for key in keys), sql
+    finally:
+        layer.adapter.close()
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+@pytest.mark.parametrize("dialect", ["postgres", "duckdb"])
+def test_authored_full_join_condition_is_emitted_as_written(engine, dialect):
+    """Only generated combine keys are lowered for PostgreSQL, never the query's own joins.
+
+    Wrapping an array-valued operand would make NULL and the empty array compare as equal.
+    """
+    layer = _shop_layer(engine, dialect=dialect)
+    try:
+        rewritten = layer.explain_sql(
+            "SELECT s.region, s.total_amount, s.total_qty, labels.name"
+            " FROM (SELECT customers.region, orders.total_amount, order_items.total_qty FROM orders) AS s"
+            " FULL OUTER JOIN labels ON s.total_amount = labels.amount AND s.region IS NOT DISTINCT FROM labels.tags"
+        ).rewritten_sql
+        joins = _full_join_conditions(rewritten, dialect)
+        assert set(joins) == {"labels", "order_items_preagg"}, rewritten
+
+        authored = joins["labels"]
+        assert [type(conjunct) for conjunct in authored] == [exp.EQ, exp.NullSafeEQ], rewritten
+        assert authored[1].sql(dialect=dialect) == "s.region IS NOT DISTINCT FROM labels.tags"
+        assert not list(authored[1].find_all(exp.Array)), rewritten
+
+        generated = joins["order_items_preagg"]
+        if dialect == "postgres":
+            assert _is_null_safe_combine_key(generated), rewritten
+        else:
+            assert [type(conjunct) for conjunct in generated] == [exp.NullSafeEQ], rewritten
     finally:
         layer.adapter.close()
 

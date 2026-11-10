@@ -340,3 +340,74 @@ def test_thoughtspot_joined_worksheet_is_queryable_and_reexports_its_bindings(tm
     assert column_ids["order_id"] == "sales_table::id"
     assert column_ids["customer_name"] == "customers_table::name"
     assert worksheet["formulas"][0]["expr"] == "[sales_table::gross_revenue] - [sales_table::discount]"
+
+
+def test_rill_rolling_measure_keeps_its_aggregate_through_native(tmp_path):
+    """Rill -> Sidemantic -> Rill: a windowed measure is still AVG(bid_price), not the bare column."""
+    measure = {
+        "name": "rolling_bid",
+        "expression": "AVG(bid_price)",
+        "window": {"order": "ts", "frame": "RANGE BETWEEN INTERVAL 6 DAY PRECEDING AND CURRENT ROW"},
+    }
+    (tmp_path / "source").mkdir()
+    (tmp_path / "source" / "bids.yaml").write_text(
+        yaml.safe_dump({"type": "metrics_view", "model": "bids", "timeseries": "ts", "measures": [measure]})
+    )
+    SidemanticAdapter().export(RillAdapter().parse(tmp_path / "source"), tmp_path / "native.yml")
+    native = SidemanticAdapter().parse(tmp_path / "native.yml")
+    rolling = native.models["bids"].get_metric("rolling_bid")
+    assert (rolling.type, rolling.agg, rolling.sql) == ("cumulative", "avg", "bid_price")
+
+    RillAdapter().export(native, tmp_path / "rill")
+    assert yaml.safe_load((tmp_path / "rill" / "bids.yaml").read_text())["measures"] == [measure]
+
+
+def ratio_graph(numerator: str) -> SemanticGraph:
+    """orders.rate = <numerator> / orders.revenue, beside a refunds model with its own ``revenue``."""
+    fact = orders(
+        Metric(name="revenue", agg="sum", sql="amount"),
+        Metric(name="completed_revenue", agg="sum", sql="amount", filters=["status = 'complete'"]),
+        Metric(name="rate", type="ratio", numerator=numerator, denominator="orders.revenue"),
+    )
+    refunds = Model(
+        name="refunds",
+        table="refunds",
+        primary_key="refund_id",
+        metrics=[Metric(name="revenue", agg="sum", sql="amount")],
+    )
+    return graph_of(fact, refunds)
+
+
+@pytest.mark.parametrize(
+    "target,output",
+    [("superset", "out"), ("rill", "out"), ("snowflake", "model.yaml"), ("atscale-sml", "out")],
+)
+def test_ratio_operand_owned_by_another_model_is_never_bound_to_a_local_namesake(tmp_path, target, output):
+    """``refunds.revenue / orders.revenue`` must not be exported as ``revenue / revenue`` (always 1)."""
+    destination = tmp_path / output
+    with capture_export_report() as report, pytest.raises(ConversionFidelityError, match="refunds.revenue"):
+        export_semantic_graph(ratio_graph("refunds.revenue"), destination, target_format=target)
+    assert report.is_blocked
+    assert not destination.exists()
+
+
+def test_superset_ratio_of_own_metrics_returns_the_native_number(tmp_path):
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    def rate(graph: SemanticGraph) -> float:
+        layer = SemanticLayer(auto_register=False)
+        layer.graph = graph
+        with duckdb.connect() as connection:
+            connection.execute(
+                "create table orders as select * from (values (1, 'complete', 150.0), (2, 'pending', 50.0)) "
+                "t(order_id, status, amount)"
+            )
+            connection.execute("create table refunds as select 1 as refund_id, 30.0 as amount")
+            return float(connection.execute(layer.compile(metrics=["orders.rate"])).fetchone()[0])
+
+    native = ratio_graph("orders.completed_revenue")
+    assert rate(native) == 0.75
+    SupersetAdapter().export(native, tmp_path / "out")
+    assert rate(SupersetAdapter().parse(tmp_path / "out")) == 0.75

@@ -10,7 +10,12 @@ from typing import Any
 
 import yaml
 
-from sidemantic.adapters.base import filtered_aggregate_sql, graph_only_metric_names, reject_unsupported_export
+from sidemantic.adapters.base import (
+    filtered_aggregate_sql,
+    foreign_ratio_operands,
+    graph_only_metric_names,
+    reject_unsupported_export,
+)
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -822,21 +827,36 @@ class RillAdapter:
         for model in models.values():
             for metric in model.metrics:
                 location = f"{model.name}.{metric.name}"
-                if self._measure_expression(metric, model.name) is None:
+                foreign = foreign_ratio_operands(metric, model.name) if metric.type == "ratio" else []
+                if foreign:
+                    problems.append(
+                        (
+                            "metric_operand",
+                            location,
+                            f"Ratio '{location}' uses {', '.join(foreign)} from another model; "
+                            "a Rill metrics view holds one model's measures",
+                        )
+                    )
+                elif self._measure_expression(metric, model) is None:
                     feature = "metric_filter" if metric.filters else "metric_type"
                     problems.append((feature, location, f"'{location}' has no Rill measure expression"))
         return problems
 
     @staticmethod
-    def _measure_expression(metric: Metric, model_name: str) -> str | None:
+    def _measure_expression(metric: Metric, model: Model) -> str | None:
         """SQL expression for a Rill measure, or None when the metric cannot be written."""
-        if metric.agg and not metric.type:
-            return filtered_aggregate_sql(metric, model_name)
+        # A rolling (cumulative) measure keeps its aggregate; the window is written beside it.
+        if metric.agg and metric.type in (None, "cumulative"):
+            return filtered_aggregate_sql(metric, model.name)
         if metric.filters:
             return None
         if metric.type == "ratio" and metric.numerator and metric.denominator and not metric.sql:
-            # A derived Rill measure references other measures of the view by name.
-            return f"{metric.numerator.split('.')[-1]} / NULLIF({metric.denominator.split('.')[-1]}, 0)"
+            # A derived Rill measure references other measures of the same view by
+            # name, so each operand must be a measure this model owns.
+            operands = [reference.split(".")[-1] for reference in (metric.numerator, metric.denominator)]
+            if foreign_ratio_operands(metric, model.name) or any(model.get_metric(name) is None for name in operands):
+                return None
+            return f"{operands[0]} / NULLIF({operands[1]}, 0)"
         if metric.type == "time_comparison" and metric.base_metric and metric.comparison_type == "prior_period":
             # A Rill time_comparison measure names its base measure and compares
             # against the prior period, which is how import reads it back.
@@ -1004,7 +1024,7 @@ class RillAdapter:
         measures = []
         for metric in model.metrics:
             # export() has already refused metrics without an expression.
-            expression = self._measure_expression(metric, model.name) or ""
+            expression = self._measure_expression(metric, model) or ""
 
             measure_def: dict[str, Any] = {
                 "name": metric.name,

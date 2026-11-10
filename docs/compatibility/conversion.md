@@ -41,7 +41,11 @@ before the vendor converter runs.
 Formats without a measure filter (`snowflake`, `holistics`, `rill`, `superset`)
 receive a filtered aggregate as `AGG(CASE WHEN <filter> THEN <value> END)`, which
 their importers read back as the same aggregate. A filter that reads another
-model's columns cannot be folded and blocks the export. A GoodData LDM fact is a
+model's columns cannot be folded and blocks the export. A model-owned ratio
+whose operand belongs to another model (`refunds.revenue / orders.revenue`)
+blocks `rill`, `superset`, `atscale-sml` and Snowflake table metrics: those
+formats name operands without a model, so the reference would bind to a
+same-named metric of the exporting model. A GoodData LDM fact is a
 physical column that imports as `SUM`; every other aggregation is a MAQL metric,
 which this adapter does not write.
 

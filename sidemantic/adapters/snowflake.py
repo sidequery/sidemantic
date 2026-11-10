@@ -7,7 +7,7 @@ import sqlglot
 import yaml
 from sqlglot import exp
 
-from sidemantic.adapters.base import BaseAdapter, filtered_measure_sql
+from sidemantic.adapters.base import BaseAdapter, filtered_measure_sql, foreign_ratio_operands
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -982,6 +982,18 @@ class SnowflakeAdapter(BaseAdapter):
                 # them; skip those rather than emitting an invalid stub that
                 # would fail to re-parse. A fact has no filter slot, so a
                 # filtered aggregation is also written as a metric expression.
+                foreign = foreign_ratio_operands(metric, model.name) if metric.type == "ratio" else []
+                if foreign:
+                    # A table-scoped expression names its operands bare; stripping
+                    # another table's qualifier would bind a same-named local metric.
+                    record_export_note(
+                        "metric_operand",
+                        f"Snowflake table metric {model.name}.{metric.name} uses {', '.join(foreign)} "
+                        "from another table; define it as a graph-level metric",
+                        severity="unsupported",
+                        source="snowflake",
+                    )
+                    continue
                 metric_def = self._export_metric(metric, model_name=model.name)
                 if "expr" not in metric_def and metric.filters:
                     record_export_note(

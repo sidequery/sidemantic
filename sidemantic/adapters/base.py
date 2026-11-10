@@ -66,6 +66,20 @@ def filtered_aggregate_sql(metric: Metric, model_name: str) -> str | None:
     return metric.model_copy(update={"sql": sql}).to_sql()
 
 
+def foreign_ratio_operands(metric: Metric, model_name: str) -> list[str]:
+    """Operands of a model-owned ratio that another model owns.
+
+    A qualified operand names its owner. An exporter that references operands by
+    bare name must not strip a foreign qualifier: the name would then resolve to
+    whichever metric of the exporting model happens to share it.
+    """
+    return [
+        reference
+        for reference in (metric.numerator, metric.denominator)
+        if reference and "." in reference and reference.rsplit(".", 1)[0] != model_name
+    ]
+
+
 def reject_unsupported_export(format_name: str, problems: list[tuple[str, str, str]]) -> None:
     """Report every construct the target format cannot carry, then refuse the export.
 

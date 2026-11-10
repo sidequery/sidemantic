@@ -10,7 +10,12 @@ from typing import Any
 
 import yaml
 
-from sidemantic.adapters.base import BaseAdapter, graph_only_metric_names, reject_unsupported_export
+from sidemantic.adapters.base import (
+    BaseAdapter,
+    foreign_ratio_operands,
+    graph_only_metric_names,
+    reject_unsupported_export,
+)
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -356,7 +361,17 @@ class AtScaleSMLAdapter(BaseAdapter):
                             "SML metric names are unique across the repository",
                         )
                     )
-                if metric.filters:
+                foreign = foreign_ratio_operands(metric, model.name) if metric.type == "ratio" else []
+                if foreign:
+                    problems.append(
+                        (
+                            "metric_operand",
+                            location,
+                            f"Ratio '{location}' uses {', '.join(foreign)} from another model; "
+                            "an SML model calculation references its own model's metrics",
+                        )
+                    )
+                elif metric.filters:
                     problems.append(
                         (
                             "metric_filter",

@@ -9,6 +9,7 @@ import yaml
 from sidemantic.adapters.base import (
     BaseAdapter,
     filtered_aggregate_sql,
+    foreign_ratio_operands,
     graph_only_metric_names,
     reject_unsupported_export,
 )
@@ -367,9 +368,20 @@ class SupersetAdapter(BaseAdapter):
         for model in models.values():
             for metric in model.metrics:
                 location = f"{model.name}.{metric.name}"
-                if self._metric_expression(metric, model) is None:
+                foreign = foreign_ratio_operands(metric, model.name) if metric.type == "ratio" else []
+                if foreign:
+                    problems.append(
+                        (
+                            "metric_operand",
+                            location,
+                            f"Ratio '{location}' uses {', '.join(foreign)} from another model; "
+                            "a Superset dataset reads one table",
+                        )
+                    )
+                elif self._metric_expression(metric, model) is None:
                     feature = "metric_filter" if metric.filters else "metric_type"
-                    problems.append((feature, location, f"'{location}' has no Superset metric expression"))
+                    kind = f" ({metric.type})" if metric.type else ""
+                    problems.append((feature, location, f"'{location}'{kind} has no Superset metric expression"))
         return problems
 
     def _metric_expression(self, metric: Metric, model: Model) -> str | None:
@@ -378,9 +390,16 @@ class SupersetAdapter(BaseAdapter):
             return filtered_aggregate_sql(metric, model.name)
         if metric.filters:
             return None
+        if metric.type not in (None, "ratio", "derived"):
+            # Windows, period comparisons and funnels have no dataset-metric form;
+            # writing only their base aggregate would report a different number.
+            return None
         if metric.type == "ratio" and metric.numerator and metric.denominator and not metric.sql:
             # A Superset metric is one SQL expression and cannot reference other
-            # metrics, so a ratio inlines its operands' aggregates.
+            # metrics, so a ratio inlines its operands' aggregates. Operands are
+            # resolved on their owning model, never by final name alone.
+            if foreign_ratio_operands(metric, model.name):
+                return None
             operands = [model.get_metric(ref.split(".")[-1]) for ref in (metric.numerator, metric.denominator)]
             if any(operand is None or operand.type or not operand.agg for operand in operands):
                 return None

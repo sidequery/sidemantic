@@ -156,12 +156,35 @@ def server(tmp_path_factory):
     _stop_server(process)
 
 
+class ExtendedProtocolCursor(psycopg.Cursor):
+    """A cursor that always speaks the extended protocol.
+
+    psycopg sends a query without parameters over the simple protocol. Preparing
+    it forces Parse/Bind/Describe/Execute, which is what JDBC-style drivers use.
+    """
+
+    def execute(self, query, params=None, **kwargs):
+        # Connection.execute passes prepare=None explicitly, so setdefault is not enough.
+        if kwargs.get("prepare") is None:
+            kwargs["prepare"] = True
+        return super().execute(query, params, **kwargs)
+
+
 @pytest.fixture(params=["simple", "extended"])
 def connection(server, request):
     """A connection speaking the simple or the extended query protocol."""
-    cursor_factory = psycopg.ClientCursor if request.param == "simple" else psycopg.Cursor
+    cursor_factory = psycopg.ClientCursor if request.param == "simple" else ExtendedProtocolCursor
     with server.connect(cursor_factory=cursor_factory) as connection:
         yield connection
+
+
+def _all_results(cursor) -> list:
+    """Every result of the last execute: its rows, or its command tag when it has none."""
+    results = []
+    while True:
+        results.append(cursor.fetchall() if cursor.description else cursor.statusmessage)
+        if not cursor.nextset():
+            return results
 
 
 def test_starts_with_several_tables_per_schema(server):
@@ -318,6 +341,49 @@ def test_session_statements_from_drivers(connection):
         connection.execute(statement)
     assert connection.execute("SHOW transaction isolation level").fetchall() == [("read committed",)]
     assert connection.execute("SHOW server_version").fetchone()[0][0].isdigit()
+
+
+def test_simple_protocol_batch_answers_every_statement(server):
+    """riffq splits a simple-protocol batch, so each statement is handled and checked on its own."""
+    with server.connect(cursor_factory=psycopg.ClientCursor) as connection:
+        cursor = connection.execute("BEGIN; SELECT orders.order_count FROM orders; COMMIT")
+        assert _all_results(cursor) == ["BEGIN", [(3,)], "COMMIT"]
+
+        cursor = connection.execute("SET extra_float_digits = 3; SHOW server_encoding; SELECT 1; SELECT 2")
+        assert _all_results(cursor)[1:] == [[("UTF8",)], [(1,)], [(2,)]]
+
+        # A write inside a batch is rejected like a standalone write.
+        with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+            connection.execute("BEGIN; DROP TABLE orders; COMMIT")
+        with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+            connection.execute("SET extra_float_digits = 3; DELETE FROM orders")
+        assert connection.execute("SELECT count(*) FROM main.orders").fetchall() == [(3,)]
+
+
+@pytest.mark.parametrize(
+    ("batch", "error"),
+    [
+        ("BEGIN; SELECT orders.order_count FROM orders; COMMIT", "SyntaxError"),
+        ("SET extra_float_digits = 3; SELECT 1", "SyntaxError"),
+        ("DISCARD ALL; SELECT 1", "SyntaxError"),
+        ("SHOW server_version; SELECT 1", "SyntaxError"),
+        ("SELECT 1; SELECT 2", "SyntaxError"),
+        ("BEGIN; DROP TABLE orders; COMMIT", "ReadOnlySqlTransaction"),
+        ("SET extra_float_digits = 3; DELETE FROM orders", "ReadOnlySqlTransaction"),
+    ],
+)
+def test_extended_protocol_batch_is_rejected_not_partially_acknowledged(server, batch, error):
+    """One extended-protocol message yields one result, so a batch in it cannot be answered in full.
+
+    Acknowledging only its leading BEGIN or SET would silently discard the rest.
+    """
+    with server.connect(cursor_factory=ExtendedProtocolCursor) as connection:
+        with pytest.raises(getattr(psycopg.errors, error)):
+            connection.execute(batch)
+        assert connection.execute("SELECT count(*) FROM main.orders").fetchall() == [(3,)]
+        # A single statement with a trailing semicolon is not a batch.
+        assert connection.execute("BEGIN;").statusmessage == "BEGIN"
+        assert connection.execute("SELECT 'a;b';").fetchall() == [("a;b",)]
 
 
 def test_client_with_implicit_transactions(server):

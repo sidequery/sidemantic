@@ -251,6 +251,9 @@ def secured_pg_connection():
         "select obj_description(oid, 'pg_namespace') from private_orders",
         "with source as (select * from private_orders) select * from source",
         "select 1; select * from private_orders",
+        "begin; select * from private_orders; commit",
+        "set search_path to main; select * from private_orders",
+        "discard all; select order_count from orders",
         "table orders",
         "show tables",
         "pragma show_tables",
@@ -429,6 +432,74 @@ def test_pg_transaction_statements_are_acknowledged():
         ("DISCARD ALL", True),
     ]
     assert captured == []
+
+
+@pytest.mark.parametrize(
+    "batch",
+    [
+        "BEGIN; SELECT 1 AS ok; COMMIT",
+        "start transaction; select 1 as ok",
+        "SET search_path TO main; SELECT 1 AS ok",
+        "SHOW server_version; SELECT 1 AS ok",
+        "DISCARD ALL; SELECT 1 AS ok",
+        "DEALLOCATE ALL; SELECT 1 AS ok",
+        "RESET ALL; SELECT 1 AS ok",
+        "SELECT 1 AS ok; SELECT 2 AS ok",
+        "SELECT 1 AS ok; BEGIN",
+        "select table_name from information_schema.tables; select 1 as ok",
+    ],
+)
+def test_pg_batch_in_one_message_is_rejected_not_partially_acknowledged(batch):
+    """A handler call returns one result, so no statement of a batch is answered or run."""
+    from sidemantic.server.connection import UnsupportedStatementError
+
+    conn, captured = _plain_pg_connection()
+    responses = []
+    with pytest.raises(UnsupportedStatementError, match="multiple statements"):
+        conn._handle_query(batch, lambda *args, **kwargs: responses.append((args, kwargs)))
+    assert captured == []
+    assert responses == []
+
+
+@pytest.mark.parametrize(
+    "batch",
+    [
+        "BEGIN; DROP TABLE orders; COMMIT",
+        "SET search_path TO main; DELETE FROM orders",
+        "DISCARD ALL; CREATE TABLE pwn (x INTEGER)",
+        "SELECT 1; COMMIT; UPDATE orders SET status = 'x'",
+    ],
+)
+def test_pg_batch_hiding_a_write_is_rejected_as_a_write(batch):
+    from sidemantic.server.connection import ReadOnlyError
+
+    conn, captured = _plain_pg_connection()
+    responses = []
+    with pytest.raises(ReadOnlyError):
+        conn._handle_query(batch, lambda *args, **kwargs: responses.append((args, kwargs)))
+    assert captured == []
+    assert responses == []
+    assert conn.layer.adapter.execute("select count(*) from orders").fetchall() == [(2,)]
+    assert conn.layer.adapter.execute("select count(*) from information_schema.tables").fetchall() == [(1,)]
+
+
+def test_pg_single_statement_with_separator_text_is_not_a_batch():
+    pytest.importorskip("riffq")
+    from sidemantic.server.connection import split_statements
+
+    assert split_statements("BEGIN; SELECT 1; COMMIT", "duckdb") == ["BEGIN", " SELECT 1", " COMMIT"]
+    assert split_statements("BEGIN;", "duckdb") == ["BEGIN"]
+    assert split_statements("SET x = 1; -- done", "duckdb") == ["SET x = 1"]
+    for single in ("SELECT 'a;b' AS ok", "SELECT 1 /* ; */ AS ok", "SELECT $$;$$ AS ok", 'SELECT 1 AS "a;b"', ";;"):
+        assert len(split_statements(single, "duckdb")) == 1, single
+
+    conn, captured = _plain_pg_connection()
+    tags = []
+    conn._handle_query("BEGIN;", lambda tag, is_tag=False: tags.append(tag))
+    conn._handle_query("SET search_path TO main; -- psql", lambda *_: None)
+    conn._handle_query("SELECT 'a;b' AS ok;", lambda *_: None)
+    assert tags == ["BEGIN"]
+    assert captured == [{"ok": "a;b"}]
 
 
 def test_pg_bound_parameters_reach_semantic_queries():

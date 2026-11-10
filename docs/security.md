@@ -148,6 +148,11 @@ effect, because drivers send them. Query failures are returned as PostgreSQL
 errors with a SQLSTATE: `42703` for an unknown field, `42601` for a syntax
 error, and `42501` for a denied policy.
 
+Several statements sent in one simple-protocol message are answered one by one,
+and each is checked as if it had been sent alone. Several statements in one
+extended-protocol (prepared) message are rejected with SQLSTATE `42601`, as
+PostgreSQL does; none of them runs.
+
 `information_schema` and `pg_catalog` queries are answered from a catalog that
 lists the session's accessible models as tables in the `semantic_layer` schema,
 with their dimensions and metrics as columns (public fields only when

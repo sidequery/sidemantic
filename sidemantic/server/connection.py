@@ -214,6 +214,52 @@ def require_read_only(sql: str, dialect: str) -> None:
         )
 
 
+def split_statements(sql: str, dialect: str) -> list[str]:
+    """Split one message into the statements it carries.
+
+    riffq splits a simple-protocol batch and calls the handler once per
+    statement, so a batch only arrives here through the extended protocol,
+    where the handler can return a single result. The text is tokenized as
+    PostgreSQL (what the client wrote) and in the backend dialect (what will
+    run it); the reading that finds more statements wins, so a separator is
+    never missed. Semicolons in strings and comments do not separate.
+    """
+    if ";" not in sql:
+        return [sql]
+    import sqlglot
+    from sqlglot.errors import SqlglotError
+    from sqlglot.tokens import TokenType
+
+    best: list[str] = []
+    for reading in dict.fromkeys(("postgres", dialect)):
+        try:
+            tokens = sqlglot.tokenize(sql, read=reading)
+        except SqlglotError:
+            continue
+        statements: list[str] = []
+        start = 0
+        has_content = False
+        for token in tokens:
+            if token.token_type is not TokenType.SEMICOLON:
+                has_content = True
+                continue
+            if has_content:
+                statements.append(sql[start : token.start])
+            start = token.end + 1
+            has_content = False
+        if has_content:
+            statements.append(sql[start:])
+        if len(statements) > len(best):
+            best = statements
+    # Nothing but separators, or text no reading can tokenize, stays one message.
+    return best or [sql]
+
+
+def _is_session_statement(statement: str) -> bool:
+    """Whether a statement is acknowledged without running anything."""
+    return statement.lstrip().lower().startswith("set ") or _SESSION_COMMAND.match(statement) is not None
+
+
 def wire_safe_table(table):
     """Convert columns riffq cannot encode into text.
 
@@ -357,19 +403,25 @@ class SemanticLayerConnection(riffq.BaseConnection):
             # to a lock-guarded wrapper preserving today's behavior.
             cursor = self.layer.adapter.cursor()
 
+            # The shortcuts below match a statement by its first keyword, so they
+            # apply only when the message is that one statement. Acknowledging
+            # "BEGIN; SELECT 1" as BEGIN would silently drop the query.
+            statements = split_statements(sql, self.layer.dialect)
+            batch = len(statements) > 1
+
             # Session configuration is acknowledged without touching the database.
-            if sql_lower.startswith("set "):
+            if sql_lower.startswith("set ") and not batch:
                 result = cursor.execute("SELECT 1 as ok WHERE FALSE")
                 self._send_result(result, callback)
                 return
 
-            session_command = _SESSION_COMMAND.match(sql)
+            session_command = None if batch else _SESSION_COMMAND.match(sql)
             if session_command:
                 keyword = " ".join(session_command.group(1).lower().split())
                 callback(_SESSION_COMMAND_TAGS[keyword], is_tag=True)
                 return
 
-            show_statement = _SHOW_STATEMENT.match(sql)
+            show_statement = None if batch else _SHOW_STATEMENT.match(sql)
             if show_statement:
                 setting = " ".join(show_statement.group(1).lower().split())
                 setting = _SESSION_SETTING_ALIASES.get(setting, setting)
@@ -389,7 +441,22 @@ class SemanticLayerConnection(riffq.BaseConnection):
 
             # Active controls already restrict the transport to one SELECT.
             if not controls_are_active(self.layer):
-                require_read_only(sql, self.layer.dialect)
+                if batch:
+                    # Each statement of a batch is held to the rule it would meet
+                    # on its own, so a batch hiding a write is reported as a write.
+                    for statement in statements:
+                        if not _is_session_statement(statement):
+                            require_read_only(statement, self.layer.dialect)
+                else:
+                    require_read_only(sql, self.layer.dialect)
+
+            # One handler call returns one result, so a batch cannot be answered
+            # in full; nothing of it runs. PostgreSQL likewise refuses several
+            # commands in one prepared statement.
+            if batch:
+                raise UnsupportedStatementError(
+                    "cannot run multiple statements in one extended-protocol message; send each statement separately"
+                )
 
             rendered_sql = rewrite_transport_sql(
                 self.layer,

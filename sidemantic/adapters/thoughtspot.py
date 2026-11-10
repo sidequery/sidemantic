@@ -113,6 +113,18 @@ def _preserved_column_binding(field: Dimension | Metric) -> str | None:
     return None
 
 
+def _worksheet_sql(field: Dimension | Metric) -> str | None:
+    """SQL to export for a worksheet column.
+
+    A joined worksheet's columns are imported under derived-table aliases. While
+    such a column is unedited, export writes its original ``table.column`` form.
+    """
+    native = (field.metadata or {}).get("thoughtspot", {})
+    if native.get("exposed_sql") is not None and field.sql == native["exposed_sql"]:
+        return native["worksheet_sql"]
+    return field.sql
+
+
 def _restore_column_type(
     column: dict[str, Any], metadata: dict[str, Any] | None, dimension_type: str | None = None
 ) -> None:
@@ -1021,7 +1033,14 @@ class ThoughtSpotAdapter(BaseAdapter):
                     for ref in (left, right):
                         if ref and ref[1] in key_names and ref[0] in known_tables:
                             key_refs.setdefault(ref[1], ref)
+            worksheet_sql = {id(field): field.sql for field in [*dimensions, *metrics]}
             sql = _expose_joined_columns(sql, known_tables, dimensions, metrics, base_table, primary_key, key_refs)
+            for field in [*dimensions, *metrics]:
+                if field.sql != worksheet_sql[id(field)]:
+                    field.metadata = {
+                        **(field.metadata or {}),
+                        "thoughtspot": {"worksheet_sql": worksheet_sql[id(field)], "exposed_sql": field.sql},
+                    }
 
         model = Model(
             name=name,
@@ -1955,7 +1974,7 @@ class ThoughtSpotAdapter(BaseAdapter):
             return formula_id
 
         for dim in model.dimensions:
-            dim_sql = dim.sql or dim.name
+            dim_sql = _worksheet_sql(dim) or dim.name
             table_ref, col_ref = _split_sql_identifier(dim_sql)
             if not table_ref and col_ref:
                 table_ref = base_table
@@ -1991,7 +2010,7 @@ class ThoughtSpotAdapter(BaseAdapter):
             worksheet_columns.append(col_def)
 
         for metric in model.metrics:
-            metric_sql = metric.sql or metric.name
+            metric_sql = _worksheet_sql(metric) or metric.name
             # TML counts a column, not rows; the non-null key counts every row.
             if metric.agg == "count" and not metric.sql and len(model.primary_key_columns) == 1:
                 metric_sql = model.primary_key_columns[0]

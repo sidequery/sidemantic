@@ -306,3 +306,37 @@ def test_native_export_keeps_model_owned_ratio_operands(tmp_path):
     SidemanticAdapter().export(graph_of(model), tmp_path / "models.yml")
     ratio = SidemanticAdapter().parse(tmp_path / "models.yml").models["orders"].get_metric("average_order")
     assert (ratio.type, ratio.numerator, ratio.denominator) == ("ratio", "revenue", "order_count")
+
+
+def test_thoughtspot_joined_worksheet_is_queryable_and_reexports_its_bindings(tmp_path):
+    """A joined worksheet imports as a derived table without losing its `table::column` bindings."""
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    graph = ThoughtSpotAdapter().parse("tests/fixtures/thoughtspot/worksheet_ids.worksheet.tml")
+    layer = SemanticLayer(auto_register=False)
+    layer.graph = graph
+    sql = layer.compile(
+        metrics=["sales_ids.net_revenue"],
+        dimensions=["sales_ids.customer_name", "sales_ids.order_date"],
+        order_by=["sales_ids.order_date"],
+    )
+    with duckdb.connect() as connection:
+        connection.execute("create table customers_table as select 1 as id, 'Ada' as name")
+        connection.execute(
+            "create table sales_table as select * from (values (10, 1, date '2024-01-01', 100.0, 20.0), "
+            "(11, 1, date '2024-01-02', 50.0, 0.0)) t(id, customer_id, order_date, gross_revenue, discount)"
+        )
+        rows = connection.execute(sql).fetchall()
+    assert [(name, str(day), float(net)) for name, day, net in rows] == [
+        ("Ada", "2024-01-01", 80.0),
+        ("Ada", "2024-01-02", 50.0),
+    ]
+
+    ThoughtSpotAdapter().export(graph, tmp_path)
+    worksheet = yaml.safe_load((tmp_path / "sales_ids.worksheet.tml").read_text())["worksheet"]
+    column_ids = {column["name"]: column.get("column_id") for column in worksheet["worksheet_columns"]}
+    assert column_ids["order_id"] == "sales_table::id"
+    assert column_ids["customer_name"] == "customers_table::name"
+    assert worksheet["formulas"][0]["expr"] == "[sales_table::gross_revenue] - [sales_table::discount]"

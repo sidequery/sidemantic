@@ -224,6 +224,24 @@ def _referenced_columns(expression: str, dialect: str) -> set[str]:
         return set()
 
 
+def _metric_sql_reads_columns(metric) -> bool:
+    """Whether a metric's sql reads table columns rather than naming other metrics.
+
+    Mirrors the SQL generator: a cumulative metric's sql names its base metric
+    (``agg`` only picks the window function); aggregations and opaque complete
+    expressions read columns, as do untyped expressions with inline aggregates;
+    derived and other untyped expressions reference metrics.
+    """
+
+    if metric.type == "cumulative":
+        return False
+    if metric.agg or metric.sql_is_complete:
+        return True
+    from sidemantic.sql.aggregation_detection import sql_has_aggregate
+
+    return metric.type is None and sql_has_aggregate(metric.sql)
+
+
 @dataclass
 class DriftReport:
     errors: list[str] = field(default_factory=list)
@@ -269,9 +287,8 @@ def check_schema_drift(layer) -> DriftReport:
                 if column.lower() not in columns and column.lower() not in known_names:
                     report.errors.append(f"Model '{name}': {kind} '{label}' references missing column '{column}'")
 
-        # Aggregations read a column expression. Derived, cumulative, and other
-        # metrics without an aggregation reference other metrics by name, which
-        # are semantic names rather than table columns.
+        # Metrics that reference other metrics use semantic names, not table
+        # columns. A metric's own name never excuses a missing column.
         metric_names = frozenset(
             [metric.name.lower() for metric in model.metrics] + [name.lower() for name in layer.graph.metrics]
         )
@@ -281,10 +298,12 @@ def check_schema_drift(layer) -> DriftReport:
         for dimension in model.dimensions:
             check("dimension", dimension.name, dimension.sql or dimension.name)
         for metric in model.metrics:
-            if metric.sql and metric.agg:
+            if not metric.sql:
+                continue
+            if _metric_sql_reads_columns(metric):
                 check("metric", metric.name, metric.sql)
-            elif metric.sql:
-                check("metric", metric.name, metric.sql, known_names=metric_names)
+            else:
+                check("metric", metric.name, metric.sql, known_names=metric_names - {metric.name.lower()})
         for relationship in model.relationships:
             for column in relationship.foreign_key_columns:
                 if column.lower() not in live_columns:

@@ -296,7 +296,8 @@ def test_check_schema_drift_accepts_metric_references_in_derived_and_cumulative_
         [
             Metric(name="completion_share", type="derived", sql="completed_revenue / revenue"),
             Metric(name="cumulative_revenue", type="cumulative", sql="revenue"),
-            Metric(name="cumulative_amount", type="cumulative", agg="sum", sql="amount"),
+            # A cumulative sql names its base metric even when agg picks the window function.
+            Metric(name="running_avg_revenue", type="cumulative", agg="avg", sql="revenue"),
         ]
     )
 
@@ -314,12 +315,32 @@ def test_check_schema_drift_reports_unknown_name_in_derived_metric():
     assert report.errors == ["Model 'orders': metric 'bad_share' references missing column 'revnue'"]
 
 
-def test_check_schema_drift_still_checks_columns_of_cumulative_aggregations():
-    layer = _orders_layer_with([Metric(name="cumulative_qty", type="cumulative", agg="sum", sql="quantity")])
+@pytest.mark.parametrize(
+    "metric",
+    [
+        # Opaque complete sql reads physical columns, even when named like one.
+        Metric(name="amount", sql="amount", sql_is_complete=True),
+        # Untyped expressions with inline aggregates read columns, not metrics.
+        Metric(name="avg_order", sql="SUM(amount) / COUNT(*)"),
+    ],
+    ids=["complete-sql", "inline-aggregates"],
+)
+def test_check_schema_drift_checks_columns_of_complete_and_inline_aggregate_metrics(metric: Metric):
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE orders (id INTEGER, total DOUBLE)")
+    layer.add_model(Model(name="orders", table="orders", primary_key="id", metrics=[metric]))
 
     report = check_schema_drift(layer)
 
-    assert report.errors == ["Model 'orders': metric 'cumulative_qty' references missing column 'quantity'"]
+    assert report.errors == [f"Model 'orders': metric '{metric.name}' references missing column 'amount'"]
+
+
+def test_check_schema_drift_metric_name_does_not_excuse_missing_column_of_same_name():
+    layer = _orders_layer_with([Metric(name="discount", type="derived", sql="revenue - discount")])
+
+    report = check_schema_drift(layer)
+
+    assert report.errors == ["Model 'orders': metric 'discount' references missing column 'discount'"]
 
 
 def test_check_schema_drift_missing_table_is_an_error():

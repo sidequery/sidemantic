@@ -154,6 +154,28 @@ def test_graph_level_measure_keeps_the_rows_of_the_model_it_aggregates(shop):
     assert rows == [("EU", 150, 300), ("US", 380, 760), (None, 15, 30)]
 
 
+def test_computed_dimension_stays_null_for_unmatched_facts(shop):
+    """COALESCE applies to customers that exist; an order without a customer row has no such value."""
+    shop.conn.execute("insert into customers values (5, null); insert into orders values (9, 5, 'completed', 7)")
+    shop.graph.models["customers"].dimensions.append(
+        Dimension(name="market", type="categorical", sql="COALESCE(region, 'none')")
+    )
+
+    rows = _rows(shop.query(metrics=["orders.revenue"], dimensions=["customers.market"]))
+
+    assert rows == _hand_sql(
+        shop,
+        """
+        select customers.market, sum(orders.amount)
+        from orders
+        left join (select id, coalesce(region, 'none') as market from customers) as customers
+          on orders.customer_id = customers.id
+        group by 1
+        """,
+    )
+    assert rows == [("EU", 150), ("US", 380), ("none", 7), (None, 15)]
+
+
 def test_measure_on_one_side_keeps_its_rows_and_is_not_fanned_out(shop):
     """Customers anchor their own count; the customer without orders has a NULL status."""
     rows = _rows(shop.query(metrics=["customers.customer_count"], dimensions=["orders.status"]))

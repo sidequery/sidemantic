@@ -201,6 +201,73 @@ def test_join_key_rollup_keeps_unmatched_and_null_keys_in_null_group(layer):
     assert execute(layer, {"metrics": ["orders.revenue", "orders.rows"]}) == (["revenue", "rows"], [(225, 8)])
 
 
+@pytest.mark.parametrize(
+    ("dimension", "expected"),
+    [
+        ("customers.label", [(None, 15, 2), ("a", 30, 2), ("b", 130, 3), ("unknown", 50, 1)]),
+        (
+            "customers.joined__month",
+            [(None, 15, 2), ("1970-01-01", 50, 1), ("2026-01-01", 30, 2), ("2026-03-01", 130, 3)],
+        ),
+    ],
+    ids=["coalesce", "coalesce-with-grain"],
+)
+def test_join_key_rollup_computes_remote_dimension_before_join(layer, dimension, expected):
+    """A dimension that maps NULL to a value must not rename the unmatched-key group.
+
+    Customer c has no name and no join date, so it legitimately falls into the
+    fallback value. Orders with an unmatched or NULL key have no customer row at
+    all and stay in the NULL group, on the rollup route as in raw planning.
+    """
+    add_customers(layer)
+    layer.adapter.execute("""
+        alter table rollup_customers add column joined date;
+        update rollup_customers set joined = case id when 1 then date '2026-01-15' when 2 then date '2026-03-02' end;
+        update rollup_customers set name = null where id = 3;
+        insert into rollup_orders values
+          (7,99,'paid',7,0,'2026-02-02 01:00:00',1),(8,null,'paid',8,0,'2026-02-02 02:00:00',1)
+    """)
+    layer.graph.models["customers"].dimensions.extend(
+        [
+            Dimension(name="label", type="categorical", sql="COALESCE(name, 'unknown')"),
+            Dimension(name="joined", type="time", granularity="day", sql="COALESCE(joined, DATE '1970-01-01')"),
+        ]
+    )
+    build(layer)
+    query = {"metrics": ["orders.revenue", "orders.rows"], "dimensions": [dimension], "order_by": [dimension]}
+
+    def normalized(rows):
+        return [(group if group is None else str(group)[:10], revenue, count) for group, revenue, count in rows]
+
+    _columns, routed_rows = execute(layer, query)
+    raw_rows = layer.adapter.execute(layer.compile(**query, use_preaggregations=False)).fetchall()
+    assert normalized(routed_rows) == expected
+    assert normalized(raw_rows) == expected
+
+
+@pytest.mark.parametrize("dialect", ["mysql", "tsql"])
+def test_join_key_rollup_order_by_renders_for_dialects_without_null_ordering(layer, dialect):
+    """MySQL and SQL Server reject NULLS FIRST/LAST; their default NULL placement already matches."""
+    import sqlglot
+
+    add_customers(layer)
+    query = {
+        "metrics": ["orders.revenue"],
+        "dimensions": ["customers.name"],
+        "order_by": ["customers.name", "orders.revenue DESC"],
+        "use_preaggregations": True,
+    }
+    sql = layer.compile(**query, dialect=dialect)
+    assert "orders_preagg_daily" in sql
+    order_by = sql[sql.rindex("ORDER BY") :].split("--")[0]
+    assert "NULLS" not in order_by, order_by
+    assert "DESC" in order_by
+    statement = sql.split("\n--")[0]
+    assert sqlglot.parse_one(statement, read=dialect).args["order"] is not None
+    # DuckDB keeps the explicit placement that orders the unmatched-key group first.
+    assert "NULLS FIRST" in layer.compile(**query, dialect="duckdb")
+
+
 def test_join_key_rollup_with_empty_source_has_no_groups(layer):
     add_customers(layer)
     layer.adapter.execute("delete from rollup_orders")

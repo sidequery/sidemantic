@@ -679,6 +679,8 @@ impl<'a> SqlGenerator<'a> {
                     &available,
                 ));
             };
+            let sql_expr =
+                self.matched_dimension_sql(sql_expr, dim_ref, &base_model, &join_paths)?;
             let output_alias = self.output_alias(&dim_ref.model, &dim_ref.alias, &alias_collisions);
 
             group_expressions.push(sql_expr.clone());
@@ -4664,6 +4666,11 @@ impl<'a> SqlGenerator<'a> {
         let rollup_alias = "sidemantic_join_rollup";
         let remote_alias = "sidemantic_join_dimension";
         let mut select_parts = Vec::new();
+        // Remote keys and dimensions are computed inside the joined subquery.
+        // Evaluated after the LEFT JOIN, an expression such as
+        // COALESCE(name, 'unknown') would turn the NULL group of unmatched keys
+        // into an ordinary dimension value.
+        let mut remote_projections = Vec::new();
         for dimension in dimension_refs {
             let owner = if &dimension.model == model_name {
                 model
@@ -4711,6 +4718,11 @@ impl<'a> SqlGenerator<'a> {
             if let Some(grain) = effective_grain {
                 expression = self.date_trunc_sql(grain, &expression)?;
             }
+            if &dimension.model != model_name {
+                let projected = format!("__sidemantic_dimension_{}", remote_projections.len());
+                remote_projections.push(format!("{expression} AS {projected}"));
+                expression = format!("{remote_alias}.{projected}");
+            }
             select_parts.push(format!(
                 "{expression} AS {}",
                 self.quote_identifier(&dimension.alias)
@@ -4736,12 +4748,13 @@ impl<'a> SqlGenerator<'a> {
             ));
         }
         let mut conditions = Vec::new();
-        for (from, to) in hop.from_keys.iter().zip(&hop.to_keys) {
+        for (index, (from, to)) in hop.from_keys.iter().zip(&hop.to_keys).enumerate() {
             let target = crate::core::key_expression(remote, to, Some(remote_alias), self.dialect)?;
+            let projected = format!("__sidemantic_join_key_{index}");
+            remote_projections.push(format!("{} AS {projected}", self.emit_expression(&target)?));
             conditions.push(format!(
-                "{rollup_alias}.{} = ({})",
-                self.quote_identifier(from),
-                self.emit_expression(&target)?
+                "{rollup_alias}.{} = {remote_alias}.{projected}",
+                self.quote_identifier(from)
             ));
         }
         // Same population as raw planning: every stored fact group is kept and
@@ -4752,8 +4765,8 @@ impl<'a> SqlGenerator<'a> {
             query.preagg_database.as_deref(),
             query.preagg_schema.as_deref(),
         )?;
-        let mut sql = format!("SELECT\n  {}\nFROM {source} AS {rollup_alias}\nLEFT JOIN {} AS {remote_alias}\n  ON {}\nGROUP BY {}",
-            select_parts.join(",\n  "), self.model_from_clause(remote, None), conditions.join(" AND "),
+        let mut sql = format!("SELECT\n  {}\nFROM {source} AS {rollup_alias}\nLEFT JOIN (\n  SELECT\n    {}\n  FROM {} AS {remote_alias}\n) AS {remote_alias}\n  ON {}\nGROUP BY {}",
+            select_parts.join(",\n  "), remote_projections.join(",\n    "), self.model_from_clause(remote, None), conditions.join(" AND "),
             (1..=dimension_refs.len()).map(|index| index.to_string()).collect::<Vec<_>>().join(", "));
         if !query.order_by.is_empty() {
             let mut order_parts = Vec::new();
@@ -4788,14 +4801,17 @@ impl<'a> SqlGenerator<'a> {
                     return Ok(None);
                 };
                 // Unmatched join keys add a NULL dimension group; order it as
-                // raw planning does instead of by the database default.
-                let nulls = if direction == "DESC" { "LAST" } else { "FIRST" };
-                order_parts.push(
-                    format!("{} {direction}", self.quote_identifier(output))
-                        .trim()
-                        .to_owned()
-                        + &format!(" NULLS {nulls}"),
-                );
+                // raw planning does: first ascending, last descending. MySQL
+                // and SQL Server have no NULLS FIRST/LAST syntax, and sort
+                // NULLs exactly that way by default.
+                let mut ordered = format!("{} {direction}", self.quote_identifier(output))
+                    .trim()
+                    .to_owned();
+                if !matches!(self.dialect, DialectType::MySQL | DialectType::TSQL) {
+                    let nulls = if direction == "DESC" { "LAST" } else { "FIRST" };
+                    ordered.push_str(&format!(" NULLS {nulls}"));
+                }
+                order_parts.push(ordered);
             }
             sql.push_str(&format!("\nORDER BY {}", order_parts.join(", ")));
         }
@@ -6080,6 +6096,71 @@ impl<'a> SqlGenerator<'a> {
 
     fn normalize_select_expression(&self, expr: &str, alias: &str) -> String {
         expr.replace("{model}", &self.quote_identifier(alias))
+    }
+
+    /// Keep a joined model's computed dimension NULL on rows its join did not match.
+    ///
+    /// Dimension expressions are evaluated after the join. Unguarded, an
+    /// expression such as COALESCE(name, 'unknown') would give a measure row
+    /// without a matching dimension row an ordinary value instead of the NULL
+    /// group, unlike Python, which computes dimensions inside the model CTE.
+    fn matched_dimension_sql(
+        &self,
+        sql_expr: String,
+        dim_ref: &DimensionRef,
+        base_model: &str,
+        join_paths: &HashMap<String, JoinPath>,
+    ) -> Result<String> {
+        if dim_ref.model == base_model {
+            return Ok(sql_expr);
+        }
+        let Some(model) = self.graph.get_model(&dim_ref.model) else {
+            return Ok(sql_expr);
+        };
+        let Some(dimension) = model.get_dimension(&dim_ref.name) else {
+            return Ok(sql_expr);
+        };
+        // A physical column is already NULL on unmatched rows, also behind a
+        // time grain; window dimensions are computed in the model CTE.
+        let Some(authored) = dimension
+            .sql
+            .as_deref()
+            .filter(|_| dimension.window.is_none())
+        else {
+            return Ok(sql_expr);
+        };
+        if matches!(
+            parse_semantic_expression(authored),
+            Ok(Expression::Column(_))
+        ) {
+            return Ok(sql_expr);
+        }
+        let Some(step) = join_paths.get(&dim_ref.model).and_then(|path| {
+            path.steps
+                .iter()
+                .rev()
+                .find(|step| step.to_model == dim_ref.model)
+        }) else {
+            return Ok(sql_expr);
+        };
+        if step.relationship_type == RelationshipType::Cross || step.to_keys.is_empty() {
+            return Ok(sql_expr);
+        }
+        // An equality join never matches a NULL key, so a non-NULL key on the
+        // joined side identifies a matched row.
+        let alias = self.model_alias(&dim_ref.model);
+        let matched = step
+            .to_keys
+            .iter()
+            .map(|key| {
+                Ok(format!(
+                    "{} IS NOT NULL",
+                    self.key_sql(model, key, Some(&alias))?
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(" AND ");
+        Ok(format!("CASE WHEN {matched} THEN {sql_expr} END"))
     }
 
     fn dimension_select_expression(
@@ -7399,7 +7480,11 @@ mod tests {
                 sql.contains("FROM orders_preagg_daily AS sidemantic_join_rollup"),
                 "{sql}"
             );
-            assert!(sql.contains("LEFT JOIN customers AS"), "{sql}");
+            assert!(sql.contains("LEFT JOIN (\n  SELECT"), "{sql}");
+            assert!(
+                sql.contains("FROM customers AS sidemantic_join_dimension"),
+                "{sql}"
+            );
         }
         // Any other anchor needs every row of that model, so it reads raw data.
         let sql = generator
@@ -7410,6 +7495,64 @@ mod tests {
             query.with_dimensions(vec!["orders.status".into(), "customers.name".into()]);
         let sql = generator.generate(&local_first).unwrap();
         assert!(sql.contains("orders_preagg_daily"), "{sql}");
+    }
+
+    #[test]
+    fn joined_computed_dimension_stays_null_for_unmatched_rows() {
+        let orders: Model = serde_json::from_value(serde_json::json!({
+            "name":"orders", "table":"orders", "primary_key":"id",
+            "dimensions":[{"name":"customer_id"}],
+            "metrics":[{"name":"revenue","agg":"sum","sql":"amount"}],
+            "relationships":[{"name":"customers","type":"many_to_one","foreign_key":"customer_id"}],
+            "pre_aggregations":[{"name":"daily","dimensions":["customer_id"],"measures":["revenue"]}]
+        }))
+        .unwrap();
+        let customers = Model::new("customers", "id")
+            .with_table("customers")
+            .with_dimension(Dimension::categorical("region"))
+            .with_dimension(Dimension::categorical("name").with_sql("COALESCE(name, 'unknown')"));
+        let mut graph = SemanticGraph::new();
+        graph.add_model(orders).unwrap();
+        graph.add_model(customers).unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["orders.revenue".into()])
+            .with_dimensions(vec!["customers.name".into(), "customers.region".into()])
+            .with_order_by(vec!["customers.name".into(), "orders.revenue DESC".into()]);
+
+        // Raw planning evaluates dimensions after the join, so the computed one
+        // is guarded by the joined key; a physical column needs no guard.
+        let raw = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(
+            raw.contains("CASE WHEN customers_cte.id IS NOT NULL THEN COALESCE("),
+            "{raw}"
+        );
+        assert!(raw.contains("customers_cte.region AS region"), "{raw}");
+
+        // The rollup route computes it inside the joined subquery instead.
+        let routed = query.clone().with_use_preaggregations(true);
+        let sql = SqlGenerator::new(&graph).generate(&routed).unwrap();
+        let (outer, joined) = sql.split_once("LEFT JOIN (").unwrap();
+        assert!(outer.contains("orders_preagg_daily"), "{sql}");
+        assert!(!outer.contains("COALESCE(\"sidemantic"), "{sql}");
+        assert!(
+            joined.contains("'unknown') AS __sidemantic_dimension_0"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY name NULLS FIRST, revenue DESC NULLS LAST"),
+            "{sql}"
+        );
+
+        // MySQL and SQL Server have no NULLS FIRST/LAST; their default order
+        // already places NULLs first ascending and last descending.
+        for dialect in [DialectType::MySQL, DialectType::TSQL] {
+            let sql = SqlGenerator::new(&graph)
+                .with_dialect(dialect)
+                .generate(&routed)
+                .unwrap();
+            assert!(sql.contains("orders_preagg_daily"), "{sql}");
+            assert!(!sql.contains("NULLS"), "{sql}");
+        }
     }
 
     #[test]

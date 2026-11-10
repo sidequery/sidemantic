@@ -2439,7 +2439,9 @@ def test_fanout_join_key_preaggregation_rolls_orders_to_customer_region(semantic
     assert candidates["join_key_preaggregation"].details["join_keys"][0]["relationship"] == "many_to_one"
     assert "orders_preagg_by_customer" in explanation.rewritten_sql
     assert "FROM orders_preagg_by_customer AS orders_rollup" in explanation.rewritten_sql
-    assert "LEFT JOIN customers AS customers" in explanation.rewritten_sql
+    # The dimension side is a subquery that computes its columns before the join.
+    assert "LEFT JOIN (SELECT customers.id AS id" in explanation.rewritten_sql
+    assert "FROM customers AS customers) AS customers" in explanation.rewritten_sql
     assert "FROM orders\n" not in explanation.rewritten_sql
 
 
@@ -2548,7 +2550,7 @@ def test_join_key_preaggregation_joins_remote_sql_source(semantic_layer):
     explanation = _assert_query_matches_baseline(semantic_layer, sql, baseline_sql, ordered=True)
 
     assert explanation.chosen_plan == "join_key_preaggregation"
-    assert "LEFT JOIN (SELECT id, region, tier FROM customers WHERE tier = 'premium') AS customers" in (
+    assert "FROM (SELECT id, region, tier FROM customers WHERE tier = 'premium') AS customers) AS customers" in (
         explanation.rewritten_sql
     )
     assert "LEFT JOIN customers AS customers" not in explanation.rewritten_sql

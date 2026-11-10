@@ -137,7 +137,10 @@ not groups. An Explore's base model replaces that anchor; see
 One-hop many-to-one dimension queries can route through a rollup carrying every
 join key, including composite keys. The rollup stands in for the metric model and
 is the preserved side, so stored groups whose join key is NULL or unmatched stay
-in a NULL dimension group, exactly as in raw planning. An explicit anchor on
+in a NULL dimension group, exactly as in raw planning. Dimension expressions of a
+joined model apply only to rows that have a matching dimension row: an expression
+such as `COALESCE(name, 'unknown')` leaves unmatched metric rows in the NULL group
+on both routes and in both engines. An explicit anchor on
 another model, explicit join kinds, colliding output aliases, uncovered join keys, multi-hop or fanout joins and row filters on
 this join route use ordinary source planning. Compatible stored dimensions and
 time grains retain their existing routing checks: bucketed timestamps cannot serve

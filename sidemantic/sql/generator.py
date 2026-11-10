@@ -8025,6 +8025,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 return None, "remote_dimension_not_many_to_one"
             if self._explicit_join_type_for_path(path[0]) is not None:
                 return None, "explicit_join_type_not_supported"
+            # The route joins on the stored key columns only; a custom predicate
+            # decides matches from columns the rollup does not carry.
+            if path[0].custom_condition:
+                return None, "custom_join_condition_not_supported"
             if remote_model_name and remote_model_name != dim_model_name:
                 return None, "multiple_remote_models_not_supported"
 
@@ -8096,6 +8100,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
 
         select_exprs: list[str] = []
         output_names: dict[str, str] = {}
+        # Remote dimensions are computed inside the joined subquery, as raw
+        # planning computes them in the model CTE. Evaluated after the LEFT
+        # JOIN, an expression such as COALESCE(name, 'unknown') would turn the
+        # NULL group of unmatched keys into an ordinary dimension value.
+        remote_projections: list[str] = []
 
         def register_output_name(output_name: str, *refs: str) -> None:
             for ref in refs:
@@ -8122,13 +8131,18 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     column_expr = f"{rollup_alias}.{self._quote_identifier(column_name)}"
                     if not granularity:
                         column_expr = self._as_grain_type(preagg.granularity, column_expr)
+                if granularity:
+                    column_expr = self._date_trunc(granularity, column_expr)
             else:
                 dimension = remote_model.get_dimension(dim_name)
                 dimension_sql = dimension.sql if dimension and dimension.sql else dim_name
-                column_expr = self._qualify_model_expression(dimension_sql, remote_model_name, remote_alias)
+                remote_expr = self._qualify_model_expression(dimension_sql, remote_model_name, remote_alias)
+                if granularity:
+                    remote_expr = self._date_trunc(granularity, remote_expr)
+                projected_name = self._quote_identifier(f"__sidemantic_dimension_{len(remote_projections)}")
+                remote_projections.append(f"{remote_expr} AS {projected_name}")
+                column_expr = f"{self._quote_identifier(remote_alias)}.{projected_name}"
 
-            if granularity:
-                column_expr = self._date_trunc(granularity, column_expr)
             select_exprs.append(f"{column_expr} AS {self._quote_alias(output_name)}")
 
         for metric_ref in metrics:
@@ -8162,10 +8176,17 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
                 output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
                 # Unmatched join keys add a NULL dimension group; order it as
-                # raw planning does instead of by the database default.
-                nulls = "LAST" if direction == " DESC" else "FIRST"
-                order_clauses.append(f"{self._quote_alias(output_name)}{direction} NULLS {nulls}")
-            order_by_clause = "\nORDER BY " + ", ".join(order_clauses)
+                # raw planning does instead of by the database default. The
+                # target dialect renders or emulates the NULL placement.
+                descending = direction == " DESC"
+                order_clauses.append(
+                    exp.Ordered(
+                        this=exp.column(output_name, quoted=True),
+                        desc=descending,
+                        nulls_first=not descending,
+                    )
+                )
+            order_by_clause = "\n" + exp.Order(expressions=order_clauses).sql(dialect=self.dialect)
 
         limit_clause = ""
         if limit is not None:
@@ -8175,12 +8196,22 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
 
         select_exprs_str = ",\n  ".join(select_exprs)
         remote_source = self._model_source_as(remote_model, remote_alias)
+        quoted_remote_alias = self._quote_identifier(remote_alias)
+        remote_keys = [
+            f"{quoted_remote_alias}.{self._quote_identifier(column)} AS {self._quote_identifier(column)}"
+            for column in dict.fromkeys(hop.to_columns)
+        ]
+        remote_columns = ",\n    ".join([*remote_keys, *remote_projections])
         # Same population as raw planning: every stored fact group is kept and
         # an unmatched join key lands in a NULL dimension group.
         return f"""SELECT
   {select_exprs_str}
 FROM {preagg_table} AS {rollup_alias}
-LEFT JOIN {remote_source}
+LEFT JOIN (
+  SELECT
+    {remote_columns}
+  FROM {remote_source}
+) AS {quoted_remote_alias}
   ON {" AND ".join(join_conditions)}{group_by_clause}{order_by_clause}{limit_clause}"""
 
     def _qualify_model_expression(self, expression_sql: str, model_name: str, alias: str) -> str:

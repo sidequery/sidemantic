@@ -1,6 +1,5 @@
 """Tests for generated terminal documentation."""
 
-import importlib.metadata
 import tomllib
 from pathlib import Path
 
@@ -59,11 +58,6 @@ def test_checked_in_manpage_exists() -> None:
     assert path.exists()
 
 
-def _locked_version(package: str) -> str:
-    lock = tomllib.loads((Path(__file__).parents[1] / "uv.lock").read_text())
-    return next(entry["version"] for entry in lock["package"] if entry["name"] == package)
-
-
 def test_live_cli_manpage_renders_nested_commands_and_options() -> None:
     rendered = render_manpage(get_command(app), version=__version__)
 
@@ -72,13 +66,19 @@ def test_live_cli_manpage_renders_nested_commands_and_options() -> None:
     assert r"\fB\-\-format table|csv|json|jsonl\fR" in rendered
 
 
-@pytest.mark.skipif(
-    any(importlib.metadata.version(package) != _locked_version(package) for package in ("typer", "click")),
-    reason="the checked-in page records the metavar spelling of the locked Typer and Click releases",
-)
 def test_checked_in_manpage_matches_live_cli() -> None:
     path = Path(__file__).parents[1] / "sidemantic" / "man" / "sidemantic.1"
-    assert path.read_text() == render_manpage(get_command(app), version=__version__)
+    checked_in = path.read_text()
+    rendered = render_manpage(get_command(app), version=__version__)
+
+    # Typer 0.26+ spells option metavars as <path> where earlier releases wrote
+    # PATH, so a page generated with one generation cannot match the other byte
+    # for byte. Compare the spelling itself rather than uv.lock: the unlocked
+    # dependency job rewrites the lockfile before the tests run.
+    if ("<path>" in rendered) != ("<path>" in checked_in):
+        pytest.skip("the installed Typer spells option metavars differently from the checked-in page")
+
+    assert checked_in == rendered
 
 
 def test_wheel_installs_generated_manpage_in_standard_location() -> None:

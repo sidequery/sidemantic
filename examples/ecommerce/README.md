@@ -13,17 +13,18 @@ A complete example semantic layer for an e-commerce analytics platform, demonstr
 
 - **data/** - Sample database
   - `create_db.py` - Script to generate sample data
-  - `ecommerce.db` - DuckDB database (generated)
+  - `ecommerce.db` - DuckDB database (pre-built; regenerate with `create_db.py`)
 
 ## Setup
 
-Generate the sample database:
+A pre-built `ecommerce.db` is included, so the queries below work right away.
+To regenerate it with fresh random data:
 
 ```bash
 uv run examples/ecommerce/data/create_db.py
 ```
 
-This creates `ecommerce.db` with realistic sample data:
+This replaces `ecommerce.db` with realistic sample data:
 - 200 customers across multiple countries
 - 100 products in various categories
 - 500 orders with realistic patterns
@@ -45,9 +46,13 @@ uvx --from "sidemantic[workbench]" sidemantic workbench examples/ecommerce/model
 
 ### Query from command line
 
+Metrics defined on a model are queried from that model (`FROM orders`).
+Graph-level metrics from `metrics.yml` belong to no single model, so query
+them from the virtual `metrics` table (`FROM metrics`).
+
 Total revenue:
 ```bash
-sidemantic query "SELECT total_revenue FROM orders" \
+sidemantic query "SELECT total_revenue FROM metrics" \
   --models examples/ecommerce/models \
   --db examples/ecommerce/data/ecommerce.db
 ```
@@ -68,7 +73,7 @@ sidemantic query "SELECT orders.order_count, orders.revenue, orders.status FROM 
 
 Customer lifetime value by tier:
 ```bash
-sidemantic query "SELECT customer_lifetime_value, customers.tier FROM customers" \
+sidemantic query "SELECT customer_lifetime_value, customers.tier FROM metrics" \
   --models examples/ecommerce/models \
   --db examples/ecommerce/data/ecommerce.db
 ```

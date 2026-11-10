@@ -5,7 +5,7 @@
   "containers": [
     {
       "class_name": "SidemanticApiContainer",
-      "image": "../../Dockerfile",
+      "image": "./Dockerfile",
       "instance_type": "standard-1",
       "max_instances": 3
     }

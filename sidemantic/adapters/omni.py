@@ -251,7 +251,7 @@ class OmniAdapter(BaseAdapter):
 
         # Parse dimensions
         dimensions = []
-        primary_key = "id"  # default
+        primary_key = None
 
         for dim_name, dim_def in (view.get("dimensions") or {}).items():
             if dim_def is None:
@@ -264,6 +264,11 @@ class OmniAdapter(BaseAdapter):
                 # Check for primary key
                 if dim_def.get("primary_key") is True:
                     primary_key = dim.name
+
+        # Without a flagged dimension the key is unknown. Assume the conventional
+        # ``id`` only when the view declares that column; never invent one.
+        if primary_key is None and any(dim.name == "id" for dim in dimensions):
+            primary_key = "id"
 
         # Parse measures
         metrics = []
@@ -1020,6 +1025,11 @@ class OmniAdapter(BaseAdapter):
 
             dimensions[dim.name] = dim_def
 
+        # Omni marks the key on a dimension. Declare a key column that is not
+        # already a dimension so import does not assume ``id``.
+        if len(model.primary_key_columns) == 1 and model.primary_key_columns[0] not in dimensions:
+            dimensions[model.primary_key_columns[0]] = {"hidden": True, "primary_key": True}
+
         if dimensions:
             view["dimensions"] = dimensions
 
@@ -1241,12 +1251,15 @@ class OmniAdapter(BaseAdapter):
                 # depends on cardinality (see Relationship): for many_to_one the
                 # from_view holds the FK; for one_to_many / one_to_one the to_view
                 # (related model) holds the FK and the from_view contributes its key.
+                # A relationship without its own key joins on the declared
+                # primary key of the model on that side.
+                target = models.get(rel.related_model)
                 if rel.type in ("one_to_many", "one_to_one"):
-                    from_key = rel.primary_key or "id"
+                    from_key = rel.primary_key or model.primary_key or "id"
                     to_key = rel.foreign_key or f"{model.name}_id"
                 else:
                     from_key = rel.foreign_key or f"{rel.name}_id"
-                    to_key = rel.primary_key or "id"
+                    to_key = rel.primary_key or (target.primary_key if target else None) or "id"
                 if rel.sql:
                     normalized = re.sub(
                         r"('(?:''|[^'])*')|\{(from|to)\}",

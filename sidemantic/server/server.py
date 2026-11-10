@@ -5,6 +5,7 @@ import typer
 
 from sidemantic.core.semantic_layer import SemanticLayer
 from sidemantic.server.connection import SemanticLayerConnection
+from sidemantic.server.pg_catalog import PgCatalog
 
 
 def _sql_string_literal(value: str) -> str:
@@ -67,10 +68,16 @@ def start_server(
             "connecting username cannot be spoofed to select another user's security attributes."
         )
 
+    # Physical tables are snapshotted below and shared with the catalog that
+    # answers information_schema/pg_catalog queries for every connection.
+    source_tables: list[tuple[str, str, list[tuple[str, str]]]] = []
+    catalog = PgCatalog(layer, source_tables)
+
     # Create connection class with layer injected
     class BoundConnection(SemanticLayerConnection):
         def __init__(self, connection_id, executor):
             super().__init__(connection_id, executor, layer, username, password, user_attrs_map=user_attrs_map)
+            self.catalog = catalog
 
     # Start server
     server = riffq.RiffqServer(f"{host}:{port}", connection_cls=BoundConnection)
@@ -87,17 +94,32 @@ def start_server(
         "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
     ).fetchall()
 
+    # riffq >= 0.4 raises on a duplicate schema or table, so register each once.
+    # Attached databases can repeat a schema.table pair; the first one wins.
+    registered_schemas: set[str] = {"semantic_layer"}
+    registered_tables: set[tuple[str, str]] = set()
     for schema_name, table_name in tbls:
-        server._server.register_schema("sidemantic", schema_name)
+        if schema_name == "semantic_layer" or (schema_name, table_name) in registered_tables:
+            continue
+        registered_tables.add((schema_name, table_name))
+        if schema_name not in registered_schemas:
+            server._server.register_schema("sidemantic", schema_name)
+            registered_schemas.add(schema_name)
         cols_info = layer.adapter.execute(
             "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
             f"WHERE table_schema = {_sql_string_literal(schema_name)} "
-            f"AND table_name = {_sql_string_literal(table_name)}"
+            f"AND table_name = {_sql_string_literal(table_name)} "
+            "ORDER BY ordinal_position"
         ).fetchall()
         columns = []
+        source_columns: list[tuple[str, str]] = []
         for col_name, data_type, is_nullable in cols_info:
+            if any(col_name == seen_name for seen_name, _ in source_columns):
+                continue
             columns.append({col_name: {"type": map_type(data_type), "nullable": is_nullable.upper() == "YES"}})
+            source_columns.append((col_name, data_type))
         server._server.register_table("sidemantic", schema_name, table_name, columns)
+        source_tables.append((schema_name, table_name, source_columns))
         typer.echo(f"  Registered source table: {schema_name}.{table_name}", err=True)
 
     # Register models as tables in the 'semantic_layer' schema
@@ -111,7 +133,7 @@ def start_server(
             # Map dimension type to SQL type
             if dim.type == "time":
                 sql_type = "timestamp"
-            elif dim.type == "number":
+            elif dim.type in ("numeric", "number"):
                 sql_type = "numeric"
             elif dim.type == "boolean":
                 sql_type = "boolean"
@@ -129,7 +151,7 @@ def start_server(
         typer.echo(f"  Registered table: semantic_layer.{model_name}", err=True)
 
     # Also register the magic 'metrics' table if there are graph-level metrics
-    if layer.graph.metrics:
+    if layer.graph.metrics and "metrics" not in layer.graph.models:
         metric_columns = []
         for metric in layer.graph.metrics.values():
             metric_columns.append({metric.name: {"type": "numeric", "nullable": True}})
@@ -143,7 +165,7 @@ def start_server(
         for dim_name, dim_type in all_dims:
             if dim_type == "time":
                 sql_type = "timestamp"
-            elif dim_type == "number":
+            elif dim_type in ("numeric", "number"):
                 sql_type = "numeric"
             elif dim_type == "boolean":
                 sql_type = "boolean"
@@ -158,11 +180,17 @@ def start_server(
     if username:
         typer.echo(f"Authentication: username={username}", err=True)
     else:
-        typer.echo("Authentication: disabled (any username/password accepted)", err=True)
+        # riffq always asks for a password; libpq refuses to connect without one.
+        typer.echo("Authentication: disabled (any username and any non-empty password are accepted)", err=True)
     connect_host = "localhost" if host == "0.0.0.0" else host
-    typer.echo(f"\nConnect with: psql -h {connect_host} -p {port} -U {username or 'any'} -d sidemantic\n", err=True)
+    password_hint = "" if username else "PGPASSWORD=any "
+    typer.echo(
+        f"\nConnect with: {password_hint}psql -h {connect_host} -p {port} -U {username or 'any'} -d sidemantic\n",
+        err=True,
+    )
 
-    # Disable catalog_emulation and handle catalog queries manually in our Python handler
-    # This prevents riffq from intercepting queries with its DataFusion parser (which fails on multi-statement queries)
-    # We manually expose semantic layer tables through information_schema query handling
+    # Disable catalog_emulation and answer catalog queries in our Python handler (see
+    # sidemantic.server.pg_catalog). riffq's emulation rejects any statement its
+    # PostgreSQL parser cannot read and has one catalog for all sessions, so it cannot
+    # hide models a session may not access.
     server.start(catalog_emulation=False)

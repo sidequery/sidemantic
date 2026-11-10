@@ -15,8 +15,9 @@ from pathlib import Path
 
 import yaml
 
-from sidemantic.adapters.base import BaseAdapter
+from sidemantic.adapters.base import BaseAdapter, graph_only_metric_names, reject_unsupported_export
 from sidemantic.adapters.bsl_expr import (
+    AGG_TO_METHOD_MAP,
     GRANULARITY_TO_TIME_GRAIN,
     TIME_GRAIN_MAP,
     _sql_to_bsl_expr,
@@ -24,6 +25,8 @@ from sidemantic.adapters.bsl_expr import (
     bsl_filter_to_sql,
     bsl_to_sql,
     is_calc_measure_expr,
+    parse_bsl_expr,
+    sql_predicate_to_bsl,
     sql_to_bsl,
 )
 from sidemantic.core.dimension import Dimension
@@ -336,10 +339,13 @@ class BSLAdapter(BaseAdapter):
         if date_part and sql_expr:
             sql_expr = f"EXTRACT({date_part.upper()} FROM {sql_expr})"
 
+        where = parse_bsl_expr(expr).where
+
         return Metric(
             name=name,
             agg=agg_type,
             sql=sql_expr,
+            filters=[where] if where else None,
             description=description,
             metadata=metadata,
         )
@@ -531,6 +537,7 @@ class BSLAdapter(BaseAdapter):
         from sidemantic.core.inheritance import resolve_model_inheritance
 
         resolved_models = resolve_model_inheritance(graph.models)
+        reject_unsupported_export("bsl", self._unsupported_constructs(graph, resolved_models))
 
         # If output_path is a directory, create one file per model
         if output_path.is_dir() or not output_path.suffix:
@@ -557,6 +564,46 @@ class BSLAdapter(BaseAdapter):
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with open(output_path, "w") as f:
                 yaml.dump(data, f, sort_keys=False, default_flow_style=False)
+
+    def _unsupported_constructs(self, graph: SemanticGraph, models: dict[str, Model]) -> list[tuple[str, str, str]]:
+        """Constructs a BSL model file cannot carry, as ``(feature, location, detail)``."""
+        problems = [
+            (
+                "graph_metrics",
+                name,
+                f"Graph-level metric '{name}' has no owning BSL model; attach it to a model before exporting",
+            )
+            for name in graph_only_metric_names(graph, models)
+        ]
+        for model in models.values():
+            for metric in model.metrics:
+                if metric.filters and "bsl_expr" not in (metric.metadata or {}) and self._measure_expr(metric) is None:
+                    problems.append(
+                        (
+                            "metric_filter",
+                            f"{model.name}.{metric.name}",
+                            f"Filter on '{model.name}.{metric.name}' has no BSL where= translation",
+                        )
+                    )
+        return problems
+
+    @staticmethod
+    def _measure_expr(metric: Metric) -> str | None:
+        """BSL expression for a simple aggregate, or None when its filters cannot be written.
+
+        Ibis aggregates filter rows through ``where=``.
+        """
+        if metric.agg == "count" and not metric.sql:
+            bsl_expr = "_.count()"
+        else:
+            bsl_expr = _sql_to_bsl_expr(metric.sql or metric.name, metric.agg)
+        if not metric.filters:
+            return bsl_expr
+        predicates = [sql_predicate_to_bsl(predicate.replace("{model}.", "")) for predicate in metric.filters]
+        if metric.agg not in AGG_TO_METHOD_MAP or not bsl_expr.endswith("()") or None in predicates:
+            return None
+        where = predicates[0] if len(predicates) == 1 else " & ".join(f"({predicate})" for predicate in predicates)
+        return f"{bsl_expr[:-1]}where={where})"
 
     def _add_profile_to_export(self, data: dict, model: Model) -> None:
         metadata = model.metadata or {}
@@ -709,11 +756,9 @@ class BSLAdapter(BaseAdapter):
             else:
                 bsl_expr = f"_.{metric.name}"
         else:
-            # Cross-format conversion: reconstruct BSL from SQL + aggregation
-            if metric.agg == "count" and not metric.sql:
-                bsl_expr = "_.count()"
-            else:
-                bsl_expr = _sql_to_bsl_expr(metric.sql or metric.name, metric.agg)
+            # Cross-format conversion: reconstruct BSL from SQL + aggregation.
+            # export() has already refused filters that cannot be written.
+            bsl_expr = self._measure_expr(metric)
 
         result_metadata = (metric.metadata or {}).get("bsl_metadata")
 

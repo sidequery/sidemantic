@@ -3357,12 +3357,15 @@ wheels = [
 
 [[package]]
 name = "riffq"
-version = "0.1.6"
+version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7b/bb/2cb2df7f1f6d6d63a4b58b563a894b3ac70e371b68eb86584e42d837de5b/riffq-0.1.6.tar.gz", hash = "sha256:91cd77a4321c73118505005648f419d56512e4f507456b9a51cfb024ee63d229", size = 79223, upload-time = "2025-07-01T12:37:59.603Z" }
+dependencies = [
+    { name = "pyarrow" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b2/3a/435646d3e81ba53468381c33acd61957c2d03e96ba77bea523c52d4197f6/riffq-0.4.1.tar.gz", hash = "sha256:6267141558d2bf9cb71488277c3738c7d9a8a400b9f6dad589fa629c593f7706", size = 270340, upload-time = "2026-11-01T19:09:52.425Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/74/58/6a89d32846f1240f0262ebb75e5f42e4d322d82ebad0621f26a14540866f/riffq-0.1.6-cp312-cp312-manylinux_2_38_x86_64.whl", hash = "sha256:a3526dad2f4babac4cf211163d0590d3dd2a26e62721492de637fc58d15cd90a", size = 39980928, upload-time = "2025-07-01T12:37:49.543Z" },
-    { url = "https://files.pythonhosted.org/packages/df/27/14d358eed6578aaaee978e3740a9acba6803f933adf79fb611ae7af4eb8e/riffq-0.1.6-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:a8388ada7baf62707604b5c166eadd1c6713f4f40078968fbfcb3b4be01da2f6", size = 35129232, upload-time = "2025-07-01T12:37:53.307Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/91/767564e1c3ef015c48d079e09725a273ffc7364bdfbe83e75b8d07cb6f08/riffq-0.4.1-cp312-cp312-win_amd64.whl", hash = "sha256:31870d8aecf34f80689cf993fe47dce16608e64b3478ca3940c0e8e83c8d20df", size = 56405143, upload-time = "2026-11-01T15:08:03.074Z" },
+    { url = "https://files.pythonhosted.org/packages/32/f1/fc066fa349f10bc3e14e14a21790b4c786ce3f54b61bea44015be7271969/riffq-0.4.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:bdf9070f5d549d948fd0dfb4f071437c945f305491eeb5277d84013169ebf7a8", size = 60012263, upload-time = "2026-11-01T19:09:46.671Z" },
 ]
 
 [[package]]
@@ -3585,12 +3588,14 @@ all-databases = [
 ]
 api = [
     { name = "fastapi" },
+    { name = "lkml" },
     { name = "pyarrow" },
     { name = "uvicorn" },
 ]
 apps = [
     { name = "altair", version = "5.5.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
     { name = "altair", version = "6.2.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
+    { name = "lkml" },
     { name = "mcp", extra = ["cli"] },
     { name = "vl-convert-python" },
 ]
@@ -3667,6 +3672,7 @@ malloy = [
     { name = "antlr4-python3-runtime" },
 ]
 mcp = [
+    { name = "lkml" },
     { name = "mcp", extra = ["cli"] },
 ]
 metricflow = [
@@ -3683,6 +3689,7 @@ rust = [
     { name = "sidemantic-rs", marker = "sys_platform != 'emscripten'" },
 ]
 serve = [
+    { name = "lkml" },
     { name = "pyarrow" },
     { name = "riffq" },
 ]
@@ -3754,8 +3761,12 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.0" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.23,<5" },
     { name = "jsonschema", marker = "extra == 'ossie'", specifier = ">=4.23,<5" },
+    { name = "lkml", marker = "extra == 'api'", specifier = ">=1.3.7" },
+    { name = "lkml", marker = "extra == 'apps'", specifier = ">=1.3.7" },
     { name = "lkml", marker = "extra == 'dev'", specifier = ">=1.3.7" },
     { name = "lkml", marker = "extra == 'lookml'", specifier = ">=1.3.7" },
+    { name = "lkml", marker = "extra == 'mcp'", specifier = ">=1.3.7" },
+    { name = "lkml", marker = "extra == 'serve'", specifier = ">=1.3.7" },
     { name = "lkml", marker = "extra == 'workbench'", specifier = ">=1.3.7" },
     { name = "lsprotocol", marker = "extra == 'lsp'", specifier = ">=2025.0.0" },
     { name = "mcp", extras = ["cli"], marker = "extra == 'apps'", specifier = ">=1.25.0,<2" },
@@ -3784,7 +3795,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "riffq", marker = "extra == 'serve'", specifier = ">=0.1.0" },
+    { name = "riffq", marker = "extra == 'serve'", specifier = ">=0.4.1,<0.5" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "sidemantic", extras = ["postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc"], marker = "extra == 'all-databases'" },
     { name = "sidemantic", extras = ["workbench", "mcp", "apps", "charts", "lsp", "dax", "lookml", "malloy", "metricflow", "widget", "api", "ossie", "rust"], marker = "extra == 'full'" },

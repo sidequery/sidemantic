@@ -844,6 +844,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn authored_full_join_conditions_are_emitted_as_written() {
+        // Lowering an authored NULL-safe comparison would change its meaning:
+        // an array-valued operand compares NULL and the empty array as equal
+        // once wrapped. Only generated combine keys are lowered, at generation.
+        let source = "SELECT * FROM a FULL OUTER JOIN b \
+                      ON a.id = b.id AND a.tags IS NOT DISTINCT FROM b.tags";
+        for target in [
+            DialectType::PostgreSQL,
+            DialectType::DuckDB,
+            DialectType::Snowflake,
+        ] {
+            let expression = parse(source, DialectType::DuckDB).unwrap();
+            let sql = emit(expression, DialectType::DuckDB, target).unwrap();
+            assert!(
+                sql.contains("ON a.id = b.id AND a.tags IS NOT DISTINCT FROM b.tags"),
+                "{target:?}: {sql}"
+            );
+        }
+    }
+
+    #[test]
     fn source_transpilation_keeps_seed_alias_and_empty_predicate() {
         let source = "SELECT amount FROM (SELECT 1 AS amount) seed WHERE FALSE";
         for dialect in [

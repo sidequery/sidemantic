@@ -69,3 +69,25 @@ def test_aql_strings_are_not_function_calls(expression):
     from sidemantic.adapters.holistics import _translate_aql_to_sql
 
     assert _translate_aql_to_sql(expression) == expression
+
+
+def test_directory_load_keeps_valid_models_beside_a_malformed_file(tmp_path, caplog):
+    """A directory is parsed as one AML project; a broken file must not hide its siblings."""
+    from sidemantic import SemanticLayer
+    from sidemantic.loaders import load_from_directory
+
+    (tmp_path / "orders.model.aml").write_text(
+        "Model orders {\n  type: 'table'\n  table_name: 'orders'\n"
+        "  dimension id {\n    type: 'number'\n    primary_key: true\n  }\n"
+        "  measure revenue {\n    aggregation_type: 'sum'\n    definition: @sql amount;;\n  }\n}\n"
+    )
+    (tmp_path / "broken.model.aml").write_text("Model broken {\n  type: 'table'\n  dimension {{{{\n")
+
+    layer = SemanticLayer(auto_register=False)
+    load_from_directory(layer, tmp_path, strict=False)
+    assert sorted(layer.graph.models) == ["orders"]
+    assert layer.graph.models["orders"].get_metric("revenue").agg == "sum"
+    assert "broken.model.aml" in caplog.text
+
+    with pytest.raises(ValueError, match="broken.model.aml"):
+        load_from_directory(SemanticLayer(auto_register=False), tmp_path, strict=True)

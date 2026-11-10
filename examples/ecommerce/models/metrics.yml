@@ -18,7 +18,7 @@ metrics:
   - name: customer_lifetime_value
     type: derived
     description: Average revenue per customer
-    sql: total_revenue / customer_count
+    sql: total_revenue / customers.customer_count
 
   - name: repeat_customer_rate
     type: ratio

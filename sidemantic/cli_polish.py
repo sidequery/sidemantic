@@ -15,11 +15,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from difflib import get_close_matches
 from pathlib import Path
-from typing import IO, Literal
+from typing import IO, Any, Literal
 
 import click
-from click.shell_completion import CompletionItem
 from typer.core import TyperGroup
+
+from sidemantic.click_compat import Command, CompletionItem, Context, Parameter, UsageError
 
 MACHINE_FORMATS = frozenset({"csv", "json", "jsonl"})
 
@@ -45,7 +46,7 @@ def invocation_requests_machine_output(args: Iterable[str]) -> bool:
     return False
 
 
-def context_requests_machine_output(ctx: click.Context) -> bool:
+def context_requests_machine_output(ctx: Context) -> bool:
     """Return whether already-parsed root options suppress human extras."""
 
     params = ctx.find_root().params
@@ -56,22 +57,33 @@ def context_requests_machine_output(ctx: click.Context) -> bool:
 class SuggestionGroup(TyperGroup):
     """Typer group that adds safe command-name recovery guidance."""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # Typer 0.20+ appends its own "Did you mean" text to unknown-command
+        # errors, including machine-output invocations. This group owns that
+        # policy, so turn the built-in suggestion off.
+        self.suggest_commands = False
+
     def resolve_command(
         self,
-        ctx: click.Context,
+        ctx: Context,
         args: list[str],
-    ) -> tuple[str | None, click.Command | None, list[str]]:
+    ) -> tuple[str | None, Command | None, list[str]]:
         try:
             resolved = super().resolve_command(ctx, args)
-        except click.UsageError as exc:
-            if not args or invocation_requests_machine_output(args) or context_requests_machine_output(ctx):
+        except UsageError as exc:
+            if not args or "No such command" not in exc.message:
                 raise
+            if invocation_requests_machine_output(args) or context_requests_machine_output(ctx):
+                # Click 8.4+ appends close matches when formatting its own
+                # unknown-command error; machine output stays hint-free.
+                raise UsageError(exc.message, ctx=ctx) from exc
             requested = args[0]
             suggestion = closest_command(requested, self.list_commands(ctx))
-            if suggestion is None or "No such command" not in exc.message:
+            if suggestion is None:
                 raise
             command_path = f"{ctx.command_path} {suggestion} --help"
-            raise click.UsageError(
+            raise UsageError(
                 f"{exc.message}\nDid you mean '{suggestion}'?\n"
                 f"Run '{command_path}' to review the corrected command before executing it.",
                 ctx=ctx,
@@ -283,8 +295,8 @@ def _configured_pager():
 
 
 def complete_semantic_format(
-    ctx: click.Context,
-    param: click.Parameter,
+    ctx: Context,
+    param: Parameter,
     incomplete: str,
 ) -> list[CompletionItem]:
     """Complete import/export formats without importing adapter dependencies."""
@@ -294,14 +306,14 @@ def complete_semantic_format(
     return _semantic_format_choices(operation, incomplete)
 
 
-def complete_source_format(ctx: click.Context, incomplete: str) -> list[tuple[str, str]]:
+def complete_source_format(ctx: Context, incomplete: str) -> list[tuple[str, str]]:
     """Complete import formats for Typer's completion callback contract."""
 
     del ctx
     return [(item.value, item.help or "") for item in _semantic_format_choices("import", incomplete)]
 
 
-def complete_target_format(ctx: click.Context, incomplete: str) -> list[tuple[str, str]]:
+def complete_target_format(ctx: Context, incomplete: str) -> list[tuple[str, str]]:
     """Complete export formats for Typer's completion callback contract."""
 
     del ctx
@@ -323,7 +335,7 @@ def _semantic_format_choices(operation: Literal["import", "export"], incomplete:
 
 
 def complete_dashboard_spec(
-    ctx: click.Context,
+    ctx: Context,
     incomplete: str,
 ) -> list[str]:
     """Complete dashboard directories plus YAML and JSON specification files."""
@@ -349,7 +361,7 @@ def complete_dashboard_spec(
 
 
 def complete_path(
-    ctx: click.Context,
+    ctx: Context,
     incomplete: str,
 ) -> list[str]:
     """Complete readable files and directories for project input paths."""
@@ -372,7 +384,7 @@ def complete_path(
 
 
 def complete_model(
-    ctx: click.Context,
+    ctx: Context,
     incomplete: str,
 ) -> list[tuple[str, str]]:
     """Complete model names from the selected project without opening a database."""
@@ -385,7 +397,7 @@ def complete_model(
         return []
 
 
-def _model_names(ctx: click.Context) -> list[str]:
+def _model_names(ctx: Context) -> list[str]:
     from sidemantic.project import ProjectContext
 
     project_value = ctx.find_root().params.get("project")

@@ -1,10 +1,11 @@
 """GoodData LDM adapter for importing/exporting logical data models."""
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
-from sidemantic.adapters.base import BaseAdapter
+from sidemantic.adapters.base import BaseAdapter, reject_unsupported_export
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -69,8 +70,11 @@ class GoodDataAdapter(BaseAdapter):
         """Export semantic graph to GoodData LDM JSON format (cloud style)."""
         owned_metrics = [metric for model in graph.models.values() for metric in model.metrics]
         if any(not any(metric is owned for owned in owned_metrics) for metric in graph.metrics.values()):
+            unplaced = ", ".join(
+                name for name, metric in graph.metrics.items() if not any(metric is owned for owned in owned_metrics)
+            )
             record_export_feature(
-                "graph_metrics", "rejected", detail="GoodData LDM cannot represent analytical metrics"
+                "graph_metrics", "rejected", detail=f"GoodData LDM cannot represent analytical metrics: {unplaced}"
             )
             raise ValueError("GoodData LDM export cannot represent graph-level metrics; MAQL metrics are unsupported")
         output_path = Path(output_path)
@@ -78,6 +82,7 @@ class GoodDataAdapter(BaseAdapter):
         from sidemantic.core.inheritance import resolve_model_inheritance
 
         resolved_models = resolve_model_inheritance(graph.models)
+        reject_unsupported_export("gooddata", self._unsupported_constructs(resolved_models))
 
         datasets = []
         date_instances = []
@@ -713,6 +718,68 @@ class GoodDataAdapter(BaseAdapter):
             if label_id:
                 label_map[label_id] = label
         return label_map
+
+    def _unsupported_constructs(self, models: dict[str, Model]) -> list[tuple[str, str, str]]:
+        """Constructs an LDM cannot carry, as ``(feature, location, detail)``.
+
+        An LDM fact binds one physical column and has no aggregation, filter or
+        expression; those live in MAQL metrics, which this adapter does not
+        write. Import reads a numeric fact back as SUM, so only an unfiltered
+        SUM over a plain column survives a round trip.
+        """
+        problems: list[tuple[str, str, str]] = []
+        for model in models.values():
+            if (model.metadata or {}).get(GOODDATA_METADATA_KEY, {}).get("kind") in ("date_instance", "date_dimension"):
+                continue
+            for metric in model.metrics:
+                location = f"{model.name}.{metric.name}"
+                fact_meta = (metric.metadata or {}).get(GOODDATA_METADATA_KEY, {})
+                if fact_meta.get("aggregated_fact"):
+                    continue
+                imported_agg = self._map_fact_aggregation(
+                    {"aggregation": fact_meta["aggregation"]} if fact_meta.get("aggregation") else {},
+                    fact_meta.get("data_type") or "NUMERIC",
+                )
+                if metric.filters:
+                    problems.append(
+                        (
+                            "metric_filter",
+                            location,
+                            f"Filter on '{location}' needs a MAQL metric; an LDM fact has no filter",
+                        )
+                    )
+                elif metric.type or metric.agg != imported_agg:
+                    kind = metric.type or metric.agg
+                    problems.append(
+                        (
+                            "metric_aggregation",
+                            location,
+                            f"'{location}' ({kind}) needs a MAQL metric; an LDM fact is a column that imports as "
+                            f"{imported_agg or 'an unaggregated value'}",
+                        )
+                    )
+                elif not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", metric.sql or metric.name):
+                    problems.append(
+                        (
+                            "metric_expression",
+                            location,
+                            f"'{location}' aggregates an expression; an LDM fact binds one physical column",
+                        )
+                    )
+            for rel in model.relationships:
+                if rel.type != "one_to_many":
+                    continue
+                target = models.get(rel.related_model)
+                if target is None or not any(back.related_model == model.name for back in target.relationships):
+                    problems.append(
+                        (
+                            "relationship",
+                            f"{model.name}.{rel.name}",
+                            f"Relationship '{model.name}.{rel.name}' (one_to_many) has no LDM reference; "
+                            f"declare it as many_to_one on '{rel.related_model}'",
+                        )
+                    )
+        return problems
 
     def _export_dataset(self, model: Model) -> dict[str, Any]:
         gd_meta = (model.metadata or {}).get(GOODDATA_METADATA_KEY, {})

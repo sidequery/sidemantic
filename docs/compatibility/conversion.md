@@ -7,6 +7,54 @@ proof of vendor compilation or SQL equivalence. Shared conversion APIs stage exp
 reject empty results, and replace the destination only after checks pass. The CLI
 also protects existing destinations when `--force` is used.
 
+## What each export target carries
+
+An export either returns the same numbers after re-import or names what it did
+not carry. Two outcomes are possible when a target cannot represent a construct:
+
+- **Blocked.** Dropping the construct would change a number or remove a metric,
+  so nothing is written and `convert` exits 1 with one line per construct
+  (`metric_filter: Filter on 'orders.completed_revenue' ...`).
+- **Review required.** The written files are correct on their own but narrower
+  than the source, for example a single-table format that has no joins. The
+  files are written and `convert` lists each loss as a warning.
+
+`Export readiness: ready (no reported losses)` is printed only when neither applies.
+
+| Target | Filtered measure | Row count / distinct count | Primary key | Joins | Graph-level metrics |
+|---|---|---|---|---|---|
+| `sidemantic`, `metricflow`, `snowflake` | Carried | Carried | Carried | Carried | Carried |
+| `ossie` | Carried | Carried | Carried | Carried | Carried (review: needs the Sidemantic runtime extension) |
+| `bsl` | Carried (`where=`) | Carried | Carried | Carried | Blocked |
+| `cube`, `lookml`, `malloy` | Carried | Carried | Carried | Carried | Blocked |
+| `hex`, `omni`, `holistics` | Carried | Carried | Carried (hidden key dimension) | Carried | Blocked |
+| `rill`, `superset` | Carried (folded into the expression) | Carried | Review: not exported | Review: not exported | Blocked |
+| `thoughtspot` | Blocked | Carried (counts the key column) | Review: not exported | Carried | Blocked |
+| `atscale-sml` | Blocked | Carried (counts the key column) | Carried (unique-key level) | Carried | Blocked |
+| `gooddata` | Blocked | Blocked | Carried | Carried | Blocked |
+| `tmdl` | Blocked | Row count carried; other aggregates need the column as a dimension | Carried when the key is a dimension; otherwise review: not exported | Carried | Blocked |
+
+`lightdash` and `sigma` accept only portable Ossie core. Time granularity, keys
+that are not declared fields, and joins without an edge identity are refused
+before the vendor converter runs.
+
+Formats without a measure filter (`snowflake`, `holistics`, `rill`, `superset`)
+receive a filtered aggregate as `AGG(CASE WHEN <filter> THEN <value> END)`, which
+their importers read back as the same aggregate. A filter that reads another
+model's columns cannot be folded and blocks the export. A model-owned ratio
+whose operand belongs to another model (`refunds.revenue / orders.revenue`)
+blocks `rill`, `superset`, `atscale-sml` and Snowflake table metrics: those
+formats name operands without a model, so the reference would bind to a
+same-named metric of the exporting model. A GoodData LDM fact is a
+physical column that imports as `SUM`; every other aggregation is a MAQL metric,
+which this adapter does not write.
+
+`tests/adapters/test_export_roundtrip.py` enforces this table: it exports one
+model to every registered target, re-imports it, and compares metric values
+grouped by categorical dimensions on DuckDB against the native model. It checks
+import through Sidemantic's own adapters, not compilation by the vendor, and it
+does not compare time-dimension names or grains.
+
 ## Exporting for official Ossie converters
 
 ```sh

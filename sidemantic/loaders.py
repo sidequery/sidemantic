@@ -414,6 +414,37 @@ def load_from_directory(
             )
             _handle_parse_error(error_source, e, strict=strict)
 
+    # AML relationships and partial models name definitions in other files, so a
+    # directory is parsed once as a project rather than file by file.
+    holistics_root = None
+    if only_file is None and any(file.suffix.lower() == ".aml" for file in project_files):
+        holistics_root = directory
+
+    if holistics_root:
+        from sidemantic.adapters.holistics import HolisticsAdapter
+
+        try:
+            graph = _parse_adapter_without_auto_registration(HolisticsAdapter(), holistics_root)
+            _collect_consumption_catalogs(consumption_catalogs, graph, layer.graph)
+            _merge_graph_passthrough_metadata(layer.graph, graph)
+            _extend_import_warnings(import_warnings, graph)
+            for model in graph.models.values():
+                if not hasattr(model, "_source_format"):
+                    model._source_format = "Holistics"
+                if not hasattr(model, "_source_file"):
+                    model._source_file = str(holistics_root.relative_to(directory))
+            _merge_models(all_models, graph.models)
+            collect_metrics(graph)
+            all_parameters.update(graph.parameters)
+        except Exception as e:
+            if strict:
+                _handle_parse_error(holistics_root, e, strict=True)
+            # Non-strict: one malformed .aml must not drop every valid sibling. Fall
+            # back to the per-file scan below, which loads what it can and reports
+            # the bad file (as the LookML project path does). Cross-file
+            # relationships are lost in that degraded mode.
+            holistics_root = None
+
     # Find and parse all files (just the requested one in single-file mode).
     scan_files = [only_file] if only_file is not None else project_files
     for file_path in scan_files:
@@ -508,6 +539,8 @@ def load_from_directory(
         elif suffix == ".aml":
             from sidemantic.adapters.holistics import HolisticsAdapter
 
+            if holistics_root:
+                continue  # already parsed as one project above
             adapter = HolisticsAdapter()
         elif suffix == ".tml":
             adapter = ThoughtSpotAdapter()
@@ -660,6 +693,11 @@ def load_from_directory(
     # so an explicit Cortex join takes precedence over a guessed one for the same
     # table pair.
     _apply_snowflake_pending_relationships(all_models, all_pending_relationships)
+
+    # Omni keeps joins in project-level relationships/model files, while its
+    # views were parsed one file at a time above. Attach them before inference.
+    if only_file is None:
+        _apply_omni_relationship_files(project_files, all_models, strict=strict)
 
     # Drop non-queryable template models (LookML `extension: required` abstract bases /
     # unsupported derived tables) BEFORE inference + registration, so FK inference never
@@ -1645,6 +1683,28 @@ def _apply_snowflake_pending_relationships(all_models: dict, pending: list) -> N
 
     SnowflakeAdapter().apply_pending_relationships(pending, all_models)
     pending.clear()
+
+
+def _apply_omni_relationship_files(project_files: list[Path], all_models: dict, *, strict: bool) -> None:
+    """Attach joins from Omni relationships/model files to the loaded Omni views."""
+    views = {name: model for name, model in all_models.items() if getattr(model, "_source_format", None) == "Omni"}
+    if not views:
+        return
+    from types import SimpleNamespace
+
+    from sidemantic.adapters.omni import OmniAdapter
+
+    adapter = OmniAdapter()
+    loaded = SimpleNamespace(models=views)
+    for file_path in project_files:
+        name = file_path.name.lower()
+        try:
+            if name in ("relationships.yaml", "relationships.yml"):
+                adapter._parse_relationships_list(adapter._load_relationships_list(file_path), loaded)
+            elif name in ("model.yaml", "model.yml"):
+                adapter._parse_relationships(file_path, loaded)
+        except Exception as e:
+            _handle_parse_error(file_path, e, strict=strict)
 
 
 def _deep_merge_metadata(target: dict, source: dict) -> None:

@@ -33,6 +33,8 @@ pub struct QueryRewriter<'a> {
     qualified_tables_physical: bool,
     warnings: std::cell::RefCell<Vec<String>>,
     used_preaggregation: std::cell::Cell<bool>,
+    /// Dialect of the statement being emitted, for its generated leaves.
+    emitted_dialect: std::cell::Cell<Option<DialectType>>,
 }
 
 impl<'a> QueryRewriter<'a> {
@@ -46,6 +48,7 @@ impl<'a> QueryRewriter<'a> {
             qualified_tables_physical: false,
             warnings: std::cell::RefCell::new(Vec::new()),
             used_preaggregation: std::cell::Cell::new(false),
+            emitted_dialect: std::cell::Cell::new(None),
         }
     }
 
@@ -101,6 +104,25 @@ impl<'a> QueryRewriter<'a> {
     }
 
     pub(crate) fn rewrite_with_output_dialect(
+        &self,
+        sql: &str,
+        input_dialect: DialectType,
+        output_dialect: DialectType,
+    ) -> Result<String> {
+        // A nested rewrite (a Yardstick leaf) returns DuckDB for a statement
+        // that is still emitted in the outermost caller's dialect.
+        let outermost = self.emitted_dialect.get().is_none();
+        if outermost {
+            self.emitted_dialect.set(Some(output_dialect));
+        }
+        let rewritten = self.rewrite_statements(sql, input_dialect, output_dialect);
+        if outermost {
+            self.emitted_dialect.set(None);
+        }
+        rewritten
+    }
+
+    fn rewrite_statements(
         &self,
         sql: &str,
         input_dialect: DialectType,
@@ -303,6 +325,83 @@ mod tests {
         assert!(sql.contains("retention_pct"));
     }
 
+    fn multi_fact_graph() -> SemanticGraph {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("customers", "id")
+                    .with_table("customers")
+                    .with_dimension(Dimension::categorical("tags"))
+                    .with_metric(Metric::count("customer_count")),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("orders")
+                    .with_metric(Metric::sum("revenue", "amount"))
+                    .with_relationship(Relationship::many_to_one("customers")),
+            )
+            .unwrap();
+        graph
+    }
+
+    #[test]
+    fn postgres_lowers_only_generated_combine_keys() {
+        let graph = multi_fact_graph();
+        let rewriter = QueryRewriter::new(&graph);
+        let authored = "s.tags IS NOT DISTINCT FROM labels.tags";
+        let sql = format!(
+            "SELECT s.tags, s.revenue, s.customer_count, labels.name \
+             FROM (SELECT customers.tags, orders.revenue, customers.customer_count FROM orders) AS s \
+             FULL OUTER JOIN labels ON s.revenue = labels.revenue AND {authored}"
+        );
+
+        let postgres = rewriter
+            .rewrite_with_dialect(&sql, DialectType::PostgreSQL)
+            .unwrap();
+        // PostgreSQL cannot plan the generated combine's NULL-safe keys as written.
+        assert!(
+            postgres.contains(
+                "FULL OUTER JOIN customers_preagg ON ARRAY[orders_preagg.tags] = \
+                 ARRAY[customers_preagg.tags] \
+                 AND (orders_preagg.tags IS NULL) = (customers_preagg.tags IS NULL)"
+            ),
+            "{postgres}"
+        );
+        // The authored join is the query's own: wrapping an array-valued
+        // operand would make NULL and the empty array compare as equal.
+        assert!(
+            postgres.contains(&format!("ON s.revenue = labels.revenue AND {authored}")),
+            "{postgres}"
+        );
+        assert_eq!(postgres.matches("ARRAY[").count(), 2, "{postgres}");
+
+        let duckdb = rewriter
+            .rewrite_with_dialect(&sql, DialectType::DuckDB)
+            .unwrap();
+        assert!(!duckdb.contains("ARRAY["), "{duckdb}");
+        assert_eq!(
+            duckdb.matches("IS NOT DISTINCT FROM").count(),
+            2,
+            "{duckdb}"
+        );
+    }
+
+    #[test]
+    fn postgres_passes_authored_full_join_without_semantic_sources_through() {
+        let graph = multi_fact_graph();
+        let sql = "SELECT a.id, b.id FROM a FULL OUTER JOIN b \
+                   ON a.id = b.id AND a.tags IS NOT DISTINCT FROM b.tags";
+        let rewritten = QueryRewriter::new(&graph)
+            .rewrite_with_dialect(sql, DialectType::PostgreSQL)
+            .unwrap();
+        assert!(
+            rewritten.contains("ON a.id = b.id AND a.tags IS NOT DISTINCT FROM b.tags"),
+            "{rewritten}"
+        );
+    }
+
     #[test]
     fn test_simple_rewrite() {
         let graph = create_test_graph();
@@ -314,6 +413,33 @@ mod tests {
         assert!(rewritten.contains("public.orders"));
         assert!(rewritten.contains("SUM("));
         assert!(rewritten.contains("GROUP BY"));
+    }
+
+    #[test]
+    fn default_time_dimension_is_not_a_hidden_group_key() {
+        let mut graph = SemanticGraph::new();
+        let mut orders = Model::new("orders", "order_id")
+            .with_table("public.orders")
+            .with_dimension(Dimension::categorical("status"))
+            .with_dimension(Dimension::time("order_date").with_sql("created_at"))
+            .with_metric(Metric::sum("revenue", "amount"));
+        orders.default_time_dimension = Some("order_date".into());
+        graph.add_model(orders).unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+
+        // The SELECT list is the whole projection, so neither query may be
+        // grouped by a default time dimension that it does not return.
+        let scalar = rewriter
+            .rewrite("SELECT orders.revenue FROM orders")
+            .unwrap();
+        assert!(!scalar.contains("GROUP BY"), "{scalar}");
+        assert!(!scalar.contains("created_at"), "{scalar}");
+
+        let grouped = rewriter
+            .rewrite("SELECT orders.status, orders.revenue FROM orders")
+            .unwrap();
+        assert!(grouped.contains("GROUP BY"), "{grouped}");
+        assert!(!grouped.contains("created_at"), "{grouped}");
     }
 
     #[test]

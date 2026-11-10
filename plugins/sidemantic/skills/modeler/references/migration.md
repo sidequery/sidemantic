@@ -5,9 +5,11 @@ Convert semantic models from Cube.js, dbt MetricFlow, LookML, and other formats 
 ## Auto-Import (Recommended)
 
 ```python
+from pathlib import Path
+
 from sidemantic import SemanticLayer, load_from_directory
 
-layer = SemanticLayer(connection="duckdb:///data.duckdb")
+layer = SemanticLayer(connection=f"duckdb:///{Path('data.duckdb').resolve()}")
 load_from_directory(layer, "path/to/models/")
 ```
 
@@ -30,9 +32,13 @@ Relationships are auto-inferred from foreign key naming conventions (e.g., `cust
 
 ```bash
 sidemantic info ./models                                    # Inspect
-sidemantic query "SELECT revenue FROM orders" --models ./models  # Query
+sidemantic query "SELECT revenue FROM orders" --models ./models --db data.duckdb  # Query
 sidemantic query "..." --models ./models --dry-run          # SQL only
+sidemantic convert ./cube_models --output models/converted.yml  # Write native YAML
 ```
+
+`convert` auto-detects the source format (`--from` to force one) and writes native
+Sidemantic YAML by default (`--to` for another format). Give `--output` a file path.
 
 ## Cube.js to Sidemantic
 
@@ -444,10 +450,12 @@ mf_adapter.export(graph, "output/metricflow_models.yml")
 ### Building a layer from parsed models
 
 ```python
+from pathlib import Path
+
 from sidemantic import SemanticLayer
 from sidemantic.adapters.lookml import LookMLAdapter
 
-layer = SemanticLayer(connection="duckdb:///data.duckdb")
+layer = SemanticLayer(connection=f"duckdb:///{Path('data.duckdb').resolve()}")
 adapter = LookMLAdapter()
 graph = adapter.parse("lookml_views/")
 for model in graph.models.values():
@@ -476,3 +484,7 @@ result = layer.sql("SELECT revenue, status FROM orders")
 | BSL | BSLAdapter | `.yml` |
 | OSI | OSIAdapter | `.yml` |
 | AtScale SML | AtScaleSMLAdapter | `.yml` |
+
+The format registry also covers `tableau` (`.tds`, `.twb`, `.tdsx`, `.twbx`), `tmdl`
+(Power BI, `.tmdl`), `graphene` (`.gsql`), `lightdash`, `sigma`, `ossie`, and
+`yardstick`. Use these names with `sidemantic convert --from`.

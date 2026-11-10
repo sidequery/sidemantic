@@ -140,6 +140,31 @@ The connecting Postgres username is mapped to user attributes via a startup
 SQL is rewritten through access gates and row filters. Physical-source SQL is
 rejected when security is active; catalog discovery omits inaccessible models.
 
+The server is read-only. It runs `SELECT` queries (plus `SHOW`, `DESCRIBE`, and
+`EXPLAIN` of a query) and rejects DDL, DML, `COPY`, `ATTACH`, `PRAGMA`, and other
+statements that could change the database with SQLSTATE `25006`. `SET` and
+transaction statements (`BEGIN`, `COMMIT`, `ROLLBACK`) are acknowledged without
+effect, because drivers send them. Query failures are returned as PostgreSQL
+errors with a SQLSTATE: `42703` for an unknown field, `42601` for a syntax
+error, and `42501` for a denied policy.
+
+Several statements sent in one simple-protocol message are answered one by one,
+and each is checked as if it had been sent alone. Several statements in one
+extended-protocol (prepared) message are rejected with SQLSTATE `42601`, as
+PostgreSQL does; none of them runs.
+
+`information_schema` and `pg_catalog` queries are answered from a catalog that
+lists the session's accessible models as tables in the `semantic_layer` schema,
+with their dimensions and metrics as columns (public fields only when
+visibility is enforced). Physical tables are listed
+only when no security control is active. The physical table list is read once
+at startup.
+
+Without `--username` and `--password-file`, any username and any non-empty
+password are accepted; PostgreSQL clients must still send a password. The
+default bind address is `127.0.0.1`. The server does not offer TLS, so put it
+behind a TLS-terminating proxy or a private network before exposing it.
+
 ### MCP server
 
 Stdio MCP may use `--user-attrs-file` as a local process identity. HTTP MCP

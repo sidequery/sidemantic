@@ -7,7 +7,7 @@ This example runs the Sidemantic HTTP API behind a Cloudflare Worker that proxie
 - HTTPS terminates at the Worker.
 - The Worker starts a Sidemantic container and forwards requests to port `4400`.
 - The container runs `SIDEMANTIC_MODE=api`.
-- The example image bakes demo models and a seeded `demo.duckdb` into `/app/models`.
+- The example image uses the demo models and seeded `demo.duckdb` that the published image ships in `/app/models`.
 
 For a real deployment, the clean shape is:
 
@@ -19,7 +19,8 @@ For a real deployment, the clean shape is:
 
 - `wrangler.jsonc`: Cloudflare Worker and container binding config
 - `src/index.ts`: Worker entrypoint and container proxy
-- `Dockerfile`: Sidemantic container image used by Cloudflare
+- `Dockerfile`: Sidemantic container image used by Cloudflare, built on the published `sidequery/sidemantic` image
+- `package.json`: Worker dependencies and the `deploy` script
 
 ## Prereqs
 
@@ -67,11 +68,13 @@ FROM sidequery/sidemantic:latest
 ENV SIDEMANTIC_MODE=api
 ENV SIDEMANTIC_API_PORT=4400
 
+# Replace the demo models that ship in /app/models.
+RUN rm -rf /app/models/*
 COPY models/ /app/models/
 WORKDIR /app/models
 ```
 
-Then remove `SIDEMANTIC_DB` from the default container env in [src/index.ts](/Users/nico/Code/sidemantic/examples/cloudflare_containers/src/index.ts).
+Then remove `SIDEMANTIC_DB` from the default container env in [src/index.ts](src/index.ts).
 
 Then set your warehouse connection:
 

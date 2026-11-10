@@ -235,6 +235,10 @@ def test_enforce_visibility_rejects_hidden_default_time_dimension(db):
     with pytest.raises(SecurityError, match=r"Field 'orders\.created_at' is not public"):
         layer.compile(metrics=["orders.order_count"])
 
+    # A query with its own grain is not grouped by the default, so it never reads the hidden field.
+    sql = layer.compile(metrics=["orders.order_count"], dimensions=["orders.id"])
+    assert "created_at" not in sql
+
 
 def test_row_filtered_query_bypasses_preaggregation(db):
     """When a participating model has active row filters, pre-agg routing is disabled."""

@@ -10,7 +10,12 @@ from typing import Any
 
 import yaml
 
-from sidemantic.adapters.base import BaseAdapter
+from sidemantic.adapters.base import (
+    BaseAdapter,
+    foreign_ratio_operands,
+    graph_only_metric_names,
+    reject_unsupported_export,
+)
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
@@ -71,6 +76,7 @@ class DimensionAttr:
     label: str | None
     description: str | None
     parent: str | None
+    is_unique_key: bool = False
 
 
 @dataclass(frozen=True)
@@ -299,6 +305,7 @@ class AtScaleSMLAdapter(BaseAdapter):
         from sidemantic.core.inheritance import resolve_model_inheritance
 
         resolved_models = resolve_model_inheritance(graph.models)
+        reject_unsupported_export("atscale-sml", self._unsupported_constructs(graph, resolved_models))
 
         datasets_dir = output_child(output_path, "datasets")
         dimensions_dir = output_child(output_path, "dimensions")
@@ -329,6 +336,69 @@ class AtScaleSMLAdapter(BaseAdapter):
                 metric_def = self._export_metric(metric, model)
                 with open(output_child(metrics_dir, f"{metric.name}.yml"), "w") as f:
                     yaml.dump(metric_def, f, sort_keys=False, default_flow_style=False)
+
+    def _unsupported_constructs(self, graph: SemanticGraph, models: dict[str, Model]) -> list[tuple[str, str, str]]:
+        """Constructs an SML repository cannot carry, as ``(feature, location, detail)``."""
+        problems = [
+            (
+                "graph_metrics",
+                name,
+                f"Graph-level metric '{name}' needs an MDX metric_calc, which this exporter does not write",
+            )
+            for name in graph_only_metric_names(graph, models)
+        ]
+        owners: dict[str, str] = {}
+        for model in models.values():
+            for metric in model.metrics:
+                location = f"{model.name}.{metric.name}"
+                # SML metric names are repository-wide and one file per metric.
+                if owners.setdefault(metric.name, model.name) != model.name:
+                    problems.append(
+                        (
+                            "metric_name",
+                            location,
+                            f"'{location}' shares its name with '{owners[metric.name]}.{metric.name}'; "
+                            "SML metric names are unique across the repository",
+                        )
+                    )
+                foreign = foreign_ratio_operands(metric, model.name) if metric.type == "ratio" else []
+                if foreign:
+                    problems.append(
+                        (
+                            "metric_operand",
+                            location,
+                            f"Ratio '{location}' uses {', '.join(foreign)} from another model; "
+                            "an SML model calculation references its own model's metrics",
+                        )
+                    )
+                elif metric.filters:
+                    problems.append(
+                        (
+                            "metric_filter",
+                            location,
+                            f"Filter on '{location}' needs a calculated dataset column, "
+                            "which this exporter does not write",
+                        )
+                    )
+                elif metric.agg == "count" and not metric.sql and len(model.primary_key_columns) != 1:
+                    problems.append(
+                        (
+                            "metric_aggregation",
+                            location,
+                            f"Row count '{location}' needs a column to count; declare a single-column primary key",
+                        )
+                    )
+                elif not metric.sql and not (
+                    metric.agg == "count" or (metric.type == "ratio" and metric.numerator and metric.denominator)
+                ):
+                    problems.append(
+                        (
+                            "metric_type",
+                            location,
+                            f"'{location}' ({metric.type or metric.agg}) has no SML metric or metric_calc form",
+                        )
+                    )
+        return problems
 
     def _collect_yaml_files(self, source_path: Path) -> list[Path]:
         if source_path.is_dir():
@@ -608,6 +678,7 @@ class AtScaleSMLAdapter(BaseAdapter):
                 label=attr.get("label") or dim_def.get("label"),
                 description=attr.get("description"),
                 parent=parent,
+                is_unique_key=attr.get("is_unique_key") is True,
             )
         )
 
@@ -828,6 +899,10 @@ class AtScaleSMLAdapter(BaseAdapter):
                 graph.add_model(model)
 
             for attr in attrs:
+                # A level flagged as the unique key names the dataset's key
+                # column; it replaces the key guessed from column names.
+                if attr.is_unique_key:
+                    model.primary_key = attr.sql
                 if model.get_dimension(attr.name):
                     continue
                 model.dimensions.append(
@@ -1268,7 +1343,25 @@ class AtScaleSMLAdapter(BaseAdapter):
                 attr["time_unit"] = dim.granularity
             if dim.description:
                 attr["description"] = dim.description
+            if model.primary_key_columns == [dim.sql or dim.name]:
+                attr["is_unique_key"] = True
             level_attributes.append(attr)
+
+        # SML names the key through a unique-key level. Declare a key column that
+        # is not already a dimension so import does not guess the key.
+        if len(model.primary_key_columns) == 1 and not any(attr.get("is_unique_key") for attr in level_attributes):
+            key = model.primary_key_columns[0]
+            level_attributes.append(
+                {
+                    "unique_name": key,
+                    "label": key,
+                    "dataset": model.name,
+                    "name_column": key,
+                    "key_columns": [key],
+                    "is_unique_key": True,
+                    "is_hidden": True,
+                }
+            )
 
         if level_attributes:
             dimension["level_attributes"] = level_attributes
@@ -1287,6 +1380,10 @@ class AtScaleSMLAdapter(BaseAdapter):
     def _export_metric(self, metric: Metric, model: Model) -> dict[str, Any]:
         if metric.type and metric.type != "derived":
             return self._export_metric_calc(metric)
+
+        # SML counts a column, not rows; the non-null key counts every row.
+        if metric.agg == "count" and not metric.sql and len(model.primary_key_columns) == 1:
+            metric = metric.model_copy(update={"sql": model.primary_key_columns[0]})
 
         # Imported custom-quantile percentiles (SML v1.5) arrive as derived metrics with
         # agg=None and a PERCENTILE_CONT(...) expression. Export them as percentile metrics
@@ -1383,11 +1480,17 @@ class AtScaleSMLAdapter(BaseAdapter):
         return metric_def
 
     def _export_metric_calc(self, metric: Metric) -> dict[str, Any]:
+        expression = metric.sql
+        if not expression and metric.type == "ratio" and metric.numerator and metric.denominator:
+            # Metric names are repository-wide, so operands are referenced bare.
+            numerator = metric.numerator.split(".")[-1]
+            denominator = metric.denominator.split(".")[-1]
+            expression = f"{numerator} / NULLIF({denominator}, 0)"
         return {
             "unique_name": metric.name,
             "object_type": "metric_calc",
             "label": metric.label or metric.name,
-            "expression": metric.sql or metric.name,
+            "expression": expression or metric.name,
         }
 
     def _resolve_relationship_level(self, related_model: Model | None, rel: Relationship, join_column: str) -> str:
@@ -1398,6 +1501,10 @@ class AtScaleSMLAdapter(BaseAdapter):
         for candidate in candidates:
             if not candidate:
                 continue
+            # The related model's key always has a level (see _export_dimension).
+            if [candidate] == related_model.primary_key_columns:
+                key_dimension = next((d for d in related_model.dimensions if (d.sql or d.name) == candidate), None)
+                return key_dimension.name if key_dimension else candidate
             for dimension in related_model.dimensions:
                 if dimension.name == candidate:
                     return dimension.name

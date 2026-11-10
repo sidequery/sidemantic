@@ -1070,19 +1070,43 @@ class SQLGenerator:
                     columns_by_model.setdefault(model_name, set()).update(columns)
         return columns_by_model
 
-    def _apply_default_time_dimensions(self, metrics: list[str], dimensions: list[str]) -> list[str]:
+    @staticmethod
+    def _metric_requires_time_axis(metric) -> bool:
+        """Whether a metric can only be evaluated over a time dimension in the grouping."""
+        if metric is None:
+            return False
+        if metric.type in ("cumulative", "time_comparison"):
+            return True
+        return metric.type == "ratio" and bool(metric.offset_window)
+
+    def _apply_default_time_dimensions(
+        self, metrics: list[str], dimensions: list[str], explicit_projection: bool = False
+    ) -> list[str]:
         """Auto-include default_time_dimension from models if not already present.
 
-        If a model has default_time_dimension set and no time dimension from that
-        model is already in the dimensions list, add it with the default_grain.
+        A model's default_time_dimension (at its default_grain) is added when no
+        time dimension from that model is already in the dimensions list and either
+
+        - the query selects metrics only, so the default supplies its grain, or
+        - a selected metric of that model needs a time axis (cumulative, time
+          comparison, offset ratio).
+
+        A query that names its own dimensions keeps exactly that grain for ordinary
+        aggregates: grouping them by a time dimension nobody selected splits their
+        totals. The same holds for a SQL SELECT, whose projection is fixed by the
+        caller (``explicit_projection``) even when it lists no dimension.
 
         Args:
             metrics: List of metric references
             dimensions: List of dimension references
+            explicit_projection: The caller's projection is complete; only metrics
+                that need a time axis receive their model's default
 
         Returns:
             Updated dimensions list with default time dimensions added
         """
+        grain_is_explicit = explicit_projection or bool(dimensions)
+
         # Extract which models already have time dimensions in the query
         models_with_time_dims = set()
         for dim_ref in dimensions:
@@ -1115,6 +1139,10 @@ class SQLGenerator:
             # base dependency so the model's default time dimension is applied.
             if not model_name and metric_obj is not None and metric_obj.type == "cumulative":
                 model_name = self._infer_cumulative_owner_model(metric_obj)
+            # Checked per metric, before the model is marked as handled: an
+            # ordinary aggregate must not hide a sibling that needs the axis.
+            if grain_is_explicit and not self._metric_requires_time_axis(metric_obj):
+                continue
             if not model_name or model_name in models_checked:
                 continue
             models_checked.add(model_name)
@@ -1399,6 +1427,7 @@ class SQLGenerator:
         user_attributes: dict | None = None,
         _query_ctes: frozenset[str] = frozenset(),
         _resolved_filters: tuple[str, ...] = (),
+        _explicit_projection: bool = False,
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -1465,6 +1494,7 @@ class SQLGenerator:
                 user_attributes=user_attributes,
                 _query_ctes=_query_ctes,
                 _resolved_filters=_resolved_filters,
+                _explicit_projection=_explicit_projection,
             )
 
         metrics = metrics or []
@@ -1483,8 +1513,12 @@ class SQLGenerator:
         # Auto-include default_time_dimension from metrics before visibility
         # validation and cache lookup. An implicit dimension is still part of
         # the caller-visible result and must obey the same column restrictions.
+        # A SQL rewrite owns its projection, so it only receives the time axis
+        # that a selected metric cannot be computed without.
         if not skip_default_time_dimensions:
-            dimensions = self._apply_default_time_dimensions(metrics, dimensions)
+            dimensions = self._apply_default_time_dimensions(
+                metrics, dimensions, explicit_projection=_explicit_projection
+            )
 
         if self.enforce_visibility:
             from sidemantic.core.security import enforce_field_visibility
@@ -3256,6 +3290,29 @@ class SQLGenerator:
 
         return False
 
+    def _full_join_null_safe_equality(self, left: exp.Expression, right: exp.Expression) -> str:
+        """Render a NULL-safe equality the dialect can plan as a FULL JOIN condition."""
+        if self.dialect == "postgres":
+            # PostgreSQL only plans FULL JOIN on hash- or merge-joinable
+            # operators, which excludes IS NOT DISTINCT FROM. Array equality
+            # is both, keeps the column type's own comparison, and treats
+            # NULL elements as equal. Wrapping an array-valued key turns both
+            # NULL and the empty array into the empty array, so the keys must
+            # also agree on being NULL.
+            condition = exp.and_(
+                exp.EQ(
+                    this=exp.Array(expressions=[left.copy()]),
+                    expression=exp.Array(expressions=[right.copy()]),
+                ),
+                exp.EQ(
+                    this=exp.paren(exp.Is(this=left.copy(), expression=exp.null())),
+                    expression=exp.paren(exp.Is(this=right.copy(), expression=exp.null())),
+                ),
+            )
+        else:
+            condition = exp.NullSafeEQ(this=left, expression=right)
+        return condition.sql(dialect=self._dialect_instance)
+
     def _generate_with_preaggregation(
         self,
         metrics: list[str],
@@ -3397,6 +3454,7 @@ class SQLGenerator:
         if len(metrics_by_model) < 2:
             # Shouldn't happen, but fall back to regular generation.
             # Segments already resolved into filters by caller, pass None.
+            # Default time dimensions were resolved by the caller as well.
             return self.generate(
                 metrics=metrics,
                 dimensions=dimensions,
@@ -3407,6 +3465,7 @@ class SQLGenerator:
                 offset=offset,
                 aliases=aliases,
                 use_preaggregations=use_preaggregations,
+                skip_default_time_dimensions=True,
                 user_attributes=user_attributes,
             )
 
@@ -3618,7 +3677,7 @@ class SQLGenerator:
                         previous[0] if len(previous) == 1 else exp.Coalesce(this=previous[0], expressions=previous[1:])
                     )
                     rhs = exp.Column(this=col_name, table=cte_name)
-                    join_conditions.append(exp.NullSafeEQ(this=lhs, expression=rhs).sql(dialect=self._dialect_instance))
+                    join_conditions.append(self._full_join_null_safe_equality(lhs, rhs))
 
                 join_clause = " AND ".join(join_conditions)
                 join_clauses.append(f"FULL OUTER JOIN {cte_name} ON {join_clause}")
@@ -3673,9 +3732,15 @@ class SQLGenerator:
                     suffix = f"{suffix} NULLS {nulls}".strip()
                 field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
                 output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
+                if field_ref not in output_names and field_ref.isdecimal():
+                    # A position selects an output column, as in the
+                    # single-model query; it is not a column named "1".
+                    order_target = exp.Literal.number(field_ref)
+                else:
+                    order_target = exp.column(output_name, quoted=True)
                 order_clauses.append(
                     exp.Ordered(
-                        this=exp.column(output_name, quoted=True),
+                        this=order_target,
                         desc=suffix.startswith("DESC"),
                         nulls_first=suffix.endswith("NULLS FIRST"),
                     )

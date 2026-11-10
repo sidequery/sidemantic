@@ -530,8 +530,9 @@ def test_superset_export_simple_model():
         status_col = next(c for c in data["columns"] if c["column_name"] == "status")
         assert status_col["type"] == "VARCHAR"
 
+        # A day-grain time dimension is a DATE column, which import reads back as day-level.
         created_col = next(c for c in data["columns"] if c["column_name"] == "created_at")
-        assert created_col["type"] == "TIMESTAMP WITHOUT TIME ZONE"
+        assert created_col["type"] == "DATE"
         assert created_col["is_dttm"] is True
 
 

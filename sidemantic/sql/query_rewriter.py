@@ -3250,6 +3250,9 @@ class QueryRewriter:
             aliases=plan.aliases,
             user_attributes=getattr(self, "_rewrite_user_attributes", None),
             _query_ctes=self._query_ctes_in_scope(query),
+            # The SELECT list is the whole projection; a model's default time
+            # dimension must not become a grouping key the result never shows.
+            _explicit_projection=True,
         )
         generated_sql = self._preserve_outer_trunc_types(generated_sql, plan)
         # Structured queries emit dimensions first and some temporal generators
@@ -6371,6 +6374,7 @@ class QueryRewriter:
                 aliases=aliases,
                 user_attributes=getattr(self, "_rewrite_user_attributes", None),
                 _query_ctes=self._query_ctes_in_scope(parsed),
+                _explicit_projection=True,
             )
 
             projection_sql = ",\n  ".join(projection.sql(dialect=self.dialect) for projection in outer_projections)

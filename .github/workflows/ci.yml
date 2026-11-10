@@ -145,6 +145,10 @@ jobs:
           - name: unlocked latest
             python-version: "3.14"
             resolution: highest
+            # New Typer releases can swap the Click runtime underneath the
+            # CLI (Typer 0.26+ vendors it), so run the CLI contract suites
+            # against the newest resolution too.
+            cli-tests: true
     env:
       UV_PYTHON: ${{ matrix.python-version }}
     steps:
@@ -196,6 +200,14 @@ jobs:
           tests/test_project.py
           -q
           -o addopts="-m 'not integration'"
+
+      - name: Exercise CLI contract
+        if: matrix.cli-tests
+        # A broken --format guard once let `server api` start and block.
+        timeout-minutes: 15
+        run: |
+          uv run --no-sync python -c "import importlib.metadata as m; print('typer', m.version('typer'), 'click', m.version('click'))"
+          uv run --no-sync pytest tests/test_cli_*.py tests/test_manpage.py -q -o addopts="-m 'not integration'"
 
       - name: Save completed build caches
         if: ${{ !cancelled() }}
@@ -252,9 +264,30 @@ jobs:
           YAML
 
           cd "$tmpdir"
+          uv run --no-project --with "$SIDEMANTIC_WHEEL" python -c "import importlib.metadata as m; print('typer', m.version('typer'), 'click', m.version('click'))"
           uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic --version
           uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic validate "$tmpdir/models"
           uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic query "SELECT order_count, status FROM orders" --models "$tmpdir/models" --dry-run
+
+          # Subcommand help must exit 0 without an error or traceback.
+          uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic validate --help >"$tmpdir/help.out" 2>"$tmpdir/help.err"
+          grep -q "Usage:" "$tmpdir/help.out"
+          if grep -q -e "Traceback" -e "Error" "$tmpdir/help.err"; then
+            echo "sidemantic validate --help reported an error"
+            cat "$tmpdir/help.err" >&2
+            exit 1
+          fi
+
+          # Handled errors must exit 1 with a concise message and no traceback.
+          set +e
+          uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic query "SELECT orders.missing FROM orders" --models "$tmpdir/models" --dry-run >"$tmpdir/error.out" 2>"$tmpdir/error.err"
+          error_status=$?
+          set -e
+          if [ "$error_status" -ne 1 ] || ! grep -q "^Error: " "$tmpdir/error.err" || grep -q "Traceback" "$tmpdir/error.err"; then
+            echo "handled CLI error exited $error_status or was not concise"
+            cat "$tmpdir/error.err" >&2
+            exit 1
+          fi
 
           uv run --no-project --with "$SIDEMANTIC_WHEEL" python - <<'PYTHON'
           from importlib.util import find_spec
@@ -289,6 +322,11 @@ jobs:
             exit 1
           fi
           grep -q "sidemantic\\[api\\]" "$tmpdir/serve.err"
+          if grep -q "Traceback" "$tmpdir/serve.err"; then
+            echo "missing serve extra must be reported without a traceback"
+            cat "$tmpdir/serve.err" >&2
+            exit 1
+          fi
 
       - name: Build runtime distribution
         run: uv build sidemantic-rs --out-dir /tmp/sidemantic-runtime-dist

@@ -24,6 +24,8 @@ Native Table round trips retain connection metadata, original data types (includ
 
 Native Table exports preserve unchanged source column names, including spaces, punctuation and Unicode. Edited field SQL must be a simple column binding. Dimension or metric expressions that need formulas are rejected before writing rather than replaced with a column name.
 
+A TML column aggregates one column and has no filter. A row count is exported as a COUNT of the model's single-column primary key. A filtered metric would need a conditional formula (`sum_if`), which this exporter does not write, so it is rejected by name. TML has no primary-key property: the export reports each model key as a review-level loss, and import leaves the key unset unless an `id` column is declared. A join without its own key uses the related model's primary key. Worksheets with joins import as a derived table whose columns are projected under in-scope aliases, so they can be queried.
+
 A destination file accepts one model. Use an output directory for multiple models. Rejected native exports are checked before writing any document in the set.
 
 ## GoodData LDM
@@ -32,4 +34,4 @@ Compound Cloud LDM grains retain every physical key column. Each `references.sou
 
 For attributes originally imported without labels, edits to the dimension SQL, native key source column or corresponding model primary-key column update the shared attribute and generated-label binding. Conflicting edits are rejected. Attributes with native labels retain their separate key and display-column bindings.
 
-Cloud and legacy shapes, SQL datasets, date instances and aggregated facts retain their existing support. Numeric facts still become SUM metrics by default; this is an adapter assumption rather than imported MAQL. MAQL analytical-model metrics and workspace security enforcement are not implemented. Preserving workspace filter metadata for a native round trip does not enforce it in SQL queries.
+Cloud and legacy shapes, SQL datasets, date instances and aggregated facts retain their existing support. Numeric facts still become SUM metrics by default; this is an adapter assumption rather than imported MAQL. Export therefore writes a fact only for an unfiltered SUM over one physical column. Row counts, distinct counts, other aggregations, filtered metrics and aggregates over expressions are rejected by name, because an exported fact would import as a different metric. MAQL analytical-model metrics and workspace security enforcement are not implemented. Preserving workspace filter metadata for a native round trip does not enforce it in SQL queries.

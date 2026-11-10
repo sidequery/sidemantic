@@ -12,8 +12,10 @@ from sidemantic.bootstrap import (
     ColumnInfo,
     TableInfo,
     bootstrap_models,
+    connection_config_example,
     generate_model_dict,
     introspect_connection,
+    redact_connection_url,
     write_model_files,
 )
 
@@ -201,3 +203,74 @@ def test_qualified_source_uses_backend_identifier_quoting(dialect):
     parsed = parse_one("SELECT * FROM " + model["table"], dialect=dialect)
     source = parsed.args["from_"].this
     assert (source.catalog, source.db, source.name) == ("warehouse", "sales", "order details")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgres://analyst:s3cret@db.internal:5432/analytics",
+        "clickhouse://reader:s3cret@ch.internal:8123/events",
+        "snowflake://analyst:s3cret@myorg-account/analytics/public?warehouse=compute_wh&role=reporter",
+        "spark://spark.internal:10000/default",
+        "bigquery://my-project/my_dataset",
+    ],
+)
+def test_connection_config_example_round_trips_through_project_config(tmp_path: Path, url: str):
+    from sidemantic.config import SidemanticConfig, build_connection_string
+
+    example = connection_config_example(url)
+
+    assert example is not None
+    assert "s3cret" not in str(example)
+    if "password_file" in example:
+        password_file = tmp_path / example["password_file"]
+        password_file.parent.mkdir(parents=True)
+        password_file.write_text("s3cret\n")
+    config = SidemanticConfig(connection=example).resolve_paths(tmp_path)
+    assert build_connection_string(config) == url
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("duckdb:///srv/data/warehouse.duckdb", {"type": "duckdb", "path": "/srv/data/warehouse.duckdb"}),
+        ("duckdb://data/warehouse.duckdb", {"type": "duckdb", "path": "data/warehouse.duckdb"}),
+        ("duckdb:///:memory:", None),
+        ("duckdb://md:analytics?motherduck_token=abc", None),
+        ("databricks://token:abc@host/default", None),
+    ],
+)
+def test_connection_config_example_for_duckdb_and_unsupported_urls(url: str, expected: dict | None):
+    assert connection_config_example(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Adapters honor these options, but config models have no field for them, so a
+        # suggested block would silently connect without TLS or with other defaults.
+        "clickhouse://reader:s3cret@cloud.internal:8443/events?secure=true",
+        "postgres://analyst:s3cret@db.internal:5432/analytics?sslmode=require",
+        "snowflake://analyst:s3cret@myorg-account/analytics/public?warehouse=wh&authenticator=externalbrowser",
+        "spark://spark.internal:10000/default?auth=KERBEROS",
+        "duckdb:///srv/warehouse.duckdb?access_mode=read_only",
+    ],
+)
+def test_connection_config_example_omits_urls_with_options_config_cannot_hold(url: str):
+    assert connection_config_example(url) is None
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("postgres://analyst:s3cret@db:5432/analytics", "postgres://analyst:****@db:5432/analytics"),
+        (
+            "duckdb://md:analytics?motherduck_token=abc&attach_mode=single",
+            "duckdb://md:analytics?motherduck_token=****&attach_mode=single",
+        ),
+        ("duckdb:///srv/warehouse.duckdb", "duckdb:///srv/warehouse.duckdb"),
+        ("bigquery://my-project/my_dataset", "bigquery://my-project/my_dataset"),
+    ],
+)
+def test_redact_connection_url_masks_only_secrets(url: str, expected: str):
+    assert redact_connection_url(url) == expected

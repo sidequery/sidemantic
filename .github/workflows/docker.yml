@@ -6,19 +6,61 @@ on:
     workflows: ["Publish to PyPI"]
     types: [completed]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-publish
+  cancel-in-progress: false
+
 env:
   IMAGE: sidequery/sidemantic
 
 jobs:
-  docker:
-    name: Docker build, test, and push
+  source:
+    name: Resolve source and version
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+
+    steps:
+      # Publish to PyPI commits the version bump to main, so build main rather
+      # than the commit that triggered the publish run.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Resolve commit and version
+        id: source
+        run: |
+          VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          SHA=$(git rev-parse HEAD)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Building $VERSION from $SHA"
+
+  build:
+    name: Build and test (${{ matrix.platform }})
+    needs: source
+    # Native runners per architecture: riffq builds from source with Rust, which
+    # is impractically slow under QEMU emulation.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ needs.source.outputs.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -29,63 +71,77 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract version
-        id: version
-        run: |
-          VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Version: $VERSION"
-
       - name: Build image
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: ${{ matrix.platform }}
           load: true
           tags: ${{ env.IMAGE }}:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
 
-      - name: Start server (demo mode)
-        run: |
-          docker run -d --name sidemantic-test -p 5433:5433 ${{ env.IMAGE }}:test --demo
-          for i in $(seq 1 30); do
-            if docker logs sidemantic-test 2>&1 | grep -q "Listening on"; then
-              echo "Server ready"
-              break
-            fi
-            echo "Waiting for server... ($i/30)"
-            sleep 1
-          done
+      - name: Smoke test API, MCP, and PostgreSQL modes
+        run: python3 scripts/docker_smoke_test.py "$IMAGE:test"
 
-      - name: Verify server logs
-        run: docker logs sidemantic-test 2>&1
-
-      - name: Install psql
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-
-      - name: Test connection
-        run: PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c "SELECT 1 AS test"
-
-      - name: Test metric aggregation (products)
-        run: |
-          PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c \
-            "SELECT category, product_count, avg_price, total_catalog_value FROM semantic_layer.products GROUP BY category ORDER BY category"
-
-      - name: Test metric aggregation (customers)
-        run: |
-          PGPASSWORD=any psql -h localhost -p 5433 -U any -d sidemantic -c \
-            "SELECT region, customer_count FROM semantic_layer.customers GROUP BY region ORDER BY region"
-
-      - name: Stop server
-        if: always()
-        run: docker stop sidemantic-test || true
-
-      - name: Push to Docker Hub
+      - name: Push image by digest
+        id: push
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
-          cache-from: type=gha
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish multi-arch image
+    needs: [source, build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push manifest list
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          refs=()
+          for digest in *; do
+            refs+=("$IMAGE@sha256:$digest")
+          done
+          docker buildx imagetools create --tag "$IMAGE:latest" --tag "$IMAGE:$VERSION" "${refs[@]}"
+
+      - name: Inspect image
+        env:
+          VERSION: ${{ needs.source.outputs.version }}
+        run: docker buildx imagetools inspect "$IMAGE:$VERSION"

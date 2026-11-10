@@ -10,7 +10,7 @@ from pathlib import Path
 from antlr4 import CommonTokenStream, InputStream
 from antlr4.error.ErrorListener import ErrorListener
 
-from sidemantic.adapters.base import BaseAdapter
+from sidemantic.adapters.base import BaseAdapter, filtered_measure_sql, reject_unsupported_export
 from sidemantic.adapters.holistics_grammar import HolisticsLexer, HolisticsParser
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
@@ -372,6 +372,22 @@ class HolisticsAdapter(BaseAdapter):
             record_export_feature("graph_metrics", "rejected", source="holistics", detail=detail)
             raise ValueError(detail)
 
+        # An AML measure has no filter property; a simple aggregate carries its
+        # filters inside the aggregated SQL. Anything else cannot be written.
+        reject_unsupported_export(
+            "holistics",
+            [
+                (
+                    "metric_filter",
+                    f"{model.name}.{metric.name}",
+                    f"Filter on '{model.name}.{metric.name}' cannot be folded into an AML measure definition",
+                )
+                for model in resolved_models.values()
+                for metric in model.metrics
+                if metric.filters and _measure_definition(metric, model.name) is None
+            ],
+        )
+
         if output_path.suffix == ".aml":
             if len(resolved_models) > 1:
                 record_export_feature(
@@ -422,8 +438,22 @@ class HolisticsAdapter(BaseAdapter):
         for dimension in model.dimensions:
             lines.extend(_export_dimension(dimension, model.primary_key))
 
+        # AML marks the key on a dimension. Declare a key column that is not
+        # already a dimension so import does not fall back to an assumed `id`.
+        declared = {dimension.name for dimension in model.dimensions}
+        if len(model.primary_key_columns) == 1 and model.primary_key_columns[0] not in declared:
+            lines.extend(
+                [
+                    f"  dimension {model.primary_key_columns[0]} {{",
+                    "    type: 'text'",
+                    "    hidden: true",
+                    "    primary_key: true",
+                    "  }",
+                ]
+            )
+
         for metric in model.metrics:
-            lines.extend(_export_measure(metric, model.primary_key))
+            lines.extend(_export_measure(metric, model.primary_key, model.name))
 
         lines.append("}")
         return "\n".join(lines) + "\n"
@@ -1186,7 +1216,9 @@ def _parse_model_block(block: AmlBlock, constants: dict[str, AmlValue], context:
         table=table_name if model_type == "table" else None,
         sql=query_expr if model_type == "query" else None,
         description=description,
-        primary_key=primary_key or "id",
+        # Without a flagged dimension the key is unknown. Assume the conventional
+        # ``id`` only when the model declares that column; never invent one.
+        primary_key=primary_key or ("id" if any(dim.name == "id" for dim in dimensions) else None),
         dimensions=dimensions,
         metrics=metrics,
     )
@@ -2321,7 +2353,19 @@ def _export_dimension(dimension: Dimension, primary_key: str) -> list[str]:
     return lines
 
 
-def _export_measure(metric: Metric, primary_key: str) -> list[str]:
+def _measure_definition(metric: Metric, model_name: str) -> str | None:
+    """SQL definition for a simple aggregate, with any row filters folded in.
+
+    Returns ``None`` when the metric has filters that cannot be folded.
+    """
+    if not metric.filters:
+        return metric.sql
+    if metric.type or not metric.agg or _map_agg_to_aml(metric.agg) == "custom":
+        return None
+    return filtered_measure_sql(metric, model_name)
+
+
+def _export_measure(metric: Metric, primary_key: str, model_name: str | None = None) -> list[str]:
     lines = [f"  measure {metric.name} {{"]
 
     if metric.label:
@@ -2344,8 +2388,7 @@ def _export_measure(metric: Metric, primary_key: str) -> list[str]:
         definition = metric.sql
     elif metric.agg:
         aggregation_type = _map_agg_to_aml(metric.agg)
-        if metric.sql:
-            definition = metric.sql
+        definition = _measure_definition(metric, model_name) if model_name else metric.sql
     elif metric.sql:
         aggregation_type = "custom"
         definition = metric.sql

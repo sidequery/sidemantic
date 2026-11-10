@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import duckdb
 import pytest
+import typer
 from typer.testing import CliRunner
 
 import sidemantic.cli as cli_module
@@ -133,6 +136,48 @@ def test_exit_codes_and_stream_separation(tmp_path: Path):
     assert not operational.stdout
     assert "Error:" in operational.stderr
     assert "Traceback" not in operational.stderr
+
+
+def test_click_runtime_types_belong_to_installed_typer():
+    # Typer 0.26+ vendors Click; exceptions and contexts from standalone click
+    # are invisible to its runtime and escape as tracebacks.
+    from typer.core import TyperGroup
+
+    from sidemantic.click_compat import ClickException, Command, Context, UsageError
+
+    assert issubclass(typer.BadParameter, UsageError)
+    assert issubclass(UsageError, ClickException)
+    assert issubclass(typer.Context, Context)
+    assert issubclass(TyperGroup, Command)
+
+
+def test_console_entry_point_reports_handled_errors_and_help_without_tracebacks(tmp_path: Path):
+    """Run Typer's real top-level exception handling, which CliRunner bypasses."""
+
+    broken_models = tmp_path / "broken"
+    _write_model(broken_models, invalid=True)
+
+    def run(*arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-m", "sidemantic.cli", *arguments],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=tmp_path,
+        )
+
+    operational = run("info", str(broken_models))
+    invocation = run("--format", "xml", "info")
+    subcommand_help = run("migrate", "generate", "--help")
+
+    assert operational.returncode == 1
+    assert operational.stderr.startswith("Error: Could not parse")
+    assert "Traceback" not in operational.stderr
+    assert invocation.returncode == 2
+    assert invocation.stderr == "Error: --format must be one of: table, csv, json, jsonl\n"
+    assert subcommand_help.returncode == 0
+    assert "migrate generate" in subcommand_help.stdout
+    assert subcommand_help.stderr == ""
 
 
 def test_info_and_validate_json_are_valid_and_stdout_only(tmp_path: Path):

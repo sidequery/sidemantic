@@ -1,2 +1,4 @@
 node_modules/
 .wrangler/
+# The repository root ignores package.json files; this example needs its own.
+!package.json

@@ -249,7 +249,7 @@ def main():
         order_by=["orders.order_date"],
     )
 
-    print("SQL (note the HASH function for symmetric aggregates):")
+    print("SQL (note: each model is pre-aggregated in its own CTE before the join):")
     print(sql)
     print("\nExecuting query...")
 
@@ -282,7 +282,7 @@ def main():
     print("  order_date  | revenue | mtd_revenue (cumulative within month)")
     print("  " + "-" * 60)
     for row in result:
-        print(f"  {row[0]:<12} | {row[1]:>7} | {row[2]:>7}")
+        print(f"  {row[0]!s:<12} | {row[1]:>7} | {row[2]:>7}")
 
     # Example 4: Table calculations
     print_section("Example 4: Table Calculations (Post-Query)")

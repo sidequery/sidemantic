@@ -52,12 +52,14 @@ workbench = [
 ]
 mcp = [
     "mcp[cli]>=1.25.0,<2",
+    "lkml>=1.3.7",  # The bundled --demo models include LookML.
 ]
 apps = [
     "mcp[cli]>=1.25.0,<2",
     "altair>=5.0.0; python_version < '3.14'",
     "altair>=6.0.0; python_version >= '3.14'",
     "vl-convert-python>=1.0.0",
+    "lkml>=1.3.7",  # The bundled --demo models include LookML.
 ]
 charts = [
     "altair>=5.0.0; python_version < '3.14'",
@@ -71,13 +73,16 @@ ossie = [
     "jsonschema>=4.23,<5",
 ]
 serve = [
-    "riffq>=0.1.0",
+    # riffq changes its handler API in minor releases; 0.4 is the tested series.
+    "riffq>=0.4.1,<0.5",
     "pyarrow>=14.0.0",
+    "lkml>=1.3.7",  # The bundled --demo models include LookML.
 ]
 api = [
     "fastapi>=0.115.0",
     "pyarrow>=14.0.0",
     "uvicorn>=0.34.0",
+    "lkml>=1.3.7",  # The bundled --demo models include LookML.
 ]
 postgres = [
     "psycopg[binary]>=3.0.0",

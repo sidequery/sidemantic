@@ -6,11 +6,18 @@ from typing import Any
 
 import yaml
 
-from sidemantic.adapters.base import BaseAdapter
+from sidemantic.adapters.base import (
+    BaseAdapter,
+    filtered_aggregate_sql,
+    foreign_ratio_operands,
+    graph_only_metric_names,
+    reject_unsupported_export,
+)
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_export_note
 from sidemantic.paths import output_child
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
@@ -93,7 +100,9 @@ class SupersetAdapter(BaseAdapter):
 
         # Parse columns
         dimensions = []
-        primary_key = "id"  # default
+        # A dataset declares no key. Assume the conventional ``id`` only when
+        # that column exists; never invent one.
+        primary_key = None
         main_dttm_col = dataset.get("main_dttm_col")
 
         for col_def in dataset.get("columns") or []:
@@ -299,6 +308,25 @@ class SupersetAdapter(BaseAdapter):
         from sidemantic.core.inheritance import resolve_model_inheritance
 
         resolved_models = resolve_model_inheritance(graph.models)
+        single_file = not (output_path.is_dir() or not output_path.suffix)
+        reject_unsupported_export("superset", self._unsupported_constructs(graph, resolved_models, single_file))
+        # Each model is written as a standalone single-table definition: the
+        # numbers it reports stay correct, but joins and keys are not carried.
+        for model in resolved_models.values():
+            for rel in model.relationships:
+                record_export_note(
+                    "relationship",
+                    f"A Superset dataset reads one table and has no joins; "
+                    f"relationship '{model.name}.{rel.name}' is not exported",
+                    source="superset",
+                )
+            if model.primary_key_columns:
+                record_export_note(
+                    "primary_key",
+                    f"A Superset dataset has no key; key {', '.join(model.primary_key_columns)} "
+                    f"of '{model.name}' is not exported",
+                    source="superset",
+                )
 
         # If output is a directory, create one file per model
         if output_path.is_dir() or not output_path.suffix:
@@ -309,13 +337,77 @@ class SupersetAdapter(BaseAdapter):
                 with open(file_path, "w") as f:
                     yaml.dump(dataset, f, default_flow_style=False, sort_keys=False)
         else:
-            # Single file export - export first model only
+            # Single file export holds one dataset; export() refuses more models.
             if resolved_models:
                 model = next(iter(resolved_models.values()))
                 dataset = self._export_dataset(model)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(output_path, "w") as f:
                     yaml.dump(dataset, f, default_flow_style=False, sort_keys=False)
+
+    def _unsupported_constructs(
+        self, graph: SemanticGraph, models: dict[str, Model], single_file: bool
+    ) -> list[tuple[str, str, str]]:
+        """Constructs a Superset dataset cannot carry, as ``(feature, location, detail)``."""
+        problems = [
+            (
+                "graph_metrics",
+                name,
+                f"Graph-level metric '{name}' has no owning dataset; attach it to a model before exporting",
+            )
+            for name in graph_only_metric_names(graph, models)
+        ]
+        if single_file and len(models) > 1:
+            problems.append(
+                (
+                    "multiple_models",
+                    ", ".join(models),
+                    "A Superset dataset file holds one model; use an output directory for multiple models",
+                )
+            )
+        for model in models.values():
+            for metric in model.metrics:
+                location = f"{model.name}.{metric.name}"
+                foreign = foreign_ratio_operands(metric, model.name) if metric.type == "ratio" else []
+                if foreign:
+                    problems.append(
+                        (
+                            "metric_operand",
+                            location,
+                            f"Ratio '{location}' uses {', '.join(foreign)} from another model; "
+                            "a Superset dataset reads one table",
+                        )
+                    )
+                elif self._metric_expression(metric, model) is None:
+                    feature = "metric_filter" if metric.filters else "metric_type"
+                    kind = f" ({metric.type})" if metric.type else ""
+                    problems.append((feature, location, f"'{location}'{kind} has no Superset metric expression"))
+        return problems
+
+    def _metric_expression(self, metric: Metric, model: Model) -> str | None:
+        """SQL expression for a Superset metric, or None when the metric cannot be written."""
+        if metric.agg and not metric.type:
+            return filtered_aggregate_sql(metric, model.name)
+        if metric.filters:
+            return None
+        if metric.type not in (None, "ratio", "derived"):
+            # Windows, period comparisons and funnels have no dataset-metric form;
+            # writing only their base aggregate would report a different number.
+            return None
+        if metric.type == "ratio" and metric.numerator and metric.denominator and not metric.sql:
+            # A Superset metric is one SQL expression and cannot reference other
+            # metrics, so a ratio inlines its operands' aggregates. Operands are
+            # resolved on their owning model, never by final name alone.
+            if foreign_ratio_operands(metric, model.name):
+                return None
+            operands = [model.get_metric(ref.split(".")[-1]) for ref in (metric.numerator, metric.denominator)]
+            if any(operand is None or operand.type or not operand.agg for operand in operands):
+                return None
+            numerator, denominator = (self._metric_expression(operand, model) for operand in operands)
+            if numerator is None or denominator is None:
+                return None
+            return f"{numerator} / NULLIF({denominator}, 0)"
+        return metric.sql or None
 
     def _export_dataset(self, model: Model) -> dict[str, Any]:
         """Export model to Superset dataset definition.
@@ -395,7 +487,9 @@ class SupersetAdapter(BaseAdapter):
 
             if dim.type == "time":
                 col_def["is_dttm"] = True
-                col_def["type"] = "TIMESTAMP WITHOUT TIME ZONE"
+                # The column type is the only place a grain can live: import
+                # reads DATE as day-level and any timestamp as finer.
+                col_def["type"] = "DATE" if dim.granularity == "day" else "TIMESTAMP WITHOUT TIME ZONE"
             elif dim.type == "numeric":
                 col_def["type"] = "NUMERIC"
             elif dim.type == "boolean":
@@ -447,19 +541,12 @@ class SupersetAdapter(BaseAdapter):
                 "max": "max",
             }
 
-            if metric.agg:
-                metric_def["metric_type"] = type_mapping.get(metric.agg, "count")
-                # Build expression
-                if metric.agg == "count_distinct" and metric.sql:
-                    metric_def["expression"] = f"COUNT(DISTINCT {metric.sql})"
-                elif metric.sql:
-                    metric_def["expression"] = f"{metric.agg.upper()}({metric.sql})"
-                else:
-                    metric_def["expression"] = f"{metric.agg.upper()}(*)"
-            else:
-                # Derived metric - no standard type
-                metric_def["metric_type"] = None
-                metric_def["expression"] = metric.sql or ""
+            # export() has already refused metrics without an expression.
+            expression = self._metric_expression(metric, model) or ""
+            # An aggregate without a Superset metric_type (or a derived metric)
+            # is carried by its expression alone.
+            metric_def["metric_type"] = type_mapping.get(metric.agg) if metric.agg and not metric.type else None
+            metric_def["expression"] = expression
 
             if metric.description:
                 metric_def["description"] = metric.description

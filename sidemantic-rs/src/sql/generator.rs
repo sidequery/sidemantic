@@ -61,6 +61,10 @@ pub struct SemanticQuery {
     pub preagg_database: Option<String>,
     pub preagg_schema: Option<String>,
     pub skip_default_time_dimensions: bool,
+    /// The caller's projection is complete, as in a SQL SELECT list. A model's
+    /// default time dimension is then added only for a metric that needs a
+    /// time axis, never as a grouping key for ordinary aggregates.
+    pub explicit_projection: bool,
     pub aliases: HashMap<String, String>,
     pub timezone: Option<String>,
     pub with_totals: bool,
@@ -174,6 +178,8 @@ struct RollupFilters {
 pub struct SqlGenerator<'a> {
     graph: &'a SemanticGraph,
     dialect: DialectType,
+    /// Where a caller re-emits this generator's SQL, when not in `dialect`.
+    emitted_dialect: Option<DialectType>,
     timezone: Option<String>,
 }
 
@@ -182,12 +188,21 @@ impl<'a> SqlGenerator<'a> {
         Self {
             graph,
             dialect: SOURCE_DIALECT,
+            emitted_dialect: None,
             timezone: None,
         }
     }
 
     pub fn with_dialect(mut self, dialect: DialectType) -> Self {
         self.dialect = dialect;
+        self
+    }
+
+    /// The semantic SQL rewriter generates leaves in the source dialect and
+    /// emits the whole statement in another. Constructs that the emitted
+    /// dialect cannot plan must already be generated in a form it accepts.
+    pub(crate) fn with_emitted_dialect(mut self, dialect: DialectType) -> Self {
+        self.emitted_dialect = Some(dialect);
         self
     }
 
@@ -274,7 +289,11 @@ impl<'a> SqlGenerator<'a> {
         let effective_dimensions = if query.skip_default_time_dimensions {
             query.dimensions.clone()
         } else {
-            self.apply_default_time_dimensions(&query.metrics, &query.dimensions)?
+            self.apply_default_time_dimensions(
+                &query.metrics,
+                &query.dimensions,
+                query.explicit_projection,
+            )?
         };
 
         // Parse all references
@@ -1165,7 +1184,11 @@ impl<'a> SqlGenerator<'a> {
         let effective_dimensions = if query.skip_default_time_dimensions {
             query.dimensions.clone()
         } else {
-            self.apply_default_time_dimensions(&query.metrics, &query.dimensions)?
+            self.apply_default_time_dimensions(
+                &query.metrics,
+                &query.dimensions,
+                query.explicit_projection,
+            )?
         };
         let dimension_refs = self.parse_dimension_refs(&effective_dimensions)?;
         let metric_refs = self.parse_metric_refs(&query.metrics)?;
@@ -2558,6 +2581,21 @@ impl<'a> SqlGenerator<'a> {
         Ok(false)
     }
 
+    /// NULL-safe equality that the target can plan as a FULL JOIN condition.
+    fn full_join_null_safe_equality(&self, left: &str, right: &str) -> String {
+        if self.emitted_dialect.unwrap_or(self.dialect) == DialectType::PostgreSQL {
+            // PostgreSQL only plans FULL JOIN on hash- or merge-joinable
+            // operators, which excludes IS NOT DISTINCT FROM. Array equality
+            // is both, keeps the column type's own comparison, and treats
+            // NULL elements as equal. Wrapping an array-valued key turns both
+            // NULL and the empty array into the empty array, so the keys must
+            // also agree on being NULL.
+            format!("ARRAY[{left}] = ARRAY[{right}] AND ({left} IS NULL) = ({right} IS NULL)")
+        } else {
+            format!("{left} IS NOT DISTINCT FROM {right}")
+        }
+    }
+
     fn generate_with_preaggregation(
         &self,
         query: &SemanticQuery,
@@ -2699,7 +2737,7 @@ impl<'a> SqlGenerator<'a> {
         sql.push('\n');
         sql.push_str(&format!("FROM {}", cte_names[0]));
 
-        for cte_name in cte_names.iter().skip(1) {
+        for (index, cte_name) in cte_names.iter().enumerate().skip(1) {
             if dimension_refs.is_empty() {
                 sql.push_str(&format!("\nCROSS JOIN {cte_name}"));
             } else {
@@ -2707,9 +2745,19 @@ impl<'a> SqlGenerator<'a> {
                     .iter()
                     .map(|dim_ref| {
                         let dim_alias = self.quote_identifier(&dim_ref.alias);
-                        format!(
-                            "{}.{} IS NOT DISTINCT FROM {cte_name}.{dim_alias}",
-                            cte_names[0], dim_alias
+                        // A group can first appear in any preceding source.
+                        let previous = cte_names[..index]
+                            .iter()
+                            .map(|previous| format!("{previous}.{dim_alias}"))
+                            .collect::<Vec<_>>();
+                        let previous = if previous.len() == 1 {
+                            previous[0].clone()
+                        } else {
+                            format!("COALESCE({})", previous.join(", "))
+                        };
+                        self.full_join_null_safe_equality(
+                            &previous,
+                            &format!("{cte_name}.{dim_alias}"),
                         )
                     })
                     .collect::<Vec<_>>();
@@ -4397,11 +4445,21 @@ impl<'a> SqlGenerator<'a> {
         value.replace('\'', "''")
     }
 
+    /// Add each selected metric model's default time dimension, at its default
+    /// grain, unless a time dimension of that model is already selected.
+    ///
+    /// A metrics-only query takes its grain from the default. A query that
+    /// names its own dimensions, or whose projection is fixed by the caller
+    /// (`explicit_projection`), keeps exactly that grain for ordinary
+    /// aggregates: grouping them by a time dimension nobody selected splits
+    /// their totals. Metrics that need a time axis always receive it.
     fn apply_default_time_dimensions(
         &self,
         metrics: &[String],
         dimensions: &[String],
+        explicit_projection: bool,
     ) -> Result<Vec<String>> {
+        let grain_is_explicit = explicit_projection || !dimensions.is_empty();
         let mut result = dimensions.to_vec();
         let mut models_with_time_dims: HashSet<String> = HashSet::new();
 
@@ -4425,22 +4483,34 @@ impl<'a> SqlGenerator<'a> {
             // Graph calculations are scalar unless dimensions were requested.
             // Only cumulative graph metrics inherit a dependency's time grain
             // because their window needs an ordering dimension.
-            if self
-                .graph
-                .get_metric(metric_ref)
-                .is_some_and(|metric| metric.r#type != MetricType::Cumulative)
-            {
+            let graph_metric = self.graph.get_metric(metric_ref);
+            if graph_metric.is_some_and(|metric| metric.r#type != MetricType::Cumulative) {
                 continue;
             }
-            let model_name =
-                if let Some((model_name, _, _)) = self.exact_metric_reference(metric_ref)? {
-                    model_name
-                } else {
-                    if !metric_ref.contains('.') {
-                        continue;
-                    }
-                    self.graph.parse_reference(metric_ref)?.0
-                };
+            let (model_name, metric_name) = if let Some((model_name, metric_name, _)) =
+                self.exact_metric_reference(metric_ref)?
+            {
+                (model_name, metric_name)
+            } else {
+                if !metric_ref.contains('.') {
+                    continue;
+                }
+                let (model_name, metric_name, _) = self.graph.parse_reference(metric_ref)?;
+                (model_name, metric_name)
+            };
+
+            // Checked per metric, before the model is marked as handled: an
+            // ordinary aggregate must not hide a sibling that needs the axis.
+            if grain_is_explicit {
+                let metric = graph_metric.or_else(|| {
+                    self.graph
+                        .get_model(&model_name)
+                        .and_then(|model| model.get_metric(&metric_name))
+                });
+                if !metric.is_some_and(Metric::requires_time_axis) {
+                    continue;
+                }
+            }
 
             if !seen_models.insert(model_name.clone()) {
                 continue;
@@ -7148,12 +7218,12 @@ mod tests {
         graph.set_metric_scopes(HashMap::new()).unwrap();
         let generator = SqlGenerator::new(&graph);
         assert!(generator
-            .apply_default_time_dimensions(&["total_revenue".into()], &[])
+            .apply_default_time_dimensions(&["total_revenue".into()], &[], false)
             .unwrap()
             .is_empty());
         assert_eq!(
             generator
-                .apply_default_time_dimensions(&["orders.revenue".into()], &[])
+                .apply_default_time_dimensions(&["orders.revenue".into()], &[], false)
                 .unwrap(),
             vec!["orders.day__day"]
         );
@@ -7162,6 +7232,52 @@ mod tests {
             .unwrap();
         assert!(!sql.contains("GROUP BY"), "{sql}");
         assert!(!sql.contains("DATE_TRUNC"), "{sql}");
+    }
+
+    #[test]
+    fn default_time_dimension_never_regroups_an_explicit_grain() {
+        let mut graph = SemanticGraph::new();
+        let mut model = Model::new("orders", "id")
+            .with_table("orders")
+            .with_dimension(Dimension::time("day"))
+            .with_dimension(Dimension::categorical("status"))
+            .with_metric(Metric::sum("revenue", "amount"))
+            .with_metric(Metric::cumulative("running_revenue", "revenue"));
+        model.default_time_dimension = Some("day".into());
+        graph.add_model(model).unwrap();
+        let generator = SqlGenerator::new(&graph);
+        let status = vec!["orders.status".to_string()];
+        let defaults = |metrics: &[&str], dimensions: &[String], explicit_projection| {
+            let metrics: Vec<String> = metrics.iter().map(|metric| metric.to_string()).collect();
+            generator
+                .apply_default_time_dimensions(&metrics, dimensions, explicit_projection)
+                .unwrap()
+        };
+
+        // Selected dimensions are the whole grain of an ordinary aggregate.
+        assert_eq!(defaults(&["orders.revenue"], &status, false), status);
+        // A SQL projection is complete even when it lists no dimension.
+        assert!(defaults(&["orders.revenue"], &[], true).is_empty());
+        // A running total still needs its time axis, also behind a sibling.
+        for metrics in [
+            vec!["orders.running_revenue"],
+            vec!["orders.revenue", "orders.running_revenue"],
+        ] {
+            assert_eq!(
+                defaults(&metrics, &status, false),
+                vec!["orders.status", "orders.day"]
+            );
+            assert_eq!(defaults(&metrics, &[], true), vec!["orders.day"]);
+        }
+
+        let sql = generator
+            .generate(
+                &SemanticQuery::new()
+                    .with_metrics(vec!["orders.revenue".into()])
+                    .with_dimensions(status),
+            )
+            .unwrap();
+        assert!(!sql.contains("day"), "{sql}");
     }
 
     #[test]
@@ -8391,6 +8507,75 @@ models:
         let sql = generator.generate(&query).unwrap();
 
         assert!(sql.contains("WHERE status = 'completed'"));
+    }
+
+    #[test]
+    fn independent_sources_join_on_null_safe_keys_from_every_preceding_source() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("customers", "id")
+                    .with_table("customers")
+                    .with_dimension(Dimension::categorical("country"))
+                    .with_metric(Metric::count("customer_count")),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("orders")
+                    .with_metric(Metric::sum("revenue", "amount"))
+                    .with_relationship(Relationship::many_to_one("customers")),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("order_items", "id")
+                    .with_table("order_items")
+                    .with_metric(Metric::sum("quantity", "qty"))
+                    .with_relationship(Relationship::many_to_one("orders")),
+            )
+            .unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec![
+                "orders.revenue".into(),
+                "order_items.quantity".into(),
+                "customers.customer_count".into(),
+            ])
+            .with_dimensions(vec!["customers.country".into()]);
+
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN customers_preagg ON COALESCE(orders_preagg.country, \
+                 order_items_preagg.country) IS NOT DISTINCT FROM customers_preagg.country"
+            ),
+            "{sql}"
+        );
+
+        // PostgreSQL rejects FULL JOIN ... ON a IS NOT DISTINCT FROM b.
+        let sql = SqlGenerator::new(&graph)
+            .with_dialect(DialectType::PostgreSQL)
+            .generate(&query)
+            .unwrap();
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN order_items_preagg ON ARRAY[orders_preagg.country] \
+                 = ARRAY[order_items_preagg.country] \
+                 AND (orders_preagg.country IS NULL) = (order_items_preagg.country IS NULL)"
+            ),
+            "{sql}"
+        );
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN customers_preagg ON ARRAY[COALESCE(orders_preagg.country, \
+                 order_items_preagg.country)] = ARRAY[customers_preagg.country] \
+                 AND (COALESCE(orders_preagg.country, order_items_preagg.country) IS NULL) \
+                 = (customers_preagg.country IS NULL)"
+            ),
+            "{sql}"
+        );
+        assert!(!sql.contains("IS NOT DISTINCT FROM"), "{sql}");
     }
 
     #[test]

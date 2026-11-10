@@ -285,10 +285,13 @@ def connection_config_example(connection: str) -> dict | None:
     """Express a connection URL as a ``sidemantic.yaml`` connection block without secrets.
 
     A password in the URL becomes a ``password_file`` reference so the block can
-    be committed. Returns None when project config cannot express the URL.
+    be committed. Returns None when project config cannot express the whole URL,
+    including query options (``secure=true``, ``sslmode=require``) that the
+    adapters honor but the config models have no field for: a suggested block
+    must never describe a weaker connection than the URL.
     """
 
-    from urllib.parse import parse_qs, unquote, urlsplit
+    from urllib.parse import parse_qsl, unquote, urlsplit
 
     parts = urlsplit(connection)
     scheme = parts.scheme.lower()
@@ -298,12 +301,16 @@ def connection_config_example(connection: str) -> dict | None:
         port = None
     username = unquote(parts.username) if parts.username else None
     path_parts = [unquote(part) for part in parts.path.split("/") if part]
-    query = {key: values[-1] for key, values in parse_qs(parts.query).items()}
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    # Snowflake's warehouse and role are the only URL options config models hold.
+    representable_options = {"warehouse", "role"} if scheme == "snowflake" else set()
+    if set(query) - representable_options:
+        return None
     credentials = {"password_file": CONNECTION_PASSWORD_FILE} if parts.password is not None else {}
 
     if scheme == "duckdb":
         path = parts.netloc + parts.path
-        if parts.query or path.startswith("md:") or path in {"", "/", ":memory:", "/:memory:"}:
+        if path.startswith("md:") or path in {"", "/", ":memory:", "/:memory:"}:
             return None
         return {"type": "duckdb", "path": path}
     if scheme == "bigquery":

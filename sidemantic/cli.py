@@ -581,7 +581,9 @@ def _unsaved_connection_comment(connection: str, root: Path) -> str:
     ]
     example = connection_config_example(connection)
     if example is None:
-        lines[-1] = "# validate --live, or add a `connection:` block (see the docs; keep passwords in a password_file)."
+        # A hand-written block could silently drop URL options (secure, sslmode)
+        # that project config has no field for, so do not invite one.
+        lines[-1] = "# validate --live; project config cannot express this whole URL, so keep using --connection."
         return "\n".join(lines) + "\n"
     if example["type"] == "duckdb":
         database = Path(example["path"]).expanduser()
@@ -724,6 +726,7 @@ def init(
         created.extend(write_model_files(bootstrap, root / "models", force=force))
 
         config_path = root / "sidemantic.yaml"
+        suggested_connection_block = False
         if config_path.exists() and not force:
             emit_warning(f"Kept existing {config_path} (pass --force to regenerate)")
         else:
@@ -732,7 +735,9 @@ def init(
                 config_data["connection"] = connection_config
             header = "# Sidemantic project configuration.\n# Docs: https://sidemantic.com/sidemantic/cli\n"
             if from_connection:
-                header += _unsaved_connection_comment(from_connection, root)
+                connection_comment = _unsaved_connection_comment(from_connection, root)
+                suggested_connection_block = "\n# connection:\n" in connection_comment
+                header += connection_comment
             config_path.write_text(header + yaml_module.dump(config_data, sort_keys=False, default_flow_style=False))
             created.append(config_path)
 
@@ -780,7 +785,9 @@ def init(
             connection_option = f" --connection {shlex.quote(displayed_connection)}"
             connection_note = (
                 "The connection was not saved to sidemantic.yaml because connection URLs can contain credentials.\n"
-                "Pass it with --connection as shown, or add the connection block suggested in sidemantic.yaml.\n"
+                "Pass it with --connection as shown"
+                + (", or uncomment the connection block in sidemantic.yaml" if suggested_connection_block else "")
+                + ".\n"
             )
             if "****" in displayed_connection:
                 connection_note += "(**** marks a value hidden from this output.)\n"

@@ -245,6 +245,22 @@ def test_connection_config_example_for_duckdb_and_unsupported_urls(url: str, exp
 
 
 @pytest.mark.parametrize(
+    "url",
+    [
+        # Adapters honor these options, but config models have no field for them, so a
+        # suggested block would silently connect without TLS or with other defaults.
+        "clickhouse://reader:s3cret@cloud.internal:8443/events?secure=true",
+        "postgres://analyst:s3cret@db.internal:5432/analytics?sslmode=require",
+        "snowflake://analyst:s3cret@myorg-account/analytics/public?warehouse=wh&authenticator=externalbrowser",
+        "spark://spark.internal:10000/default?auth=KERBEROS",
+        "duckdb:///srv/warehouse.duckdb?access_mode=read_only",
+    ],
+)
+def test_connection_config_example_omits_urls_with_options_config_cannot_hold(url: str):
+    assert connection_config_example(url) is None
+
+
+@pytest.mark.parametrize(
     ("url", "expected"),
     [
         ("postgres://analyst:s3cret@db:5432/analytics", "postgres://analyst:****@db:5432/analytics"),

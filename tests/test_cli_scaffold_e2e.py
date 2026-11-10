@@ -263,6 +263,33 @@ def test_init_from_connection_hides_password_in_next_steps(monkeypatch: pytest.M
     assert "#   password_file: .secrets/db-password" in config_text
 
 
+def test_init_from_connection_with_url_options_suggests_no_weaker_config_block(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from sidemantic.bootstrap import BootstrapResult
+
+    monkeypatch.setattr(
+        "sidemantic.bootstrap.bootstrap_models",
+        lambda connection, init_sql=None: BootstrapResult(
+            tables=[], model_dicts={"events": {"name": "events", "table": "events", "metrics": []}}
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        app, ["init", "ch", "--from-connection", "clickhouse://reader:s3cret@cloud.internal:8443/events?secure=true"]
+    )
+
+    assert result.exit_code == 0, result.output
+    # The next steps keep the TLS option; no config block that would drop it is offered.
+    assert "--connection 'clickhouse://reader:****@cloud.internal:8443/events?secure=true'" in result.output
+    assert "uncomment" not in result.output
+    config_text = (tmp_path / "ch" / "sidemantic.yaml").read_text()
+    assert "# connection:" not in config_text
+    assert "keep using --connection" in config_text
+    assert "connection" not in yaml.safe_load(config_text)
+
+
 # --- demo ---------------------------------------------------------------------
 
 

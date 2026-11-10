@@ -273,16 +273,13 @@ class PgCatalog:
         """Snapshot physical tables once; the catalog does not track later DDL."""
         if self._source_tables is None:
             tables: dict[tuple[str, str], list[tuple[str, str]]] = {}
-            try:
-                rows = self.layer.adapter.execute(
-                    "SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns "
-                    "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
-                    "ORDER BY table_schema, table_name, ordinal_position"
-                ).fetchall()
-                for schema_name, table_name, column_name, data_type in rows:
-                    tables.setdefault((schema_name, table_name), []).append((column_name, data_type))
-            except Exception:
-                logger.warning("Could not read source tables for the PostgreSQL catalog", exc_info=True)
+            rows = self.layer.adapter.execute(
+                "SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns "
+                "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
+                "ORDER BY table_schema, table_name, ordinal_position"
+            ).fetchall()
+            for schema_name, table_name, column_name, data_type in rows:
+                tables.setdefault((schema_name, table_name), []).append((column_name, data_type))
             self._source_tables = [(schema, table, columns) for (schema, table), columns in tables.items()]
         return self._source_tables
 

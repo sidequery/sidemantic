@@ -44,12 +44,50 @@ def test_high_risk_parse_and_runtime_paths_have_no_broad_catches():
     assert violations == {}
 
 
-def test_postgres_protocol_boundary_logs_and_reraises_unchanged():
-    handlers = _broad_handlers("sidemantic/server/connection.py")
+def _broad_handler_tries_by_function(relative_path: str) -> dict[str, list[ast.Try]]:
+    """Map each function to the try statements in it that have a broad handler."""
+    tree = ast.parse((ROOT / relative_path).read_text(), filename=relative_path)
+    found: dict[str, list[ast.Try]] = {}
+    for function in ast.walk(tree):
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        tries = [
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Try) and any(_is_broad_exception(handler) for handler in node.handlers)
+        ]
+        if tries:
+            found[function.name] = tries
+    return found
 
-    assert len(handlers) == 1
+
+def test_postgres_protocol_boundary_logs_and_reraises_unchanged():
+    tries = _broad_handler_tries_by_function("sidemantic/server/connection.py")
+
+    # Exactly two broad handlers: query handling, and the executor-thread boundary
+    # checked by the next test. Anything else must catch specific exceptions.
+    assert sorted(tries) == ["_handle_query", "_run_query"]
+    assert len(_broad_handlers("sidemantic/server/connection.py")) == 2
+
+    (query_try,) = tries["_handle_query"]
+    (handler,) = query_try.handlers
     assert any(
-        isinstance(node, ast.Raise) and node.exc is None
-        for statement in handlers[0].body
-        for node in ast.walk(statement)
+        isinstance(node, ast.Raise) and node.exc is None for statement in handler.body for node in ast.walk(statement)
     )
+
+
+def test_postgres_protocol_boundary_reports_the_exception_to_the_client():
+    """Queries run on an executor thread, where a raised exception never reaches riffq.
+
+    The boundary around that thread's work therefore catches what query handling
+    logged and re-raised, and its only action is to hand that same exception to
+    the client as a PostgreSQL error. It must not swallow, retry, or substitute.
+    """
+    tries = _broad_handler_tries_by_function("sidemantic/server/connection.py")
+
+    (boundary,) = tries["_run_query"]
+    assert [ast.unparse(statement) for statement in boundary.body] == ["self._handle_query(sql, callback, **kwargs)"]
+    assert not boundary.orelse and not boundary.finalbody
+    (handler,) = boundary.handlers
+    assert handler.name == "exc"
+    assert [ast.unparse(statement) for statement in handler.body] == ["callback(error_response(exc), is_error=True)"]

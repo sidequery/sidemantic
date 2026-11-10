@@ -342,22 +342,6 @@ class SemanticLayerConnection(riffq.BaseConnection):
         reader = result_to_record_batch_reader(result, self.layer.adapter)
         self._send_table(reader.read_all(), callback)
 
-    def _execute_for_describe(self, cursor, rendered_sql: str):
-        """Fetch only the result shape for a Describe, which precedes every Execute."""
-        import sqlglot
-        from sqlglot import exp
-        from sqlglot.errors import SqlglotError
-
-        try:
-            statements = [parsed for parsed in sqlglot.parse(rendered_sql, dialect=self.layer.dialect) if parsed]
-            if len(statements) == 1 and isinstance(statements[0], exp.Query):
-                return cursor.execute(statements[0].limit(0).sql(dialect=self.layer.dialect))
-        except SqlglotError:
-            pass
-        except Exception:
-            logging.debug("Schema-only execution failed; describing with the full query", exc_info=True)
-        return cursor.execute(rendered_sql)
-
     def _handle_query(self, sql, callback, **kwargs):
         """Handle a SQL query."""
         try:
@@ -415,11 +399,11 @@ class SemanticLayerConnection(riffq.BaseConnection):
                 transport="PostgreSQL",
             )
 
-            # Execute the query
-            if describe:
-                result = self._execute_for_describe(cursor, rendered_sql)
-            else:
-                result = cursor.execute(rendered_sql)
+            # Execute the query. A Describe runs the same statement to learn its
+            # columns: rewriting it to fetch no rows would regenerate the SQL, and a
+            # query that only fails after regeneration could not be told apart from
+            # one that really fails.
+            result = cursor.execute(rendered_sql)
 
             # Convert to Arrow and send
             self._send_result(result, callback)

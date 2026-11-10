@@ -210,7 +210,9 @@ def test_directed_cycle_deduplicates_the_actual_join_target(filter_only):
         "many_to_one",
         "many_to_one",
     ]
-    generator = SQLGenerator(graph, base_model="orders" if filter_only else None)
+    # Anchor at orders explicitly. The measure owner would otherwise anchor the
+    # query and reach orders through the permitted customers -> accounts route.
+    generator = SQLGenerator(graph, base_model="orders")
     sql = generator.generate(
         metrics=["customers.credit", "customers.count", "customers.double_credit"],
         dimensions=[] if filter_only else ["orders.region"],

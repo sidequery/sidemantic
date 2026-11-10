@@ -2108,21 +2108,15 @@ class SQLGenerator:
                 for model_name in self._extract_models_from_sql(metric.sql):
                     add_model(model_name)
 
-        # Role dimensions describe rows of their declaring model, not the full
-        # population of the reused lookup table. Anchor at that model when it
-        # also owns the selected measures; an explicit explore base still wins.
-        aggregate_models = self._find_aggregate_metric_models(metrics)
-        if len(aggregate_models) == 1:
-            metric_model = next(iter(aggregate_models))
-            for dim in dimensions:
-                owner = self.graph._role_owners.get(dim.split(".")[0])
-                while owner in self.graph._role_owners:
-                    owner = self.graph._role_owners[owner]
-                if owner == metric_model:
-                    add_model(metric_model)
-                    break
+        # The model that owns the selected measures is the preserved side of the
+        # join graph: dimension models are LEFT JOINed onto it, so facts without
+        # a matching dimension row land in a NULL group and a breakdown adds up
+        # to the ungrouped total. An explicit explore base still wins.
+        measure_model = self._single_measure_model(metrics)
+        if measure_model:
+            add_model(measure_model)
 
-        # Collect from dimensions first (since they define the grain)
+        # Without a single measure owner, dimensions come first in query order.
         for dim in dimensions:
             # Remove granularity suffix if present
             if "__" in dim:
@@ -2150,8 +2144,8 @@ class SQLGenerator:
                     logging.debug("Failed to parse filter for model extraction: %s", filter_expr, exc_info=True)
 
         # Directed native relationships restrict which population may anchor a
-        # query. Keep dimension-first ordering for ordinary graphs, but choose
-        # a reachable anchor when that ordering would traverse a forbidden edge.
+        # query. Keep the ordering above for ordinary graphs, but choose a
+        # reachable anchor when that ordering would traverse a forbidden edge.
         if (
             not self.base_model
             and len(models) > 1
@@ -2179,6 +2173,22 @@ class SQLGenerator:
                     break
 
         return models
+
+    def _single_measure_model(self, metric_refs: list[str]) -> str | None:
+        """The one model whose rows every selected measure aggregates, if there is one."""
+        aggregate_models = self._find_aggregate_metric_models(metric_refs)
+        if aggregate_models:
+            return next(iter(aggregate_models)) if len(aggregate_models) == 1 else None
+        # An unowned graph aggregate such as SUM(orders.amount) names its source in SQL.
+        referenced: set[str] = set()
+        for metric_ref in metric_refs:
+            try:
+                model_name, metric = self.graph.resolve_metric_reference(metric_ref)
+            except KeyError:
+                continue
+            if model_name is None and metric.agg and metric.sql:
+                referenced.update(self._extract_models_from_sql(metric.sql))
+        return next(iter(referenced)) if len(referenced) == 1 else None
 
     def _find_aggregate_metric_models(self, metric_refs: list[str]) -> set[str]:
         """Find models whose entity keys can de-duplicate selected aggregate leaves."""
@@ -7974,6 +7984,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
             return None, "no_remote_dimensions"
 
         metric_model_name = metric_models[0]
+        # The rollup stands in for the measure model, which this route keeps as
+        # the preserved side. Any other explicit anchor needs raw planning.
+        if self.base_model and self.base_model != metric_model_name:
+            return None, "explicit_anchor_not_supported"
         metric_model = self.graph.get_model(metric_model_name)
         if not metric_model.pre_aggregations:
             return None, "model_has_no_preaggregations"
@@ -8011,6 +8025,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 return None, "remote_dimension_not_many_to_one"
             if self._explicit_join_type_for_path(path[0]) is not None:
                 return None, "explicit_join_type_not_supported"
+            # The route joins on the stored key columns only; a custom predicate
+            # decides matches from columns the rollup does not carry.
+            if path[0].custom_condition:
+                return None, "custom_join_condition_not_supported"
             if remote_model_name and remote_model_name != dim_model_name:
                 return None, "multiple_remote_models_not_supported"
 
@@ -8082,6 +8100,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
 
         select_exprs: list[str] = []
         output_names: dict[str, str] = {}
+        # Remote dimensions are computed inside the joined subquery, as raw
+        # planning computes them in the model CTE. Evaluated after the LEFT
+        # JOIN, an expression such as COALESCE(name, 'unknown') would turn the
+        # NULL group of unmatched keys into an ordinary dimension value.
+        remote_projections: list[str] = []
 
         def register_output_name(output_name: str, *refs: str) -> None:
             for ref in refs:
@@ -8108,13 +8131,18 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     column_expr = f"{rollup_alias}.{self._quote_identifier(column_name)}"
                     if not granularity:
                         column_expr = self._as_grain_type(preagg.granularity, column_expr)
+                if granularity:
+                    column_expr = self._date_trunc(granularity, column_expr)
             else:
                 dimension = remote_model.get_dimension(dim_name)
                 dimension_sql = dimension.sql if dimension and dimension.sql else dim_name
-                column_expr = self._qualify_model_expression(dimension_sql, remote_model_name, remote_alias)
+                remote_expr = self._qualify_model_expression(dimension_sql, remote_model_name, remote_alias)
+                if granularity:
+                    remote_expr = self._date_trunc(granularity, remote_expr)
+                projected_name = self._quote_identifier(f"__sidemantic_dimension_{len(remote_projections)}")
+                remote_projections.append(f"{remote_expr} AS {projected_name}")
+                column_expr = f"{self._quote_identifier(remote_alias)}.{projected_name}"
 
-            if granularity:
-                column_expr = self._date_trunc(granularity, column_expr)
             select_exprs.append(f"{column_expr} AS {self._quote_alias(output_name)}")
 
         for metric_ref in metrics:
@@ -8147,8 +8175,18 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     direction = f" {parts[1].upper()}"
                 field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
                 output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
-                order_clauses.append(f"{self._quote_alias(output_name)}{direction}")
-            order_by_clause = "\nORDER BY " + ", ".join(order_clauses)
+                # Unmatched join keys add a NULL dimension group; order it as
+                # raw planning does instead of by the database default. The
+                # target dialect renders or emulates the NULL placement.
+                descending = direction == " DESC"
+                order_clauses.append(
+                    exp.Ordered(
+                        this=exp.column(output_name, quoted=True),
+                        desc=descending,
+                        nulls_first=not descending,
+                    )
+                )
+            order_by_clause = "\n" + exp.Order(expressions=order_clauses).sql(dialect=self.dialect)
 
         limit_clause = ""
         if limit is not None:
@@ -8158,10 +8196,22 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
 
         select_exprs_str = ",\n  ".join(select_exprs)
         remote_source = self._model_source_as(remote_model, remote_alias)
+        quoted_remote_alias = self._quote_identifier(remote_alias)
+        remote_keys = [
+            f"{quoted_remote_alias}.{self._quote_identifier(column)} AS {self._quote_identifier(column)}"
+            for column in dict.fromkeys(hop.to_columns)
+        ]
+        remote_columns = ",\n    ".join([*remote_keys, *remote_projections])
+        # Same population as raw planning: every stored fact group is kept and
+        # an unmatched join key lands in a NULL dimension group.
         return f"""SELECT
   {select_exprs_str}
-FROM {remote_source}
-LEFT JOIN {preagg_table} AS {rollup_alias}
+FROM {preagg_table} AS {rollup_alias}
+LEFT JOIN (
+  SELECT
+    {remote_columns}
+  FROM {remote_source}
+) AS {quoted_remote_alias}
   ON {" AND ".join(join_conditions)}{group_by_clause}{order_by_clause}{limit_clause}"""
 
     def _qualify_model_expression(self, expression_sql: str, model_name: str, alias: str) -> str:

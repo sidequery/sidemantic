@@ -803,8 +803,8 @@ def _cases(layer: SemanticLayer) -> list[BenchmarkCase]:
             expected_plan="join_key_preaggregation",
             expected_rules=("join_key_preaggregation_route_selection",),
             expected_sql_contains=(
-                "FROM customers AS customers",
-                "LEFT JOIN orders_preagg_by_customer AS orders_rollup",
+                "FROM orders_preagg_by_customer AS orders_rollup",
+                "FROM customers AS customers) AS customers",
             ),
             forbidden_sql_contains="FROM orders\n",
             min_speedup=1.2,

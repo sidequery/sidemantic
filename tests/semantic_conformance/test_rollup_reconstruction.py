@@ -4,7 +4,16 @@ from copy import deepcopy
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, PreAggregation, Relationship, SecurityPolicy, SemanticLayer
+from sidemantic import (
+    Dimension,
+    Explore,
+    Metric,
+    Model,
+    PreAggregation,
+    Relationship,
+    SecurityPolicy,
+    SemanticLayer,
+)
 from sidemantic.semantic_handoff import graph_to_semantic_input
 
 
@@ -155,7 +164,7 @@ def add_customers(layer):
     )
 
 
-def test_join_key_rollup_preserves_remote_domain_and_metric_states(layer):
+def test_join_key_rollup_preserves_fact_population_and_metric_states(layer):
     add_customers(layer)
     build(layer)
     assert execute(
@@ -171,12 +180,95 @@ def test_join_key_rollup_preserves_remote_domain_and_metric_states(layer):
             ("a", 30, 15.0, 27, 2, 15.0),
             ("b", 130, 65.0, 112, 3, pytest.approx(130 / 3)),
             ("c", 50, 50.0, 45, 1, 50.0),
-            ("empty", None, None, None, 0, None),
         ],
     )
 
 
-def test_join_key_rollup_with_empty_source_retains_remote_members(layer):
+def test_join_key_rollup_keeps_unmatched_and_null_keys_in_null_group(layer):
+    add_customers(layer)
+    layer.adapter.execute("""
+        insert into rollup_orders values
+          (7,99,'paid',7,0,'2026-02-02 01:00:00',1),(8,null,'paid',8,0,'2026-02-02 02:00:00',1)
+    """)
+    build(layer)
+    query = {"metrics": ["orders.revenue", "orders.rows"], "dimensions": ["customers.name"]}
+    order_by = {"order_by": ["customers.name"]}
+    expected = (["name", "revenue", "rows"], [(None, 15, 2), ("a", 30, 2), ("b", 130, 3), ("c", 50, 1)])
+    assert execute(layer, query | order_by) == expected
+    raw = layer.adapter.execute(layer.compile(**query, **order_by, use_preaggregations=False))
+    assert ([column[0] for column in raw.description], raw.fetchall()) == expected
+    # The breakdown adds up to the ungrouped total on both routes.
+    assert execute(layer, {"metrics": ["orders.revenue", "orders.rows"]}) == (["revenue", "rows"], [(225, 8)])
+
+
+@pytest.mark.parametrize(
+    ("dimension", "expected"),
+    [
+        ("customers.label", [(None, 15, 2), ("a", 30, 2), ("b", 130, 3), ("unknown", 50, 1)]),
+        (
+            "customers.joined__month",
+            [(None, 15, 2), ("1970-01-01", 50, 1), ("2026-01-01", 30, 2), ("2026-03-01", 130, 3)],
+        ),
+    ],
+    ids=["coalesce", "coalesce-with-grain"],
+)
+def test_join_key_rollup_computes_remote_dimension_before_join(layer, dimension, expected):
+    """A dimension that maps NULL to a value must not rename the unmatched-key group.
+
+    Customer c has no name and no join date, so it legitimately falls into the
+    fallback value. Orders with an unmatched or NULL key have no customer row at
+    all and stay in the NULL group, on the rollup route as in raw planning.
+    """
+    add_customers(layer)
+    layer.adapter.execute("""
+        alter table rollup_customers add column joined date;
+        update rollup_customers set joined = case id when 1 then date '2026-01-15' when 2 then date '2026-03-02' end;
+        update rollup_customers set name = null where id = 3;
+        insert into rollup_orders values
+          (7,99,'paid',7,0,'2026-02-02 01:00:00',1),(8,null,'paid',8,0,'2026-02-02 02:00:00',1)
+    """)
+    layer.graph.models["customers"].dimensions.extend(
+        [
+            Dimension(name="label", type="categorical", sql="COALESCE(name, 'unknown')"),
+            Dimension(name="joined", type="time", granularity="day", sql="COALESCE(joined, DATE '1970-01-01')"),
+        ]
+    )
+    build(layer)
+    query = {"metrics": ["orders.revenue", "orders.rows"], "dimensions": [dimension], "order_by": [dimension]}
+
+    def normalized(rows):
+        return [(group if group is None else str(group)[:10], revenue, count) for group, revenue, count in rows]
+
+    _columns, routed_rows = execute(layer, query)
+    raw_rows = layer.adapter.execute(layer.compile(**query, use_preaggregations=False)).fetchall()
+    assert normalized(routed_rows) == expected
+    assert normalized(raw_rows) == expected
+
+
+@pytest.mark.parametrize("dialect", ["mysql", "tsql"])
+def test_join_key_rollup_order_by_renders_for_dialects_without_null_ordering(layer, dialect):
+    """MySQL and SQL Server reject NULLS FIRST/LAST; their default NULL placement already matches."""
+    import sqlglot
+
+    add_customers(layer)
+    query = {
+        "metrics": ["orders.revenue"],
+        "dimensions": ["customers.name"],
+        "order_by": ["customers.name", "orders.revenue DESC"],
+        "use_preaggregations": True,
+    }
+    sql = layer.compile(**query, dialect=dialect)
+    assert "orders_preagg_daily" in sql
+    order_by = sql[sql.rindex("ORDER BY") :].split("--")[0]
+    assert "NULLS" not in order_by, order_by
+    assert "DESC" in order_by
+    statement = sql.split("\n--")[0]
+    assert sqlglot.parse_one(statement, read=dialect).args["order"] is not None
+    # DuckDB keeps the explicit placement that orders the unmatched-key group first.
+    assert "NULLS FIRST" in layer.compile(**query, dialect="duckdb")
+
+
+def test_join_key_rollup_with_empty_source_has_no_groups(layer):
     add_customers(layer)
     layer.adapter.execute("delete from rollup_orders")
     build(layer)
@@ -187,7 +279,28 @@ def test_join_key_rollup_with_empty_source_retains_remote_members(layer):
             "dimensions": ["customers.name"],
             "order_by": ["customers.name"],
         },
-    ) == (["name", "rows", "avg_amount"], [("a", 0, None), ("b", 0, None), ("c", 0, None), ("empty", 0, None)])
+    ) == (["name", "rows", "avg_amount"], [])
+
+
+@pytest.mark.parametrize("empty_source", [False, True])
+def test_dimension_anchored_explore_keeps_members_without_facts(layer, empty_source):
+    """An Explore based on the dimension model is the explicit way to list every member."""
+    add_customers(layer)
+    layer.graph.add_explore(Explore(name="by_customer", model="customers"))
+    if empty_source:
+        layer.adapter.execute("delete from rollup_orders")
+    build(layer)
+    query = {
+        "explore": "by_customer",
+        "metrics": ["orders.rows", "orders.avg_amount"],
+        "dimensions": ["name"],
+        "order_by": ["name"],
+    }
+    expected = [("a", 2, 15.0), ("b", 3, 65.0), ("c", 1, 50.0), ("empty", 0, None)]
+    if empty_source:
+        expected = [(name, 0, None) for name, _rows, _average in expected]
+    # The rollup stands in for the measure model, so another anchor reads raw rows.
+    assert execute(layer, query, routed=False) == (["name", "rows", "avg_amount"], expected)
 
 
 def test_join_key_rollup_alias_order_limit_and_local_dimension(layer):
@@ -271,6 +384,10 @@ def test_composite_join_rollup_uses_every_key_and_preserves_literals(layer):
         create table composite_rollup_customers(tenant integer,id integer,name varchar);
         insert into composite_rollup_customers values (1,1,'a'),(2,1,'unused'),(1,2,'b'),(2,2,'c'),(1,3,'d'),(1,4,null);
     """)
+    # Give the customer whose name falls back to the literal an order, so the
+    # literal still reaches the result. The (2, 1) customer shares only its id
+    # with tenant 1's orders and must not receive them.
+    layer.adapter.execute("insert into rollup_orders values (7,4,'paid',70,0,'2026-02-02 01:00:00',1)")
     build(layer)
     assert execute(
         layer,
@@ -285,9 +402,8 @@ def test_composite_join_rollup_uses_every_key_and_preserves_literals(layer):
             ("a", 2, 15.0),
             ("b", 2, 40.0),
             ("c", 1, 90.0),
-            ("customers.name", 0, None),
+            ("customers.name", 1, 70.0),
             ("d", 1, 50.0),
-            ("unused", 0, None),
         ],
     )
 
@@ -300,14 +416,17 @@ def test_missing_stored_join_key_uses_raw_source(layer):
         layer,
         {"metrics": ["orders.rows"], "dimensions": ["customers.name"], "order_by": ["customers.name"]},
         routed=False,
-    ) == (["name", "rows"], [("a", 2), ("b", 3), ("c", 1), ("empty", 0)])
+    ) == (["name", "rows"], [("a", 2), ("b", 3), ("c", 1)])
 
 
-def test_empty_remote_dimension_domain_stays_empty(layer):
+def test_empty_remote_dimension_keeps_facts_in_null_group(layer):
     add_customers(layer)
     layer.adapter.execute("delete from rollup_customers")
     build(layer)
-    assert execute(layer, {"metrics": ["orders.rows"], "dimensions": ["customers.name"]}) == (["name", "rows"], [])
+    assert execute(layer, {"metrics": ["orders.rows"], "dimensions": ["customers.name"]}) == (
+        ["name", "rows"],
+        [(None, 6)],
+    )
 
 
 def test_lambda_daily_states_roll_up_to_months(layer):
@@ -462,8 +581,6 @@ def test_colliding_join_dimension_outputs_keep_raw_contract(layer):
 
 @pytest.mark.parametrize("anchor", ["local-first", "role-owner"])
 def test_join_rollup_preserves_local_and_role_source_population(layer, anchor):
-    if layer.engine != "rust":
-        pytest.skip("Native effective-anchor routing regression")
     add_customers(layer)
     if anchor == "role-owner":
         relationship = layer.graph.models["orders"].relationships[0]
@@ -474,7 +591,8 @@ def test_join_rollup_preserves_local_and_role_source_population(layer, anchor):
         dimensions = ["orders.status", "customers.name"]
     build(layer)
     query = {"metrics": ["orders.revenue"], "dimensions": dimensions}
-    columns, rows = execute(layer, query, routed=False)
+    # The orders rollup is the preserved side whichever dimension comes first.
+    columns, rows = execute(layer, query)
     cursor = layer.adapter.execute(layer.compile(**query, use_preaggregations=False))
     assert columns == [column[0] for column in cursor.description]
     assert sorted(rows, key=str) == sorted(cursor.fetchall(), key=str)

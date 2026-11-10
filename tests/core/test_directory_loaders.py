@@ -146,7 +146,7 @@ airports:
 
     sql = layer.compile(metrics=["flights.count"], dimensions=["origin_airport.name"])
     assert "origin_airport_cte" in sql
-    assert "origin_airport_cte.code = flights_cte.origin" in sql
+    assert "flights_cte.origin = origin_airport_cte.code" in sql
 
 
 def test_load_from_directory_scopes_reused_bsl_join_aliases(tmp_path):

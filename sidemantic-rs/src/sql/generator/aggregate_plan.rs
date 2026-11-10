@@ -1530,7 +1530,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_count_without_inputs_retains_owner_join_and_dimension_domain() {
+    fn complete_count_without_inputs_retains_owner_join_and_population() {
         let mut graph = graph();
         let mut orders = graph.get_model("orders").unwrap().clone();
         let mut count = Metric::derived("opaque_count", "COUNT(*)");
@@ -1542,8 +1542,11 @@ mod tests {
             .with_dimensions(vec!["customers.region".into()]);
         let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
         assert!(sql.contains("COUNT(*) AS __sidemantic_metric_0"), "{sql}");
-        assert!(sql.contains("FROM customers_cte AS customers_cte"), "{sql}");
-        assert!(sql.contains("LEFT JOIN orders_cte AS orders_cte"), "{sql}");
+        assert!(sql.contains("FROM orders_cte AS orders_cte"), "{sql}");
+        assert!(
+            sql.contains("LEFT JOIN customers_cte AS customers_cte"),
+            "{sql}"
+        );
         assert_valid_sql(&sql);
     }
 

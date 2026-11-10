@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
+from sidemantic import Dimension, Explore, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
 from sidemantic.core.semantic_layer import SecurityError
 from sidemantic.semantic_handoff import graph_to_semantic_input
 
@@ -151,16 +151,28 @@ def test_count_family_keyed_fanout_and_orphan_group(counts, restricted):
         insert into count_family_items values (1,1,'x'),(2,1,'x'),(3,2,'x'),(4,2,'y'),
           (5,3,'y'),(6,4,'y'),(7,5,'x'),(8,6,'x'),(9,99,'orphan');
     """)
-    # Source restrictions exclude ids4/5 and the orphan group. Without those
-    # restrictions, the retained orphan still cannot invent a qualifying row.
+    # Source restrictions exclude ids4/5. Orders own the counts, so the orphan
+    # category is not one of their groups either way.
     expected = (
         [("x", 3, 3, 0, 3, 3, 0), ("y", 1, 1, 0, 1, 1, 0)]
         if restricted
-        else [("orphan", 0, 0, 0, 0, 0, 0), ("x", 4, 4, 0, 4, 4, 0), ("y", 2, 2, 0, 2, 2, 0)]
+        else [("x", 4, 4, 0, 4, 4, 0), ("y", 2, 2, 0, 2, 2, 0)]
     )
     assert result(
         counts, dimensions=["items.category"], filters=["items.category IS NOT NULL"], order_by=["items.category"]
     ) == (["category", *counts[1]], expected)
+    if not restricted:
+        # Anchored at the dimension model, the orphan category is retained and
+        # still cannot invent a qualifying row.
+        layer.graph.add_explore(Explore(name="by_item", model="items"))
+        assert result(
+            counts,
+            explore="by_item",
+            metrics=list(counts[1].values()),
+            dimensions=["category"],
+            filters=["category IS NOT NULL"],
+            order_by=["category"],
+        ) == (["category", *counts[1]], [("orphan", 0, 0, 0, 0, 0, 0), *expected])
 
 
 @pytest.mark.parametrize("restricted", [False, True])

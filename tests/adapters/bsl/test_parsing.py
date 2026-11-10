@@ -1279,8 +1279,8 @@ flights:
             )
             assert "origin_airport_cte" in sql
             assert "destination_airport_cte" in sql
-            assert "INNER JOIN flights_cte" in sql
-            assert "origin_airport_cte.code = flights_cte.origin" in sql
+            assert "INNER JOIN origin_airport_cte" in sql
+            assert "flights_cte.origin = origin_airport_cte.code" in sql
             assert "flights_cte.destination = destination_airport_cte.code" in sql
 
             adapter.export(graph, export_path)
@@ -1468,7 +1468,7 @@ facts:
                 dimensions=["calendar.day"],
                 skip_default_time_dimensions=True,
             )
-            assert "CROSS JOIN facts_cte" in sql
+            assert "CROSS JOIN calendar_cte" in sql
             assert "id AS id" in sql
 
             conn = duckdb.connect(":memory:")

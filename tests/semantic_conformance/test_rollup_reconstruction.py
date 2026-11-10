@@ -526,6 +526,11 @@ def test_postgres_rollup_reconstruction_executes(mode):
         connection.execute(
             "insert into pg_rollup_orders values (1,1,'paid',2,0,'2026-01-01 01:00:00'),(2,1,'paid',3,1,'2026-01-02 01:00:00'),(3,2,'paid',null,0,'2026-01-02 02:00:00'),(4,2,'open',100,10,'2026-01-02 15:00:00')"
         )
+        if mode == "join":
+            # One order names a customer that does not exist and one has no customer.
+            connection.execute(
+                "insert into pg_rollup_orders values (5,9,'paid',7,0,'2026-01-03 01:00:00'),(6,null,'paid',8,1,'2026-01-03 02:00:00')"
+            )
         connection.execute(
             f"create temporary table orders_preagg_daily as {model.pre_aggregations[0].generate_materialization_sql(model)}"
         )
@@ -536,11 +541,21 @@ def test_postgres_rollup_reconstruction_executes(mode):
         elif mode == "join":
             connection.execute("create temporary table pg_rollup_customers(id integer,name text)")
             connection.execute("insert into pg_rollup_customers values (1,'a'),(2,'b'),(3,'empty')")
-            expected = [("a", 2.5, 4, 2.5, 2), ("b", 100.0, 90, 100.0, 1), ("empty", None, None, None, 0)]
+            # The rollup is the preserved side: both orders without a customer
+            # row form the NULL group and the customer without orders has none.
+            expected = [(None, 7.5, 14, 7.5, 2), ("a", 2.5, 4, 2.5, 2), ("b", 100.0, 90, 100.0, 1)]
         rows = connection.execute(sql).fetchall()
         assert [
             tuple(float(value) if isinstance(value, Decimal) else value for value in row) for row in rows
         ] == expected
+        if mode == "join":
+            # Anchored at the dimension model, every customer is listed and the
+            # one without orders counts zero. That anchor reads raw rows.
+            anchored = compile_semantic_input(graph, {**query, "consumption_base_model": "customers"})
+            assert "orders_preagg_daily" not in anchored
+            rows = connection.execute(anchored).fetchall()
+            assert [row[0] for row in rows] == ["a", "b", "empty"]
+            assert rows[-1] == ("empty", None, None, None, 0)
 
 
 def test_average_chooses_compatible_count_by_definition_not_name(layer):

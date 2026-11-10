@@ -414,9 +414,39 @@ def load_from_directory(
             )
             _handle_parse_error(error_source, e, strict=strict)
 
+    # AML relationships and partial models name definitions in other files, so a
+    # directory is parsed once as a project rather than file by file.
+    holistics_root = None
+    if only_file is None and any(file.suffix.lower() == ".aml" for file in project_files):
+        holistics_root = directory
+
+    if holistics_root:
+        from sidemantic.adapters.holistics import HolisticsAdapter
+
+        try:
+            graph = _parse_adapter_without_auto_registration(HolisticsAdapter(), holistics_root)
+            _collect_consumption_catalogs(consumption_catalogs, graph, layer.graph)
+            _merge_graph_passthrough_metadata(layer.graph, graph)
+            _extend_import_warnings(import_warnings, graph)
+            for model in graph.models.values():
+                if not hasattr(model, "_source_format"):
+                    model._source_format = "Holistics"
+                if not hasattr(model, "_source_file"):
+                    model._source_file = str(holistics_root.relative_to(directory))
+            _merge_models(all_models, graph.models)
+            collect_metrics(graph)
+            all_parameters.update(graph.parameters)
+        except Exception as e:
+            if strict:
+                _handle_parse_error(holistics_root, e, strict=True)
+            # Non-strict: one malformed .aml must not drop every valid sibling. Fall
+            # back to the per-file scan below, which loads what it can and reports
+            # the bad file (as the LookML project path does). Cross-file
+            # relationships are lost in that degraded mode.
+            holistics_root = None
+
     # Find and parse all files (just the requested one in single-file mode).
     scan_files = [only_file] if only_file is not None else project_files
-    holistics_project_parsed = False
     for file_path in scan_files:
         if not file_path.is_file():
             continue
@@ -509,14 +539,9 @@ def load_from_directory(
         elif suffix == ".aml":
             from sidemantic.adapters.holistics import HolisticsAdapter
 
+            if holistics_root:
+                continue  # already parsed as one project above
             adapter = HolisticsAdapter()
-            # AML relationships and partial models name definitions in other
-            # files, so a directory is parsed once as a project, not per file.
-            if only_file is None:
-                if holistics_project_parsed:
-                    continue
-                holistics_project_parsed = True
-                file_path = directory
         elif suffix == ".tml":
             adapter = ThoughtSpotAdapter()
         elif suffix in (".tds", ".twb", ".tdsx", ".twbx"):

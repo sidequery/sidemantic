@@ -1,0 +1,727 @@
+[
+  {
+    "id": "multi_fact_left_branches",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.revenue",
+        "tickets.total_cost"
+      ]
+    },
+    "expected": [
+      [
+        "EAST",
+        60,
+        10
+      ],
+      [
+        "WEST",
+        40,
+        5
+      ],
+      [
+        "NORTH",
+        null,
+        11
+      ],
+      [
+        null,
+        180,
+        13
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "three_branch_merged_keys",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.revenue",
+        "tickets.ticket_count",
+        "visits.visit_count"
+      ]
+    },
+    "expected": [
+      [
+        "EAST",
+        60,
+        2,
+        0
+      ],
+      [
+        "WEST",
+        40,
+        1,
+        0
+      ],
+      [
+        "NORTH",
+        null,
+        1,
+        2
+      ],
+      [
+        "SOUTH",
+        null,
+        0,
+        1
+      ],
+      [
+        null,
+        180,
+        2,
+        1
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "dataset_metrics_share_population",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.revenue",
+        "orders.order_count",
+        "orders.avg_amount"
+      ]
+    },
+    "expected": [
+      [
+        "EAST",
+        60,
+        5,
+        15
+      ],
+      [
+        "WEST",
+        40,
+        1,
+        40
+      ],
+      [
+        null,
+        180,
+        3,
+        60
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "unmatched_home_rows_null_group",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.revenue"
+      ]
+    },
+    "expected": [
+      [
+        "EAST",
+        60
+      ],
+      [
+        "WEST",
+        40
+      ],
+      [
+        null,
+        180
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "dimensions_only_anchor_domain",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ]
+    },
+    "expected": [
+      [
+        "EAST"
+      ],
+      [
+        "WEST"
+      ],
+      [
+        "NORTH"
+      ],
+      [
+        "SOUTH"
+      ],
+      [
+        null
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "dimensions_only_directed_anchor",
+    "query": {
+      "dimensions": [
+        "orders.status",
+        "customers.region"
+      ]
+    },
+    "expected": [
+      [
+        "paid",
+        "EAST"
+      ],
+      [
+        "open",
+        "EAST"
+      ],
+      [
+        "paid",
+        "WEST"
+      ],
+      [
+        "paid",
+        null
+      ],
+      [
+        "open",
+        null
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "filter_smb_each_branch",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.revenue",
+        "tickets.total_cost"
+      ],
+      "filter": "customers.segment='SMB'"
+    },
+    "expected": [
+      [
+        "EAST",
+        30,
+        10
+      ],
+      [
+        "WEST",
+        40,
+        5
+      ],
+      [
+        "NORTH",
+        null,
+        11
+      ],
+      [
+        null,
+        70,
+        null
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "filter_unknown_is_false",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "customers.region<>'WEST'"
+    },
+    "expected": [
+      [
+        "EAST",
+        60
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "filter_null_safe_retains_unmatched",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "customers.region IS DISTINCT FROM 'WEST'"
+    },
+    "expected": [
+      [
+        "EAST",
+        60
+      ],
+      [
+        null,
+        180
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "false_filter_no_dimensions",
+    "query": {
+      "metrics": [
+        "orders.revenue",
+        "orders.order_count",
+        "tickets.ticket_count"
+      ],
+      "filter": "FALSE"
+    },
+    "expected": [
+      [
+        null,
+        0,
+        0
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "false_filter_grouped_empty",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.revenue",
+        "tickets.ticket_count"
+      ],
+      "filter": "1=0"
+    },
+    "expected": [],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "null_filter_no_dimensions",
+    "query": {
+      "metrics": [
+        "orders.revenue",
+        "orders.order_count"
+      ],
+      "filter": "NULL"
+    },
+    "expected": [
+      [
+        null,
+        0
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "unconnected_metric_populations",
+    "query": {
+      "metrics": [
+        "orders.revenue",
+        "unrelated.total"
+      ]
+    },
+    "expected": [
+      [
+        280,
+        9
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "unconnected_metrics_constant_filter",
+    "query": {
+      "metrics": [
+        "orders.order_count",
+        "unrelated.total"
+      ],
+      "filter": "FALSE"
+    },
+    "expected": [
+      [
+        0,
+        null
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "model_metric_independent_atoms",
+    "query": {
+      "metrics": [
+        "per_customer"
+      ]
+    },
+    "expected": [
+      [
+        46.666666666666664
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "model_metric_shared_dimension",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "per_customer"
+      ]
+    },
+    "expected": [
+      [
+        "EAST",
+        30
+      ],
+      [
+        "WEST",
+        40
+      ],
+      [
+        "NORTH",
+        null
+      ],
+      [
+        "SOUTH",
+        null
+      ],
+      [
+        null,
+        180
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "model_metric_mixed_fact_atoms",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "net"
+      ]
+    },
+    "expected": [
+      [
+        "EAST",
+        50
+      ],
+      [
+        "WEST",
+        35
+      ],
+      [
+        "NORTH",
+        null
+      ],
+      [
+        null,
+        167
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "model_metric_atoms_same_branch",
+    "query": {
+      "metrics": [
+        "holistic",
+        "orders.revenue"
+      ]
+    },
+    "expected": [
+      [
+        6,
+        280
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "single_dataset_metric_aggregate_formula",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.positive_average"
+      ]
+    },
+    "expected": [
+      [
+        "EAST",
+        12
+      ],
+      [
+        "WEST",
+        40
+      ],
+      [
+        null,
+        60
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "empty_source_ungrouped",
+    "query": {
+      "metrics": [
+        "orders.revenue",
+        "orders.order_count"
+      ]
+    },
+    "expected": [
+      [
+        null,
+        0
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135",
+    "extra_sql": "DELETE FROM raw_orders;"
+  },
+  {
+    "id": "empty_source_grouped",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.revenue"
+      ]
+    },
+    "expected": [],
+    "rule": "L3 \u00a7\u00a73\u20135",
+    "extra_sql": "DELETE FROM raw_orders;"
+  },
+  {
+    "id": "one_empty_branch_other_domain",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.order_count",
+        "tickets.total_cost"
+      ]
+    },
+    "expected": [
+      [
+        "EAST",
+        0,
+        10
+      ],
+      [
+        "WEST",
+        0,
+        5
+      ],
+      [
+        "NORTH",
+        0,
+        11
+      ],
+      [
+        null,
+        0,
+        13
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135",
+    "extra_sql": "DELETE FROM raw_orders;"
+  },
+  {
+    "id": "cardinality_violation_same_group_dedup",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.revenue",
+        "orders.order_count"
+      ]
+    },
+    "expected": [
+      [
+        "EAST",
+        60,
+        5
+      ],
+      [
+        "WEST",
+        40,
+        1
+      ],
+      [
+        null,
+        180,
+        3
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135",
+    "extra_sql": "INSERT INTO raw_customers VALUES(1,'EAST','SMB');"
+  },
+  {
+    "id": "cardinality_violation_different_groups",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "metrics": [
+        "orders.revenue",
+        "orders.order_count"
+      ]
+    },
+    "expected": [
+      [
+        "EAST",
+        60,
+        5
+      ],
+      [
+        "ALT",
+        30,
+        4
+      ],
+      [
+        "WEST",
+        40,
+        1
+      ],
+      [
+        null,
+        180,
+        3
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135",
+    "extra_sql": "INSERT INTO raw_customers VALUES(1,'ALT','SMB');"
+  },
+  {
+    "id": "holistic_not_reaggregated",
+    "query": {
+      "dimensions": [
+        "customers.segment"
+      ],
+      "metrics": [
+        "orders.unique_customers"
+      ]
+    },
+    "expected": [
+      [
+        "SMB",
+        3
+      ],
+      [
+        "ENT",
+        1
+      ],
+      [
+        null,
+        1
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "aliases_output_order",
+    "query": {
+      "dimensions": [
+        {
+          "field": "customers.region",
+          "alias": "Region"
+        }
+      ],
+      "metrics": [
+        {
+          "metric": "orders.revenue",
+          "alias": "Revenue"
+        },
+        {
+          "metric": "tickets.total_cost",
+          "alias": "Cost"
+        }
+      ]
+    },
+    "expected": [
+      [
+        "EAST",
+        60,
+        10
+      ],
+      [
+        "WEST",
+        40,
+        5
+      ],
+      [
+        "NORTH",
+        null,
+        11
+      ],
+      [
+        null,
+        180,
+        13
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "filter_uses_model_names_not_alias",
+    "query": {
+      "dimensions": [
+        {
+          "field": "customers.region",
+          "alias": "Region"
+        }
+      ],
+      "metrics": [
+        "orders.revenue"
+      ],
+      "filter": "customers.region='EAST'"
+    },
+    "expected": [
+      [
+        "EAST",
+        60
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  },
+  {
+    "id": "dimension_only_filter_cannot_choose_other_anchor",
+    "query": {
+      "dimensions": [
+        "customers.region"
+      ],
+      "filter": "customers.segment='ENT'"
+    },
+    "expected": [
+      [
+        "EAST"
+      ],
+      [
+        "SOUTH"
+      ]
+    ],
+    "rule": "L3 \u00a7\u00a73\u20135"
+  }
+]

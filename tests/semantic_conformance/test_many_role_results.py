@@ -174,7 +174,8 @@ def test_bridge_join_retains_bridge_keys_when_custom_sql_is_present(rust):
 def test_target_measures_retain_target_key_grain(rust):
     model = source()
     model["models"][1]["metrics"] = [{"name": "sum_ids", "agg": "sum", "sql": "id"}]
-    assert execute(rust, model, ["orders.id"], metrics=["primary_tags.sum_ids"]) == Counter({(1, 6), (2, 5), (3, None)})
+    # Order 3 has no primary tag, so the tag measure has no group for it.
+    assert execute(rust, model, ["orders.id"], metrics=["primary_tags.sum_ids"]) == Counter({(1, 6), (2, 5)})
 
 
 def test_composite_junction_keys_do_not_cross_tenants(rust):

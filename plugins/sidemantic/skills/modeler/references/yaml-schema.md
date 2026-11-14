@@ -5,16 +5,34 @@ Complete field-by-field reference for the native YAML format.
 ## Top-Level Structure
 
 ```yaml
-connection:       # Optional: database connection
-models:           # List of model definitions
-metrics:          # Optional: graph-level metrics
+models:             # List of model definitions
+metrics:            # Optional: graph-level metrics
+parameters:         # Optional: values for {{ name }} templates in filters and segments
+saved_queries:      # Optional: named structured queries (sidemantic query --saved-query)
+explores:           # Optional: governed query entry points
+table_calculations: # Optional: post-query calculations
 ```
 
-All three sections are optional. Environment variable substitution is supported: `${VAR}`, `${VAR:-default}`, `$VAR`.
+All sections are optional. Environment variable substitution is supported: `${VAR}`, `${VAR:-default}`, `$VAR`.
 
 ## Connection
 
-String form: `connection: "duckdb:///path/to/db.duckdb"`
+Put the connection in the project's `sidemantic.yaml`, not in model files. The CLI
+reads it from there, and a relative DuckDB `path` resolves against that file:
+
+```yaml
+# sidemantic.yaml
+models_dir: models
+connection:
+  type: duckdb
+  path: data/warehouse.duckdb
+```
+
+The CLI ignores `connection:` inside model files; only `SemanticLayer.from_yaml()`
+reads it there, and a DuckDB path in that form should be absolute. URL form:
+`duckdb:///` followed by an absolute path (`duckdb:////abs/path/db.duckdb`). On the
+command line use `--db data.duckdb` for DuckDB files and `--connection URL` for
+everything else.
 
 Dictionary form:
 
@@ -95,7 +113,7 @@ Dictionary form:
 | `source_uri` | string | No | -- | Remote data source URI (DuckDB) |
 | `description` | string | No | -- | Human-readable description |
 | `extends` | string | No | -- | Parent model name for inheritance |
-| `primary_key` | string or list | No | `"id"` | Primary key column(s) |
+| `primary_key` | string or list | No | none (no `id` is inferred) | Primary key column(s); set it on any model that is joined to |
 | `unique_keys` | list[list[string]] | No | -- | Unique constraints (Pydantic only, not in YAML adapter) |
 | `default_time_dimension` | string | No | -- | Auto-included time dimension for queries |
 | `default_grain` | string | No | -- | Default granularity: `hour`, `day`, `week`, `month`, `quarter`, `year` |
@@ -114,7 +132,7 @@ Dictionary form:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | -- | Unique within model. Referenced as `model.name` |
-| `type` | string | Yes | `"categorical"` (YAML) | `categorical`, `time`, `boolean`, `numeric` |
+| `type` | string | No | `"categorical"` | `categorical`, `time`, `boolean`, `numeric` |
 | `sql` | string | No | column matching `name` | SQL expression. `expr` accepted as alias |
 | `granularity` | string | No | -- | Required for time dims: `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` |
 | `supported_granularities` | list[string] | No | all | Override available granularities |
@@ -171,12 +189,12 @@ Enables: `model.get_hierarchy_path("city")` returns `["country", "state", "city"
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `agg` | string | Yes* | `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median` |
+| `agg` | string | Yes* | `sum`, `count`, `count_distinct`, `approx_count_distinct`, `avg`, `min`, `max`, `median`, `stddev`, `stddev_pop`, `variance`, `variance_pop` |
 | `sql` | string | No | Expression to aggregate. `expr` accepted as alias. Defaults to column matching `name`. For `count` without `sql`, generates `COUNT(*)` |
 
 *Not required if `sql` contains a recognized aggregation (e.g., `sql: "SUM(amount)"` auto-extracts `agg: sum, sql: amount`).
 
-Current model-level validation aligns with this set (`sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median`).
+Model-level validation accepts exactly this set of aggregations.
 
 ```yaml
 - name: revenue
@@ -222,9 +240,9 @@ Current model-level validation aligns with this set (`sum`, `count`, `count_dist
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `sql` | Yes* | Base aggregation (e.g., `"SUM(amount)"`). Auto-parsed |
+| `sql` | Yes* | Base metric to accumulate (e.g., `revenue`), not a raw aggregate: `sql: "SUM(amount)"` fails at query time with `Measure amount not found` |
 | `window_expression` | Yes* | Raw SQL window function (alternative to `sql`) |
-| `window` | No | Time window (e.g., `"7 days"`) |
+| `window` | No | Rolling time window (e.g., `"7 days"`). Omit for a running total |
 | `grain_to_date` | No | Period reset: `day`, `week`, `month`, `quarter`, `year` |
 | `window_frame` | No | Raw SQL window frame clause |
 | `window_order` | No | ORDER BY column. Defaults to model's `default_time_dimension` |
@@ -232,16 +250,16 @@ Current model-level validation aligns with this set (`sum`, `count`, `count_dist
 *One of `sql` or `window_expression` required.
 
 ```yaml
-# Rolling 7-day sum
+# Rolling 7-day sum of the model's `revenue` metric
 - name: rolling_revenue
   type: cumulative
-  sql: "SUM(amount)"
+  sql: revenue
   window: "7 days"
 
 # Month-to-date
 - name: mtd_revenue
   type: cumulative
-  sql: "SUM(amount)"
+  sql: revenue
   grain_to_date: month
 ```
 
@@ -286,8 +304,8 @@ Current model-level validation aligns with this set (`sum`, `count`, `count_dist
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | -- | Name of the related model |
 | `type` | string | Yes | -- | `many_to_one`, `one_to_one`, `one_to_many`, `many_to_many` |
-| `foreign_key` | string or list | No | `{name}_id` (many_to_one) | FK column(s) in this model |
-| `primary_key` | string or list | No | `"id"` | PK in related model |
+| `foreign_key` | string or list | Yes (keyed types) | -- | FK column(s). Not inferred: without it the relationship adds no join |
+| `primary_key` | string or list | No | related model's `primary_key` | PK in related model |
 | `through` | string | No | -- | Junction model for many_to_many |
 | `through_foreign_key` | string | No | -- | FK in junction pointing to this model |
 | `related_foreign_key` | string | No | -- | FK in junction pointing to related model |

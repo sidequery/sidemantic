@@ -50,7 +50,7 @@ def test_export_preserves_ordinary_names(tmp_path, adapter_class):
 
 def test_metric_filename_cannot_escape(tmp_path):
     graph = SemanticGraph()
-    graph.add_model(Model(name="sales", table="orders", metrics=[Metric(name="../../escape", agg="count")]))
+    graph.add_model(Model(name="sales", table="orders", metrics=[Metric(name="../../escape", agg="sum", sql="amount")]))
     with pytest.raises(ValueError, match="Unsafe output filename"):
         AtScaleSMLAdapter().export(graph, tmp_path / "output")
     assert not (tmp_path / "escape.yml").exists()

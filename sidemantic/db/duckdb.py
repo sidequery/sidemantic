@@ -228,7 +228,9 @@ class DuckDBAdapter(BaseDatabaseAdapter):
         """Create adapter from connection URL.
 
         Args:
-            url: Connection URL (e.g., "duckdb:///:memory:" or "duckdb:///path/to/db.duckdb")
+            url: Connection URL: "duckdb:///:memory:", "duckdb:///abs/path/db.duckdb"
+                (three slashes, absolute path), or "duckdb://relative/db.duckdb"
+                (two slashes, path relative to the working directory)
             init_sql: SQL statements to run after connecting (overrides any init_sql in URL params)
 
         Returns:
@@ -241,11 +243,14 @@ class DuckDBAdapter(BaseDatabaseAdapter):
         if parsed.scheme != "duckdb":
             raise ValueError(f"Invalid DuckDB URL: {url}")
 
-        # Remove protocol prefix while preserving leading slash in file paths
+        # Remove protocol prefix while preserving leading slash in file paths.
+        # A path written after two slashes parses as the URL host; keep it
+        # rather than silently opening a different database.
         # duckdb:///:memory: -> :memory:
         # duckdb:///tmp/app.db -> /tmp/app.db
+        # duckdb://data/app.db -> data/app.db (relative to the working directory)
         # duckdb:/// -> :memory:
-        db_path = parsed.path
+        db_path = parsed.netloc + parsed.path
 
         # Handle :memory: special case (may have leading slash from URI)
         if db_path in ("/:memory:", ":memory:", "", "/"):

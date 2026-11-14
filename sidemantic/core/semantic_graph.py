@@ -412,6 +412,7 @@ class SemanticGraph:
 
                 related_model = relationship.related_model
                 edge_id = relationship.edge_id
+                reversible = (relationship.metadata or {}).get("reversible") is not False
                 if related_model not in self.models:
                     continue  # Skip if related model doesn't exist yet
 
@@ -433,7 +434,8 @@ class SemanticGraph:
 
                 if relationship.type == "cross":
                     add_edge(model_name, related_instance, [], [], "cross", edge_id=edge_id)
-                    add_edge(related_instance, model_name, [], [], "cross", edge_id=edge_id)
+                    if reversible:
+                        add_edge(related_instance, model_name, [], [], "cross", edge_id=edge_id)
                     continue
 
                 if relationship.type == "many_to_many":
@@ -464,15 +466,16 @@ class SemanticGraph:
                             custom_condition,
                             edge_id,
                         )
-                        add_edge(
-                            related_instance,
-                            model_name,
-                            remote_keys,
-                            local_keys,
-                            "one_to_many",
-                            _reverse_custom_join_condition(custom_condition),
-                            edge_id,
-                        )
+                        if reversible:
+                            add_edge(
+                                related_instance,
+                                model_name,
+                                remote_keys,
+                                local_keys,
+                                "one_to_many",
+                                _reverse_custom_join_condition(custom_condition),
+                                edge_id,
+                            )
                         continue
 
                     junction_self_fks, junction_related_fks = relationship.junction_key_columns()
@@ -487,7 +490,8 @@ class SemanticGraph:
                     )
 
                     add_edge(model_name, junction_model, base_pk, junction_self_fks, "one_to_many", edge_id=edge_id)
-                    add_edge(junction_model, model_name, junction_self_fks, base_pk, "many_to_one", edge_id=edge_id)
+                    if reversible:
+                        add_edge(junction_model, model_name, junction_self_fks, base_pk, "many_to_one", edge_id=edge_id)
 
                     add_edge(
                         junction_model,
@@ -497,14 +501,15 @@ class SemanticGraph:
                         "many_to_one",
                         edge_id=edge_id,
                     )
-                    add_edge(
-                        related_instance,
-                        junction_model,
-                        related_pk,
-                        junction_related_fks,
-                        "one_to_many",
-                        edge_id=edge_id,
-                    )
+                    if reversible:
+                        add_edge(
+                            related_instance,
+                            junction_model,
+                            related_pk,
+                            junction_related_fks,
+                            "one_to_many",
+                            edge_id=edge_id,
+                        )
                     continue
 
                 # Get the join key names
@@ -533,15 +538,16 @@ class SemanticGraph:
                     custom_condition,
                     edge_id,
                 )
-                add_edge(
-                    related_instance,
-                    model_name,
-                    remote_keys,
-                    local_keys,
-                    invert_relationship(relationship.type),
-                    _reverse_custom_join_condition(custom_condition),
-                    edge_id,
-                )
+                if reversible:
+                    add_edge(
+                        related_instance,
+                        model_name,
+                        remote_keys,
+                        local_keys,
+                        invert_relationship(relationship.type),
+                        _reverse_custom_join_condition(custom_condition),
+                        edge_id,
+                    )
 
         # Role instances inherit the canonical target's explicitly role-aliased
         # outgoing relationships. Scope nested roles by their parent instance so
@@ -559,6 +565,7 @@ class SemanticGraph:
             for relationship in source_model.relationships:
                 if not relationship.active:
                     continue
+                reversible = (relationship.metadata or {}).get("reversible") is not False
                 related_model = relationship.related_model
                 if related_model not in self.models:
                     continue
@@ -567,7 +574,8 @@ class SemanticGraph:
                 self._relationship_instances[(source_instance, relationship.name)] = nested_instance
                 if relationship.type == "cross":
                     add_edge(source_instance, nested_instance, [], [], "cross", edge_id=relationship.edge_id)
-                    add_edge(nested_instance, source_instance, [], [], "cross", edge_id=relationship.edge_id)
+                    if reversible:
+                        add_edge(nested_instance, source_instance, [], [], "cross", edge_id=relationship.edge_id)
                 elif relationship.type in {"many_to_one", "one_to_one", "one_to_many"}:
                     if relationship.type == "many_to_one":
                         local_keys = relationship.foreign_key_columns
@@ -589,15 +597,16 @@ class SemanticGraph:
                         custom_condition,
                         relationship.edge_id,
                     )
-                    add_edge(
-                        nested_instance,
-                        source_instance,
-                        remote_keys,
-                        local_keys,
-                        invert_relationship(relationship.type),
-                        _reverse_custom_join_condition(custom_condition),
-                        relationship.edge_id,
-                    )
+                    if reversible:
+                        add_edge(
+                            nested_instance,
+                            source_instance,
+                            remote_keys,
+                            local_keys,
+                            invert_relationship(relationship.type),
+                            _reverse_custom_join_condition(custom_condition),
+                            relationship.edge_id,
+                        )
                 elif relationship.type == "many_to_many":
                     if relationship.through:
                         raise ValueError(
@@ -624,15 +633,16 @@ class SemanticGraph:
                         custom_condition,
                         relationship.edge_id,
                     )
-                    add_edge(
-                        nested_instance,
-                        source_instance,
-                        remote_keys,
-                        local_keys,
-                        "many_to_one",
-                        _reverse_custom_join_condition(custom_condition),
-                        relationship.edge_id,
-                    )
+                    if reversible:
+                        add_edge(
+                            nested_instance,
+                            source_instance,
+                            remote_keys,
+                            local_keys,
+                            "many_to_one",
+                            _reverse_custom_join_condition(custom_condition),
+                            relationship.edge_id,
+                        )
                 pending.append((nested_instance, related_model, depth + 1))
 
     def relationship_target_instance(self, source_instance: str, relationship: Relationship) -> str:

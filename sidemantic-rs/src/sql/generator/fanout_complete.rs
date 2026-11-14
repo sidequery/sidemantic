@@ -237,8 +237,9 @@ pub(super) fn generate_entity_aggregates(
     rows.with_totals = false;
     rows.use_preaggregations = false;
     // Independent children retain their own population before their grouped
-    // outputs are joined. A single complete expression retains the ordinary
-    // dimension-domain contract, including COUNT(*) on null-extended rows.
+    // outputs are joined. A single complete expression follows the ordinary
+    // anchor: its owner, or an explicit base whose null-extended rows COUNT(*)
+    // still counts.
     let source = if independent_source {
         Some(owner.to_string())
     } else {

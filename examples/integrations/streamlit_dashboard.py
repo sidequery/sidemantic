@@ -495,10 +495,10 @@ def main():
 
     with st.expander("View Symmetric Aggregate SQL"):
         st.code(fanout_sql, language="sql")
-        if "HASH" in fanout_sql:
-            st.success("Symmetric aggregates detected! Look for HASH() function.")
-        else:
-            st.info("No symmetric aggregates needed for this query.")
+        st.caption(
+            "Each model is aggregated in its own CTE before the results are joined on the month, "
+            "so order revenue is never multiplied by the number of items."
+        )
 
 
 if __name__ == "__main__":

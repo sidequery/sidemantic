@@ -112,6 +112,22 @@ def test_schema_profiles_have_exact_pins_and_integrity() -> None:
         "0a742fc41b0999511084ea42f5070ceee19be3b542d81936c89e75b6800231a0",
     )
 
+    expected["logical-0.2.0.dev0-172a3e5"] = (
+        "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1",
+        "ea513794167c8d67e29fb7a7c537c9e2c33e718fb1e50becbe1ac389884ae662",
+        "ea513794167c8d67e29fb7a7c537c9e2c33e718fb1e50becbe1ac389884ae662",
+    )
+    expected["ontology-0.2.0.dev0-172a3e5"] = (
+        "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1",
+        "03649920d4e8e1f2b75c86007acc34fb012a5650ae66ff38df3f0aa743baacdd",
+        "228b589ad950c557199f9049eb087b0c9cf8e6acbd6dab70e1b408dd1061fde2",
+    )
+    expected["mapping-0.2.0.dev0-172a3e5"] = (
+        "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1",
+        "26a371b3a89974614157b21fe7aa10f5c2005cb14b12ae6d36f9514cd8ddc786",
+        "8db74be12cda94e23240cc502bb2ac0580b69a05431fda35ee0c9e8b7e6f096b",
+    )
+
     profiles = {profile.name: profile for profile in validation.available_schema_profiles()}
     assert set(profiles) == set(expected)
 

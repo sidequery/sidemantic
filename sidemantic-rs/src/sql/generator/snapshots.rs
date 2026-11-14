@@ -180,7 +180,11 @@ pub(super) fn try_generate(
     let dimensions = if query.skip_default_time_dimensions {
         query.dimensions.clone()
     } else {
-        generator.apply_default_time_dimensions(&query.metrics, &query.dimensions)?
+        generator.apply_default_time_dimensions(
+            &query.metrics,
+            &query.dimensions,
+            query.explicit_projection,
+        )?
     };
     let output_dimensions = generator.parse_dimension_refs(&dimensions)?;
     let mut raw_dimensions = dimensions.clone();

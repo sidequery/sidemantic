@@ -25,7 +25,13 @@ def is_logical_document_data(data: Mapping[str, object]) -> bool:
     return (
         "semantic_model" in data
         or "datasets" in data
-        or ("name" in data and "ontology" not in data and "ontology_mappings" not in data)
+        or (
+            "name" in data
+            and not any(
+                key in data
+                for key in ("ontology", "ontology_mappings", "ontology_ref", "semantic_model_ref", "concept_mappings")
+            )
+        )
     )
 
 
@@ -251,10 +257,34 @@ class OssieOntologyDocument(_OssieDocumentBase):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class OssieMappingDocument(_OssieDocumentBase):
+    """A standalone ontology mapping, preserved without executable scopes."""
+
+    _known_root_fields: ClassVar[frozenset[str]] = frozenset(
+        {
+            "version",
+            "name",
+            "description",
+            "ontology_ref",
+            "semantic_model_ref",
+            "concept_mappings",
+            "custom_extensions",
+        }
+    )
+
+    def __post_init__(self) -> None:
+        super(OssieMappingDocument, self).__post_init__()
+        if not isinstance(self.canonical_data, FrozenJSONObject):
+            raise TypeError("An Ossie mapping document must have an object root")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class UnsupportedOssieDocument(_OssieDocumentBase):
     """Parsed data that cannot yet be classified as a supported Ossie document family."""
 
     reason: str | None = None
 
 
-OssieDocument: TypeAlias = OssieLogicalDocument | OssieOntologyDocument | UnsupportedOssieDocument
+OssieDocument: TypeAlias = (
+    OssieLogicalDocument | OssieOntologyDocument | OssieMappingDocument | UnsupportedOssieDocument
+)

@@ -10,6 +10,7 @@ mod fanout_complete;
 mod imported_totals;
 mod join_kind;
 mod options;
+mod ossie_wide;
 mod retention;
 mod snapshots;
 mod source_projection;
@@ -60,6 +61,10 @@ pub struct SemanticQuery {
     pub preagg_database: Option<String>,
     pub preagg_schema: Option<String>,
     pub skip_default_time_dimensions: bool,
+    /// The caller's projection is complete, as in a SQL SELECT list. A model's
+    /// default time dimension is then added only for a metric that needs a
+    /// time axis, never as a grouping key for ordinary aggregates.
+    pub explicit_projection: bool,
     pub aliases: HashMap<String, String>,
     pub timezone: Option<String>,
     pub with_totals: bool,
@@ -173,6 +178,8 @@ struct RollupFilters {
 pub struct SqlGenerator<'a> {
     graph: &'a SemanticGraph,
     dialect: DialectType,
+    /// Where a caller re-emits this generator's SQL, when not in `dialect`.
+    emitted_dialect: Option<DialectType>,
     timezone: Option<String>,
 }
 
@@ -181,12 +188,21 @@ impl<'a> SqlGenerator<'a> {
         Self {
             graph,
             dialect: SOURCE_DIALECT,
+            emitted_dialect: None,
             timezone: None,
         }
     }
 
     pub fn with_dialect(mut self, dialect: DialectType) -> Self {
         self.dialect = dialect;
+        self
+    }
+
+    /// The semantic SQL rewriter generates leaves in the source dialect and
+    /// emits the whole statement in another. Constructs that the emitted
+    /// dialect cannot plan must already be generated in a form it accepts.
+    pub(crate) fn with_emitted_dialect(mut self, dialect: DialectType) -> Self {
+        self.emitted_dialect = Some(dialect);
         self
     }
 
@@ -221,6 +237,9 @@ impl<'a> SqlGenerator<'a> {
         // parsing, AST transformation, serialization and destruction on the same
         // protected stack instead of returning a deep AST to the caller stack.
         crate::semantic_input::with_semantic_stack(|| {
+            if self.uses_latest_ossie() {
+                return self.generate_latest_ossie(query);
+            }
             if let Some(graph) = self.prepare_imported_window_dimensions()? {
                 return SqlGenerator::new(&graph)
                     .with_dialect(self.dialect)
@@ -270,7 +289,11 @@ impl<'a> SqlGenerator<'a> {
         let effective_dimensions = if query.skip_default_time_dimensions {
             query.dimensions.clone()
         } else {
-            self.apply_default_time_dimensions(&query.metrics, &query.dimensions)?
+            self.apply_default_time_dimensions(
+                &query.metrics,
+                &query.dimensions,
+                query.explicit_projection,
+            )?
         };
 
         // Parse all references
@@ -414,8 +437,8 @@ impl<'a> SqlGenerator<'a> {
             }
         }
 
-        // Ordinary queries preserve the dimension domain, including zero-count
-        // related rows. Aggregate children instead retain their source domain.
+        // The measure owner is the preserved side, as in each aggregate child:
+        // dimension models are LEFT JOINed onto it.
         let base_model = query
             .consumption_base_model
             .as_deref()
@@ -656,6 +679,8 @@ impl<'a> SqlGenerator<'a> {
                     &available,
                 ));
             };
+            let sql_expr =
+                self.matched_dimension_sql(sql_expr, dim_ref, &base_model, &join_paths)?;
             let output_alias = self.output_alias(&dim_ref.model, &dim_ref.alias, &alias_collisions);
 
             group_expressions.push(sql_expr.clone());
@@ -1161,7 +1186,11 @@ impl<'a> SqlGenerator<'a> {
         let effective_dimensions = if query.skip_default_time_dimensions {
             query.dimensions.clone()
         } else {
-            self.apply_default_time_dimensions(&query.metrics, &query.dimensions)?
+            self.apply_default_time_dimensions(
+                &query.metrics,
+                &query.dimensions,
+                query.explicit_projection,
+            )?
         };
         let dimension_refs = self.parse_dimension_refs(&effective_dimensions)?;
         let metric_refs = self.parse_metric_refs(&query.metrics)?;
@@ -1732,15 +1761,14 @@ impl<'a> SqlGenerator<'a> {
         dimensions: &[DimensionRef],
         metrics: &[MetricRef],
     ) -> Option<String> {
-        // A role describes rows of its owner when that owner supplies the measures.
-        // Otherwise preserve dimension-first domain selection.
+        // The model that owns every selected measure is the preserved side:
+        // dimension models are LEFT JOINed onto it, so facts without a matching
+        // dimension row land in a NULL group and a breakdown adds up to the
+        // ungrouped total. Without a single owner, dimensions come first.
         if let Some(metric) = metrics.first() {
             if metrics
                 .iter()
                 .all(|candidate| candidate.model == metric.model)
-                && dimensions.iter().any(|dimension| {
-                    self.graph.role_root_owner(&dimension.model) == Some(metric.model.as_str())
-                })
             {
                 return Some(metric.model.clone());
             }
@@ -2554,6 +2582,21 @@ impl<'a> SqlGenerator<'a> {
         Ok(false)
     }
 
+    /// NULL-safe equality that the target can plan as a FULL JOIN condition.
+    fn full_join_null_safe_equality(&self, left: &str, right: &str) -> String {
+        if self.emitted_dialect.unwrap_or(self.dialect) == DialectType::PostgreSQL {
+            // PostgreSQL only plans FULL JOIN on hash- or merge-joinable
+            // operators, which excludes IS NOT DISTINCT FROM. Array equality
+            // is both, keeps the column type's own comparison, and treats
+            // NULL elements as equal. Wrapping an array-valued key turns both
+            // NULL and the empty array into the empty array, so the keys must
+            // also agree on being NULL.
+            format!("ARRAY[{left}] = ARRAY[{right}] AND ({left} IS NULL) = ({right} IS NULL)")
+        } else {
+            format!("{left} IS NOT DISTINCT FROM {right}")
+        }
+    }
+
     fn generate_with_preaggregation(
         &self,
         query: &SemanticQuery,
@@ -2695,7 +2738,7 @@ impl<'a> SqlGenerator<'a> {
         sql.push('\n');
         sql.push_str(&format!("FROM {}", cte_names[0]));
 
-        for cte_name in cte_names.iter().skip(1) {
+        for (index, cte_name) in cte_names.iter().enumerate().skip(1) {
             if dimension_refs.is_empty() {
                 sql.push_str(&format!("\nCROSS JOIN {cte_name}"));
             } else {
@@ -2703,9 +2746,19 @@ impl<'a> SqlGenerator<'a> {
                     .iter()
                     .map(|dim_ref| {
                         let dim_alias = self.quote_identifier(&dim_ref.alias);
-                        format!(
-                            "{}.{} IS NOT DISTINCT FROM {cte_name}.{dim_alias}",
-                            cte_names[0], dim_alias
+                        // A group can first appear in any preceding source.
+                        let previous = cte_names[..index]
+                            .iter()
+                            .map(|previous| format!("{previous}.{dim_alias}"))
+                            .collect::<Vec<_>>();
+                        let previous = if previous.len() == 1 {
+                            previous[0].clone()
+                        } else {
+                            format!("COALESCE({})", previous.join(", "))
+                        };
+                        self.full_join_null_safe_equality(
+                            &previous,
+                            &format!("{cte_name}.{dim_alias}"),
                         )
                     })
                     .collect::<Vec<_>>();
@@ -4393,11 +4446,21 @@ impl<'a> SqlGenerator<'a> {
         value.replace('\'', "''")
     }
 
+    /// Add each selected metric model's default time dimension, at its default
+    /// grain, unless a time dimension of that model is already selected.
+    ///
+    /// A metrics-only query takes its grain from the default. A query that
+    /// names its own dimensions, or whose projection is fixed by the caller
+    /// (`explicit_projection`), keeps exactly that grain for ordinary
+    /// aggregates: grouping them by a time dimension nobody selected splits
+    /// their totals. Metrics that need a time axis always receive it.
     fn apply_default_time_dimensions(
         &self,
         metrics: &[String],
         dimensions: &[String],
+        explicit_projection: bool,
     ) -> Result<Vec<String>> {
+        let grain_is_explicit = explicit_projection || !dimensions.is_empty();
         let mut result = dimensions.to_vec();
         let mut models_with_time_dims: HashSet<String> = HashSet::new();
 
@@ -4421,22 +4484,34 @@ impl<'a> SqlGenerator<'a> {
             // Graph calculations are scalar unless dimensions were requested.
             // Only cumulative graph metrics inherit a dependency's time grain
             // because their window needs an ordering dimension.
-            if self
-                .graph
-                .get_metric(metric_ref)
-                .is_some_and(|metric| metric.r#type != MetricType::Cumulative)
-            {
+            let graph_metric = self.graph.get_metric(metric_ref);
+            if graph_metric.is_some_and(|metric| metric.r#type != MetricType::Cumulative) {
                 continue;
             }
-            let model_name =
-                if let Some((model_name, _, _)) = self.exact_metric_reference(metric_ref)? {
-                    model_name
-                } else {
-                    if !metric_ref.contains('.') {
-                        continue;
-                    }
-                    self.graph.parse_reference(metric_ref)?.0
-                };
+            let (model_name, metric_name) = if let Some((model_name, metric_name, _)) =
+                self.exact_metric_reference(metric_ref)?
+            {
+                (model_name, metric_name)
+            } else {
+                if !metric_ref.contains('.') {
+                    continue;
+                }
+                let (model_name, metric_name, _) = self.graph.parse_reference(metric_ref)?;
+                (model_name, metric_name)
+            };
+
+            // Checked per metric, before the model is marked as handled: an
+            // ordinary aggregate must not hide a sibling that needs the axis.
+            if grain_is_explicit {
+                let metric = graph_metric.or_else(|| {
+                    self.graph
+                        .get_model(&model_name)
+                        .and_then(|model| model.get_metric(&metric_name))
+                });
+                if !metric.is_some_and(Metric::requires_time_axis) {
+                    continue;
+                }
+            }
 
             if !seen_models.insert(model_name.clone()) {
                 continue;
@@ -4517,7 +4592,9 @@ impl<'a> SqlGenerator<'a> {
             return Ok(None);
         }
         let remote_name = remote_names.iter().next().expect("one remote model");
-        if explicit_anchor.is_some_and(|anchor| anchor != remote_name) {
+        // The rollup stands in for the measure model, which this route keeps
+        // as the preserved side. Any other explicit anchor needs raw planning.
+        if explicit_anchor.is_some_and(|anchor| anchor != model_name) {
             return Ok(None);
         }
         let Some(remote) = self.graph.get_model(remote_name) else {
@@ -4589,6 +4666,11 @@ impl<'a> SqlGenerator<'a> {
         let rollup_alias = "sidemantic_join_rollup";
         let remote_alias = "sidemantic_join_dimension";
         let mut select_parts = Vec::new();
+        // Remote keys and dimensions are computed inside the joined subquery.
+        // Evaluated after the LEFT JOIN, an expression such as
+        // COALESCE(name, 'unknown') would turn the NULL group of unmatched keys
+        // into an ordinary dimension value.
+        let mut remote_projections = Vec::new();
         for dimension in dimension_refs {
             let owner = if &dimension.model == model_name {
                 model
@@ -4636,6 +4718,11 @@ impl<'a> SqlGenerator<'a> {
             if let Some(grain) = effective_grain {
                 expression = self.date_trunc_sql(grain, &expression)?;
             }
+            if &dimension.model != model_name {
+                let projected = format!("__sidemantic_dimension_{}", remote_projections.len());
+                remote_projections.push(format!("{expression} AS {projected}"));
+                expression = format!("{remote_alias}.{projected}");
+            }
             select_parts.push(format!(
                 "{expression} AS {}",
                 self.quote_identifier(&dimension.alias)
@@ -4661,23 +4748,25 @@ impl<'a> SqlGenerator<'a> {
             ));
         }
         let mut conditions = Vec::new();
-        for (from, to) in hop.from_keys.iter().zip(&hop.to_keys) {
+        for (index, (from, to)) in hop.from_keys.iter().zip(&hop.to_keys).enumerate() {
             let target = crate::core::key_expression(remote, to, Some(remote_alias), self.dialect)?;
+            let projected = format!("__sidemantic_join_key_{index}");
+            remote_projections.push(format!("{} AS {projected}", self.emit_expression(&target)?));
             conditions.push(format!(
-                "{rollup_alias}.{} = ({})",
-                self.quote_identifier(from),
-                self.emit_expression(&target)?
+                "{rollup_alias}.{} = {remote_alias}.{projected}",
+                self.quote_identifier(from)
             ));
         }
-        // Match Python's dimension domain: retain remote members without facts.
+        // Same population as raw planning: every stored fact group is kept and
+        // an unmatched join key lands in a NULL dimension group.
         let source = self.preaggregation_source(
             model,
             preagg,
             query.preagg_database.as_deref(),
             query.preagg_schema.as_deref(),
         )?;
-        let mut sql = format!("SELECT\n  {}\nFROM {} AS {remote_alias}\nLEFT JOIN {source} AS {rollup_alias}\n  ON {}\nGROUP BY {}",
-            select_parts.join(",\n  "), self.model_from_clause(remote, None), conditions.join(" AND "),
+        let mut sql = format!("SELECT\n  {}\nFROM {source} AS {rollup_alias}\nLEFT JOIN (\n  SELECT\n    {}\n  FROM {} AS {remote_alias}\n) AS {remote_alias}\n  ON {}\nGROUP BY {}",
+            select_parts.join(",\n  "), remote_projections.join(",\n    "), self.model_from_clause(remote, None), conditions.join(" AND "),
             (1..=dimension_refs.len()).map(|index| index.to_string()).collect::<Vec<_>>().join(", "));
         if !query.order_by.is_empty() {
             let mut order_parts = Vec::new();
@@ -4711,11 +4800,18 @@ impl<'a> SqlGenerator<'a> {
                 let Some(output) = output else {
                     return Ok(None);
                 };
-                order_parts.push(
-                    format!("{} {direction}", self.quote_identifier(output))
-                        .trim()
-                        .to_owned(),
-                );
+                // Unmatched join keys add a NULL dimension group; order it as
+                // raw planning does: first ascending, last descending. MySQL
+                // and SQL Server have no NULLS FIRST/LAST syntax, and sort
+                // NULLs exactly that way by default.
+                let mut ordered = format!("{} {direction}", self.quote_identifier(output))
+                    .trim()
+                    .to_owned();
+                if !matches!(self.dialect, DialectType::MySQL | DialectType::TSQL) {
+                    let nulls = if direction == "DESC" { "LAST" } else { "FIRST" };
+                    ordered.push_str(&format!(" NULLS {nulls}"));
+                }
+                order_parts.push(ordered);
             }
             sql.push_str(&format!("\nORDER BY {}", order_parts.join(", ")));
         }
@@ -6002,6 +6098,71 @@ impl<'a> SqlGenerator<'a> {
         expr.replace("{model}", &self.quote_identifier(alias))
     }
 
+    /// Keep a joined model's computed dimension NULL on rows its join did not match.
+    ///
+    /// Dimension expressions are evaluated after the join. Unguarded, an
+    /// expression such as COALESCE(name, 'unknown') would give a measure row
+    /// without a matching dimension row an ordinary value instead of the NULL
+    /// group, unlike Python, which computes dimensions inside the model CTE.
+    fn matched_dimension_sql(
+        &self,
+        sql_expr: String,
+        dim_ref: &DimensionRef,
+        base_model: &str,
+        join_paths: &HashMap<String, JoinPath>,
+    ) -> Result<String> {
+        if dim_ref.model == base_model {
+            return Ok(sql_expr);
+        }
+        let Some(model) = self.graph.get_model(&dim_ref.model) else {
+            return Ok(sql_expr);
+        };
+        let Some(dimension) = model.get_dimension(&dim_ref.name) else {
+            return Ok(sql_expr);
+        };
+        // A physical column is already NULL on unmatched rows, also behind a
+        // time grain; window dimensions are computed in the model CTE.
+        let Some(authored) = dimension
+            .sql
+            .as_deref()
+            .filter(|_| dimension.window.is_none())
+        else {
+            return Ok(sql_expr);
+        };
+        if matches!(
+            parse_semantic_expression(authored),
+            Ok(Expression::Column(_))
+        ) {
+            return Ok(sql_expr);
+        }
+        let Some(step) = join_paths.get(&dim_ref.model).and_then(|path| {
+            path.steps
+                .iter()
+                .rev()
+                .find(|step| step.to_model == dim_ref.model)
+        }) else {
+            return Ok(sql_expr);
+        };
+        if step.relationship_type == RelationshipType::Cross || step.to_keys.is_empty() {
+            return Ok(sql_expr);
+        }
+        // An equality join never matches a NULL key, so a non-NULL key on the
+        // joined side identifies a matched row.
+        let alias = self.model_alias(&dim_ref.model);
+        let matched = step
+            .to_keys
+            .iter()
+            .map(|key| {
+                Ok(format!(
+                    "{} IS NOT NULL",
+                    self.key_sql(model, key, Some(&alias))?
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .join(" AND ");
+        Ok(format!("CASE WHEN {matched} THEN {sql_expr} END"))
+    }
+
     fn dimension_select_expression(
         &self,
         dimension: &crate::core::Dimension,
@@ -7144,12 +7305,12 @@ mod tests {
         graph.set_metric_scopes(HashMap::new()).unwrap();
         let generator = SqlGenerator::new(&graph);
         assert!(generator
-            .apply_default_time_dimensions(&["total_revenue".into()], &[])
+            .apply_default_time_dimensions(&["total_revenue".into()], &[], false)
             .unwrap()
             .is_empty());
         assert_eq!(
             generator
-                .apply_default_time_dimensions(&["orders.revenue".into()], &[])
+                .apply_default_time_dimensions(&["orders.revenue".into()], &[], false)
                 .unwrap(),
             vec!["orders.day__day"]
         );
@@ -7158,6 +7319,52 @@ mod tests {
             .unwrap();
         assert!(!sql.contains("GROUP BY"), "{sql}");
         assert!(!sql.contains("DATE_TRUNC"), "{sql}");
+    }
+
+    #[test]
+    fn default_time_dimension_never_regroups_an_explicit_grain() {
+        let mut graph = SemanticGraph::new();
+        let mut model = Model::new("orders", "id")
+            .with_table("orders")
+            .with_dimension(Dimension::time("day"))
+            .with_dimension(Dimension::categorical("status"))
+            .with_metric(Metric::sum("revenue", "amount"))
+            .with_metric(Metric::cumulative("running_revenue", "revenue"));
+        model.default_time_dimension = Some("day".into());
+        graph.add_model(model).unwrap();
+        let generator = SqlGenerator::new(&graph);
+        let status = vec!["orders.status".to_string()];
+        let defaults = |metrics: &[&str], dimensions: &[String], explicit_projection| {
+            let metrics: Vec<String> = metrics.iter().map(|metric| metric.to_string()).collect();
+            generator
+                .apply_default_time_dimensions(&metrics, dimensions, explicit_projection)
+                .unwrap()
+        };
+
+        // Selected dimensions are the whole grain of an ordinary aggregate.
+        assert_eq!(defaults(&["orders.revenue"], &status, false), status);
+        // A SQL projection is complete even when it lists no dimension.
+        assert!(defaults(&["orders.revenue"], &[], true).is_empty());
+        // A running total still needs its time axis, also behind a sibling.
+        for metrics in [
+            vec!["orders.running_revenue"],
+            vec!["orders.revenue", "orders.running_revenue"],
+        ] {
+            assert_eq!(
+                defaults(&metrics, &status, false),
+                vec!["orders.status", "orders.day"]
+            );
+            assert_eq!(defaults(&metrics, &[], true), vec!["orders.day"]);
+        }
+
+        let sql = generator
+            .generate(
+                &SemanticQuery::new()
+                    .with_metrics(vec!["orders.revenue".into()])
+                    .with_dimensions(status),
+            )
+            .unwrap();
+        assert!(!sql.contains("day"), "{sql}");
     }
 
     #[test]
@@ -7266,18 +7473,86 @@ mod tests {
             .with_metrics(vec!["orders.revenue".into()])
             .with_dimensions(vec!["customers.name".into()])
             .with_use_preaggregations(true);
-        assert!(generator
-            .generate(&query)
-            .unwrap()
-            .contains("orders_preagg_daily"));
+        // The rollup stands in for orders, the preserved side of this query.
+        for source in [None, Some("orders")] {
+            let sql = generator.generate_from_model(&query, source).unwrap();
+            assert!(
+                sql.contains("FROM orders_preagg_daily AS sidemantic_join_rollup"),
+                "{sql}"
+            );
+            assert!(sql.contains("LEFT JOIN (\n  SELECT"), "{sql}");
+            assert!(
+                sql.contains("FROM customers AS sidemantic_join_dimension"),
+                "{sql}"
+            );
+        }
+        // Any other anchor needs every row of that model, so it reads raw data.
         let sql = generator
-            .generate_from_model(&query, Some("orders"))
+            .generate_from_model(&query, Some("customers"))
             .unwrap();
         assert!(!sql.contains("orders_preagg_daily"), "{sql}");
         let local_first =
             query.with_dimensions(vec!["orders.status".into(), "customers.name".into()]);
         let sql = generator.generate(&local_first).unwrap();
-        assert!(!sql.contains("orders_preagg_daily"), "{sql}");
+        assert!(sql.contains("orders_preagg_daily"), "{sql}");
+    }
+
+    #[test]
+    fn joined_computed_dimension_stays_null_for_unmatched_rows() {
+        let orders: Model = serde_json::from_value(serde_json::json!({
+            "name":"orders", "table":"orders", "primary_key":"id",
+            "dimensions":[{"name":"customer_id"}],
+            "metrics":[{"name":"revenue","agg":"sum","sql":"amount"}],
+            "relationships":[{"name":"customers","type":"many_to_one","foreign_key":"customer_id"}],
+            "pre_aggregations":[{"name":"daily","dimensions":["customer_id"],"measures":["revenue"]}]
+        }))
+        .unwrap();
+        let customers = Model::new("customers", "id")
+            .with_table("customers")
+            .with_dimension(Dimension::categorical("region"))
+            .with_dimension(Dimension::categorical("name").with_sql("COALESCE(name, 'unknown')"));
+        let mut graph = SemanticGraph::new();
+        graph.add_model(orders).unwrap();
+        graph.add_model(customers).unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["orders.revenue".into()])
+            .with_dimensions(vec!["customers.name".into(), "customers.region".into()])
+            .with_order_by(vec!["customers.name".into(), "orders.revenue DESC".into()]);
+
+        // Raw planning evaluates dimensions after the join, so the computed one
+        // is guarded by the joined key; a physical column needs no guard.
+        let raw = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(
+            raw.contains("CASE WHEN customers_cte.id IS NOT NULL THEN COALESCE("),
+            "{raw}"
+        );
+        assert!(raw.contains("customers_cte.region AS region"), "{raw}");
+
+        // The rollup route computes it inside the joined subquery instead.
+        let routed = query.clone().with_use_preaggregations(true);
+        let sql = SqlGenerator::new(&graph).generate(&routed).unwrap();
+        let (outer, joined) = sql.split_once("LEFT JOIN (").unwrap();
+        assert!(outer.contains("orders_preagg_daily"), "{sql}");
+        assert!(!outer.contains("COALESCE(\"sidemantic"), "{sql}");
+        assert!(
+            joined.contains("'unknown') AS __sidemantic_dimension_0"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY name NULLS FIRST, revenue DESC NULLS LAST"),
+            "{sql}"
+        );
+
+        // MySQL and SQL Server have no NULLS FIRST/LAST; their default order
+        // already places NULLs first ascending and last descending.
+        for dialect in [DialectType::MySQL, DialectType::TSQL] {
+            let sql = SqlGenerator::new(&graph)
+                .with_dialect(dialect)
+                .generate(&routed)
+                .unwrap();
+            assert!(sql.contains("orders_preagg_daily"), "{sql}");
+            assert!(!sql.contains("NULLS"), "{sql}");
+        }
     }
 
     #[test]
@@ -8250,8 +8525,8 @@ models:
 
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("LEFT JOIN orders_cte AS orders_cte"));
-        assert!(sql.contains("customers_cte.id = orders_cte.customers_id"));
+        assert!(sql.contains("LEFT JOIN customers_cte AS customers_cte"));
+        assert!(sql.contains("orders_cte.customers_id = customers_cte.id"));
     }
 
     #[test]
@@ -8308,8 +8583,8 @@ models:
 
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("order_items_cte.order_id = shipments_cte.order_id"));
-        assert!(sql.contains("order_items_cte.item_id = shipments_cte.item_id"));
+        assert!(sql.contains("shipments_cte.order_id = order_items_cte.order_id"));
+        assert!(sql.contains("shipments_cte.item_id = order_items_cte.item_id"));
         assert!(sql.contains(" AND "));
     }
 
@@ -8368,10 +8643,14 @@ models:
 
         let sql = generator.generate(&query).unwrap();
 
-        assert!(sql.contains("products_cte.tenant_id = order_items_cte.tenant_id"));
-        assert!(sql.contains("products_cte.product_id = order_items_cte.product_id"));
-        assert!(sql.contains("order_items_cte.tenant_id = orders_cte.tenant_id"));
-        assert!(sql.contains("order_items_cte.order_id = orders_cte.order_id"));
+        for condition in [
+            "orders_cte.tenant_id = order_items_cte.tenant_id",
+            "orders_cte.order_id = order_items_cte.order_id",
+            "order_items_cte.tenant_id = products_cte.tenant_id",
+            "order_items_cte.product_id = products_cte.product_id",
+        ] {
+            assert!(sql.contains(condition), "{condition}: {sql}");
+        }
     }
 
     #[test]
@@ -8387,6 +8666,75 @@ models:
         let sql = generator.generate(&query).unwrap();
 
         assert!(sql.contains("WHERE status = 'completed'"));
+    }
+
+    #[test]
+    fn independent_sources_join_on_null_safe_keys_from_every_preceding_source() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("customers", "id")
+                    .with_table("customers")
+                    .with_dimension(Dimension::categorical("country"))
+                    .with_metric(Metric::count("customer_count")),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("orders")
+                    .with_metric(Metric::sum("revenue", "amount"))
+                    .with_relationship(Relationship::many_to_one("customers")),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("order_items", "id")
+                    .with_table("order_items")
+                    .with_metric(Metric::sum("quantity", "qty"))
+                    .with_relationship(Relationship::many_to_one("orders")),
+            )
+            .unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec![
+                "orders.revenue".into(),
+                "order_items.quantity".into(),
+                "customers.customer_count".into(),
+            ])
+            .with_dimensions(vec!["customers.country".into()]);
+
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN customers_preagg ON COALESCE(orders_preagg.country, \
+                 order_items_preagg.country) IS NOT DISTINCT FROM customers_preagg.country"
+            ),
+            "{sql}"
+        );
+
+        // PostgreSQL rejects FULL JOIN ... ON a IS NOT DISTINCT FROM b.
+        let sql = SqlGenerator::new(&graph)
+            .with_dialect(DialectType::PostgreSQL)
+            .generate(&query)
+            .unwrap();
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN order_items_preagg ON ARRAY[orders_preagg.country] \
+                 = ARRAY[order_items_preagg.country] \
+                 AND (orders_preagg.country IS NULL) = (order_items_preagg.country IS NULL)"
+            ),
+            "{sql}"
+        );
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN customers_preagg ON ARRAY[COALESCE(orders_preagg.country, \
+                 order_items_preagg.country)] = ARRAY[customers_preagg.country] \
+                 AND (COALESCE(orders_preagg.country, order_items_preagg.country) IS NULL) \
+                 = (customers_preagg.country IS NULL)"
+            ),
+            "{sql}"
+        );
+        assert!(!sql.contains("IS NOT DISTINCT FROM"), "{sql}");
     }
 
     #[test]

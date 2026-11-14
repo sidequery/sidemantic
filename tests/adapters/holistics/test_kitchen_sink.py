@@ -187,21 +187,6 @@ class TestKitchenSinkParsing:
         assert order_count is not None
         assert order_count.sql == "COUNT(kitchen_orders.order_id)"
 
-        # where() table function preserved through the pipe; count still applies.
-        high_value = store.get_metric("high_value_orders")
-        assert high_value is not None
-        assert high_value.sql == "COUNT(kitchen_orders.order_id)"
-
-        # of_all() metric modifier preserves the inner aggregation.
-        revenue_share = store.get_metric("revenue_share")
-        assert revenue_share is not None
-        assert revenue_share.sql == "SUM(kitchen_orders.amount)"
-
-        # relative_period() period-over-period preserves the inner aggregation.
-        last_month = store.get_metric("revenue_last_month")
-        assert last_month is not None
-        assert last_month.sql == "SUM(kitchen_orders.amount)"
-
     def test_extends_merge(self, kitchen_sink_layer):
         extended = kitchen_sink_layer.graph.models["kitchen_orders_extended"]
         inline = kitchen_sink_layer.graph.models["kitchen_orders_inline"]

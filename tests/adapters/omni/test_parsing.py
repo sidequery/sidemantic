@@ -187,7 +187,7 @@ def test_omni_time_comparison_export():
         adapter.export(graph, tmpdir_path)
 
         # Read exported file
-        view_file = tmpdir_path / "views" / "sales.yaml"
+        view_file = tmpdir_path / "views" / "sales.view.yaml"
         assert view_file.exists()
 
         with open(view_file) as f:
@@ -312,8 +312,9 @@ def test_omni_one_to_many_join_sql_not_reversed(tmp_path):
     # Normalize whitespace so we can match the join condition regardless of layout.
     flat = " ".join(sql.split())
 
-    # Correct join pairs customers.id with orders.customer_id.
-    assert "customers_cte.id = orders_cte.customer_id" in flat
+    # Correct join pairs customers.id with orders.customer_id; orders owns the
+    # measure, so it is the left side of the join.
+    assert "orders_cte.customer_id = customers_cte.id" in flat
     # The reversed (buggy) pairing joins the customers FK to the orders PK, and
     # even references a customer_id column that customers does not have.
     assert "customers_cte.customer_id = orders_cte.id" not in flat
@@ -350,8 +351,8 @@ def test_omni_one_to_many_export_round_trip(tmp_path):
 
     # The exported on_sql must place the local key on the customers side and the
     # related FK on the orders side: ${customers.id} = ${orders.customer_id}.
-    model_def = yaml.safe_load((tmp_path / "model.yaml").read_text())
-    on_sql = model_def["relationships"][0]["on_sql"]
+    model_def = yaml.safe_load((tmp_path / "relationships.yaml").read_text())
+    on_sql = model_def[0]["on_sql"]
     assert on_sql == "${customers.id} = ${orders.customer_id}"
 
     reimported = adapter.parse(tmp_path)
@@ -941,7 +942,7 @@ def test_omni_export_simple_model():
         assert views_dir.exists()
 
         # Read back and verify
-        view_file = views_dir / "test_model.yaml"
+        view_file = views_dir / "test_model.view.yaml"
         assert view_file.exists()
 
         with open(view_file) as f:
@@ -968,7 +969,7 @@ def test_omni_export_simple_model():
 
 
 def test_omni_export_with_relationships():
-    """Test exporting models with relationships creates model.yaml."""
+    """Test exporting models with relationships creates relationships.yaml."""
     from sidemantic.core.relationship import Relationship
 
     model1 = Model(
@@ -990,17 +991,16 @@ def test_omni_export_with_relationships():
     with tempfile.TemporaryDirectory() as tmpdir:
         adapter.export(graph, tmpdir)
 
-        # Verify model.yaml with relationships was created
-        model_file = Path(tmpdir) / "model.yaml"
+        # Verify relationships.yaml was created
+        model_file = Path(tmpdir) / "relationships.yaml"
         assert model_file.exists()
 
         with open(model_file) as f:
             data = yaml.safe_load(f)
 
-        assert "relationships" in data
-        assert len(data["relationships"]) >= 1
+        assert len(data) >= 1
 
-        rel = data["relationships"][0]
+        rel = data[0]
         assert rel["join_from_view"] == "orders"
         assert rel["join_to_view"] == "customers"
         assert rel["relationship_type"] == "many_to_one"
@@ -1027,7 +1027,7 @@ def test_omni_export_dimension_type_mapping():
     with tempfile.TemporaryDirectory() as tmpdir:
         adapter.export(graph, tmpdir)
 
-        with open(Path(tmpdir) / "views" / "test.yaml") as f:
+        with open(Path(tmpdir) / "views" / "test.view.yaml") as f:
             data = yaml.safe_load(f)
 
         dims = data["dimensions"]
@@ -1061,7 +1061,7 @@ def test_omni_export_measure_aggregation_mapping():
     with tempfile.TemporaryDirectory() as tmpdir:
         adapter.export(graph, tmpdir)
 
-        with open(Path(tmpdir) / "views" / "test.yaml") as f:
+        with open(Path(tmpdir) / "views" / "test.view.yaml") as f:
             data = yaml.safe_load(f)
 
         measures = data["measures"]
@@ -1095,7 +1095,7 @@ def test_omni_export_with_labels():
     with tempfile.TemporaryDirectory() as tmpdir:
         adapter.export(graph, tmpdir)
 
-        with open(Path(tmpdir) / "views" / "test.yaml") as f:
+        with open(Path(tmpdir) / "views" / "test.view.yaml") as f:
             data = yaml.safe_load(f)
 
         assert data["dimensions"]["status"]["label"] == "Order Status"

@@ -33,6 +33,16 @@ _FORBIDDEN_NODE_TYPES = tuple(
 )
 
 
+def is_aggregate_filter(node: exp.Expression) -> bool:
+    """A filter modifier is not a standalone WHERE clause."""
+    if not isinstance(node, exp.Filter) or not isinstance(node.expression, exp.Where):
+        return False
+    aggregate = node.this
+    if isinstance(aggregate, exp.WithinGroup):
+        aggregate = aggregate.this
+    return isinstance(aggregate, exp.AggFunc)
+
+
 def scalar_sql_expression_error(expression: str, *, sqlglot_dialect: str | None, row_level: bool = False) -> str | None:
     """Return why SQL is not one scalar Ossie expression, otherwise ``None``.
 
@@ -52,7 +62,11 @@ def scalar_sql_expression_error(expression: str, *, sqlglot_dialect: str | None,
     if isinstance(root, (exp.Alias, exp.Aliases, exp.Star)):
         return "expression must be a scalar value, without a projection alias or wildcard"
     for node in root.walk():
-        if isinstance(node, _FORBIDDEN_NODE_TYPES):
+        if isinstance(node, exp.Filter) and not is_aggregate_filter(node):
+            return "FILTER must modify an aggregate expression"
+        if isinstance(node, _FORBIDDEN_NODE_TYPES) and not (
+            isinstance(node, exp.Where) and is_aggregate_filter(node.parent) and node is node.parent.expression
+        ):
             return f"Ossie expressions cannot contain {type(node).__name__}"
         if row_level and isinstance(node, exp.AggFunc) and node.find_ancestor(exp.Window) is None:
             return "Ossie dataset fields are row-level expressions and cannot contain aggregates"

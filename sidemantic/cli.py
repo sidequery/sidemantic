@@ -6,8 +6,8 @@ import json
 import sys
 from pathlib import Path
 
-import click
 import typer
+from typer.core import TyperGroup
 
 from sidemantic import __version__
 from sidemantic.cli_contract import (
@@ -48,6 +48,7 @@ from sidemantic.cli_polish import (
     emit_long_output,
     emit_next_step,
 )
+from sidemantic.click_compat import Context, ParameterSource
 from sidemantic.config import SidemanticConfig
 from sidemantic.project import ProjectContext, ProjectResolutionError
 
@@ -354,8 +355,8 @@ def main(
         if output_format not in OUTPUT_FORMATS:
             raise InvocationError(f"--format must be one of: {', '.join(OUTPUT_FORMATS)}")
 
-    format_explicit = ctx.get_parameter_source("output_format") is click.core.ParameterSource.COMMANDLINE
-    plain_explicit = ctx.get_parameter_source("plain") is click.core.ParameterSource.COMMANDLINE
+    format_explicit = ctx.get_parameter_source("output_format") is ParameterSource.COMMANDLINE
+    plain_explicit = ctx.get_parameter_source("plain") is ParameterSource.COMMANDLINE
 
     cli_state().reset(
         debug=bool(debug),
@@ -391,9 +392,9 @@ def main(
 
     def source_priority(name: str, configured_value: object) -> int:
         source = ctx.get_parameter_source(name)
-        if source is click.core.ParameterSource.COMMANDLINE:
+        if source is ParameterSource.COMMANDLINE:
             return 3
-        if source is click.core.ParameterSource.ENVIRONMENT:
+        if source is ParameterSource.ENVIRONMENT:
             return 2
         return 1 if configured_value else 0
 
@@ -453,9 +454,9 @@ def help_command(
     from typer.main import get_command
 
     current = get_command(app)
-    context = click.Context(current, info_name="sidemantic")
+    context = Context(current, info_name="sidemantic")
     for index, part in enumerate(command or []):
-        if not isinstance(current, click.Group):
+        if not isinstance(current, TyperGroup):
             raise InvocationError(f"{' '.join(command)} does not name a command")
         child = current.get_command(context, part)
         if child is None:
@@ -471,7 +472,7 @@ def help_command(
                 f"Run 'sidemantic help {corrected_path}' to review it."
             )
         current = child
-        context = click.Context(current, info_name=part, parent=context)
+        context = Context(current, info_name=part, parent=context)
     emit_result(current.get_help(context))
 
 
@@ -498,8 +499,107 @@ def _scaffold_payload(root: Path, created: list[Path]) -> dict[str, object]:
     return {"root": str(root), "created": [_relative_to_root(path, root) for path in sorted(created)]}
 
 
-@app.command(epilog=GROUP_EPILOG)
+def _cd_hint(root: Path) -> str:
+    """Return a ``cd`` line for next-step guidance when the project is not the cwd."""
+
+    cwd = Path.cwd().resolve()
+    return "" if root == cwd else f"  cd {_relative_to_root(root, cwd)}\n"
+
+
+def _expand_from_sources(sources: list[Path]) -> list[Path]:
+    """Resolve ``init --from`` values from the cwd, expanding glob patterns like ``data/*.csv``."""
+
+    import glob
+
+    resolved: list[Path] = []
+    for source in sources:
+        candidate = source.expanduser()
+        if glob.has_magic(str(candidate)):
+            # Match relative patterns under the cwd without treating the cwd itself as a pattern.
+            if candidate.is_absolute():
+                matches = [Path(match) for match in glob.glob(str(candidate))]
+            else:
+                matches = [Path.cwd() / match for match in glob.glob(str(candidate), root_dir=Path.cwd())]
+            if not matches:
+                raise InvocationError(f"--from pattern matched no files: {source}")
+            resolved.extend(sorted(match.resolve() for match in matches))
+            continue
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        candidate = candidate.resolve()
+        if not candidate.exists():
+            raise InvocationError(f"--from source not found: {candidate}")
+        resolved.append(candidate)
+    # A file named twice (a glob plus an explicit path) is still one source.
+    return list(dict.fromkeys(resolved))
+
+
+def _portable_config_path(path: Path, root: Path) -> str:
+    """Spell a data source path for the generated ``sidemantic.yaml``.
+
+    Sources under or beside the project root are written relative to it, which
+    the config loader resolves from the config file's directory, so the project
+    keeps working after it is moved or cloned together with its data. Sources
+    elsewhere stay absolute.
+    """
+
+    import os
+
+    from sidemantic.paths import is_within
+
+    if is_within(path, root.parent):
+        return Path(os.path.relpath(path.resolve(), root.resolve())).as_posix()
+    return str(path)
+
+
+def _absolute_duckdb_url(connection: str) -> str:
+    """Pin a cwd-relative DuckDB URL (duckdb://data.duckdb) to an absolute path.
+
+    Next-step commands run after ``cd`` into the new project, where the
+    original relative path would open a different (new, empty) database.
+    """
+
+    if not connection.startswith("duckdb://") or connection.startswith(("duckdb:///", "duckdb://md:")):
+        return connection
+    location, separator, query = connection.removeprefix("duckdb://").partition("?")
+    if location in {"", ":memory:"}:
+        return connection
+    return f"duckdb://{(Path.cwd() / Path(location).expanduser()).resolve()}{separator}{query}"
+
+
+def _unsaved_connection_comment(connection: str, root: Path) -> str:
+    """Explain, in the generated config, how to supply an unsaved --from-connection URL."""
+
+    import yaml
+
+    from sidemantic.bootstrap import connection_config_example
+
+    lines = [
+        "# `sidemantic init --from-connection` does not save the connection here because",
+        "# connection URLs can contain credentials. Pass --connection to query, test, and",
+        "# validate --live, or save the connection by uncommenting this block",
+    ]
+    example = connection_config_example(connection)
+    if example is None:
+        # A hand-written block could silently drop URL options (secure, sslmode)
+        # that project config has no field for, so do not invite one.
+        lines[-1] = "# validate --live; project config cannot express this whole URL, so keep using --connection."
+        return "\n".join(lines) + "\n"
+    if example["type"] == "duckdb":
+        database = Path(example["path"]).expanduser()
+        example["path"] = _portable_config_path(database if database.is_absolute() else Path.cwd() / database, root)
+    if "password_file" in example:
+        lines[-1] += f" and writing the password to {example['password_file']}:"
+    else:
+        lines[-1] += ":"
+    block = yaml.dump({"connection": example}, sort_keys=False, default_flow_style=False)
+    lines.extend(f"# {line}" for line in block.splitlines())
+    return "\n".join(lines) + "\n"
+
+
+@app.command(epilog=GROUP_EPILOG, context_settings={"allow_extra_args": True})
 def init(
+    ctx: typer.Context,
     directory: Path = typer.Argument(None, help="Project directory to create (defaults to the current directory)"),
     from_sources: list[Path] = typer.Option(
         None,
@@ -529,6 +629,25 @@ def init(
     try:
         import yaml as yaml_module
 
+        extra_args = [Path(arg) for arg in ctx.args]
+        if from_sources:
+            # An unquoted glob (--from data/*.csv) reaches the CLI as one --from
+            # value followed by bare file arguments. A project directory is never
+            # an existing file, so existing files among the positionals are
+            # further sources and at most one other positional is the directory.
+            positionals = ([directory] if directory is not None else []) + extra_args
+            shell_expanded = [path for path in positionals if path.expanduser().is_file()]
+            directories = [path for path in positionals if not path.expanduser().is_file()]
+            from_sources = [*from_sources, *shell_expanded]
+            directory = directories[0] if directories else None
+            extra_args = directories[1:]
+        if extra_args:
+            listing = " ".join(str(arg) for arg in extra_args)
+            raise InvocationError(
+                f"Got unexpected extra argument(s): {listing}. sidemantic init takes one project directory; "
+                "to generate models from several files, repeat --from, pass a directory (--from data/), "
+                "or quote the glob (--from 'data/*.csv')"
+            )
         if from_sources and from_connection:
             raise InvocationError("--from and --from-connection are mutually exclusive")
 
@@ -548,9 +667,10 @@ def init(
                 emit_diagnostic(f"  {_relative_to_root(path, root)}")
             emit_guidance(
                 "Next:\n"
+                f"{_cd_hint(root)}"
                 '  sidemantic query "SELECT orders.status, orders.revenue FROM orders"\n'
                 "  sidemantic test\n"
-                "  sidemantic init --from data/*.csv   # regenerate models from real data"
+                "  sidemantic init --from 'data/*.csv'   # regenerate models from real data"
             )
             return
 
@@ -561,15 +681,7 @@ def init(
             connection_str = from_connection
             init_sql = None
         else:
-            sources = []
-            for source in from_sources:
-                resolved = source.expanduser()
-                if not resolved.is_absolute():
-                    resolved = Path.cwd() / resolved
-                resolved = resolved.resolve()
-                if not resolved.exists():
-                    raise InvocationError(f"--from source not found: {resolved}")
-                sources.append(resolved)
+            sources = _expand_from_sources(from_sources)
 
             from sidemantic.datafiles import build_file_views, discover_data_files, is_data_file
 
@@ -596,13 +708,13 @@ def init(
             if db_files:
                 connection_str = f"duckdb:///{db_files[0]}"
                 init_sql = None
-                connection_config = {"type": "duckdb", "path": _relative_to_root(db_files[0], root)}
+                connection_config = {"type": "duckdb", "path": _portable_config_path(db_files[0], root)}
             else:
                 connection_str = "duckdb:///:memory:"
                 init_sql = build_file_views(data_files)
                 connection_config = {
                     "type": "files",
-                    "paths": [_relative_to_root(path, root) for path in data_files],
+                    "paths": [_portable_config_path(path, root) for path in data_files],
                 }
 
         with progress("Introspecting data and generating models"):
@@ -614,6 +726,7 @@ def init(
         created.extend(write_model_files(bootstrap, root / "models", force=force))
 
         config_path = root / "sidemantic.yaml"
+        suggested_connection_block = False
         if config_path.exists() and not force:
             emit_warning(f"Kept existing {config_path} (pass --force to regenerate)")
         else:
@@ -621,10 +734,10 @@ def init(
             if connection_config:
                 config_data["connection"] = connection_config
             header = "# Sidemantic project configuration.\n# Docs: https://sidemantic.com/sidemantic/cli\n"
-            if connection_config is None:
-                header += (
-                    "# Add a `connection:` block for your database (see docs), or pass --connection at query time.\n"
-                )
+            if from_connection:
+                connection_comment = _unsaved_connection_comment(from_connection, root)
+                suggested_connection_block = "\n# connection:\n" in connection_comment
+                header += connection_comment
             config_path.write_text(header + yaml_module.dump(config_data, sort_keys=False, default_flow_style=False))
             created.append(config_path)
 
@@ -661,12 +774,31 @@ def init(
         for note in bootstrap.notes:
             emit_diagnostic(f"  {note}")
         first_model = sorted(bootstrap.model_dicts)[0]
+        connection_option = ""
+        connection_note = ""
+        if from_connection:
+            import shlex
+
+            from sidemantic.bootstrap import redact_connection_url
+
+            displayed_connection = redact_connection_url(_absolute_duckdb_url(from_connection))
+            connection_option = f" --connection {shlex.quote(displayed_connection)}"
+            connection_note = (
+                "The connection was not saved to sidemantic.yaml because connection URLs can contain credentials.\n"
+                "Pass it with --connection as shown"
+                + (", or uncomment the connection block in sidemantic.yaml" if suggested_connection_block else "")
+                + ".\n"
+            )
+            if "****" in displayed_connection:
+                connection_note += "(**** marks a value hidden from this output.)\n"
         emit_guidance(
             "Generated models are a starting point; review and rename before sharing.\n"
+            f"{connection_note}"
             "Next:\n"
-            f'  sidemantic query "SELECT {first_model}.record_count FROM {first_model}"\n'
-            "  sidemantic test\n"
-            "  sidemantic validate --live"
+            f"{_cd_hint(root)}"
+            f'  sidemantic query "SELECT {first_model}.record_count FROM {first_model}"{connection_option}\n'
+            f"  sidemantic test{connection_option}\n"
+            f"  sidemantic validate --live{connection_option}"
         )
     except typer.Exit:
         raise
@@ -1456,6 +1588,10 @@ server_app.command("mcp")(mcp_serve)
 def rewrite(
     sql: str = typer.Argument(..., help="Semantic SQL query to rewrite, or - to read from stdin"),
     models: Path = typer.Option(None, "--models", "-m", help="Directory containing semantic layer files"),
+    ossie_wide: bool = typer.Option(
+        False, "--ossie-wide", help="Interpret the argument as a strict Ossie Layer 3 JSON query"
+    ),
+    ossie_scope: str = typer.Option(None, "--ossie-scope", help="Explicit Apache Ossie semantic-model scope"),
     connection: str = typer.Option(None, "--connection", help="Database connection string (sets SQL dialect)"),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file"),
     engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
@@ -1488,11 +1624,17 @@ def rewrite(
             fallback=fallback,
             enforce_visibility=enforce_visibility,
             use_preaggregations=use_preaggregations,
+            ossie_scope=ossie_scope,
         )
 
         from sidemantic.core.transport_security import rewrite_transport_sql
 
-        rewritten_sql = rewrite_transport_sql(layer, sql, user_attributes=user_attributes, transport="CLI rewrite")
+        if ossie_wide:
+            import json
+
+            rewritten_sql = layer.compile_ossie_wide(json.loads(sql), user_attributes=user_attributes)
+        else:
+            rewritten_sql = rewrite_transport_sql(layer, sql, user_attributes=user_attributes, transport="CLI rewrite")
         _emit_engine_selection(layer)
         typer.echo(rewritten_sql)
     except typer.Exit:
@@ -1528,6 +1670,11 @@ def convert(
         "--ossie-scope",
         help="Explicit semantic-model scope to select on Ossie import or name on Ossie export",
     ),
+    ossie_source_dialect: str = typer.Option(
+        None,
+        "--ossie-source-dialect",
+        help="Dialect used to interpret physical source names in an Ossie input",
+    ),
     ossie_target_dialect: str = typer.Option(
         None,
         "--ossie-target-dialect",
@@ -1548,6 +1695,11 @@ def convert(
         "--ossie-schema-revision",
         help="Pinned Ossie draft revision for synthesized output (commit SHA)",
     ),
+    ossie_input_schema_revision: str = typer.Option(
+        None,
+        "--ossie-input-schema-revision",
+        help="Pinned Ossie draft revision for validating the source (commit SHA)",
+    ),
     ossie_consumer_profile: str = typer.Option(
         None,
         "--ossie-consumer-profile",
@@ -1562,6 +1714,16 @@ def convert(
         False,
         "--ossie-portable-only",
         help="Require portable Ossie core output instead of preserving native behavior in a Sidemantic extension",
+    ),
+    ossie_preserve_document: bool = typer.Option(
+        False,
+        "--ossie-preserve-document",
+        help="Preserve one valid Ossie document without runtime graph conversion",
+    ),
+    ossie_official_compatible: bool = typer.Option(
+        False,
+        "--ossie-official-compatible",
+        help="Export portable flat Ossie core with model-scoped metrics for official converters",
     ),
     force: bool = typer.Option(False, "--force", help="Allow writing to an existing destination"),
 ):
@@ -1608,7 +1770,10 @@ def convert(
                 # after parsing, so writing directly could publish a blocked
                 # conversion or overwrite a valid --force destination.
                 converted_output = temp_root / output.name
-            from sidemantic.fidelity import capture_import_report
+                # Carry the destination shape through both staging layers.
+                if output.is_dir():
+                    converted_output.mkdir(exist_ok=True)
+            from sidemantic.fidelity import capture_export_report, capture_import_report
 
             source_adapter_options = None
             if source_format == "auto" or get_semantic_format(source_format, operation="import").name == "ossie":
@@ -1617,13 +1782,66 @@ def convert(
                     source_adapter_options["scope_id"] = ossie_scope
                 if ossie_target_dialect is not None:
                     source_adapter_options["target_dialect"] = ossie_target_dialect
+                if ossie_source_dialect is not None:
+                    source_adapter_options["source_dialect"] = ossie_source_dialect
                 if ossie_consumer_profile is not None:
                     source_adapter_options["consumer_profile"] = ossie_consumer_profile
                 if ossie_permissive:
                     source_adapter_options["import_policy"] = "permissive"
+                if ossie_input_schema_revision is not None:
+                    source_adapter_options["schema_revision"] = ossie_input_schema_revision
+
+            if source_format != "auto" and get_semantic_format(source_format).name in {"lightdash", "sigma"}:
+                source_adapter_options = {}
+                if ossie_target_dialect is not None:
+                    source_adapter_options["target_dialect"] = ossie_target_dialect
+                if ossie_expression_dialect is not None:
+                    source_adapter_options["expression_dialect"] = ossie_expression_dialect
+
+            if ossie_preserve_document:
+                if target_spec.name != "ossie" or (
+                    source_format != "auto" and get_semantic_format(source_format).name != "ossie"
+                ):
+                    raise InvocationError("--ossie-preserve-document requires an Ossie source and --to ossie")
+                if any(
+                    (
+                        ossie_scope,
+                        ossie_expression_dialect,
+                        ossie_schema_version,
+                        ossie_schema_revision,
+                        ossie_portable_only,
+                        ossie_official_compatible,
+                        ossie_permissive,
+                    )
+                ):
+                    raise InvocationError(
+                        "Document preservation cannot be combined with graph synthesis or permissive options"
+                    )
+                from sidemantic.adapters.ossie import OssieAdapter
+                from sidemantic.formats import validate_conversion_output
+
+                OssieAdapter(**(source_adapter_options or {})).preserve_document(source, converted_output)
+                validate_conversion_output(converted_output, target_format=target_spec.name)
+                if output_to_stdout:
+                    write_text_output("-", converted_output.read_text())
+                else:
+                    _promote_converted_output(converted_output, output)
+                    emit_diagnostic(f"Preserved Ossie document: {output}")
+                emit_diagnostic(
+                    "Document fidelity: exact (canonical data; source bytes reused when serialization matches)"
+                )
+                return
+            if ossie_official_compatible and target_spec.name != "ossie":
+                raise InvocationError("--ossie-official-compatible requires --to ossie")
 
             target_adapter_options = None
             target_export_options = None
+            if target_spec.name in {"lightdash", "sigma"}:
+                if ossie_expression_dialect is None:
+                    raise InvocationError("--ossie-expression-dialect is required for official bridge export")
+                target_adapter_options = {"expression_dialect": ossie_expression_dialect}
+                if ossie_scope is not None:
+                    target_adapter_options["export_scope_name"] = ossie_scope
             if target_spec.name == "ossie":
                 if ossie_scope is None:
                     raise InvocationError("--ossie-scope is required when exporting a runtime graph to Ossie")
@@ -1635,6 +1853,7 @@ def convert(
                     "scope_name": ossie_scope,
                     "expression_dialect": ossie_expression_dialect,
                     "portable_only": ossie_portable_only,
+                    "official_compatible": ossie_official_compatible,
                 }
                 if ossie_consumer_profile is not None:
                     target_adapter_options = {"consumer_profile": ossie_consumer_profile}
@@ -1644,7 +1863,7 @@ def convert(
                     target_export_options["schema_revision"] = ossie_schema_revision
 
             with progress(f"Converting semantic definitions to {target_format}"):
-                with capture_import_report() as fidelity_report:
+                with capture_import_report() as fidelity_report, capture_export_report() as export_report:
                     graph = convert_semantic_source(
                         source,
                         converted_output,
@@ -1667,6 +1886,23 @@ def convert(
                 emit_fidelity(f"Import readiness: {fidelity_report.readiness}")
                 if fidelity_report.is_blocked:
                     raise typer.Exit(1)
+            if export_report.has_losses:
+                emit_export = emit_error if export_report.is_blocked else emit_warning
+                emit_export("Export fidelity:")
+                for line in (*export_report.summary_lines(), *export_report.feature_summary_lines()):
+                    emit_export(f"  {line}")
+                emit_export(f"Export readiness: {export_report.readiness}")
+                if export_report.is_blocked:
+                    raise typer.Exit(1)
+            elif not output_to_stdout:
+                for line in export_report.feature_summary_lines(include_exact=True):
+                    emit_diagnostic(f"  {line}")
+                emit_diagnostic("Export readiness: ready (no reported losses)")
+            from sidemantic.formats import validate_conversion_output
+
+            validate_conversion_output(converted_output, target_format=target_spec.name)
+            if not graph.models:
+                raise ValueError("No models were imported; refusing empty conversion")
             if output_to_stdout:
                 write_text_output("-", converted_output.read_text())
             else:
@@ -1682,60 +1918,23 @@ def convert(
     except typer.Exit:
         raise
     except Exception as e:
+        from sidemantic.fidelity import ConversionFidelityError
+
+        if isinstance(e, ConversionFidelityError):
+            # The exception message joins every blocking construct into one
+            # line; name each lost construct on its own line instead.
+            emit_error(f"{e.phase.capitalize()} fidelity:")
+            for line in (*e.report.summary_lines(), *e.report.feature_summary_lines()):
+                emit_error(f"  {line}")
+            emit_error(f"{e.phase.capitalize()} readiness: blocked; nothing was written")
+            raise typer.Exit(1) from e
         fail(e)
 
 
 def _promote_converted_output(staged: Path, output: Path) -> None:
-    """Publish a fidelity-approved staged conversion to its destination."""
-    import shutil
-    import tempfile
+    from sidemantic.formats import promote_converted_output
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if staged.is_dir():
-        if output.exists() and not output.is_dir():
-            raise ValueError(f"Cannot replace file destination with directory output: {output}")
-
-        # Prepare the complete replacement on the destination filesystem before
-        # touching the current output. Renames below are then atomic, stale files
-        # cannot survive, and a failed promotion can restore the old tree.
-        transaction = Path(tempfile.mkdtemp(prefix=".sidemantic-promote-", dir=output.parent))
-        prepared = transaction / "next"
-        backup = transaction / "previous"
-        had_output = output.exists()
-        cleanup_transaction = True
-        try:
-            shutil.copytree(staged, prepared)
-            if had_output:
-                output.replace(backup)
-            try:
-                prepared.replace(output)
-            except Exception as promotion_error:
-                if had_output and backup.exists():
-                    try:
-                        backup.replace(output)
-                    except Exception as rollback_error:
-                        cleanup_transaction = False
-                        raise RuntimeError(
-                            f"Directory promotion failed and rollback also failed; "
-                            f"previous output is preserved at {backup}: {rollback_error}"
-                        ) from promotion_error
-                raise
-        finally:
-            if cleanup_transaction:
-                shutil.rmtree(transaction, ignore_errors=True)
-        return
-    if output.exists() and output.is_dir():
-        raise ValueError(f"Cannot replace directory destination with file output: {output}")
-    transaction = Path(tempfile.mkdtemp(prefix=".sidemantic-promote-", dir=output.parent))
-    prepared = transaction / "next"
-    try:
-        # The conversion staging directory may be on another filesystem. Copy
-        # beside the destination first, then use one same-filesystem atomic
-        # replacement so EXDEV cannot corrupt or remove an existing file.
-        shutil.copy2(staged, prepared)
-        prepared.replace(output)
-    finally:
-        shutil.rmtree(transaction, ignore_errors=True)
+    promote_converted_output(staged, output)
 
 
 def _stdin_source_extension(source_spec, content: str, *, requested: str | None) -> str:
@@ -1817,6 +2016,9 @@ def query(
         None, "--connection", help="Database connection string (e.g., postgres://host/db, bigquery://project/dataset)"
     ),
     db: Path = typer.Option(None, "--db", help="Path to DuckDB database file (shorthand for duckdb:/// connection)"),
+    ossie_wide: bool = typer.Option(
+        False, "--ossie-wide", help="Interpret the argument as a strict Ossie Layer 3 JSON query"
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show generated SQL without executing"),
     engine: str = typer.Option(None, "--engine", help="Runtime engine: python, rust, or auto"),
     fallback: bool | None = typer.Option(None, "--fallback/--no-fallback", help="Allow Rust engine fallback to Python"),
@@ -1861,6 +2063,8 @@ def query(
         or limit is not None
         or offset is not None
     )
+    if ossie_wide and sql is None:
+        raise typer.BadParameter("--ossie-wide requires a JSON query argument or - for stdin")
     if sql is not None and structured_options:
         raise typer.BadParameter("SQL cannot be combined with structured query options")
     if sql is None and not any((explore, saved_query, metrics, dimensions)):
@@ -1894,9 +2098,17 @@ def query(
         if table_calculations:
             structured_query["table_calculations"] = table_calculations
 
+        wide_query = None
+        if ossie_wide:
+            import json
+
+            wide_query = json.loads(sql)
+
         # Dry run: show generated SQL without executing
         if dry_run:
-            if sql is None:
+            if ossie_wide:
+                rewritten_sql = layer.compile_ossie_wide(wide_query, user_attributes=user_attributes)
+            elif sql is None:
                 rewritten_sql = layer.compile(**structured_query)
             else:
                 from sidemantic.core.transport_security import rewrite_transport_sql
@@ -1917,7 +2129,10 @@ def query(
             return
 
         # Execute query
-        result = layer.query(**structured_query) if sql is None else layer.sql(sql, user_attributes=user_attributes)
+        if ossie_wide:
+            result = layer.query_ossie_wide(wide_query, user_attributes=user_attributes)
+        else:
+            result = layer.query(**structured_query) if sql is None else layer.sql(sql, user_attributes=user_attributes)
         _emit_engine_selection(layer)
 
         # Get results

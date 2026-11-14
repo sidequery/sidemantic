@@ -65,6 +65,70 @@ def test_start_server_registers_tables(monkeypatch):
     assert any(t[2] == "orders" and t[1] == "semantic_layer" for t in calls["tables"])
 
 
+def test_start_server_registers_each_schema_and_table_once(monkeypatch):
+    """riffq >= 0.4 raises on duplicates; one register_schema per table crashed startup."""
+    from sidemantic.server.server import start_server
+
+    registered = {"schemas": [], "tables": []}
+
+    class StrictInnerServer:
+        def register_database(self, name):
+            pass
+
+        def register_schema(self, db, schema):
+            if (db, schema) in registered["schemas"]:
+                raise ValueError(f'schema "{schema}" already exists in database "{db}"')
+            registered["schemas"].append((db, schema))
+
+        def register_table(self, db, schema, table, columns):
+            if (db, schema, table) in registered["tables"]:
+                raise ValueError(f'table "{table}" already exists in schema "{schema}"')
+            registered["tables"].append((db, schema, table))
+
+    class FakeServer:
+        def __init__(self, *args, **kwargs):
+            self._server = StrictInnerServer()
+
+        def start(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr("riffq.RiffqServer", FakeServer)
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    layer.adapter.execute("CREATE TABLE orders (id INTEGER, status VARCHAR)")
+    layer.adapter.execute("CREATE TABLE customers (id INTEGER)")
+    layer.adapter.execute("CREATE SCHEMA staging")
+    layer.adapter.execute("CREATE TABLE staging.events (id INTEGER)")
+    layer.adapter.execute("CREATE TABLE staging.sessions (id INTEGER)")
+    # An attached database repeats schema and table names of the main one.
+    layer.adapter.execute("ATTACH ':memory:' AS other")
+    layer.adapter.execute("CREATE TABLE other.main.orders (id INTEGER)")
+    layer.add_model(
+        Model(
+            name="orders",
+            table="orders",
+            primary_key="id",
+            dimensions=[Dimension(name="status", sql="status", type="categorical")],
+            metrics=[Metric(name="order_count", agg="count")],
+        )
+    )
+
+    start_server(layer, port=5447)
+
+    assert sorted(registered["schemas"]) == [
+        ("sidemantic", "main"),
+        ("sidemantic", "semantic_layer"),
+        ("sidemantic", "staging"),
+    ]
+    assert sorted(registered["tables"]) == [
+        ("sidemantic", "main", "customers"),
+        ("sidemantic", "main", "orders"),
+        ("sidemantic", "semantic_layer", "orders"),
+        ("sidemantic", "staging", "events"),
+        ("sidemantic", "staging", "sessions"),
+    ]
+
+
 def test_start_server_registers_metrics_table_and_binds_connection(monkeypatch):
     from sidemantic.server.server import start_server
 

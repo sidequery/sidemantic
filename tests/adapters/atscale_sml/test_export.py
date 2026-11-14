@@ -316,8 +316,20 @@ class TestAtScaleSMLExport:
         with open(tmp_path / "models" / "orders.yml") as f:
             model_def = yaml.safe_load(f)
 
+        # A relationship without its own key joins on the related model's primary
+        # key, which is exported as a hidden unique-key level even when it is not
+        # a dimension; it must not fall back to an unrelated dimension.
         level = model_def["relationships"][0]["to"]["level"]
-        assert level == "customer_id"
+        assert level == "id"
+
+        with open(tmp_path / "dimensions" / "customers.yml") as f:
+            key_levels = [a for a in yaml.safe_load(f)["level_attributes"] if a.get("is_unique_key")]
+        assert [(a["unique_name"], a["key_columns"], a.get("is_hidden")) for a in key_levels] == [("id", ["id"], True)]
+
+        reimported = AtScaleSMLAdapter().parse(tmp_path)
+        assert reimported.models["customers"].primary_key == "id"
+        relationship = reimported.models["orders"].relationships[0]
+        assert (relationship.foreign_key, relationship.primary_key) == ("customer_id", "id")
 
 
 if __name__ == "__main__":

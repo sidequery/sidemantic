@@ -308,10 +308,17 @@ def test_synthesis_qualifies_expression_columns_and_preserves_numeric_results(op
 
 
 def test_synthesis_preserves_quoted_column_case_and_existing_qualifiers() -> None:
+    from sidemantic.interchange.ossie.profiles import CURRENT_OSSIE_SCHEMA_COMMIT
+
     graph = _graph()
     graph.models["orders"].metrics[0].sql = 'coalesce("Amount", 0) * orders."Quantity"'
 
-    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    result = synthesize_ossie_document(
+        graph,
+        scope_name="commerce",
+        expression_dialect="ANSI_SQL",
+        schema_revision=CURRENT_OSSIE_SCHEMA_COMMIT,
+    )
 
     assert result.valid, result.diagnostics
     expression = result.document.to_parsed_data()["metrics"][0]["expression"]
@@ -320,10 +327,17 @@ def test_synthesis_preserves_quoted_column_case_and_existing_qualifiers() -> Non
 
 @pytest.mark.parametrize("expression", ["revenue * 2", "orders.revenue * 2"])
 def test_synthesis_preserves_model_metric_references_in_derived_formulas(expression: str) -> None:
+    from sidemantic.interchange.ossie.profiles import CURRENT_OSSIE_SCHEMA_COMMIT
+
     graph = _graph()
     graph.models["orders"].metrics.append(Metric(name="double_revenue", type="derived", sql=expression))
 
-    result = synthesize_ossie_document(graph, scope_name="commerce", expression_dialect="ANSI_SQL")
+    result = synthesize_ossie_document(
+        graph,
+        scope_name="commerce",
+        expression_dialect="ANSI_SQL",
+        schema_revision=CURRENT_OSSIE_SCHEMA_COMMIT,
+    )
 
     assert result.valid, result.diagnostics
     metrics = result.document.to_parsed_data()["metrics"]

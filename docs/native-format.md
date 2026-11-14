@@ -58,6 +58,8 @@ models:
       - name: total_revenue
         agg: sum
         sql: amount
+      - name: order_count
+        agg: count
 
 metrics:
   - name: revenue_per_order
@@ -109,6 +111,10 @@ models:
     freshness:
       watermark: updated_at
       ttl_seconds: 3600
+    dimensions:
+      - name: created_at
+        type: time
+        granularity: day
 ```
 
 At least one of `table`, `sql`, or `source_uri` should be present unless the model extends another model that provides one.
@@ -131,7 +137,7 @@ At least one of `table`, `sql`, or `source_uri` should be present unless the mod
 | `required_filters` | No | Fields that every query using the model must filter. Enforced by Python-hosted clients before Python or Rust compilation. |
 | `required_filters_or_groups` | No | Fields that every query using the model must filter or group by, independently for each listed field. |
 | `pre_aggregations` | No | List of pre-aggregation definitions. |
-| `default_time_dimension` | No | Time dimension to add by default when the query needs time grouping. |
+| `default_time_dimension` | No | Time dimension a structured query is grouped by when it selects metrics and no dimensions, and the time axis of cumulative, time-comparison and offset-ratio metrics that select none. Ordinary aggregates in a query with its own dimensions, or in a SQL `SELECT`, are never grouped by it. |
 | `default_grain` | No | Default time grain for the default time dimension. |
 | `freshness` | No | Source freshness policy for live chart/dashboard runtimes. |
 | `security` | No | Row/access `SecurityPolicy` (`access` gate + `row_filters`) enforced per query when `user_attributes` are supplied. See [Security](security.md). |
@@ -286,22 +292,27 @@ Metrics describe aggregations or derived semantic measures.
 ```yaml
 metrics:
   - name: total_revenue
-    type: simple
     agg: sum
     sql: amount
 ```
 
-`type: simple` is optional when `agg` is present.
+Simple metrics omit `type`; `agg` makes them simple. The Rust loader also accepts
+`type: simple`, but the Python loader rejects it, so portable files should leave it out.
 
 Supported aggregations in the native contract:
 
 - `count`
 - `count_distinct`
+- `approx_count_distinct`
 - `sum`
 - `avg`
 - `min`
 - `max`
 - `median`
+- `stddev`
+- `stddev_pop`
+- `variance`
+- `variance_pop`
 
 Additional aggregation names must be added deliberately to the Rust enum and tested before they are considered part of the native contract.
 
@@ -334,9 +345,24 @@ The runtime is responsible for safe divide behavior.
 metrics:
   - name: cumulative_revenue
     type: cumulative
-    base_metric: total_revenue
-    window: unbounded
+    sql: total_revenue
+  - name: rolling_7d_revenue
+    type: cumulative
+    sql: total_revenue
+    window: "7 days"
+  - name: mtd_revenue
+    type: cumulative
+    sql: total_revenue
+    grain_to_date: month
 ```
+
+`sql` names the base metric to accumulate and is required (or `window_expression`
+for a raw window function). The Rust loader also accepts `base_metric` in place of
+`sql`, but the Python loader rejects a cumulative metric without `sql`, so portable
+files should use `sql`. Omit `window` and `grain_to_date` for a running total;
+set `window` to a `"<number> <unit>"` interval for a rolling window, or
+`grain_to_date` (`day`, `week`, `month`, `quarter`, `year`) for a period-to-date
+total.
 
 Supported cumulative behavior must be validated before SQL generation. Queries missing a usable time dimension should fail before producing SQL.
 
@@ -427,7 +453,7 @@ Initial native-runtime rule:
 | Field | Notes |
 |---|---|
 | `name` | Required. Unique within owner scope. |
-| `type` | `simple`, `derived`, `ratio`, `cumulative`, `time_comparison`, `conversion`, `retention`, or `cohort`. |
+| `type` | `derived`, `ratio`, `cumulative`, `time_comparison`, `conversion`, `retention`, or `cohort`. Omit for simple metrics. |
 | `agg` | Aggregation for simple metrics and some cohort inner metrics. |
 | `sql` | SQL expression or derived expression. |
 | `filters` | List of SQL predicates applied to the metric. |
@@ -468,11 +494,14 @@ relationships:
 | `related_foreign_key_columns` | For many-to-many | Explicit through-to-target key columns. |
 | `sql` | No | Custom join SQL using `{from}` and `{to}` runtime placeholders. |
 
-For CLI-authored native files, prefer explicit `foreign_key` and `primary_key`
-fields. Omitted keys are still supported for compatibility: `many_to_one`
-defaults the source key to `{name}_id`, while `one_to_many` and `one_to_one`
-default the related-side key to `id`; omitted `primary_key` resolves to the
-target model's declared primary key when building graph joins.
+Set `foreign_key` on every keyed relationship. The Python runtime does not infer
+it: a `many_to_one`, `one_to_many`, or `one_to_one` relationship without
+`foreign_key` adds no join, so queries across it fail with `No join path found`,
+and the Python CLI's Rust engine path rejects it. The standalone Rust loader still
+applies compatibility defaults (`many_to_one` uses `{name}_id`; `one_to_many` and
+`one_to_one` use `id` on the related side), so files that rely on them behave
+differently across runtimes. An omitted `primary_key` resolves to the target
+model's declared primary key in both runtimes.
 
 When `sql` is present, Python and Rust use it instead of the FK/PK-generated
 predicate. `{from}` is replaced with the source model's runtime alias and `{to}`
@@ -485,6 +514,72 @@ Relationship types:
 - `one_to_one`
 - `one_to_many`
 - `many_to_many`
+
+### Which rows a joined query keeps
+
+The model that owns the selected metrics is the preserved side of the join. Models
+that only supply dimensions are `LEFT JOIN`ed onto it, across every hop:
+
+- A metric row whose key is `NULL` or matches no dimension row is counted in a
+  `NULL` dimension group, so a breakdown adds up to the ungrouped total.
+- A dimension row that no metric row references is not a group. `orders.revenue`
+  by `customers.region` lists no region without orders.
+- A filter or segment on a dimension model's column keeps only metric rows that
+  have a matching dimension row, so it removes the `NULL` group. That includes
+  `IS NULL` predicates; filter on the metric model's own key column to inspect
+  unmatched rows.
+- The same holds when the metric sits on the "one" side: `customers.customer_count`
+  by `orders.status` keeps every customer once, with customers without orders in a
+  `NULL` status group.
+
+Metrics from several models keep each model's own rows, so their groups are the
+union of those populations. A query with dimensions and no metric starts from its
+first dimension's model.
+
+To list every dimension member, including those without metric rows, either query
+through an Explore whose base `model` is the dimension model, or also select a
+metric owned by that model:
+
+```yaml
+models:
+  - name: customers
+    table: customers
+    primary_key: id
+    dimensions:
+      - name: region
+        type: categorical
+    metrics:
+      - name: customer_count
+        agg: count
+  - name: orders
+    table: orders
+    primary_key: id
+    relationships:
+      - name: customers
+        type: many_to_one
+        foreign_key: customer_id
+    metrics:
+      - name: revenue
+        agg: sum
+        sql: amount
+      - name: order_count
+        agg: count
+
+explores:
+  - name: by_customer
+    model: customers
+```
+
+```bash
+# Every customer region; regions without orders have NULL revenue and a zero count.
+sidemantic query --explore by_customer --metric orders.revenue --metric orders.order_count --dimension region
+# Both populations: regions without orders and orders without a region.
+sidemantic query --metric orders.revenue --metric customers.customer_count --dimension customers.region
+```
+
+Releases through 0.13.1 anchored a single-model metric query on its first
+dimension's model instead: it listed dimension members without metric rows and
+dropped metric rows without a matching dimension row.
 
 Composite relationship:
 
@@ -627,19 +722,21 @@ MODEL (
 );
 
 DIMENSION (
-  model orders,
   name status,
   type categorical,
   sql status
 );
 
 METRIC (
-  model orders,
   name total_revenue,
   agg sum,
   sql amount
 );
 ```
+
+Definitions that follow a `MODEL` statement belong to that model. The Rust loader
+also accepts an explicit `model orders` property inside `DIMENSION` and `METRIC`,
+but the Python parser fails on it, so portable files should leave it out.
 
 SQL files may also use YAML frontmatter for the model and SQL definitions for metrics, segments, parameters, and pre-aggregations.
 
@@ -728,6 +825,7 @@ models:
       - name: created_at
         type: time
         sql: created_at
+        granularity: day
         supported_granularities: [day, week, month, quarter, year]
     metrics:
       - name: order_count
@@ -735,6 +833,9 @@ models:
       - name: total_revenue
         agg: sum
         sql: amount
+      - name: customer_count
+        agg: count_distinct
+        sql: customer_id
       - name: average_order_value
         type: ratio
         numerator: total_revenue
@@ -761,8 +862,13 @@ metrics:
   - name: revenue_per_customer
     type: ratio
     numerator: orders.total_revenue
-    denominator: customers.customer_count
+    denominator: orders.customer_count
 ```
+
+The top-level metric depends on one model, so both runtimes can load it. A top-level
+metric that combines metrics from two models (for example
+`orders.total_revenue / customers.customer_count`) works in the Python runtime, but
+the Rust loader rejects it because it cannot pick a single owning model.
 
 ## Authoring contracts
 

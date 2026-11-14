@@ -7,7 +7,7 @@ Every validation rule, error message, and common pitfall in Sidemantic model def
 Verify before loading any model:
 
 1. Every model has `table` or `sql` (not neither)
-2. Every model has a `primary_key` (defaults to `"id"`)
+2. Every model that is joined to or needs fan-out protection sets `primary_key` (no `id` is inferred)
 3. Every dimension has a valid `type`: `categorical`, `time`, `boolean`, `numeric`
 4. Every `time` dimension has `granularity` set
 5. Every simple metric has a valid `agg` or SQL containing an aggregation function
@@ -19,9 +19,11 @@ Verify before loading any model:
 
 ## Model Validation
 
-### primary_key is required
+### primary_key
 
-Default is `"id"`. Only fails if explicitly set to empty.
+Optional. Omitted means the model has no known key (no `id` is inferred), so it
+cannot serve as a join target. Validation only fails if it is explicitly set to an
+empty value.
 
 **Error:** `Model 'orders' must have a primary_key defined`
 **Fix:** `primary_key: order_id`
@@ -30,7 +32,7 @@ Default is `"id"`. Only fails if explicitly set to empty.
 
 Every model needs one. Having both is allowed (sql takes precedence).
 
-**Error:** `Model 'orders' must have either 'table' or 'sql' defined`
+**Error:** `Model 'orders' must have one of 'table', 'sql', 'dax', or 'source_uri' defined`
 **Fix:** Add `table: public.orders` or `sql: "SELECT * FROM ..."`
 
 ### Duplicate model names
@@ -72,14 +74,12 @@ Both `sql` and `expr` are accepted as aliases. If both provided with different v
 
 ### Simple metrics need valid aggregation
 
-For metrics without a complex `type`, `agg` must be one of: `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median`.
+For metrics without a complex `type`, `agg` must be one of: `sum`, `count`, `count_distinct`, `approx_count_distinct`, `avg`, `min`, `max`, `median`, `stddev`, `stddev_pop`, `variance`, `variance_pop`.
 
 Exception: if `sql` contains a recognized function (e.g., `SUM(amount)`), agg is auto-extracted.
 
-**Error:** `Model 'orders': measure 'revenue' has invalid aggregation 'None'. Must be one of: sum, count, count_distinct, avg, min, max, median`
+**Error:** `Model 'orders': measure 'revenue' has invalid aggregation 'None'. Must be one of: approx_count_distinct, avg, count, count_distinct, max, median, min, stddev, stddev_pop, sum, variance, variance_pop`
 **Fix:** Add `agg: sum` or use `sql: "SUM(amount)"`
-
-Note: `stddev`, `stddev_pop`, `variance`, `variance_pop` are accepted by Pydantic (Phase 1) but may fail `validate_model()` (Phase 2). See "Two-Phase Validation" below.
 
 ### Auto-parsing behavior
 
@@ -120,7 +120,7 @@ Cannot have circular dependencies:
 
 ### Invalid metric type
 
-**Error:** `Input should be 'ratio', 'derived', 'cumulative', 'time_comparison' or 'conversion'`
+**Error:** `Input should be 'ratio', 'derived', 'cumulative', 'time_comparison', 'conversion', 'retention' or 'cohort'`
 
 There is no `type: simple`. Simple aggregations omit `type` and use `agg`.
 
@@ -134,15 +134,15 @@ There is no `type: simple`. Simple aggregations omit `type` and use `agg`.
 
 Must be one of: `many_to_one`, `one_to_one`, `one_to_many`, `many_to_many`.
 
-### foreign_key defaults
+### foreign_key is not inferred
 
-- `many_to_one`: defaults to `{name}_id` (e.g., relationship named `customers` defaults to `customers_id`)
-- `one_to_one` / `one_to_many`: defaults to `id`
+- `many_to_one` / `one_to_one` / `one_to_many`: always set `foreign_key`. Without it the relationship adds no join and cross-model queries fail with `No join path found`.
+- `primary_key` may be omitted; it resolves to the related model's `primary_key`.
 - `many_to_many`: specify `through`, `through_foreign_key`, `related_foreign_key`
 
 ### Related model must exist
 
-Relationships to missing models are silently skipped during adjacency building. Queries across unresolved relationships fail at query time:
+Relationships to missing models are silently skipped during adjacency building. `sidemantic validate` reports them (`Model 'orders' has relationship to 'customer' which doesn't exist`); queries across unresolved relationships fail at query time:
 
 **Error:** `No join path found between orders and customers`
 **Fix:** Ensure both models are added and the relationship's `name` matches the target model's `name` exactly.
@@ -164,9 +164,7 @@ Must be qualified: `model.dimension_name`.
 
 Use double-underscore: `model.dimension__granularity`.
 
-Valid at query time: `hour`, `day`, `week`, `month`, `quarter`, `year`.
-
-Note: `second` and `minute` are valid for dimension definition but not in the query-time validation list.
+Valid at query time: `second`, `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`.
 
 ### Join path validation
 
@@ -190,7 +188,7 @@ Model-level: both `metrics` and `measures` work. Graph-level (top-level): only `
 
 ### Type defaults
 
-Dimensions in YAML default to `type: categorical` when omitted. Primary key defaults to `"id"`.
+Dimensions in YAML default to `type: categorical` when omitted. There is no primary key default; set `primary_key` explicitly.
 
 ### Indentation
 
@@ -239,7 +237,7 @@ Bare `yes`, `no`, `true`, `false` are parsed as booleans. Quote them if used as 
 | Error | Fix |
 |-------|-----|
 | `must have a primary_key defined` | Set `primary_key: column_name` |
-| `must have either 'table' or 'sql' defined` | Add `table` or `sql` |
+| `must have one of 'table', 'sql', 'dax', or 'source_uri' defined` | Add `table` or `sql` |
 | `Model X already exists` | Use unique names |
 | `Measure X already exists` | Use unique metric names |
 | `has invalid type 'string'` | Use: categorical, time, boolean, numeric |
@@ -285,8 +283,6 @@ When `SemanticLayer.add_model()` or `SemanticLayer.add_metric()` is called (incl
 These raise `ModelValidationError` or `MetricValidationError`.
 
 **Key difference:** Phase 1 catches structural errors (missing fields, wrong types). Phase 2 catches reference errors (model not found, measure not found, circular dependency). A metric can pass Phase 1 and fail Phase 2 if its references don't resolve.
-
-**Known inconsistency:** `stddev`, `stddev_pop`, `variance`, `variance_pop` are accepted by Pydantic (Phase 1) but may fail `validate_model()` (Phase 2) which has a more restrictive aggregation list.
 
 ## Error Class Hierarchy
 

@@ -128,10 +128,20 @@ Derived and ratio metrics reconstruct their source-local aggregate dependencies;
 metric predicates become HAVING over those reconstructed states. Empty count
 populations return zero, while nullable sums and averages remain null.
 
+The model that owns the selected metrics anchors an ordinary query in both
+engines: dimension models are LEFT JOINed onto it, metric rows without a matching
+dimension row form a NULL group, and dimension members without metric rows are
+not groups. An Explore's base model replaces that anchor; see
+[Which rows a joined query keeps](native-format.md#which-rows-a-joined-query-keeps).
+
 One-hop many-to-one dimension queries can route through a rollup carrying every
-join key, including composite keys. The remote dimension model remains the query
-domain, so members with no facts retain zero counts. Explicit anchors requiring a
-different domain, explicit join kinds, colliding output aliases, uncovered join keys, multi-hop or fanout joins and row filters on
+join key, including composite keys. The rollup stands in for the metric model and
+is the preserved side, so stored groups whose join key is NULL or unmatched stay
+in a NULL dimension group, exactly as in raw planning. Dimension expressions of a
+joined model apply only to rows that have a matching dimension row: an expression
+such as `COALESCE(name, 'unknown')` leaves unmatched metric rows in the NULL group
+on both routes and in both engines. An explicit anchor on
+another model, explicit join kinds, colliding output aliases, uncovered join keys, multi-hop or fanout joins and row filters on
 this join route use ordinary source planning. Compatible stored dimensions and
 time grains retain their existing routing checks: bucketed timestamps cannot serve
 finer grains or untruncated timestamps, and week buckets cannot serve months.

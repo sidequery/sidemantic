@@ -122,17 +122,37 @@ def test_sibling_groups_preserve_each_item_and_null_population(layer, include_pa
     ]
     metrics = ["items.items_value", "items.average", "items.values", "items.rows"]
     if include_parent:
+        # Each measure source keeps its own population: the fact whose refund
+        # group has no items still contributes its total.
         metrics.append("facts.total")
         expected = [(*row, total) for row, total in zip(expected, [40, 30, 10, 30], strict=True)]
+    else:
+        # Items alone are the preserved side; a refund group without items is
+        # not a group of an item measure.
+        expected = [row for row in expected if row[0] != "empty"]
+        assert (
+            expected
+            == layer.adapter.execute("""
+            with refund_groups as (
+                select distinct fact_id, label from sibling_refunds
+            )
+            select refund_groups.label, sum(items.value), avg(items.value), count(items.value), count(items.id)
+            from sibling_items as items
+            left join sibling_facts as facts on items.fact_id = facts.id
+            left join refund_groups on refund_groups.fact_id = facts.id
+            group by refund_groups.label
+            order by refund_groups.label
+        """).fetchall()
+        )
     assert execute(layer, metrics=metrics, dimensions=["refunds.label"], order_by=["refunds.label"]) == expected
 
 
-def test_empty_sibling_population_has_no_groups(layer):
+def test_empty_sibling_population_keeps_measure_in_null_group(layer):
     layer.adapter.execute("""
         insert into sibling_facts values (1, 1);
         insert into sibling_items values (101, 1, 3);
     """)
-    assert execute(layer, metrics=["items.items_value", "items.rows"], dimensions=["refunds.label"]) == []
+    assert execute(layer, metrics=["items.items_value", "items.rows"], dimensions=["refunds.label"]) == [(None, 3, 1)]
 
 
 def test_source_identity_survives_three_edge_fanout_path(layer):

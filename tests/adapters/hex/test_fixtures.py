@@ -69,7 +69,7 @@ class TestSaasAnalyticsParsing:
         assert model.get_dimension("mrr").type == "numeric"
         assert model.get_dimension("started_at").type == "time"
         assert model.get_dimension("ended_at").type == "time"
-        assert model.get_dimension("is_active").type == "categorical"  # boolean -> categorical
+        assert model.get_dimension("is_active").type == "boolean"
         assert model.get_dimension("segment").type == "categorical"
         assert model.get_dimension("subscription_quarter").type == "time"
 
@@ -184,8 +184,8 @@ class TestSaasAnalyticsParsing:
         # Semi-additive measures map to non_additive_dimension (the 'over' dimension)
         assert current_mrr.non_additive_dimension == "subscription_quarter"
 
-    def test_count_if_aggregation(self, model):
-        """count_if func is parsed as conditional count."""
+    def test_filtered_count_aggregation(self, model):
+        """A count plus filter retains conditional count semantics."""
         hv = model.get_metric("high_value_count")
         assert hv.agg == "count"
         assert hv.filters is not None

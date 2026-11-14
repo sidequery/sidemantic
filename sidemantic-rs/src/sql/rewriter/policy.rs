@@ -126,6 +126,7 @@ impl QueryRewriter<'_> {
             qualified_tables_physical: false,
             warnings: std::cell::RefCell::new(Vec::new()),
             used_preaggregation: std::cell::Cell::new(false),
+            emitted_dialect: std::cell::Cell::new(None),
         };
         rewriter.rewrite_policy_statement(statement)
     }

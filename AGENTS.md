@@ -5,7 +5,7 @@ Universal SQL-first semantic layer in Python. Imports from Cube/LookML/dbt/Hex/R
 ## Usage Preference (Important)
 
 - Sidemantic usage is overwhelmingly CLI-first in practice (roughly 95% CLI usage).
-- Default to `sidemantic` CLI workflows (`validate`, `info`, `query`, `migrator`, etc.).
+- Default to `sidemantic` CLI workflows (`validate`, `info`, `query`, `migrate`, etc.).
 - Treat Python API examples as secondary, advanced automation paths, not the default onboarding path.
 
 ## Codebase Structure
@@ -17,11 +17,11 @@ Universal SQL-first semantic layer in Python. Imports from Cube/LookML/dbt/Hex/R
 - `sql/` - SQL generation and query rewriting
 - `widget/`, `server/`, `workbench/`, `mcp_server.py` - Optional features with lazy imports
 
-**Separate experimental implementations (not the main codebase):**
-- `sidemantic-rs/` - Rust rewrite (WIP)
+**Rust runtime and DuckDB extension (experimental):**
+- `sidemantic-rs/` - Rust native runtime, also built as the `sidemantic-rs` Python extension. Python opts in through `sidemantic/rust_bridge.py`, the optional `rust` extra, and `--engine rust|auto`; Python stays the default engine (see `docs/rust-engine-mode.md`).
 - `sidemantic-duckdb/` - DuckDB extension wrapping sidemantic-rs
 
-These don't share code with Python. CI runs them only when their dirs change.
+CI runs the Rust and DuckDB jobs when their dirs change, and the Rust jobs also when the Python code they exercise changes (bridge, core, SQL, CLI; see the paths filter in `.github/workflows/ci.yml`).
 
 ## Version Management
 
@@ -73,17 +73,18 @@ uv run ruff format . --exclude docs/_extensions --exclude sidemantic-duckdb/exte
 **Why this matters:**
 - Targeted checks keep small changes fast while still covering the affected behavior
 - CI runs the full matrix and remains the final integration gate
-- Ruff must be in `[project.optional-dependencies] dev` for CI
-- NOT in `[dependency-groups]` (that's uv-specific, CI uses optional-dependencies)
+- CI installs with `uv sync --extra dev`, so ruff and other CI tools must be in `[project.optional-dependencies] dev`
+- `[dependency-groups] dev` alone is not enough (uv-only; CI reads the `dev` extra)
 
 ## Dependency Management
 
 - Use `uv` for all Python package management
-- Ruff should be in dev dependencies (`[dependency-groups] dev`)
+- Dev tools such as ruff go in the `dev` extra (`[project.optional-dependencies] dev`); `[dependency-groups] dev` mirrors them for local uv use
 - DO NOT add dev tools to main dependencies unless explicitly requested
 - Optional features use `[project.optional-dependencies]`:
   - `workbench` - textual, plotext, textual-plotext (for TUI, NOT Pyodide compatible)
-  - `serve` - mcp[cli], riffq, pyarrow (for PostgreSQL server, NOT Pyodide compatible)
+  - `serve` - riffq, pyarrow (for the PostgreSQL wire server, `sidemantic server postgres`; NOT Pyodide compatible)
+  - `api` / `mcp` - fastapi, uvicorn, pyarrow / mcp[cli] (for `sidemantic serve`, `server api`, `server mcp`)
   - `dev` - pytest, ruff, pandas, numpy (for development)
 
 **CRITICAL: Pyodide Compatibility Rules**
@@ -98,13 +99,11 @@ uv run ruff format . --exclude docs/_extensions --exclude sidemantic-duckdb/exte
 - `sidemantic/__init__.py` - Only imports core classes (Model, Dimension, etc.)
 - `sidemantic/cli.py` - Imports typer (core dep) at top, workbench/server imports inside command functions
 - `sidemantic/workbench/__init__.py` - Lazy imports textual inside `run_workbench()` function
-- `sidemantic/server/` - Never imported unless `sidemantic serve` command is run
+- `sidemantic/server/` - Not imported by `sidemantic/__init__.py`; `server.py`/`connection.py` (riffq) load only for `sidemantic server postgres`, and the dependency-free `common.py` is shared with the API, MCP, and chart modules
 
-**Pyodide typing-extensions issue:**
-- Pyodide has typing-extensions==4.11.0
-- Some deps (pydantic>=2.10, inflect>=7.2) require typing-extensions>=4.12+
-- Dashboard handles this by installing pydantic<2.10 with deps=False
-- inflect<7.2 constraint in core deps marked with `# PYODIDE:` comment
+**Pyodide install path** (`docs/pyodide.md`, `.github/workflows/pyodide-test.yml`):
+- Pyodide's bundled `pydantic`, `pyyaml`, and `jinja2` are loaded first; `sqlglot`, `lkml`, and `inflect` are installed with `deps=False`
+- Bundled Pyodide packages pin their own versions (including typing-extensions), so a core dep that needs newer versions breaks this path
 
 **Version constraints with "PYODIDE:" comments are REQUIRED:**
 - Heavy deps (textual, riffq, mcp) are optional to avoid Pyodide conflicts
@@ -114,7 +113,7 @@ uv run ruff format . --exclude docs/_extensions --exclude sidemantic-duckdb/exte
 
 **If Pyodide CI fails:**
 - Check if a dep version changed that requires newer typing-extensions
-- Either downgrade that dep OR add workaround in dashboard.qmd install
+- Either constrain that dep OR update the install sequence in `docs/pyodide.md` and `pyodide-test.yml` together
 - CI installs local wheel to test current code, not PyPI version
 
 ## Testing

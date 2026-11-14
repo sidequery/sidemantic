@@ -94,12 +94,12 @@ class TestRevenueTimeseriesDescriptions:
 
 
 class TestRevenueTimeseriesPrimaryKey:
-    """Verify primary key parsing (composite key uses first column)."""
+    """Verify complete primary key parsing."""
 
-    def test_daily_revenue_composite_pk_uses_first(self, graph):
-        """Composite PK (date, product_id, region_id) should use first: date."""
+    def test_daily_revenue_composite_pk(self, graph):
+        """Composite PK preserves date, product_id, and region_id."""
         model = graph.models["daily_revenue"]
-        assert model.primary_key == "date"
+        assert model.primary_key == ["date", "product_id", "region_id"]
 
     def test_product_pk(self, graph):
         model = graph.models["product"]

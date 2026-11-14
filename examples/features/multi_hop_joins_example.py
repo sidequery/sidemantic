@@ -1,9 +1,12 @@
+#!/usr/bin/env python3
+# /// script
+# dependencies = ["sidemantic", "duckdb"]
+# ///
 """Test multi-hop joins."""
 
 import duckdb
 
 from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from tests.utils import fetch_rows
 
 conn = duckdb.connect(":memory:")
 
@@ -107,7 +110,7 @@ result = sl.query(
 )
 
 print("Results (region_name, revenue):")
-for row in fetch_rows(result):
+for row in result.fetchall():
     print(f"  {row}")
 print()
 

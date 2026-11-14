@@ -902,8 +902,8 @@ def test_docker_entrypoint_does_not_use_eval():
     assert "eval " not in content
 
 
-@pytest.mark.parametrize("mode", ["serve", "both"])
-def test_docker_pg_modes_launch_postgres_command(mode, tmp_path):
+def _run_docker_entrypoint(tmp_path, *args, **env_vars):
+    """Run docker-entrypoint.sh against a fake `sidemantic` that records each invocation's argv."""
     entrypoint = Path(__file__).resolve().parent.parent / "docker-entrypoint.sh"
     log = tmp_path / "commands.jsonl"
     executable = tmp_path / "sidemantic"
@@ -915,21 +915,58 @@ def test_docker_pg_modes_launch_postgres_command(mode, tmp_path):
     )
     executable.chmod(0o755)
     env = {key: value for key, value in os.environ.items() if not key.startswith("SIDEMANTIC_")}
-    env.update(
-        PATH=f"{tmp_path}{os.pathsep}{env['PATH']}",
-        COMMAND_LOG=str(log),
+    env.update(PATH=f"{tmp_path}{os.pathsep}{env['PATH']}", COMMAND_LOG=str(log), TMPDIR=str(tmp_path), **env_vars)
+    subprocess.run(["sh", str(entrypoint), *args], env=env, check=True, capture_output=True, timeout=10)
+    return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+def _option_value(args, option):
+    return args[args.index(option) + 1]
+
+
+@pytest.mark.parametrize("mode", ["serve", "both"])
+def test_docker_pg_modes_launch_postgres_command(mode, tmp_path):
+    commands = _run_docker_entrypoint(
+        tmp_path,
+        "--demo",
         SIDEMANTIC_MODE=mode,
         SIDEMANTIC_USERNAME="demo_user",
         SIDEMANTIC_PASSWORD="demo_password",
         SIDEMANTIC_PORT="5433",
     )
-    subprocess.run(["sh", str(entrypoint), "--demo"], env=env, check=True, capture_output=True, timeout=10)
-    commands = [json.loads(line) for line in log.read_text().splitlines()]
     postgres = next(args for args in commands if args[:2] == ["server", "postgres"])
-    assert postgres[postgres.index("--username") + 1] == "demo_user"
-    assert postgres[postgres.index("--password") + 1] == "demo_password"
-    assert postgres[postgres.index("--port") + 1] == "5433"
+    assert _option_value(postgres, "--username") == "demo_user"
+    assert "--password" not in postgres
+    password_file = Path(_option_value(postgres, "--password-file"))
+    assert password_file.read_text() == "demo_password\n"
+    assert password_file.stat().st_mode & 0o777 == 0o600
+    assert _option_value(postgres, "--port") == "5433"
     assert len(commands) == (2 if mode == "both" else 1)
+    if mode == "both":
+        assert next(args for args in commands if args[:2] == ["server", "mcp"])[-1] == "--demo"
+
+
+def test_docker_api_mode_passes_token_as_file(tmp_path):
+    (api,) = _run_docker_entrypoint(
+        tmp_path,
+        "--demo",
+        SIDEMANTIC_MODE="api",
+        SIDEMANTIC_API_TOKEN="secret-token",
+        SIDEMANTIC_CORS_ORIGINS="https://a.example,https://b.example",
+    )
+    assert api[:4] == ["server", "api", "--host", "0.0.0.0"]
+    assert "--auth-token" not in api
+    assert Path(_option_value(api, "--auth-token-file")).read_text() == "secret-token\n"
+    assert [api[i + 1] for i, arg in enumerate(api) if arg == "--cors-origin"] == [
+        "https://a.example",
+        "https://b.example",
+    ]
+    assert api[-1] == "--demo"
+
+
+def test_docker_mcp_mode_launches_stdio_server_with_connection(tmp_path):
+    (mcp,) = _run_docker_entrypoint(tmp_path, "/app/models", SIDEMANTIC_MODE="mcp", SIDEMANTIC_CONNECTION="duckdb:///x")
+    assert mcp == ["server", "mcp", "--connection", "duckdb:///x", "/app/models"]
 
 
 def test_mcp_serve_applies_static_user_attributes_and_visibility(monkeypatch, tmp_path):

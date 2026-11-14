@@ -38,8 +38,9 @@ uv run setup_data.py
 Analyze query patterns to find which pre-aggregations would be most beneficial:
 
 ```bash
-# Analyze simulated query history
-uvx sidemantic preagg recommend --queries query_history.sql
+# Analyze simulated query history (the sample history is small, so lower the
+# minimum query count from its default)
+uvx sidemantic preagg recommend --queries query_history.sql --min-count 5
 
 # Or analyze real query history from your database (BigQuery, Snowflake, etc.)
 # uvx sidemantic preagg recommend --connection "bigquery://project/dataset" --days 7
@@ -47,24 +48,24 @@ uvx sidemantic preagg recommend --queries query_history.sql
 
 **Output:**
 ```
-✓ Analyzed 310 queries
-  Found 4 unique patterns
-  3 patterns above threshold
+✓ Analyzed 27 queries
+Found 4 unique patterns
+3 patterns above threshold
 
 Pre-Aggregation Recommendations (found 3)
 
-1. daily_status
+1. orders_day_order_date_status_2metrics
    Model: orders
-   Query Count: 150
-   Benefit Score: 0.89
-   Metrics: order_count, revenue
-   Dimensions: order_date, status
+   Query Count: 10
+   Benefit Score: 0.47
+   Metrics: orders.order_count, orders.revenue
+   Dimensions: orders.order_date, orders.status
    Granularities: day
 
-2. daily_region
+2. orders_day_order_date_region_2metrics
    Model: orders
-   Query Count: 80
-   Benefit Score: 0.78
+   Query Count: 8
+   Benefit Score: 0.47
    ...
 ```
 
@@ -74,30 +75,30 @@ Automatically add pre-aggregations to your model YAML files:
 
 ```bash
 # Dry run to see what would be added
-uvx sidemantic preagg apply models/ --queries query_history.sql --dry-run
+uvx sidemantic preagg apply models/ --queries query_history.sql --min-count 5 --dry-run
 
 # Apply the recommendations
-uvx sidemantic preagg apply models/ --queries query_history.sql
+uvx sidemantic preagg apply models/ --queries query_history.sql --min-count 5
 ```
 
 This updates `models/orders.yml` with pre-aggregation definitions:
 
 ```yaml
 pre_aggregations:
-  - name: daily_status
-    measures: [revenue, order_count]
+  - name: orders_day_order_date_status_2metrics
+    measures: [order_count, revenue]
     dimensions: [status]
     time_dimension: order_date
     granularity: day
 
-  - name: daily_region
-    measures: [revenue, order_count]
+  - name: orders_day_order_date_region_2metrics
+    measures: [order_count, revenue]
     dimensions: [region]
     time_dimension: order_date
     granularity: day
 
-  - name: monthly_summary
-    measures: [revenue, order_count]
+  - name: orders_month_3dims_78e5a7_2metrics
+    measures: [order_count, revenue]
     dimensions: [status, region]
     time_dimension: order_date
     granularity: month
@@ -116,9 +117,9 @@ uvx sidemantic preagg refresh --db data/warehouse.db
 ```
 
 This creates tables like:
-- `preagg.orders_preagg_daily_status` - Daily metrics by status
-- `preagg.orders_preagg_daily_region` - Daily metrics by region
-- `preagg.orders_preagg_monthly_summary` - Monthly rollup
+- `preagg.orders_preagg_orders_day_order_date_status_2metrics` - Daily metrics by status
+- `preagg.orders_preagg_orders_day_order_date_region_2metrics` - Daily metrics by region
+- `preagg.orders_preagg_orders_month_3dims_78e5a7_2metrics` - Monthly rollup by status and region
 
 ### 5. Query with Explicit Routing
 

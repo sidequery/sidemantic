@@ -15,6 +15,7 @@ from sidemantic.interchange.ossie.documents import (
     OssieDocument,
     OssieDocumentSource,
     OssieLogicalDocument,
+    OssieMappingDocument,
     OssieOntologyDocument,
     UnsupportedOssieDocument,
     freeze_json,
@@ -23,6 +24,7 @@ from sidemantic.interchange.ossie.documents import (
     thaw_json,
 )
 from sidemantic.interchange.ossie.lowering import OssieLoweringResult, lower_ossie_document
+from sidemantic.interchange.ossie.mapping import validate_ossie_mapping
 from sidemantic.interchange.ossie.parser import (
     OssieParseOptions,
     OssieParseResult,
@@ -32,10 +34,12 @@ from sidemantic.interchange.ossie.profiles import (
     CURRENT_OSSIE_SCHEMA_COMMIT,
     DBT_1_12_0_1_0_ALIAS,
     DBT_1_12_0_1_1,
+    LATEST_OSSIE_SCHEMA_COMMIT,
     LEGACY_OSSIE_SCHEMA_COMMIT,
     OSSIE_CORE_0_1_1,
     OSSIE_CORE_0_2_0_CURRENT,
     OSSIE_CORE_0_2_0_DEV0,
+    OSSIE_CORE_0_2_0_LATEST,
     OSSIE_PROFILES,
     OssieConsumerProfile,
     OssieImportPolicy,
@@ -65,6 +69,9 @@ from sidemantic.interchange.ossie.synthesis import (
 
 __all__ = [
     "CURRENT_OSSIE_SCHEMA_COMMIT",
+    "LATEST_OSSIE_SCHEMA_COMMIT",
+    "OSSIE_CORE_0_2_0_LATEST",
+    "OssieMappingDocument",
     "LEGACY_OSSIE_SCHEMA_COMMIT",
     "DBT_1_12_0_1_0_ALIAS",
     "DBT_1_12_0_1_1",
@@ -113,4 +120,5 @@ __all__ = [
     "synthesize_ossie_document",
     "thaw_json",
     "validate_ossie_semantics",
+    "validate_ossie_mapping",
 ]

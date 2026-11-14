@@ -13,7 +13,7 @@ from sqlglot.errors import SqlglotError
 
 from sidemantic.core.preagg_matcher import FINALIZED_AGGREGATIONS, PreAggregationMatcher
 from sidemantic.core.relative_date import bigquery_trunc_part
-from sidemantic.core.semantic_graph import SemanticGraph, _relationship_local_key_columns
+from sidemantic.core.semantic_graph import JoinPath, SemanticGraph, _relationship_local_key_columns
 from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
 from sidemantic.sql.aggregation_detection import sql_has_aggregate
 from sidemantic.sql.fragment import (
@@ -25,6 +25,7 @@ from sidemantic.sql.fragment import (
 )
 from sidemantic.sql.order_by import split_order_field
 from sidemantic.sql.parsing import parse_fragment as _parse_fragment
+from sidemantic.sql.rendering import render_sql
 from sidemantic.validation import QueryValidationError
 
 
@@ -240,6 +241,7 @@ class SQLGenerator:
                             if aggregation
                             else expression.sql(dialect=self.dialect),
                             "sql_is_complete": aggregation is None,
+                            "metadata": {**(metric.metadata or {}), "ossie_physical_aggregate_inputs": True},
                         }
                     )
                     replacements[owner] = model.model_copy(update={"metrics": [*model.metrics, leaf]})
@@ -690,6 +692,15 @@ class SQLGenerator:
         )
 
     def _cache_generate_result(self, cache_key: tuple[object, ...], sql: str) -> str:
+        if "OVER" in sql.upper() and any(
+            (model.metadata or {}).get("ossie_source_name") for model in self.graph.models.values()
+        ):
+            # Preserve portable window semantics at the final emission boundary:
+            # intermediate SQLGlot serializers may omit nominal-default NULLS
+            # clauses even on engines whose session can change that default.
+            parsed = _parse_fragment(sql, self.dialect)
+            if parsed.find(exp.Window) is not None:
+                sql = render_sql(parsed, dialect=self.dialect, pretty=True)
         if len(self._generate_cache) >= self._generate_cache_limit:
             self._generate_cache.pop(next(iter(self._generate_cache)))
         self._generate_cache[cache_key] = sql
@@ -1059,19 +1070,43 @@ class SQLGenerator:
                     columns_by_model.setdefault(model_name, set()).update(columns)
         return columns_by_model
 
-    def _apply_default_time_dimensions(self, metrics: list[str], dimensions: list[str]) -> list[str]:
+    @staticmethod
+    def _metric_requires_time_axis(metric) -> bool:
+        """Whether a metric can only be evaluated over a time dimension in the grouping."""
+        if metric is None:
+            return False
+        if metric.type in ("cumulative", "time_comparison"):
+            return True
+        return metric.type == "ratio" and bool(metric.offset_window)
+
+    def _apply_default_time_dimensions(
+        self, metrics: list[str], dimensions: list[str], explicit_projection: bool = False
+    ) -> list[str]:
         """Auto-include default_time_dimension from models if not already present.
 
-        If a model has default_time_dimension set and no time dimension from that
-        model is already in the dimensions list, add it with the default_grain.
+        A model's default_time_dimension (at its default_grain) is added when no
+        time dimension from that model is already in the dimensions list and either
+
+        - the query selects metrics only, so the default supplies its grain, or
+        - a selected metric of that model needs a time axis (cumulative, time
+          comparison, offset ratio).
+
+        A query that names its own dimensions keeps exactly that grain for ordinary
+        aggregates: grouping them by a time dimension nobody selected splits their
+        totals. The same holds for a SQL SELECT, whose projection is fixed by the
+        caller (``explicit_projection``) even when it lists no dimension.
 
         Args:
             metrics: List of metric references
             dimensions: List of dimension references
+            explicit_projection: The caller's projection is complete; only metrics
+                that need a time axis receive their model's default
 
         Returns:
             Updated dimensions list with default time dimensions added
         """
+        grain_is_explicit = explicit_projection or bool(dimensions)
+
         # Extract which models already have time dimensions in the query
         models_with_time_dims = set()
         for dim_ref in dimensions:
@@ -1104,6 +1139,10 @@ class SQLGenerator:
             # base dependency so the model's default time dimension is applied.
             if not model_name and metric_obj is not None and metric_obj.type == "cumulative":
                 model_name = self._infer_cumulative_owner_model(metric_obj)
+            # Checked per metric, before the model is marked as handled: an
+            # ordinary aggregate must not hide a sibling that needs the axis.
+            if grain_is_explicit and not self._metric_requires_time_axis(metric_obj):
+                continue
             if not model_name or model_name in models_checked:
                 continue
             models_checked.add(model_name)
@@ -1388,6 +1427,7 @@ class SQLGenerator:
         user_attributes: dict | None = None,
         _query_ctes: frozenset[str] = frozenset(),
         _resolved_filters: tuple[str, ...] = (),
+        _explicit_projection: bool = False,
     ) -> str:
         """Generate SQL query from semantic layer query.
 
@@ -1416,6 +1456,25 @@ class SQLGenerator:
         Returns:
             SQL query string
         """
+        from sidemantic.sql.ossie_wide import compile_ossie_wide_extended, is_latest_ossie_graph
+
+        if is_latest_ossie_graph(self.graph):
+            return compile_ossie_wide_extended(
+                self.graph,
+                metrics=metrics,
+                dimensions=dimensions,
+                filters=filters,
+                aliases=aliases,
+                order_by=order_by,
+                limit=limit,
+                offset=offset,
+                dialect=self.dialect,
+                segments=segments,
+                parameters=parameters,
+                ungrouped=ungrouped,
+                use_preaggregations=use_preaggregations,
+                with_totals=with_totals,
+            )
         lowered = self._lower_ossie_aggregates() or self._lower_filtered_complete_aggregates()
         if lowered is not None:
             return lowered.generate(
@@ -1435,6 +1494,7 @@ class SQLGenerator:
                 user_attributes=user_attributes,
                 _query_ctes=_query_ctes,
                 _resolved_filters=_resolved_filters,
+                _explicit_projection=_explicit_projection,
             )
 
         metrics = metrics or []
@@ -1453,8 +1513,12 @@ class SQLGenerator:
         # Auto-include default_time_dimension from metrics before visibility
         # validation and cache lookup. An implicit dimension is still part of
         # the caller-visible result and must obey the same column restrictions.
+        # A SQL rewrite owns its projection, so it only receives the time axis
+        # that a selected metric cannot be computed without.
         if not skip_default_time_dimensions:
-            dimensions = self._apply_default_time_dimensions(metrics, dimensions)
+            dimensions = self._apply_default_time_dimensions(
+                metrics, dimensions, explicit_projection=_explicit_projection
+            )
 
         if self.enforce_visibility:
             from sidemantic.core.security import enforce_field_visibility
@@ -2044,21 +2108,15 @@ class SQLGenerator:
                 for model_name in self._extract_models_from_sql(metric.sql):
                     add_model(model_name)
 
-        # Role dimensions describe rows of their declaring model, not the full
-        # population of the reused lookup table. Anchor at that model when it
-        # also owns the selected measures; an explicit explore base still wins.
-        aggregate_models = self._find_aggregate_metric_models(metrics)
-        if len(aggregate_models) == 1:
-            metric_model = next(iter(aggregate_models))
-            for dim in dimensions:
-                owner = self.graph._role_owners.get(dim.split(".")[0])
-                while owner in self.graph._role_owners:
-                    owner = self.graph._role_owners[owner]
-                if owner == metric_model:
-                    add_model(metric_model)
-                    break
+        # The model that owns the selected measures is the preserved side of the
+        # join graph: dimension models are LEFT JOINed onto it, so facts without
+        # a matching dimension row land in a NULL group and a breakdown adds up
+        # to the ungrouped total. An explicit explore base still wins.
+        measure_model = self._single_measure_model(metrics)
+        if measure_model:
+            add_model(measure_model)
 
-        # Collect from dimensions first (since they define the grain)
+        # Without a single measure owner, dimensions come first in query order.
         for dim in dimensions:
             # Remove granularity suffix if present
             if "__" in dim:
@@ -2085,7 +2143,52 @@ class SQLGenerator:
                 except SqlglotError:
                     logging.debug("Failed to parse filter for model extraction: %s", filter_expr, exc_info=True)
 
+        # Directed native relationships restrict which population may anchor a
+        # query. Keep the ordering above for ordinary graphs, but choose a
+        # reachable anchor when that ordering would traverse a forbidden edge.
+        if (
+            not self.base_model
+            and len(models) > 1
+            and any(
+                (relationship.metadata or {}).get("reversible") is False
+                for model in self.graph.models.values()
+                for relationship in model.relationships
+            )
+        ):
+            if self.graph._adjacency_dirty:
+                self.graph.build_adjacency()
+            required = set(models)
+            for candidate in models:
+                reachable = {candidate}
+                pending = [candidate]
+                while pending:
+                    current = pending.pop()
+                    for edge in self.graph._adjacency.get(current, []):
+                        target = edge[0]
+                        if target not in reachable:
+                            reachable.add(target)
+                            pending.append(target)
+                if required <= reachable:
+                    models = [candidate, *(name for name in models if name != candidate)]
+                    break
+
         return models
+
+    def _single_measure_model(self, metric_refs: list[str]) -> str | None:
+        """The one model whose rows every selected measure aggregates, if there is one."""
+        aggregate_models = self._find_aggregate_metric_models(metric_refs)
+        if aggregate_models:
+            return next(iter(aggregate_models)) if len(aggregate_models) == 1 else None
+        # An unowned graph aggregate such as SUM(orders.amount) names its source in SQL.
+        referenced: set[str] = set()
+        for metric_ref in metric_refs:
+            try:
+                model_name, metric = self.graph.resolve_metric_reference(metric_ref)
+            except KeyError:
+                continue
+            if model_name is None and metric.agg and metric.sql:
+                referenced.update(self._extract_models_from_sql(metric.sql))
+        return next(iter(referenced)) if len(referenced) == 1 else None
 
     def _find_aggregate_metric_models(self, metric_refs: list[str]) -> set[str]:
         """Find models whose entity keys can de-duplicate selected aggregate leaves."""
@@ -2608,9 +2711,10 @@ class SQLGenerator:
 
         # Check if other models have has_many/has_one pointing to this model
         if needs_keyed_joins:
-            for other_model_name, other_model in self.graph.models.items():
-                if other_model_name not in all_models:
-                    continue
+            # Incoming relationships can originate at a nested role instance,
+            # whose canonical model need not participate in this query.
+            for other_model_name in sorted(all_models):
+                other_model = self.graph.get_model(other_model_name)
                 for other_join in other_model.relationships:
                     target_instance = self.graph.relationship_target_instance(other_model_name, other_join)
                     # Custom-SQL joins supply their key columns via the custom-join
@@ -2971,9 +3075,8 @@ class SQLGenerator:
             if target_instance in all_models and relationship.type != "cross":
                 return True
 
-        for other_model_name, other_model in self.graph.models.items():
-            if other_model_name not in all_models:
-                continue
+        for other_model_name in sorted(all_models):
+            other_model = self.graph.get_model(other_model_name)
             for relationship in other_model.relationships:
                 target_instance = self.graph.relationship_target_instance(other_model_name, relationship)
                 if target_instance == model_name and relationship.type != "cross":
@@ -3019,21 +3122,50 @@ class SQLGenerator:
         Returns:
             Dict mapping model names to whether they need symmetric aggregates
         """
-        models = [base_model_name, *other_models]
-        needs_symmetric = dict.fromkeys(models, False)
-        # A dimension can anchor the query on the many side. Assess fanout from
-        # each metric owner's perspective, not just the chosen FROM model.
-        for model_name in models:
-            for other_model in models:
-                if model_name == other_model:
-                    continue
-                try:
-                    path = self.graph.find_relationship_path(model_name, other_model)
-                    if any(hop.relationship == "one_to_many" for hop in path):
+
+        def direct_many_to_many(hop: JoinPath) -> bool:
+            # Direct many-to-many edges use one_to_many adjacency in both
+            # directions. Their inverse multiplicity cannot be inferred from
+            # that normalized label alone.
+            return any(
+                relationship.active
+                and relationship.type == "many_to_many"
+                and not relationship.through
+                and self.graph.relationship_target_instance(source, relationship) == target
+                for source, target in ((hop.from_model, hop.to_model), (hop.to_model, hop.from_model))
+                for relationship in self.graph.get_model(source).relationships
+            )
+
+        # Analyze only the joins emitted for this query. A permitted return
+        # route through a directed cycle can have different cardinalities from
+        # the inverse of the actual join. Reversing the perspective here does
+        # not permit reverse traversal when selecting query paths.
+        adjacency: dict[str, list[tuple[str, bool]]] = {base_model_name: []}
+        for hop in self._query_join_paths(base_model_name, other_models):
+            many_to_many = direct_many_to_many(hop)
+            adjacency.setdefault(hop.from_model, []).append(
+                (hop.to_model, many_to_many or hop.relationship in {"one_to_many", "cross"})
+            )
+            adjacency.setdefault(hop.to_model, []).append(
+                (hop.from_model, many_to_many or hop.relationship in {"many_to_one", "cross"})
+            )
+
+        needs_symmetric = dict.fromkeys(adjacency, False)
+        for model_name in adjacency:
+            visited = {model_name}
+            pending = [model_name]
+            while pending:
+                current = pending.pop()
+                for target, multiplies_rows in adjacency[current]:
+                    if target in visited:
+                        continue
+                    if multiplies_rows:
                         needs_symmetric[model_name] = True
                         break
-                except (ValueError, KeyError):
-                    pass
+                    visited.add(target)
+                    pending.append(target)
+                if needs_symmetric[model_name]:
+                    break
 
         return needs_symmetric
 
@@ -3153,32 +3285,43 @@ class SQLGenerator:
         # Check if any pair of metric models would cause fan-out
         # Fan-out occurs when model A joins to model B via a path that includes
         # a many_to_one relationship from B's perspective (one_to_many from A's)
-        metric_model_list = list(metric_models)
+        metric_model_list = sorted(metric_models)
         for i, model_a in enumerate(metric_model_list):
             for model_b in metric_model_list[i + 1 :]:
-                try:
-                    # Check path from A to B
-                    join_path = self.graph.find_relationship_path(model_a, model_b)
-                    if join_path:
-                        # If any hop is many_to_one (from A's perspective), model_a metrics
-                        # would be replicated when joining to model_b
-                        for jp in join_path:
-                            if jp.relationship == "many_to_one":
-                                # model_a is on the "many" side, so its rows fan out
-                                # when we aggregate model_b metrics
-                                return True
-
-                    # Check reverse path
-                    join_path_reverse = self.graph.find_relationship_path(model_b, model_a)
-                    if join_path_reverse:
-                        for jp in join_path_reverse:
-                            if jp.relationship == "many_to_one":
-                                return True
-
-                except (ValueError, KeyError):
-                    pass
+                for source, target in ((model_a, model_b), (model_b, model_a)):
+                    try:
+                        join_path = self.graph.find_relationship_path(source, target)
+                    except (ValueError, KeyError):
+                        continue
+                    # Either orientation repeats the one side. A directed
+                    # relationship may expose only its one-to-many traversal.
+                    if any(hop.relationship in {"many_to_one", "one_to_many"} for hop in join_path):
+                        return True
 
         return False
+
+    def _full_join_null_safe_equality(self, left: exp.Expression, right: exp.Expression) -> str:
+        """Render a NULL-safe equality the dialect can plan as a FULL JOIN condition."""
+        if self.dialect == "postgres":
+            # PostgreSQL only plans FULL JOIN on hash- or merge-joinable
+            # operators, which excludes IS NOT DISTINCT FROM. Array equality
+            # is both, keeps the column type's own comparison, and treats
+            # NULL elements as equal. Wrapping an array-valued key turns both
+            # NULL and the empty array into the empty array, so the keys must
+            # also agree on being NULL.
+            condition = exp.and_(
+                exp.EQ(
+                    this=exp.Array(expressions=[left.copy()]),
+                    expression=exp.Array(expressions=[right.copy()]),
+                ),
+                exp.EQ(
+                    this=exp.paren(exp.Is(this=left.copy(), expression=exp.null())),
+                    expression=exp.paren(exp.Is(this=right.copy(), expression=exp.null())),
+                ),
+            )
+        else:
+            condition = exp.NullSafeEQ(this=left, expression=right)
+        return condition.sql(dialect=self._dialect_instance)
 
     def _generate_with_preaggregation(
         self,
@@ -3321,6 +3464,7 @@ class SQLGenerator:
         if len(metrics_by_model) < 2:
             # Shouldn't happen, but fall back to regular generation.
             # Segments already resolved into filters by caller, pass None.
+            # Default time dimensions were resolved by the caller as well.
             return self.generate(
                 metrics=metrics,
                 dimensions=dimensions,
@@ -3331,6 +3475,7 @@ class SQLGenerator:
                 offset=offset,
                 aliases=aliases,
                 use_preaggregations=use_preaggregations,
+                skip_default_time_dimensions=True,
                 user_attributes=user_attributes,
             )
 
@@ -3409,6 +3554,18 @@ class SQLGenerator:
             child_generator.base_model = self.base_model or (
                 None if model_name in complete_groups.values() else model_name
             )
+            if self.base_model is None and child_generator.base_model is not None:
+                for required_model in child_generator._find_required_models(model_metrics, dimensions, model_filters):
+                    try:
+                        self.graph.find_relationship_path(child_generator.base_model, required_model)
+                    except ValueError as error:
+                        if not str(error).startswith("No join path"):
+                            raise
+                        # The metric owner was only an implicit preference.
+                        # Reuse the ordinary directed-anchor selection instead
+                        # of treating it as an explicit user restriction.
+                        child_generator.base_model = None
+                        break
             child_generator._generate_cache = {}
             sub_query = child_generator.generate(
                 metrics=model_metrics,
@@ -3530,7 +3687,7 @@ class SQLGenerator:
                         previous[0] if len(previous) == 1 else exp.Coalesce(this=previous[0], expressions=previous[1:])
                     )
                     rhs = exp.Column(this=col_name, table=cte_name)
-                    join_conditions.append(exp.NullSafeEQ(this=lhs, expression=rhs).sql(dialect=self._dialect_instance))
+                    join_conditions.append(self._full_join_null_safe_equality(lhs, rhs))
 
                 join_clause = " AND ".join(join_conditions)
                 join_clauses.append(f"FULL OUTER JOIN {cte_name} ON {join_clause}")
@@ -3585,9 +3742,15 @@ class SQLGenerator:
                     suffix = f"{suffix} NULLS {nulls}".strip()
                 field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
                 output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
+                if field_ref not in output_names and field_ref.isdecimal():
+                    # A position selects an output column, as in the
+                    # single-model query; it is not a column named "1".
+                    order_target = exp.Literal.number(field_ref)
+                else:
+                    order_target = exp.column(output_name, quoted=True)
                 order_clauses.append(
                     exp.Ordered(
-                        this=exp.column(output_name, quoted=True),
+                        this=order_target,
                         desc=suffix.startswith("DESC"),
                         nulls_first=suffix.endswith("NULLS FIRST"),
                     )
@@ -3613,6 +3776,17 @@ class SQLGenerator:
 
         return full_sql
 
+    def _query_join_paths(self, base_model_name: str, other_models: list[str]) -> list[JoinPath]:
+        """Select the ordered joins, adding each query instance only once."""
+        joined_models = {base_model_name}
+        joins = []
+        for other_model in other_models:
+            for hop in self.graph.find_relationship_path(base_model_name, other_model):
+                if hop.to_model not in joined_models:
+                    joins.append(hop)
+                    joined_models.add(hop.to_model)
+        return joins
+
     def _add_join_paths_to_query(
         self,
         query,
@@ -3621,44 +3795,30 @@ class SQLGenerator:
         models_with_filters: set[str],
     ):
         """Add the same multi-hop joins used by the main grouped query."""
-        if not other_models:
-            return query
-
-        joined_models = {base_model_name}
-        for other_model in other_models:
-            join_path = self.graph.find_relationship_path(base_model_name, other_model)
-            if not join_path:
+        for jp in self._query_join_paths(base_model_name, other_models):
+            right_table = self._quote_identifier(self._cte_name(jp.to_model))
+            if jp.relationship == "cross":
+                query = query.join(right_table, join_type="cross")
                 continue
 
-            for jp in join_path:
-                if jp.to_model in joined_models:
-                    continue
+            if jp.custom_condition:
+                join_cond = self._custom_join_condition(jp)
+            else:
+                if len(jp.from_columns) != len(jp.to_columns):
+                    raise ValueError(
+                        f"Join between {jp.from_model} and {jp.to_model} has mismatched key columns: "
+                        f"from_columns has {len(jp.from_columns)}, to_columns has {len(jp.to_columns)}"
+                    )
 
-                right_table = self._quote_identifier(self._cte_name(jp.to_model))
-                if jp.relationship == "cross":
-                    query = query.join(right_table, join_type="cross")
-                    joined_models.add(jp.to_model)
-                    continue
-
-                if jp.custom_condition:
-                    join_cond = self._custom_join_condition(jp)
-                else:
-                    if len(jp.from_columns) != len(jp.to_columns):
-                        raise ValueError(
-                            f"Join between {jp.from_model} and {jp.to_model} has mismatched key columns: "
-                            f"from_columns has {len(jp.from_columns)}, to_columns has {len(jp.to_columns)}"
-                        )
-
-                    join_conditions = [
-                        self._cte_ref(jp.from_model, fk) + " = " + self._cte_ref(jp.to_model, pk)
-                        for fk, pk in zip(jp.from_columns, jp.to_columns)
-                    ]
-                    join_cond = " AND ".join(join_conditions)
-                join_type = self._explicit_join_type_for_path(jp)
-                if join_type is None:
-                    join_type = "inner" if jp.to_model in models_with_filters else "left"
-                query = query.join(right_table, on=join_cond, join_type=join_type)
-                joined_models.add(jp.to_model)
+                join_conditions = [
+                    self._cte_ref(jp.from_model, fk) + " = " + self._cte_ref(jp.to_model, pk)
+                    for fk, pk in zip(jp.from_columns, jp.to_columns)
+                ]
+                join_cond = " AND ".join(join_conditions)
+            join_type = self._explicit_join_type_for_path(jp)
+            if join_type is None:
+                join_type = "inner" if jp.to_model in models_with_filters else "left"
+            query = query.join(right_table, on=join_cond, join_type=join_type)
 
         return query
 
@@ -4395,24 +4555,6 @@ class SQLGenerator:
             )
         # Detect if symmetric aggregates are needed
         symmetric_agg_needed = self._has_fanout_joins(base_model_name, other_models)
-
-        # A model introduced only by a query-level filter can multiply the metric
-        # model just like a selected dimension model can.
-        row_context_models = {base_model_name, *other_models}
-        metric_models = set()
-        for metric_ref in metrics:
-            metric_models.update(self._find_required_models([metric_ref], []))
-        for metric_model in metric_models:
-            for context_model in row_context_models:
-                if metric_model == context_model:
-                    continue
-                try:
-                    join_path = self.graph.find_relationship_path(metric_model, context_model)
-                except ValueError:
-                    continue
-                if any(jp.relationship in {"one_to_many", "many_to_many", "cross"} for jp in join_path):
-                    symmetric_agg_needed[metric_model] = True
-                    break
 
         fanout_safe_plan = self._fanout_safe_metric_plan(metrics, symmetric_agg_needed)
         if fanout_safe_plan is not None and not ungrouped:
@@ -5206,6 +5348,11 @@ class SQLGenerator:
                     if any(metric is mm for mm in m.metrics):
                         metric_model_name = m_name
                         break
+            if metric_model_name and (metric.metadata or {}).get("ossie_physical_aggregate_inputs"):
+                # These leaves already contain physical source expressions. Their
+                # input columns must use dedicated raw aliases, not logical field
+                # projections that would apply calculated fields a second time.
+                return self._build_complete_sql_expr(metric, metric_model_name, grouped=False)
             formula = metric.sql
             if metric_model_name:
                 cte_alias = self._quote_identifier(self._cte_name(metric_model_name))
@@ -7837,6 +7984,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
             return None, "no_remote_dimensions"
 
         metric_model_name = metric_models[0]
+        # The rollup stands in for the measure model, which this route keeps as
+        # the preserved side. Any other explicit anchor needs raw planning.
+        if self.base_model and self.base_model != metric_model_name:
+            return None, "explicit_anchor_not_supported"
         metric_model = self.graph.get_model(metric_model_name)
         if not metric_model.pre_aggregations:
             return None, "model_has_no_preaggregations"
@@ -7874,6 +8025,10 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 return None, "remote_dimension_not_many_to_one"
             if self._explicit_join_type_for_path(path[0]) is not None:
                 return None, "explicit_join_type_not_supported"
+            # The route joins on the stored key columns only; a custom predicate
+            # decides matches from columns the rollup does not carry.
+            if path[0].custom_condition:
+                return None, "custom_join_condition_not_supported"
             if remote_model_name and remote_model_name != dim_model_name:
                 return None, "multiple_remote_models_not_supported"
 
@@ -7945,6 +8100,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
 
         select_exprs: list[str] = []
         output_names: dict[str, str] = {}
+        # Remote dimensions are computed inside the joined subquery, as raw
+        # planning computes them in the model CTE. Evaluated after the LEFT
+        # JOIN, an expression such as COALESCE(name, 'unknown') would turn the
+        # NULL group of unmatched keys into an ordinary dimension value.
+        remote_projections: list[str] = []
 
         def register_output_name(output_name: str, *refs: str) -> None:
             for ref in refs:
@@ -7971,13 +8131,18 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     column_expr = f"{rollup_alias}.{self._quote_identifier(column_name)}"
                     if not granularity:
                         column_expr = self._as_grain_type(preagg.granularity, column_expr)
+                if granularity:
+                    column_expr = self._date_trunc(granularity, column_expr)
             else:
                 dimension = remote_model.get_dimension(dim_name)
                 dimension_sql = dimension.sql if dimension and dimension.sql else dim_name
-                column_expr = self._qualify_model_expression(dimension_sql, remote_model_name, remote_alias)
+                remote_expr = self._qualify_model_expression(dimension_sql, remote_model_name, remote_alias)
+                if granularity:
+                    remote_expr = self._date_trunc(granularity, remote_expr)
+                projected_name = self._quote_identifier(f"__sidemantic_dimension_{len(remote_projections)}")
+                remote_projections.append(f"{remote_expr} AS {projected_name}")
+                column_expr = f"{self._quote_identifier(remote_alias)}.{projected_name}"
 
-            if granularity:
-                column_expr = self._date_trunc(granularity, column_expr)
             select_exprs.append(f"{column_expr} AS {self._quote_alias(output_name)}")
 
         for metric_ref in metrics:
@@ -8010,8 +8175,18 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     direction = f" {parts[1].upper()}"
                 field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
                 output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
-                order_clauses.append(f"{self._quote_alias(output_name)}{direction}")
-            order_by_clause = "\nORDER BY " + ", ".join(order_clauses)
+                # Unmatched join keys add a NULL dimension group; order it as
+                # raw planning does instead of by the database default. The
+                # target dialect renders or emulates the NULL placement.
+                descending = direction == " DESC"
+                order_clauses.append(
+                    exp.Ordered(
+                        this=exp.column(output_name, quoted=True),
+                        desc=descending,
+                        nulls_first=not descending,
+                    )
+                )
+            order_by_clause = "\n" + exp.Order(expressions=order_clauses).sql(dialect=self.dialect)
 
         limit_clause = ""
         if limit is not None:
@@ -8021,10 +8196,22 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
 
         select_exprs_str = ",\n  ".join(select_exprs)
         remote_source = self._model_source_as(remote_model, remote_alias)
+        quoted_remote_alias = self._quote_identifier(remote_alias)
+        remote_keys = [
+            f"{quoted_remote_alias}.{self._quote_identifier(column)} AS {self._quote_identifier(column)}"
+            for column in dict.fromkeys(hop.to_columns)
+        ]
+        remote_columns = ",\n    ".join([*remote_keys, *remote_projections])
+        # Same population as raw planning: every stored fact group is kept and
+        # an unmatched join key lands in a NULL dimension group.
         return f"""SELECT
   {select_exprs_str}
-FROM {remote_source}
-LEFT JOIN {preagg_table} AS {rollup_alias}
+FROM {preagg_table} AS {rollup_alias}
+LEFT JOIN (
+  SELECT
+    {remote_columns}
+  FROM {remote_source}
+) AS {quoted_remote_alias}
   ON {" AND ".join(join_conditions)}{group_by_clause}{order_by_clause}{limit_clause}"""
 
     def _qualify_model_expression(self, expression_sql: str, model_name: str, alias: str) -> str:

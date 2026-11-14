@@ -10,17 +10,19 @@ from pathlib import Path
 from antlr4 import CommonTokenStream, InputStream
 from antlr4.error.ErrorListener import ErrorListener
 
-from sidemantic.adapters.base import BaseAdapter
+from sidemantic.adapters.base import BaseAdapter, filtered_measure_sql, reject_unsupported_export
 from sidemantic.adapters.holistics_grammar import HolisticsLexer, HolisticsParser
 from sidemantic.core.dimension import Dimension
 from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
+from sidemantic.fidelity import record_export_feature, record_import_note
 from sidemantic.paths import output_child
 
 _AML_INTERPOLATION_RE = re.compile(r"\{\{\s*(.*?)\s*\}\}")
 _TAGGED_BLOCK_RE = re.compile(r"^@(?P<tag>[A-Za-z_][A-Za-z0-9_]*)\s*(?P<body>.*?);;\s*$", re.DOTALL)
+_AQL_QUOTED_RE = re.compile(r"""'(?:\\.|''|[^'\\])*'|"(?:\\.|""|[^"\\])*"|`(?:\\.|``|[^`\\])*`""")
 
 
 @dataclass
@@ -363,7 +365,40 @@ class HolisticsAdapter(BaseAdapter):
 
         resolved_models = resolve_model_inheritance(graph.models)
 
+        local_metrics = [metric for model in resolved_models.values() for metric in model.metrics]
+        graph_only = [name for name, metric in graph.metrics.items() if metric not in local_metrics]
+        if graph_only:
+            detail = "Graph-level metrics have no holistics model placement: " + ", ".join(graph_only)
+            record_export_feature("graph_metrics", "rejected", source="holistics", detail=detail)
+            raise ValueError(detail)
+
+        # An AML measure has no filter property; a simple aggregate carries its
+        # filters inside the aggregated SQL. Anything else cannot be written.
+        reject_unsupported_export(
+            "holistics",
+            [
+                (
+                    "metric_filter",
+                    f"{model.name}.{metric.name}",
+                    f"Filter on '{model.name}.{metric.name}' cannot be folded into an AML measure definition",
+                )
+                for model in resolved_models.values()
+                for metric in model.metrics
+                if metric.filters and _measure_definition(metric, model.name) is None
+            ],
+        )
+
         if output_path.suffix == ".aml":
+            if len(resolved_models) > 1:
+                record_export_feature(
+                    "multiple_models",
+                    "rejected",
+                    source="holistics",
+                    detail="Single-file export would omit models; use a directory",
+                )
+                raise ValueError(
+                    "Holistics single-file export requires exactly one model; use a directory for multiple models"
+                )
             if resolved_models:
                 model = next(iter(resolved_models.values()))
                 output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -403,8 +438,22 @@ class HolisticsAdapter(BaseAdapter):
         for dimension in model.dimensions:
             lines.extend(_export_dimension(dimension, model.primary_key))
 
+        # AML marks the key on a dimension. Declare a key column that is not
+        # already a dimension so import does not fall back to an assumed `id`.
+        declared = {dimension.name for dimension in model.dimensions}
+        if len(model.primary_key_columns) == 1 and model.primary_key_columns[0] not in declared:
+            lines.extend(
+                [
+                    f"  dimension {model.primary_key_columns[0]} {{",
+                    "    type: 'text'",
+                    "    hidden: true",
+                    "    primary_key: true",
+                    "  }",
+                ]
+            )
+
         for metric in model.metrics:
-            lines.extend(_export_measure(metric, model.primary_key))
+            lines.extend(_export_measure(metric, model.primary_key, model.name))
 
         lines.append("}")
         return "\n".join(lines) + "\n"
@@ -1167,7 +1216,9 @@ def _parse_model_block(block: AmlBlock, constants: dict[str, AmlValue], context:
         table=table_name if model_type == "table" else None,
         sql=query_expr if model_type == "query" else None,
         description=description,
-        primary_key=primary_key or "id",
+        # Without a flagged dimension the key is unknown. Assume the conventional
+        # ``id`` only when the model declares that column; never invent one.
+        primary_key=primary_key or ("id" if any(dim.name == "id" for dim in dimensions) else None),
         dimensions=dimensions,
         metrics=metrics,
     )
@@ -1920,6 +1971,12 @@ def _translate_aql_to_sql(expr: str) -> str:
     if not expr:
         return expr
 
+    # Check nested calls and whitespace before '(' without matching string values.
+    calls = _AQL_QUOTED_RE.sub("", expr)
+    for call in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(", calls):
+        if call[1].lower() in _AQL_TABLE_FUNCS | _AQL_METRIC_MODIFIERS:
+            _apply_aql_function(call[1], [], None)  # Raises with a fidelity note.
+
     segments = _split_aql_pipeline(expr)
     base = segments[0].strip()
 
@@ -1987,6 +2044,11 @@ def _translate_aql_inline(expr: str) -> str:
     idx = 0
 
     while idx < len(expr):
+        quoted = _AQL_QUOTED_RE.match(expr, idx)
+        if quoted:
+            buf.append(quoted[0])
+            idx = quoted.end()
+            continue
         match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", expr[idx:])
         if not match:
             buf.append(expr[idx])
@@ -2018,7 +2080,7 @@ def _translate_aql_inline(expr: str) -> str:
 def _apply_aql_pipe(base: str, segment: str) -> str:
     match = re.match(r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:\((?P<args>.*)\))?\s*$", segment)
     if not match:
-        return base
+        raise ValueError(f"Unsupported Holistics AQL pipeline stage: {segment!r}")
     name = match.group("name")
     args = _split_aql_args(match.group("args") or "")
     return _apply_aql_function(name, args, base=base)
@@ -2068,14 +2130,11 @@ _AQL_AGG_SQL = {
     "median": "MEDIAN",
 }
 
-# Table-shaping functions (filter/group/select rows of a table). At the
-# SQL-fragment level the surrounding aggregation produces the value, so these
-# are best-effort passed through (the base flows to the next pipe stage).
+# Table-shaping functions require row/group scope that fragment translation
+# cannot represent. Reject them rather than dropping their conditions.
 _AQL_TABLE_FUNCS = {"filter", "group", "select", "where"}
 
-# Metric-modifier functions that change a metric's grouping/period scope.
-# We cannot express their windowing at the fragment level, so we preserve the
-# inner metric expression rather than dropping it.
+# Metric modifiers require grouping/period scope unavailable to this translator.
 _AQL_METRIC_MODIFIERS = {"of_all", "exclude", "keep_grains", "relative_period", "period_to_date", "running_total"}
 
 
@@ -2100,20 +2159,13 @@ def _apply_aql_function(name: str, args: list[str], base: str | None) -> str:
             return "COUNT(*)"
         return f"SUM(CASE WHEN {condition} THEN 1 ELSE 0 END)"
 
-    if normalized in _AQL_TABLE_FUNCS:
-        # Best-effort: keep the upstream table expression flowing through the
-        # pipeline; the aggregation that follows still produces the value.
-        if base is not None:
-            return base
-        if cleaned_args:
-            return cleaned_args[0]
-        return "*"
-
-    if normalized in _AQL_METRIC_MODIFIERS:
-        # Preserve the metric being modified so it is not lost. The scope change
-        # (ignore grouping / shift period) cannot be expressed in a fragment.
-        inner = base if base is not None else (cleaned_args[0] if cleaned_args else "")
-        return inner
+    if normalized in _AQL_TABLE_FUNCS | _AQL_METRIC_MODIFIERS:
+        detail = (
+            f"Holistics AQL function {name!r} changes row, grouping, or period scope and cannot be "
+            "translated faithfully to SQL. Rewrite this definition as explicit SQL before importing."
+        )
+        record_import_note("aql_scope", detail, source="holistics", location=name)
+        raise ValueError(detail)
 
     if base:
         combined_args = [base] + cleaned_args if cleaned_args else [base]
@@ -2301,7 +2353,19 @@ def _export_dimension(dimension: Dimension, primary_key: str) -> list[str]:
     return lines
 
 
-def _export_measure(metric: Metric, primary_key: str) -> list[str]:
+def _measure_definition(metric: Metric, model_name: str) -> str | None:
+    """SQL definition for a simple aggregate, with any row filters folded in.
+
+    Returns ``None`` when the metric has filters that cannot be folded.
+    """
+    if not metric.filters:
+        return metric.sql
+    if metric.type or not metric.agg or _map_agg_to_aml(metric.agg) == "custom":
+        return None
+    return filtered_measure_sql(metric, model_name)
+
+
+def _export_measure(metric: Metric, primary_key: str, model_name: str | None = None) -> list[str]:
     lines = [f"  measure {metric.name} {{"]
 
     if metric.label:
@@ -2324,8 +2388,7 @@ def _export_measure(metric: Metric, primary_key: str) -> list[str]:
         definition = metric.sql
     elif metric.agg:
         aggregation_type = _map_agg_to_aml(metric.agg)
-        if metric.sql:
-            definition = metric.sql
+        definition = _measure_definition(metric, model_name) if model_name else metric.sql
     elif metric.sql:
         aggregation_type = "custom"
         definition = metric.sql

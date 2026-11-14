@@ -203,3 +203,355 @@ fn current_metadata_and_dialects_validate_without_becoming_sql_targets() {
             .valid
     );
 }
+
+const LATEST_REVISION: &str = "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1";
+const OCTOBER_REVISION: &str = "b6c702ed1c07e91382a69e870c875cbd19570828";
+
+fn latest_document() -> serde_json::Value {
+    serde_json::json!({"version": "0.2.0.dev0", "name": "commerce", "datasets": [{
+        "name": "orders", "source": "orders", "fields": [
+            {"name": "amount", "expression": {"sql": "amount * 2"}}
+        ], "metrics": [
+            {"name": "total", "expression": {"sql": "SUM(amount)"}},
+            {"name": "physical", "expression": {"sql": "SUM(source.amount)"}},
+            {"name": "rows", "expression": {"sql": "COUNT(*)"}}
+        ]
+    }]})
+}
+
+fn latest_scope(
+    document: &serde_json::Value,
+) -> sidemantic::Result<sidemantic::OssieCompiledScope> {
+    OssieForwardAdapter.select_scope_with_revision(
+        &document.to_string(),
+        OssieSerialization::Json,
+        OssieConsumerProfile::OssieCore,
+        OssieTarget::DuckDb,
+        None,
+        Some(LATEST_REVISION),
+    )
+}
+
+#[test]
+fn latest_features_infer_an_immutable_revision_and_preserve_historical_selection() {
+    let document = latest_document();
+    let status = OssieForwardAdapter.inspect(
+        &document.to_string(),
+        OssieSerialization::Json,
+        OssieConsumerProfile::OssieCore,
+    );
+    assert!(status.valid, "{:?}", status.diagnostics);
+    assert_eq!(
+        status.profile.unwrap().schema_revision.as_deref(),
+        Some(LATEST_REVISION)
+    );
+    let historical = OssieForwardAdapter.inspect_with_revision(
+        &document.to_string(),
+        OssieSerialization::Json,
+        OssieConsumerProfile::OssieCore,
+        Some(OCTOBER_REVISION),
+    );
+    assert!(!historical.valid);
+    assert!(historical
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "ossie.schema.additional_properties"));
+    let ambiguous = serde_json::json!({"version":"0.2.0.dev0", "name":"old", "datasets":[{"name":"t", "source":"t"}]});
+    let inferred = OssieForwardAdapter.inspect(
+        &ambiguous.to_string(),
+        OssieSerialization::Json,
+        OssieConsumerProfile::OssieCore,
+    );
+    assert_eq!(
+        inferred.profile.unwrap().schema_revision.as_deref(),
+        Some(OCTOBER_REVISION)
+    );
+    assert!(OssieForwardAdapter
+        .inspect_with_revision(
+            &ambiguous.to_string(),
+            OssieSerialization::Json,
+            OssieConsumerProfile::OssieCore,
+            Some("unknown")
+        )
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "ossie.schema.profile_unsupported"));
+}
+
+#[test]
+fn latest_sql_is_authoritative_portable_form_with_exact_target_precedence() {
+    let mut document = latest_document();
+    document["datasets"][0]["fields"][0]["expression"] = serde_json::json!({
+        "sql":"amount * 2", "dialects":[
+            {"dialect":"OSSIE_SQL_2026", "expression":"amount * 999"},
+            {"dialect":"UNREGISTERED_VENDOR", "expression":"opaque text"},
+            {"dialect":"SNOWFLAKE", "expression":"amount * 3"}
+        ]
+    });
+    let scope = latest_scope(&document).unwrap();
+    assert_eq!(
+        scope.models[0].dimensions[0].sql.as_deref(),
+        Some("amount * 2")
+    );
+    let scope = OssieForwardAdapter
+        .select_scope(
+            &document.to_string(),
+            OssieSerialization::Json,
+            OssieConsumerProfile::OssieCore,
+            OssieTarget::Snowflake,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        scope.models[0].dimensions[0].sql.as_deref(),
+        Some("amount * 3")
+    );
+    document["datasets"][0]["fields"][0]["expression"] = serde_json::json!({"dialects":[{"dialect":"UNREGISTERED_VENDOR", "expression":"opaque text"}]});
+    assert!(latest_scope(&document).is_err());
+}
+
+#[test]
+fn latest_dataset_metrics_bind_fields_source_columns_and_row_counts_separately() {
+    let scope = latest_scope(&latest_document()).unwrap();
+    assert_eq!(
+        scope.models[0].metadata.as_ref().unwrap()["ossie_scope_name"],
+        "commerce"
+    );
+    assert_eq!(
+        scope
+            .metrics
+            .iter()
+            .map(|metric| metric.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["orders.total", "orders.physical", "orders.rows"]
+    );
+    assert_eq!(scope.metrics[0].sql.as_deref(), Some("SUM(orders.amount)"));
+    let graph = scope.into_graph().unwrap();
+    assert_eq!(graph.metric_owner("orders.rows"), Some("orders"));
+    let sql = sidemantic::SqlGenerator::new(&graph)
+        .generate(&sidemantic::SemanticQuery::new().with_metrics(vec![
+            "orders.total".into(),
+            "orders.physical".into(),
+            "orders.rows".into(),
+        ]))
+        .unwrap();
+    assert!(sql.contains("amount * 2"), "{sql}");
+    assert!(sql.contains("amount AS"), "{sql}");
+    assert!(sql.contains("1 AS"), "{sql}");
+    assert!(!sql.contains("source.amount"), "{sql}");
+}
+
+#[test]
+fn latest_metric_namespaces_reject_undeclared_cross_dataset_and_metric_references() {
+    for sql in [
+        "SUM(missing)",
+        "SUM(orders.amount)",
+        "SUM(other.amount)",
+        "total * 2",
+    ] {
+        let mut document = latest_document();
+        document["datasets"][0]["metrics"][0]["expression"] = serde_json::json!({"sql": sql});
+        assert!(latest_scope(&document).is_err(), "dataset metric {sql}");
+    }
+    for sql in [
+        "SUM(amount)",
+        "SUM(orders.missing)",
+        "SUM(orders.total)",
+        "global * 2",
+    ] {
+        let mut document = latest_document();
+        document["metrics"] = serde_json::json!([{"name":"global", "expression":{"sql":sql}}]);
+        assert!(latest_scope(&document).is_err(), "model metric {sql}");
+    }
+    let mut document = latest_document();
+    document["metrics"] =
+        serde_json::json!([{"name":"global", "expression":{"sql":"SUM(orders.amount)"}}]);
+    assert!(latest_scope(&document).is_ok());
+}
+
+#[test]
+fn latest_dataset_field_metric_collisions_and_source_shadowing_fail_closed() {
+    let mut document = latest_document();
+    document["datasets"][0]["metrics"][0]["name"] = serde_json::json!("AMOUNT");
+    let status = OssieForwardAdapter.inspect(
+        &document.to_string(),
+        OssieSerialization::Json,
+        OssieConsumerProfile::OssieCore,
+    );
+    assert!(status
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "ossie.semantic.metric.field_name_collision"));
+    let mut document = latest_document();
+    document["datasets"][0]["fields"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"name":"source", "expression":{"sql":"amount"}}));
+    assert!(latest_scope(&document)
+        .unwrap_err()
+        .to_string()
+        .contains("shadows"));
+}
+
+#[test]
+fn portable_window_order_is_explicit_in_final_duckdb_sql() {
+    for (ordering, placement) in [
+        ("ASC", "ASC NULLS LAST"),
+        ("DESC", "DESC NULLS FIRST"),
+        ("ASC NULLS FIRST", "ASC NULLS FIRST"),
+        ("DESC NULLS LAST", "DESC NULLS LAST"),
+    ] {
+        let document = serde_json::json!({"version":"0.2.0.dev0", "name":"window", "datasets":[{
+            "name":"orders", "source":"orders", "fields":[
+                {"name":"amount", "expression":{"sql":"amount"}},
+                {"name":"position", "expression":{"sql":format!("ROW_NUMBER() OVER (ORDER BY amount {ordering})")}}
+            ]
+        }]});
+        let graph = latest_scope(&document).unwrap().into_graph().unwrap();
+        let sql = sidemantic::SqlGenerator::new(&graph)
+            .generate(
+                &sidemantic::SemanticQuery::new()
+                    .with_dimensions(vec!["orders.amount".into(), "orders.position".into()]),
+            )
+            .unwrap();
+        assert!(sql.contains(&format!("amount {placement}")), "{sql}");
+    }
+}
+
+#[test]
+fn latest_official_scott_model_compiles_with_declared_dataset_owners() {
+    let path = fixture_root().join("latest-query-172a3e5/scott/scott_model.ossie.yaml");
+    let content = fs::read_to_string(path).unwrap();
+    let catalog = OssieForwardAdapter
+        .parse_catalog(
+            &content,
+            OssieSerialization::Yaml,
+            OssieConsumerProfile::OssieCore,
+            OssieTarget::DuckDb,
+        )
+        .unwrap();
+    assert_eq!(
+        catalog.profile.schema_revision.as_deref(),
+        Some(LATEST_REVISION)
+    );
+    let graph = catalog
+        .scopes
+        .into_iter()
+        .next()
+        .unwrap()
+        .into_graph()
+        .unwrap();
+    assert_eq!(graph.metric_owner("emp.sum_sal"), Some("emp"));
+    assert_eq!(graph.metric_owner("dept.dept_count"), Some("dept"));
+    let sql = sidemantic::SqlGenerator::new(&graph)
+        .generate(
+            &sidemantic::SemanticQuery::new()
+                .with_metrics(vec!["emp.sum_sal".into(), "emp.emp_count".into()]),
+        )
+        .unwrap();
+    assert!(sql.contains("FROM scott.emp"), "{sql}");
+    assert!(sql.contains("SUM("), "{sql}");
+    assert!(sql.contains("COUNT("), "{sql}");
+}
+
+#[test]
+fn latest_filter_predicates_do_not_cross_dataset_populations() {
+    let mut document = latest_document();
+    document["datasets"].as_array_mut().unwrap().push(serde_json::json!({
+        "name":"returns", "source":"returns", "fields":[{"name":"amount", "expression":{"sql":"amount"}}]
+    }));
+    for expression in [
+        "SUM(orders.amount) FILTER (WHERE returns.amount > 0)",
+        "ROUND(orders.amount) FILTER (WHERE orders.amount > 0)",
+    ] {
+        document["metrics"] = serde_json::json!([{"name":"bad", "expression":{"sql":expression}}]);
+        assert!(latest_scope(&document).is_err(), "{expression}");
+    }
+    document["metrics"] = serde_json::json!([{"name":"good", "expression":{"sql":"SUM(orders.amount) FILTER (WHERE orders.amount > 0)"}}]);
+    assert!(latest_scope(&document).is_ok());
+}
+
+#[test]
+fn latest_scope_identity_is_opaque_and_model_aggregate_grain_is_query_time() {
+    let mut document = latest_document();
+    document["name"] = serde_json::json!("Sales semantic model");
+    assert_eq!(
+        latest_scope(&document).unwrap().scope_id,
+        "Sales semantic model"
+    );
+    for expression in [
+        "COUNT(*)",
+        "SUM(1)",
+        "COUNT(*) FILTER (WHERE orders.amount > 0)",
+    ] {
+        document["metrics"] =
+            serde_json::json!([{"name":"ambiguous", "expression":{"sql":expression}}]);
+        let graph = latest_scope(&document).unwrap().into_graph().unwrap();
+        let result = sidemantic::SqlGenerator::new(&graph)
+            .generate_ossie_wide(&serde_json::json!({"metrics":["ambiguous"]}));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("E_AMBIGUOUS_MEASURE_GRAIN"),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn latest_portable_agg_is_reserved_without_reinterpreting_historical_or_vendor_sql() {
+    let mut document = latest_document();
+    for function in ["AGG", "agg", "Agg"] {
+        document["datasets"][0]["fields"][0]["expression"] =
+            serde_json::json!({"sql":format!("{function}(amount)")});
+        assert!(latest_scope(&document)
+            .unwrap_err()
+            .to_string()
+            .contains("reserved"));
+    }
+    document["datasets"][0]["fields"][0]["expression"] = serde_json::json!({"sql":"amount", "dialects":[{"dialect":"OSSIE_SQL_2026", "expression":"AGG(amount)"}]});
+    assert!(
+        latest_scope(&document).is_ok(),
+        "authoritative sql overrides the older portable variant"
+    );
+    document["datasets"][0]["fields"][0]["expression"] =
+        serde_json::json!({"dialects":[{"dialect":"ANSI_SQL", "expression":"AGG(amount)"}]});
+    assert!(
+        latest_scope(&document).is_ok(),
+        "vendor expressions retain their meaning"
+    );
+    document["datasets"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("metrics");
+    document["datasets"][0]["fields"][0]["expression"] =
+        serde_json::json!({"dialects":[{"dialect":"OSSIE_SQL_2026", "expression":"AGG(amount)"}]});
+    assert!(OssieForwardAdapter
+        .select_scope_with_revision(
+            &document.to_string(),
+            OssieSerialization::Json,
+            OssieConsumerProfile::OssieCore,
+            OssieTarget::DuckDb,
+            None,
+            Some(OCTOBER_REVISION)
+        )
+        .is_ok());
+}
+
+#[test]
+fn dataset_count_star_filter_binds_its_predicate_before_runtime_handoff() {
+    let mut document = latest_document();
+    document["datasets"][0]["metrics"][2]["expression"] =
+        serde_json::json!({"sql":"COUNT(*) FILTER (WHERE amount > 10)"});
+    let scope = latest_scope(&document).unwrap();
+    assert!(scope.metrics[2]
+        .sql
+        .as_ref()
+        .unwrap()
+        .contains("orders.amount > 10"));
+    assert!(scope.into_graph().is_ok());
+    document["datasets"][0]["metrics"][2]["expression"] =
+        serde_json::json!({"sql":"COUNT(*) FILTER (WHERE missing > 10)"});
+    assert!(latest_scope(&document).is_err());
+}

@@ -1,0 +1,278 @@
+{
+  "version": "0.2.0.dev0",
+  "name": "commerce",
+  "datasets": [
+    {
+      "name": "customers",
+      "source": "raw_customers",
+      "primary_key": [
+        "id"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "expression": {
+            "sql": "id"
+          }
+        },
+        {
+          "name": "region",
+          "expression": {
+            "sql": "region"
+          }
+        },
+        {
+          "name": "segment",
+          "expression": {
+            "sql": "segment"
+          }
+        }
+      ],
+      "metrics": [
+        {
+          "name": "customer_count",
+          "expression": {
+            "sql": "COUNT(*)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "orders",
+      "source": "raw_orders",
+      "fields": [
+        {
+          "name": "id",
+          "expression": {
+            "sql": "id"
+          }
+        },
+        {
+          "name": "customer_id",
+          "expression": {
+            "sql": "customer_id"
+          }
+        },
+        {
+          "name": "amount",
+          "expression": {
+            "sql": "amount"
+          }
+        },
+        {
+          "name": "status",
+          "expression": {
+            "sql": "status"
+          }
+        },
+        {
+          "name": "doubled",
+          "expression": {
+            "sql": "amount * 2"
+          }
+        }
+      ],
+      "metrics": [
+        {
+          "name": "revenue",
+          "expression": {
+            "sql": "SUM(amount)"
+          }
+        },
+        {
+          "name": "order_count",
+          "expression": {
+            "sql": "COUNT(*)"
+          }
+        },
+        {
+          "name": "avg_amount",
+          "expression": {
+            "sql": "AVG(amount)"
+          }
+        },
+        {
+          "name": "unique_customers",
+          "expression": {
+            "sql": "COUNT(DISTINCT customer_id)"
+          }
+        },
+        {
+          "name": "doubled_total",
+          "expression": {
+            "sql": "SUM(doubled)"
+          }
+        },
+        {
+          "name": "coalesced_total",
+          "expression": {
+            "sql": "COALESCE(SUM(amount),0)"
+          }
+        },
+        {
+          "name": "positive_average",
+          "expression": {
+            "sql": "SUM(amount) / NULLIF(COUNT(*), 0)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "tickets",
+      "source": "raw_tickets",
+      "fields": [
+        {
+          "name": "id",
+          "expression": {
+            "sql": "id"
+          }
+        },
+        {
+          "name": "customer_id",
+          "expression": {
+            "sql": "customer_id"
+          }
+        },
+        {
+          "name": "cost",
+          "expression": {
+            "sql": "cost"
+          }
+        }
+      ],
+      "metrics": [
+        {
+          "name": "ticket_count",
+          "expression": {
+            "sql": "COUNT(*)"
+          }
+        },
+        {
+          "name": "total_cost",
+          "expression": {
+            "sql": "SUM(cost)"
+          }
+        },
+        {
+          "name": "cost_average",
+          "expression": {
+            "sql": "AVG(cost)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "visits",
+      "source": "raw_visits",
+      "fields": [
+        {
+          "name": "id",
+          "expression": {
+            "sql": "id"
+          }
+        },
+        {
+          "name": "customer_id",
+          "expression": {
+            "sql": "customer_id"
+          }
+        }
+      ],
+      "metrics": [
+        {
+          "name": "visit_count",
+          "expression": {
+            "sql": "COUNT(*)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "unrelated",
+      "source": "raw_unrelated",
+      "fields": [
+        {
+          "name": "label",
+          "expression": {
+            "sql": "label"
+          }
+        },
+        {
+          "name": "value",
+          "expression": {
+            "sql": "value"
+          }
+        }
+      ],
+      "metrics": [
+        {
+          "name": "total",
+          "expression": {
+            "sql": "SUM(value)"
+          }
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "orders_customer",
+      "from": "orders",
+      "to": "customers",
+      "from_columns": [
+        "customer_id"
+      ],
+      "to_columns": [
+        "id"
+      ]
+    },
+    {
+      "name": "tickets_customer",
+      "from": "tickets",
+      "to": "customers",
+      "from_columns": [
+        "customer_id"
+      ],
+      "to_columns": [
+        "id"
+      ]
+    },
+    {
+      "name": "visits_customer",
+      "from": "visits",
+      "to": "customers",
+      "from_columns": [
+        "customer_id"
+      ],
+      "to_columns": [
+        "id"
+      ]
+    }
+  ],
+  "metrics": [
+    {
+      "name": "per_customer",
+      "expression": {
+        "sql": "SUM(orders.amount) / COUNT(DISTINCT customers.id)"
+      }
+    },
+    {
+      "name": "net",
+      "expression": {
+        "sql": "SUM(orders.amount) - SUM(tickets.cost)"
+      }
+    },
+    {
+      "name": "holistic",
+      "expression": {
+        "sql": "COUNT(DISTINCT orders.amount)"
+      }
+    },
+    {
+      "name": "global_constant",
+      "expression": {
+        "sql": "1 + 2"
+      }
+    }
+  ]
+}

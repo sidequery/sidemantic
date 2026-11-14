@@ -90,10 +90,11 @@ def test_postgres_filtered_float_fanout_average_preserves_values(having):
         )
     )
     filters = ["items.category IS NOT NULL"]
+    # Orders own the measures, so the category whose only item names a missing
+    # order is not one of their groups.
     expected = [
         ("a", pytest.approx(5 / 24), 0.125, 0.625, 0.25, 4),
         ("b", 0.375, None, 0.375, None, 2),
-        ("orphan", None, None, None, None, 0),
     ]
     if having == "average":
         filters.append("orders.average > 0.3")
@@ -101,22 +102,20 @@ def test_postgres_filtered_float_fanout_average_preserves_values(having):
     elif having == "sum":
         filters.append("orders.total > 0.5")
         expected = [("a", pytest.approx(5 / 24), 0.125, 0.625, 0.25, 4)]
-    sql = compile_semantic_input(
-        graph,
-        {
-            "metrics": [
-                "orders.average",
-                "orders.first_average",
-                "orders.total",
-                "orders.first_total",
-                "orders.row_count",
-            ],
-            "dimensions": ["items.category"],
-            "filters": filters,
-            "order_by": ["items.category"],
-            "dialect": "postgres",
-        },
-    )
+    query = {
+        "metrics": [
+            "orders.average",
+            "orders.first_average",
+            "orders.total",
+            "orders.first_total",
+            "orders.row_count",
+        ],
+        "dimensions": ["items.category"],
+        "filters": filters,
+        "order_by": ["items.category"],
+        "dialect": "postgres",
+    }
+    sql = compile_semantic_input(graph, query)
     with psycopg.connect(dsn, autocommit=True) as connection:
         connection.execute('create temporary table float_orders(id integer, "Amount" double precision, paid boolean)')
         connection.execute("insert into float_orders values (1,0.125,true),(2,0.375,true),(3,null,true),(7,0.125,true)")
@@ -125,6 +124,10 @@ def test_postgres_filtered_float_fanout_average_preserves_values(having):
             "insert into float_items values (1,1,'a'),(2,1,'a'),(3,1,'a'),(4,2,'a'),(5,3,'a'),(6,7,'a'),(7,7,'a'),(8,2,'b'),(9,2,'b'),(10,3,'b'),(11,999,'orphan')"
         )
         assert connection.execute(sql).fetchall() == expected
+        if having == "none":
+            # Anchored at the dimension model, that category is kept as a zero group.
+            anchored = compile_semantic_input(graph, {**query, "consumption_base_model": "items"})
+            assert connection.execute(anchored).fetchall() == [*expected, ("orphan", None, None, None, None, 0)]
 
 
 @pytest.mark.parametrize("population", ["grouped", "no_matches", "empty"])

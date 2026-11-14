@@ -13,13 +13,13 @@ mod segment;
 pub mod symmetric_agg;
 mod table_calc;
 
-pub(crate) use dependency::is_aggregate_ast_node;
 pub use dependency::{
     check_circular_dependencies, extract_column_references_from_expr, extract_dependencies,
     extract_dependencies_with_context, outer_semantic_column_references, parse_semantic_expression,
     replace_outer_semantic_columns, replace_semantic_columns, semantic_column_references,
     validate_row_expression, SemanticColumnReference,
 };
+pub(crate) use dependency::{is_aggregate_ast_kind, is_aggregate_ast_node};
 pub use graph::{JoinPath, JoinStep, SemanticGraph};
 pub use inheritance::{merge_model, resolve_model_inheritance};
 pub use key_expression::{has_computed_keys, is_computed_key, key_expression, semantic_key_names};

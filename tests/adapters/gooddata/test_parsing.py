@@ -640,8 +640,23 @@ def test_gooddata_composite_sources_reference_foreign_key():
                         },
                     ],
                 },
-                {"id": "customers", "title": "Customers", "dataSourceTableId": "customers"},
-                {"id": "products", "title": "Products", "dataSourceTableId": "products"},
+                {
+                    "id": "customers",
+                    "title": "Customers",
+                    "dataSourceTableId": "customers",
+                    "grain": [{"id": "region"}, {"id": "customer_code"}],
+                    "attributes": [
+                        {"id": "region", "sourceColumn": "region"},
+                        {"id": "customer_code", "sourceColumn": "customer_code"},
+                    ],
+                },
+                {
+                    "id": "products",
+                    "title": "Products",
+                    "dataSourceTableId": "products",
+                    "grain": [{"id": "product_id"}],
+                    "attributes": [{"id": "product_id", "sourceColumn": "product_id"}],
+                },
             ]
         }
     }

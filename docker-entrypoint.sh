@@ -8,6 +8,13 @@ ENTRYPOINT_ARGS_FILE=$(mktemp)
 trap 'rm -f "$ENTRYPOINT_ARGS_FILE"' EXIT
 printf '%s\n' "$@" > "$ENTRYPOINT_ARGS_FILE"
 
+# The CLI reads secrets from files so they never appear in process arguments.
+# Copy a secret passed by environment variable into a private (0600) file.
+write_secret_file() {
+    SECRET_FILE=$(mktemp)
+    printf '%s\n' "$1" > "$SECRET_FILE"
+}
+
 run_serve() {
     set -- sidemantic server postgres --host 0.0.0.0
     if [ -n "$SIDEMANTIC_CONNECTION" ]; then
@@ -20,7 +27,8 @@ run_serve() {
         set -- "$@" --username "$SIDEMANTIC_USERNAME"
     fi
     if [ -n "$SIDEMANTIC_PASSWORD" ]; then
-        set -- "$@" --password "$SIDEMANTIC_PASSWORD"
+        write_secret_file "$SIDEMANTIC_PASSWORD"
+        set -- "$@" --password-file "$SECRET_FILE"
     fi
     if [ -n "$SIDEMANTIC_PORT" ]; then
         set -- "$@" --port "$SIDEMANTIC_PORT"
@@ -35,7 +43,10 @@ run_serve() {
 }
 
 run_mcp() {
-    set -- sidemantic mcp-serve
+    set -- sidemantic server mcp
+    if [ -n "$SIDEMANTIC_CONNECTION" ]; then
+        set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
+    fi
     if [ -n "$SIDEMANTIC_DB" ]; then
         set -- "$@" --db "$SIDEMANTIC_DB"
     fi
@@ -49,7 +60,7 @@ run_mcp() {
 }
 
 run_api() {
-    set -- sidemantic api-serve --host 0.0.0.0
+    set -- sidemantic server api --host 0.0.0.0
     if [ -n "$SIDEMANTIC_CONNECTION" ]; then
         set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
     fi
@@ -57,7 +68,8 @@ run_api() {
         set -- "$@" --db "$SIDEMANTIC_DB"
     fi
     if [ -n "$SIDEMANTIC_API_TOKEN" ]; then
-        set -- "$@" --auth-token "$SIDEMANTIC_API_TOKEN"
+        write_secret_file "$SIDEMANTIC_API_TOKEN"
+        set -- "$@" --auth-token-file "$SECRET_FILE"
     fi
     if [ -n "$SIDEMANTIC_API_PORT" ]; then
         set -- "$@" --port "$SIDEMANTIC_API_PORT"
@@ -94,7 +106,8 @@ run_both() {
         set -- "$@" --username "$SIDEMANTIC_USERNAME"
     fi
     if [ -n "$SIDEMANTIC_PASSWORD" ]; then
-        set -- "$@" --password "$SIDEMANTIC_PASSWORD"
+        write_secret_file "$SIDEMANTIC_PASSWORD"
+        set -- "$@" --password-file "$SECRET_FILE"
     fi
     if [ -n "$SIDEMANTIC_PORT" ]; then
         set -- "$@" --port "$SIDEMANTIC_PORT"
@@ -106,7 +119,10 @@ run_both() {
     SERVE_PID=$!
     trap 'kill "$SERVE_PID" 2>/dev/null; rm -f "$ENTRYPOINT_ARGS_FILE"' EXIT
 
-    set -- sidemantic mcp-serve
+    set -- sidemantic server mcp
+    if [ -n "$SIDEMANTIC_CONNECTION" ]; then
+        set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
+    fi
     if [ -n "$SIDEMANTIC_DB" ]; then
         set -- "$@" --db "$SIDEMANTIC_DB"
     fi

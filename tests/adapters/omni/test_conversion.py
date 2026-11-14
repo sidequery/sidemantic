@@ -3,8 +3,11 @@
 import tempfile
 from pathlib import Path
 
+import duckdb
+import lkml
 import pytest
 
+from sidemantic import SemanticLayer
 from sidemantic.adapters.cube import CubeAdapter
 from sidemantic.adapters.lookml import LookMLAdapter
 from sidemantic.adapters.metricflow import MetricFlowAdapter
@@ -82,6 +85,19 @@ def test_omni_to_lookml_conversion():
 
         # Verify file created
         assert output_path.exists()
+        explore = next(item for item in lkml.load(output_path.read_text())["explores"] if item["name"] == "orders")
+        assert explore["joins"][0]["type"] == "left_outer"
+        restored = lookml_adapter.parse(output_path)
+        with duckdb.connect() as db:
+            db.execute("CREATE SCHEMA public")
+            db.execute(
+                "CREATE TABLE public.orders AS SELECT * FROM (VALUES (1,1,10), (2,2,20)) t(id,customer_id,amount)"
+            )
+            db.execute("CREATE TABLE public.customers AS SELECT 1 AS id, 'Alice' AS name")
+            layer = SemanticLayer()
+            layer.graph = restored
+            sql = layer.compile(dimensions=["orders.id", "customers.name"], metrics=["orders.total_revenue"])
+            assert sorted(db.execute(sql).fetchall()) == [(1, "Alice", 10), (2, None, 20)]
 
 
 def test_omni_to_superset_conversion():

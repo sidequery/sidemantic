@@ -180,10 +180,13 @@ For Arrow:
 FastAPI path:
 
 ```python
+from pathlib import Path
+
 from sidemantic import SemanticLayer, load_from_directory
 from sidemantic.api_server import create_app
 
-layer = SemanticLayer(connection="duckdb:///data.duckdb")
+# DuckDB URLs take an absolute path; resolve relative database files first.
+layer = SemanticLayer(connection=f"duckdb:///{Path('data.duckdb').resolve()}")
 load_from_directory(layer, "models")
 app = create_app(layer, cors_origins=["http://localhost:5174"])
 ```

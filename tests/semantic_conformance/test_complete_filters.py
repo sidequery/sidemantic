@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
+from sidemantic import Dimension, Explore, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
 from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError, graph_to_semantic_input
 
 
@@ -426,7 +426,6 @@ def test_filtered_float_averages_deduplicate_keys_within_each_group(
         ("a", pytest.approx(5 / 24), 0.125, 0.625, 0.25, 4),
         ("b", 0.375, None, 0.375, None, 2),
         ("null-only", None, None, None, None, 1),
-        ("orphan", None, None, None, None, 0),
     ]
     if having == "average":
         query["filters"].append(f"orders.{average} > 0.3")
@@ -540,6 +539,20 @@ def test_complete_row_count_keyed_fanout_and_missing_source_rows(row_count_layer
             "dimensions": ["items.category"],
             "filters": ["items.category IS NOT NULL"],
             "order_by": ["items.category"],
+        },
+        ["category", "paid_rows", "ordinary_rows"],
+        [("a", 3, 3), ("b", 0, 0)],
+    )
+    # Anchored at the dimension model, a category without source rows is a zero group.
+    layer.graph.add_explore(Explore(name="by_item", model="items"))
+    assert_result(
+        layer,
+        {
+            "explore": "by_item",
+            "metrics": ["orders.paid_rows", "orders.ordinary_rows"],
+            "dimensions": ["category"],
+            "filters": ["category IS NOT NULL"],
+            "order_by": ["category"],
         },
         ["category", "paid_rows", "ordinary_rows"],
         [("a", 3, 3), ("b", 0, 0), ("orphan", 0, 0)],

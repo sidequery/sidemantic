@@ -19,8 +19,8 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
 
-import click
 import typer
+from typer.core import TyperGroup
 
 from sidemantic.cli_polish import (
     SuggestionGroup,
@@ -28,6 +28,7 @@ from sidemantic.cli_polish import (
     emit_long_output,
     recovery_hint,
 )
+from sidemantic.click_compat import ClickException, Command, Context, UsageError, get_current_context
 
 _PAGE_JSON_OUTPUT: ContextVar[bool] = ContextVar("sidemantic_page_json_output", default=False)
 
@@ -137,7 +138,7 @@ class ContractGroup(SuggestionGroup):
         "--no-pager",
     }
 
-    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+    def parse_args(self, ctx: Context, args: list[str]) -> list[str]:
         """Accept unambiguous long global options after a subcommand.
 
         Click normally stops parsing root options after selecting a command.
@@ -189,25 +190,25 @@ class ContractGroup(SuggestionGroup):
             index += 1
         return [*global_args, *remaining]
 
-    def invoke(self, ctx: click.Context) -> Any:
+    def invoke(self, ctx: Context) -> Any:
         if self._is_help_request(ctx):
             ctx.meta[HELP_REQUESTED_META_KEY] = True
         try:
             result = super().invoke(ctx)
             self._emit_deprecations(ctx)
             return result
-        except click.ClickException as exc:
+        except ClickException as exc:
             hint = recovery_hint(exc.format_message()) if self._human_recovery_enabled() else None
             if hint is not None and f"Hint: {hint}" not in exc.message:
                 exc.message = f"{exc.message}\nHint: {hint}"
             raise
-        except (click.exceptions.Exit, click.Abort):
+        except (typer.Exit, typer.Abort):
             raise
         except CLIError as exc:
             self._emit_deprecations(ctx)
             emit_error(str(exc))
             self._emit_recovery(str(exc))
-            raise click.exceptions.Exit(int(exc.exit_code)) from exc
+            raise typer.Exit(int(exc.exit_code)) from exc
         except Exception as exc:
             if cli_state().debug:
                 raise
@@ -215,9 +216,9 @@ class ContractGroup(SuggestionGroup):
             self._emit_deprecations(ctx)
             emit_error(message)
             self._emit_recovery(message)
-            raise click.exceptions.Exit(int(ExitCode.OPERATIONAL_ERROR)) from exc
+            raise typer.Exit(int(ExitCode.OPERATIONAL_ERROR)) from exc
 
-    def _is_help_request(self, ctx: click.Context) -> bool:
+    def _is_help_request(self, ctx: Context) -> bool:
         """Recognize help flags and no-argument subgroup help before callbacks run."""
 
         protected = list(getattr(ctx, "_protected_args", ()))
@@ -228,9 +229,9 @@ class ContractGroup(SuggestionGroup):
         if tokens and tokens[0] == "help":
             return True
 
-        command: click.Command = self
+        command: Command = self
         index = 0
-        while isinstance(command, click.Group) and index < len(tokens):
+        while isinstance(command, TyperGroup) and index < len(tokens):
             token = tokens[index]
             if token.startswith("-"):
                 return False
@@ -239,10 +240,10 @@ class ContractGroup(SuggestionGroup):
                 return False
             command = child
             index += 1
-        return index == len(tokens) and isinstance(command, click.Group) and bool(command.no_args_is_help)
+        return index == len(tokens) and isinstance(command, TyperGroup) and bool(command.no_args_is_help)
 
     @staticmethod
-    def _emit_deprecations(ctx: click.Context) -> None:
+    def _emit_deprecations(ctx: Context) -> None:
         if ctx.parent is not None:
             return
         for command_name in ctx.meta.pop("deprecated_commands", []):
@@ -270,7 +271,7 @@ class ContractGroup(SuggestionGroup):
 def emit_pending_deprecation(command_name: str) -> None:
     """Emit one queued legacy-command warning before a blocking callback."""
 
-    ctx = click.get_current_context(silent=True)
+    ctx = get_current_context(silent=True)
     if ctx is None:
         return
     root = ctx.find_root()
@@ -533,7 +534,7 @@ def color_enabled(*, no_color: bool = False, is_tty: bool | None = None) -> bool
     return is_terminal(sys.stdout) if is_tty is None else is_tty
 
 
-def configure_click_color(ctx: click.Context, *, enabled: bool) -> None:
+def configure_click_color(ctx: Context, *, enabled: bool) -> None:
     """Apply color policy without overriding Click capture or redirection.
 
     Click may already disable color for captured or redirected output even when
@@ -636,7 +637,7 @@ def fail(exc: Exception | str, *, usage: bool = False) -> NoReturn:
 
     if isinstance(exc, CLIError):
         raise exc
-    if isinstance(exc, click.UsageError):
+    if isinstance(exc, UsageError):
         raise InvocationError(exc.format_message()) from exc
     if isinstance(exc, Exception) and cli_state().debug:
         raise exc

@@ -272,9 +272,12 @@ def test_import_thoughtspot_worksheet_ids():
     assert model.sql is not None
     assert "JOIN customers_table" in model.sql
 
+    # A joined worksheet is a derived table, so each `table.column` is projected
+    # under an alias that stays in scope for the outer query.
     customer_name = model.get_dimension("customer_name")
     assert customer_name is not None
-    assert customer_name.sql == "customers_table.name"
+    assert customer_name.sql == "customers_table__name"
+    assert "customers_table.name AS customers_table__name" in model.sql
 
     net_revenue = model.get_metric("net_revenue")
     assert net_revenue is not None
@@ -355,7 +358,8 @@ def test_import_thoughtspot_unbracketed_expr():
     model = graph.models["sales_unbracketed"]
     net_revenue = model.get_metric("net_revenue")
     assert net_revenue is not None
-    assert "sales.gross_revenue" in (net_revenue.sql or "")
+    assert net_revenue.sql == "sales__gross_revenue - sales__discount"
+    assert "sales.gross_revenue AS sales__gross_revenue" in model.sql
 
 
 # =============================================================================

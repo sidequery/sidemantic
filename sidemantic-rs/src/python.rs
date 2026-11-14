@@ -144,6 +144,32 @@ fn compile_with_semantic_input(
 }
 
 #[pyfunction]
+fn compile_ossie_wide_with_semantic_input(
+    py: Python<'_>,
+    input_json: &str,
+    query_json: &str,
+    dialect: &str,
+) -> PyResult<String> {
+    crate::semantic_input::compile_ossie_wide_with_semantic_input(input_json, query_json, dialect)
+        .map_err(|error| semantic_input_error(py, error))
+}
+
+#[pyfunction]
+fn compile_ossie_view_definition(
+    py: Python<'_>,
+    input_json: &str,
+    sql: &str,
+    dialect: &str,
+) -> PyResult<String> {
+    crate::semantic_input::compile_ossie_view_definition(input_json, sql, dialect)
+        .and_then(|value| {
+            serde_json::to_string(&value)
+                .map_err(|error| SidemanticError::InvalidConfig(error.to_string()))
+        })
+        .map_err(|error| semantic_input_error(py, error))
+}
+
+#[pyfunction]
 fn validate_with_semantic_input(
     py: Python<'_>,
     input_json: &str,
@@ -1440,44 +1466,63 @@ fn parse_ossie_options(
 
 /// Validate an Apache Ossie document with the strict forward handoff contract.
 #[pyfunction]
-#[pyo3(signature = (content, serialization, consumer_profile = "ossie-core"))]
-fn ossie_validate(content: &str, serialization: &str, consumer_profile: &str) -> PyResult<String> {
+#[pyo3(signature = (content, serialization, consumer_profile = "ossie-core", schema_revision = None))]
+fn ossie_validate(
+    content: &str,
+    serialization: &str,
+    consumer_profile: &str,
+    schema_revision: Option<&str>,
+) -> PyResult<String> {
     let (serialization, consumer) = parse_ossie_options(serialization, consumer_profile)?;
-    serde_json::to_string(&OssieForwardAdapter.inspect(content, serialization, consumer))
-        .map_err(|error| PyValueError::new_err(error.to_string()))
+    serde_json::to_string(&OssieForwardAdapter.inspect_with_revision(
+        content,
+        serialization,
+        consumer,
+        schema_revision,
+    ))
+    .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 /// Compile all isolated scopes in an Apache Ossie logical document.
 #[pyfunction]
-#[pyo3(signature = (content, serialization, consumer_profile = "ossie-core", target = "ANSI_SQL"))]
+#[pyo3(signature = (content, serialization, consumer_profile = "ossie-core", target = "ANSI_SQL", schema_revision = None))]
 fn ossie_parse_catalog(
     content: &str,
     serialization: &str,
     consumer_profile: &str,
     target: &str,
+    schema_revision: Option<&str>,
 ) -> PyResult<String> {
     let (serialization, consumer) = parse_ossie_options(serialization, consumer_profile)?;
     let target = OssieTarget::parse(target).map_err(PyValueError::new_err)?;
     let catalog = OssieForwardAdapter
-        .parse_catalog(content, serialization, consumer, target)
+        .parse_catalog_with_revision(content, serialization, consumer, target, schema_revision)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
     serde_json::to_string(&catalog).map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 /// Select exactly one compiled Apache Ossie semantic-model scope.
 #[pyfunction]
-#[pyo3(signature = (content, serialization, scope_id = None, consumer_profile = "ossie-core", target = "ANSI_SQL"))]
+#[pyo3(signature = (content, serialization, scope_id = None, consumer_profile = "ossie-core", target = "ANSI_SQL", schema_revision = None))]
 fn ossie_select_scope(
     content: &str,
     serialization: &str,
     scope_id: Option<&str>,
     consumer_profile: &str,
     target: &str,
+    schema_revision: Option<&str>,
 ) -> PyResult<String> {
     let (serialization, consumer) = parse_ossie_options(serialization, consumer_profile)?;
     let target = OssieTarget::parse(target).map_err(PyValueError::new_err)?;
     let scope = OssieForwardAdapter
-        .select_scope(content, serialization, consumer, target, scope_id)
+        .select_scope_with_revision(
+            content,
+            serialization,
+            consumer,
+            target,
+            scope_id,
+            schema_revision,
+        )
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
     serde_json::to_string(&scope).map_err(|error| PyValueError::new_err(error.to_string()))
 }
@@ -1499,6 +1544,8 @@ fn sidemantic_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.py().get_type::<UnsupportedSemanticFeaturesError>(),
     )?;
     m.add_function(wrap_pyfunction!(compile_with_semantic_input, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_ossie_wide_with_semantic_input, m)?)?;
+    m.add_function(wrap_pyfunction!(compile_ossie_view_definition, m)?)?;
     m.add_function(wrap_pyfunction!(validate_with_semantic_input, m)?)?;
     m.add_function(wrap_pyfunction!(rewrite_with_semantic_input, m)?)?;
     m.add_function(wrap_pyfunction!(rewrite_with_semantic_input_context, m)?)?;

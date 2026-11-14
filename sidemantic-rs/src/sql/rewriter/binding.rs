@@ -465,9 +465,15 @@ impl QueryRewriter<'_> {
             vec![(base.clone(), alias.unwrap_or_else(|| base.clone()))]
         });
         let join_filters = self.bind_explicit_joins(&select.joins, &mut sources)?;
+        // The SELECT list is the whole projection; a model's default time
+        // dimension must not become a grouping key the result never shows.
+        let query = SemanticQuery {
+            explicit_projection: true,
+            ..SemanticQuery::new()
+        };
         let mut bindings = Bindings {
             graph: self.graph.clone(),
-            query: SemanticQuery::new(),
+            query,
             sources,
             base,
             references: HashMap::new(),
@@ -569,7 +575,11 @@ impl QueryRewriter<'_> {
             prepare(&bindings.graph, &mut bindings.query)?;
             bindings.query.order_by.clear();
         }
-        let sql = SqlGenerator::new(&bindings.graph).generate(&bindings.query)?;
+        let mut generator = SqlGenerator::new(&bindings.graph);
+        if let Some(dialect) = self.emitted_dialect.get() {
+            generator = generator.with_emitted_dialect(dialect);
+        }
+        let sql = generator.generate(&bindings.query)?;
         // Preserve routing metadata outside the parsed subquery: trailing SQL
         // comments are discarded by the parser and can consume its closing ')'.
         let sql = if let Some(inner) = sql.strip_suffix("\n-- used_preagg=true") {

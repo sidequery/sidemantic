@@ -1,4 +1,4 @@
-.TH "SIDEMANTIC" "1" "" "Sidemantic 0.13.0" "User Commands"
+.TH "SIDEMANTIC" "1" "" "Sidemantic 0.13.1" "User Commands"
 .SH NAME
 sidemantic \- SQL\-first semantic layer
 .SH SYNOPSIS
@@ -149,6 +149,12 @@ Examples: sidemantic rewrite "SELECT orders.revenue FROM orders" \-\-models ./mo
 \fB\-\-models, \-m PATH\fR
 Directory containing semantic layer files
 .TP
+\fB\-\-ossie\-wide\fR
+Interpret the argument as a strict Ossie Layer 3 JSON query
+.TP
+\fB\-\-ossie\-scope TEXT\fR
+Explicit Apache Ossie semantic\-model scope
+.TP
 \fB\-\-connection TEXT\fR
 Database connection string (sets SQL dialect)
 .TP
@@ -193,6 +199,9 @@ Destination format
 \fB\-\-ossie\-scope TEXT\fR
 Explicit semantic\-model scope to select on Ossie import or name on Ossie export
 .TP
+\fB\-\-ossie\-source\-dialect TEXT\fR
+Dialect used to interpret physical source names in an Ossie input
+.TP
 \fB\-\-ossie\-target\-dialect TEXT\fR
 Execution dialect used when lowering an Ossie source (for example duckdb or bigquery)
 .TP
@@ -205,6 +214,9 @@ Explicit pinned Ossie schema version for synthesized output
 \fB\-\-ossie\-schema\-revision TEXT\fR
 Pinned Ossie draft revision for synthesized output (commit SHA)
 .TP
+\fB\-\-ossie\-input\-schema\-revision TEXT\fR
+Pinned Ossie draft revision for validating the source (commit SHA)
+.TP
 \fB\-\-ossie\-consumer\-profile TEXT\fR
 Ossie import or export consumer profile (ossie\-core or dbt\-1.12)
 .TP
@@ -213,6 +225,12 @@ Preserve invalid Ossie source while lowering only independently safe constructs
 .TP
 \fB\-\-ossie\-portable\-only\fR
 Require portable Ossie core output instead of preserving native behavior in a Sidemantic extension
+.TP
+\fB\-\-ossie\-preserve\-document\fR
+Preserve one valid Ossie document without runtime graph conversion
+.TP
+\fB\-\-ossie\-official\-compatible\fR
+Export portable flat Ossie core with model\-scoped metrics for official converters
 .TP
 \fB\-\-force\fR
 Allow writing to an existing destination
@@ -238,6 +256,9 @@ Database connection string (e.g., postgres://host/db, bigquery://project/dataset
 .TP
 \fB\-\-db PATH\fR
 Path to DuckDB database file (shorthand for duckdb:/// connection)
+.TP
+\fB\-\-ossie\-wide\fR
+Interpret the argument as a strict Ossie Layer 3 JSON query
 .TP
 \fB\-\-dry\-run\fR
 Show generated SQL without executing

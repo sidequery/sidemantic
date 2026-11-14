@@ -125,10 +125,12 @@ def test_native_custom_join_sql_exports_exactly_and_executes_after_reparse(tmp_p
     layer.adapter.execute("insert into orders values (10, 1, 20), (11, 2, 30)")
     for model in reparsed.models.values():
         layer.add_model(model)
+    # The join condition rejects the inactive customer, so that order keeps its
+    # revenue in a NULL name group and the customer without a match has no group.
     assert sorted(
         layer.query(metrics=["orders.revenue"], dimensions=["customers.name"]).fetchall(),
-        key=lambda row: row[0],
-    ) == [("Ada", 20), ("Grace", None)]
+        key=lambda row: row[1],
+    ) == [("Ada", 20), (None, 30)]
 
 
 @pytest.mark.parametrize(

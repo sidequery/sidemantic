@@ -182,8 +182,12 @@ def test_export_emits_type_discriminator():
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
         temp_path = Path(f.name)
     try:
-        # Export just the model (single-file export writes the first model).
-        adapter.export(graph, temp_path)
+        # Single-file export requires explicitly selecting one resource.
+        from sidemantic.core.semantic_graph import SemanticGraph
+
+        selected = SemanticGraph()
+        selected.add_model(graph.models["subscriptions"])
+        adapter.export(selected, temp_path)
         with open(temp_path) as fh:
             data = yaml.safe_load(fh)
         assert data["type"] == "model"

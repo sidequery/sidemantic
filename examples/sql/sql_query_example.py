@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+# /// script
+# dependencies = ["sidemantic", "pandas"]
+# ///
 """Example demonstrating SQL query interface for the semantic layer.
 
 This shows how users can write familiar SQL queries that get automatically

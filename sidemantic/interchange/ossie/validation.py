@@ -25,12 +25,13 @@ from sidemantic.interchange.ossie.diagnostics import (
 )
 from sidemantic.interchange.ossie.profiles import (
     CURRENT_OSSIE_SCHEMA_COMMIT,
+    LATEST_OSSIE_SCHEMA_COMMIT,
     OssieConsumerProfile,
     OssieProfile,
     resolve_ossie_profile,
 )
 
-DocumentKind = Literal["logical", "ontology"]
+DocumentKind = Literal["logical", "ontology", "mapping"]
 DiagnosticStage = Literal["profile", "availability", "integrity", "schema"]
 JsonPathPart = str | int
 
@@ -292,16 +293,64 @@ def detect_schema_profile(document: Any) -> SchemaProfile | None:
 
     from sidemantic.interchange.ossie.documents import is_logical_document_data
 
+    if any(key in document for key in ("ontology_ref", "semantic_model_ref", "concept_mappings")):
+        return get_schema_profile(f"mapping-0.2.0.dev0-{LATEST_OSSIE_SCHEMA_COMMIT[:7]}")
     has_logical_root = is_logical_document_data(document)
     has_ontology_root = "ontology" in document or "ontology_mappings" in document
     if has_logical_root == has_ontology_root:
         return None
     if has_logical_root:
-        suffix = "" if "semantic_model" in document else f"-{CURRENT_OSSIE_SCHEMA_COMMIT[:7]}"
+        revision = LATEST_OSSIE_SCHEMA_COMMIT if _latest_logical_shape(document) else CURRENT_OSSIE_SCHEMA_COMMIT
+        suffix = "" if "semantic_model" in document else f"-{revision[:7]}"
         return get_schema_profile(f"logical-0.2.0.dev0{suffix}")
+    if _latest_logical_shape(document):
+        return get_schema_profile(f"ontology-0.2.0.dev0-{LATEST_OSSIE_SCHEMA_COMMIT[:7]}")
     if _current_ontology_shape(document):
         return get_schema_profile(f"ontology-0.2.0.dev0-{CURRENT_OSSIE_SCHEMA_COMMIT[:7]}")
     return get_schema_profile("ontology-0.2.0.dev0")
+
+
+def _latest_logical_shape(document: Mapping[str, object]) -> bool:
+    """New syntax selects its immutable draft; ambiguous documents retain their pin."""
+    datasets = document.get("datasets")
+    if isinstance(datasets, (list, tuple)) and any(isinstance(d, Mapping) and "metrics" in d for d in datasets):
+        return True
+    old_dialects = {
+        "ANSI_SQL",
+        "SNOWFLAKE",
+        "MDX",
+        "TABLEAU",
+        "DATABRICKS",
+        "MAQL",
+        "BIGQUERY",
+        "SIGMA",
+        "THOUGHTSPOT",
+        "DAX",
+        "OSSIE_SQL_2026",
+    }
+
+    def items(value):
+        return value if isinstance(value, (list, tuple)) else ()
+
+    definitions = list(items(document.get("metrics")))
+    for dataset in items(datasets):
+        if isinstance(dataset, Mapping):
+            definitions.extend(items(dataset.get("fields")))
+    for definition in definitions:
+        expression = definition.get("expression") if isinstance(definition, Mapping) else None
+        if not isinstance(expression, Mapping):
+            continue
+        if "sql" in expression:
+            return True
+        for variant in items(expression.get("dialects")):
+            label = variant.get("dialect") if isinstance(variant, Mapping) else None
+            if isinstance(label, str) and label not in old_dialects:
+                return True
+    for mapping in items(document.get("ontology_mappings")):
+        embedded = mapping.get("semantic_model") if isinstance(mapping, Mapping) else None
+        if isinstance(embedded, Mapping) and _latest_logical_shape(embedded):
+            return True
+    return False
 
 
 def _current_ontology_shape(document: Mapping[str, object]) -> bool:
@@ -497,6 +546,10 @@ def validate_ossie_schema(
                     if isinstance(document, Mapping) and ("ontology" in document or "ontology_mappings" in document)
                     else "logical"
                 )
+                if isinstance(document, Mapping) and any(
+                    key in document for key in ("ontology_ref", "semantic_model_ref", "concept_mappings")
+                ):
+                    family = "mapping"
                 suffix = f"-{contract_profile.schema_revision[:7]}" if contract_profile.schema_revision else ""
                 resolved_profile = get_schema_profile(f"{family}-{contract_profile.validation_schema_version}{suffix}")
         except KeyError:

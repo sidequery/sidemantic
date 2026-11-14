@@ -130,6 +130,8 @@ def graph_handoff_requirements(graph: SemanticGraph, *, input_dialect: str = "du
                 requirements.add("relationship.roles")
             if not relationship.active:
                 requirements.add("relationship.inactive")
+            if (relationship.metadata or {}).get("reversible") is False:
+                requirements.add("relationship.forward_only")
         for dimension in model.dimensions:
             if dimension.has_untranslated_dax:
                 requirements.add("dimension.dax")

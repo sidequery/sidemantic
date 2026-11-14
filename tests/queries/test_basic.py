@@ -575,7 +575,8 @@ def test_custom_join_sql_projects_extra_predicate_columns():
     rows = df_rows(
         layer.query(metrics=["orders.revenue"], dimensions=["customers.country"], order_by=["customers.country"])
     )
-    assert rows == [("Expired", None), ("US", 50)]
+    # The expired customer row matches no order, so it is not a group of an orders measure.
+    assert rows == [("US", 50)]
 
 
 def test_compiles_and_executes_columns_with_spaces():

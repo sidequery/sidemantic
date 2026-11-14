@@ -1164,6 +1164,11 @@ class SidemanticAdapter(BaseAdapter):
                         measure_def["non_additive_window_groupings"] = list(measure.non_additive_window_groupings)
                 if measure.type:
                     measure_def["type"] = measure.type
+                # A model-owned ratio is invalid without its operands.
+                if measure.numerator:
+                    measure_def["numerator"] = measure.numerator
+                if measure.denominator:
+                    measure_def["denominator"] = measure.denominator
                 if measure.base_metric:
                     measure_def["base_metric"] = measure.base_metric
                 if measure.comparison_type:

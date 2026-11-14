@@ -21,6 +21,7 @@ from sidemantic.interchange.ossie.diagnostics import (
 from sidemantic.interchange.ossie.documents import (
     OssieDocument,
     OssieLogicalDocument,
+    OssieMappingDocument,
     OssieOntologyDocument,
     UnsupportedOssieDocument,
 )
@@ -82,6 +83,8 @@ def _schema_profile_name(document: OssieDocument) -> str | None:
         return f"logical-{document.version}{suffix}"
     if isinstance(document, OssieOntologyDocument):
         return f"ontology-{document.version}{suffix}"
+    if isinstance(document, OssieMappingDocument):
+        return f"mapping-{document.version}{suffix}"
     return None
 
 
@@ -211,7 +214,9 @@ def serialize_ossie_document(
     ``consumer_profile`` context.
     """
 
-    if not isinstance(document, (OssieLogicalDocument, OssieOntologyDocument, UnsupportedOssieDocument)):
+    if not isinstance(
+        document, (OssieLogicalDocument, OssieOntologyDocument, OssieMappingDocument, UnsupportedOssieDocument)
+    ):
         raise TypeError("document must be an OssieDocument")
     if not isinstance(exact_source, bool):
         raise TypeError("exact_source must be a boolean")

@@ -32,7 +32,11 @@ impl SqlGenerator<'_> {
                 }
                 default_metrics.push(reference.clone());
             }
-            self.apply_default_time_dimensions(&default_metrics, &query.dimensions)?
+            self.apply_default_time_dimensions(
+                &default_metrics,
+                &query.dimensions,
+                query.explicit_projection,
+            )?
         };
         let mut fields = Vec::new();
         for (reference, dimension) in dimensions
@@ -116,6 +120,7 @@ impl SqlGenerator<'_> {
         let generator = SqlGenerator {
             graph: self.graph,
             dialect: self.dialect,
+            emitted_dialect: self.emitted_dialect,
             timezone: query.timezone.clone().or_else(|| self.timezone.clone()),
         };
         let mut inner = query.clone();

@@ -23,6 +23,24 @@ pub fn parse_portable_expression(sql: &str) -> Result<Expression, String> {
     }
     let expression = match expressions.remove(0) {
         Expression::Paren(parentheses) => parentheses.this,
+        // Polyglot classifies an extra parenthesized scalar prefix (such as
+        // ((a > 0) AND (a < 100))) as a Subquery wrapper. Unwrap only the
+        // wrapper introduced above; actual query nodes remain forbidden by
+        // validate_tree, including nested SELECTs.
+        Expression::Subquery(parentheses)
+            if parentheses.alias.is_none()
+                && parentheses.column_aliases.is_empty()
+                && parentheses.order_by.is_none()
+                && parentheses.limit.is_none()
+                && parentheses.offset.is_none()
+                && parentheses.distribute_by.is_none()
+                && parentheses.sort_by.is_none()
+                && parentheses.cluster_by.is_none()
+                && !parentheses.lateral
+                && !parentheses.modifiers_inside =>
+        {
+            parentheses.this
+        }
         expression => expression,
     };
     if matches!(
@@ -89,7 +107,100 @@ fn prepare_source_literals(sql: &str) -> Result<String, String> {
     Ok(prepared)
 }
 
+fn validate_filter_populations(
+    arguments: &serde_json::Value,
+    predicate: &serde_json::Value,
+) -> Result<(), String> {
+    fn datasets(value: &serde_json::Value, names: &mut std::collections::BTreeSet<String>) {
+        if let Some(column) = value.get("column") {
+            if let Some(name) = column["table"]["name"].as_str() {
+                names.insert(name.to_ascii_uppercase());
+            }
+        }
+        match value {
+            serde_json::Value::Object(fields) => {
+                for child in fields.values() {
+                    datasets(child, names);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for child in values {
+                    datasets(child, names);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut inputs = std::collections::BTreeSet::new();
+    let mut predicates = std::collections::BTreeSet::new();
+    datasets(arguments, &mut inputs);
+    datasets(predicate, &mut predicates);
+    if predicates.len() > 1
+        || (!inputs.is_empty() && !predicates.is_empty() && inputs != predicates)
+    {
+        return Err(
+            "FILTER predicates must reference the same dataset as the aggregate inputs".into(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_node(node: &Expression) -> Result<(), String> {
+    if let Expression::AggregateFunction(function) = node {
+        if function.filter.is_some() {
+            // The parser wraps any function followed by FILTER as an aggregate,
+            // including known scalar functions. Recheck the unmodified call.
+            let arguments = function
+                .args
+                .iter()
+                .map(source_sql)
+                .collect::<polyglot_sql::Result<Vec<_>>>()
+                .map_err(|error| error.to_string())?
+                .join(", ");
+            let original = parse_source(&format!("{}({arguments})", function.name))
+                .map_err(|error| error.to_string())?;
+            if !crate::core::is_aggregate_ast_kind(&function.name.to_ascii_lowercase())
+                && !matches!(
+                    function.name.to_ascii_uppercase().as_str(),
+                    "PERCENTILE_CONT" | "PERCENTILE_DISC" | "CORR" | "COVAR_POP" | "COVAR_SAMP"
+                )
+                && !crate::core::is_aggregate_ast_node(
+                    &serde_json::to_value(original).map_err(|error| error.to_string())?,
+                )
+            {
+                return Err("FILTER requires an aggregate expression".into());
+            }
+        }
+    }
+    if let Expression::Filter(filter) = node {
+        let aggregate = serde_json::to_value(&filter.this).map_err(|error| error.to_string())?;
+        let aggregate = aggregate
+            .get("within_group")
+            .and_then(|group| group.get("this"))
+            .unwrap_or(&aggregate);
+        if !crate::core::is_aggregate_ast_node(aggregate) {
+            return Err("FILTER requires an aggregate expression".into());
+        }
+        validate_filter_populations(
+            aggregate,
+            &serde_json::to_value(&filter.expression).map_err(|error| error.to_string())?,
+        )?;
+    }
+    let value = serde_json::to_value(node).map_err(|error| error.to_string())?;
+    if crate::core::is_aggregate_ast_node(&value) {
+        if let Some(aggregate) = value
+            .as_object()
+            .and_then(|fields| fields.values().next())
+            .and_then(serde_json::Value::as_object)
+        {
+            if let Some(predicate) = aggregate.get("filter").filter(|value| !value.is_null()) {
+                let mut inputs = aggregate.clone();
+                inputs.remove("filter");
+                validate_filter_populations(&serde_json::Value::Object(inputs), predicate)?;
+            }
+        }
+    }
+
     if polyglot_sql::is_ddl(node)
         || matches!(
             node,
@@ -212,7 +323,118 @@ fn duckdb_date_add(unit: &str, amount: &str, value: &str) -> polyglot_sql::Resul
     )
 }
 
+/// GoogleSQL has no aggregate FILTER clause. NULL-ignoring aggregates can
+/// express the same row predicate inside their input without filtering the
+/// relation or changing DISTINCT, window partitions, or empty-group behavior.
+fn bigquery_filter(node: Expression) -> polyglot_sql::Result<Expression> {
+    use serde_json::Value;
+    let mut value = serde_json::to_value(&node).map_err(|error| invalid(error.to_string()))?;
+    let predicate = if let Expression::Filter(filter) = &node {
+        value = serde_json::to_value(&filter.this).map_err(|error| invalid(error.to_string()))?;
+        Some(serde_json::to_value(&filter.expression).map_err(|error| invalid(error.to_string()))?)
+    } else if crate::core::is_aggregate_ast_node(&value) {
+        value
+            .as_object_mut()
+            .and_then(|fields| fields.values_mut().next())
+            .and_then(Value::as_object_mut)
+            .and_then(|aggregate| aggregate.remove("filter"))
+            .filter(|predicate| !predicate.is_null())
+    } else {
+        None
+    };
+    let Some(predicate) = predicate else {
+        return Ok(node);
+    };
+    let predicate = predicate
+        .get("where")
+        .and_then(|clause| clause.get("this"))
+        .cloned()
+        .unwrap_or(predicate);
+    let (kind, aggregate) = value
+        .as_object_mut()
+        .and_then(|fields| fields.iter_mut().next())
+        .ok_or_else(|| invalid("Invalid filtered aggregate"))?;
+    let aggregate = aggregate
+        .as_object_mut()
+        .ok_or_else(|| invalid("Invalid aggregate arguments"))?;
+    let name = if matches!(kind.as_str(), "aggregate_function" | "function") {
+        aggregate
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase()
+    } else {
+        kind.to_string()
+    };
+    if !matches!(
+        name.as_str(),
+        "count"
+            | "count_if"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "stddev"
+            | "stddev_pop"
+            | "stddev_samp"
+            | "variance"
+            | "var_pop"
+            | "var_samp"
+            | "logical_and"
+            | "logical_or"
+            | "bool_and"
+            | "bool_or"
+            | "corr"
+            | "covar_pop"
+            | "covar_samp"
+            | "string_agg"
+            | "any_value"
+    ) {
+        return Err(invalid(format!(
+            "BigQuery FILTER on {name} requires query-level lowering"
+        )));
+    }
+    aggregate.insert("filter".into(), Value::Null);
+    if name == "count" && aggregate.get("star").and_then(Value::as_bool) == Some(true) {
+        aggregate.insert("star".into(), Value::Bool(false));
+        aggregate.insert(
+            "this".into(),
+            serde_json::to_value(Expression::Literal(Literal::Number("1".into())))
+                .map_err(|error| invalid(error.to_string()))?,
+        );
+    }
+    let argument = if aggregate.contains_key("this") {
+        aggregate.get_mut("this")
+    } else {
+        aggregate
+            .get_mut("args")
+            .and_then(Value::as_array_mut)
+            .and_then(|args| args.first_mut())
+    }
+    .ok_or_else(|| invalid("Filtered aggregate has no value argument"))?;
+    let condition: Expression =
+        serde_json::from_value(predicate).map_err(|error| invalid(error.to_string()))?;
+    let input: Expression =
+        serde_json::from_value(argument.clone()).map_err(|error| invalid(error.to_string()))?;
+    *argument = serde_json::to_value(Expression::Case(Box::new(
+        polyglot_sql::expressions::Case {
+            operand: None,
+            whens: vec![(condition, input)],
+            else_: Some(Expression::null()),
+            comments: vec![],
+            inferred_type: None,
+        },
+    )))
+    .map_err(|error| invalid(error.to_string()))?;
+    serde_json::from_value(value).map_err(|error| invalid(error.to_string()))
+}
+
 fn normalize(node: Expression, target: DialectType) -> polyglot_sql::Result<Expression> {
+    let node = if target == DialectType::BigQuery {
+        bigquery_filter(node)?
+    } else {
+        node
+    };
     match node {
         Expression::CurrentTime(_) if target == DialectType::DuckDB => {
             polyglot_sql::parse_one("LOCALTIME", target)
@@ -440,16 +662,69 @@ fn lower_ossie_sql_inner(sql: &str, target: DialectType) -> Result<String, Strin
         Ok(())
     }
     let mut value = serde_json::to_value(expression).map_err(|error| error.to_string())?;
+    fn pin_portable_order(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if fields.contains_key("this")
+                    && fields.contains_key("desc")
+                    && fields
+                        .get("nulls_first")
+                        .is_some_and(serde_json::Value::is_null)
+                {
+                    fields.insert("nulls_first".into(), fields["desc"].clone());
+                }
+                for child in fields.values_mut() {
+                    pin_portable_order(child);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for child in values {
+                    pin_portable_order(child);
+                }
+            }
+            _ => {}
+        }
+    }
+    pin_portable_order(&mut value);
     rewrite(&mut value, target, &dialect)?;
     let expression = serde_json::from_value(value).map_err(|error| error.to_string())?;
-    dialect
-        .generate_with_source(&expression, DialectType::Snowflake)
-        .map_err(|error| error.to_string())
+    crate::semantic_input::dialects::generate_preserving_null_order(
+        &expression,
+        target,
+        DialectType::Snowflake,
+    )
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bigquery_filters_preserve_distinct_and_window_structure() {
+        for source in [
+            "SUM(amount) FILTER (WHERE amount > 5)",
+            "COUNT(*) FILTER (WHERE amount > 5)",
+            "COUNT(DISTINCT amount) FILTER (WHERE amount > 5)",
+            "COUNT(DISTINCT NULL) FILTER (WHERE amount > 5)",
+            "AVG(amount) FILTER (WHERE amount > 5)",
+            "SUM(amount) FILTER (WHERE amount > 5) OVER ()",
+        ] {
+            let sql = lower_ossie_sql(source, DialectType::BigQuery).unwrap();
+            assert!(!sql.contains("FILTER"), "{sql}");
+            assert!(sql.contains("CASE") || sql.contains("IF("), "{sql}");
+            assert_eq!(
+                sql.contains("DISTINCT"),
+                source.contains("DISTINCT"),
+                "{sql}"
+            );
+            assert_eq!(sql.contains("OVER"), source.contains("OVER"), "{sql}");
+            polyglot_sql::parse_one(&sql, DialectType::BigQuery).unwrap();
+            assert!(lower_ossie_sql(source, DialectType::DuckDB)
+                .unwrap()
+                .contains("FILTER"));
+        }
+    }
 
     #[test]
     fn rejects_queries_and_multiple_expressions() {
@@ -617,5 +892,26 @@ mod tests {
             "{lowered}"
         );
         assert!(!lowered.contains("INTERVAL -1 MONTH"), "{lowered}");
+    }
+    #[test]
+    fn parenthesized_boolean_filters_do_not_admit_queries_or_modifiers() {
+        for source in ["(a > 0) AND (a < 100)", "(a = 1 OR a = 2) AND (a > 1)"] {
+            let lowered = lower_ossie_sql(source, DialectType::DuckDB)
+                .unwrap_or_else(|error| panic!("{source}: {error}"));
+            assert!(
+                crate::core::parse_semantic_expression(&lowered).is_ok(),
+                "{lowered}"
+            );
+        }
+        for source in [
+            "SELECT 1",
+            "(SELECT 1)",
+            "1 + (SELECT 1)",
+            "(a > 0) ORDER BY 1",
+            "(a > 0) LIMIT 1",
+            "(a > 0) OFFSET 1",
+        ] {
+            assert!(parse_portable_expression(source).is_err(), "{source}");
+        }
     }
 }

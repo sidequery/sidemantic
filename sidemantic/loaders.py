@@ -240,7 +240,18 @@ def load_from_directory(
     # Collect parsed definitions first, then register in dependency order.
     all_models = {}
     all_metrics = {}
+    all_metric_owners = {}
     all_parameters = {}
+
+    def collect_metrics(graph):
+        all_metrics.update(graph.metrics)
+        for name in graph.metrics:
+            owner = graph.metric_owners.get(name)
+            if owner is None:
+                all_metric_owners.pop(name, None)
+            else:
+                all_metric_owners[name] = owner
+
     consumption_catalogs = {name: {} for name in ("explores", "saved_queries", "table_calculations")}
     # Snowflake table-scoped metrics whose table lives in another file, held as
     # (table_name, Metric) pairs so same-named scoped metrics never collide.
@@ -284,7 +295,7 @@ def load_from_directory(
                 if not hasattr(model, "_source_file"):
                     model._source_file = str(tmdl_root.relative_to(directory))
             _merge_models(all_models, graph.models)
-            all_metrics.update(graph.metrics)
+            collect_metrics(graph)
             all_parameters.update(graph.parameters)
         except Exception as e:
             _append_import_warning(
@@ -329,7 +340,7 @@ def load_from_directory(
             # _drop_non_registerable_models).
             template_target_names |= {n for n, m in graph.models.items() if not _is_registerable_model(m)}
             _merge_models(all_models, graph.models)
-            all_metrics.update(graph.metrics)
+            collect_metrics(graph)
             all_parameters.update(graph.parameters)
         except Exception as e:
             _append_import_warning(
@@ -385,7 +396,7 @@ def load_from_directory(
             # The adapter has already resolved all intra-Malloy conflicts. This
             # merge only arbitrates names against other semantic formats.
             _merge_models(all_models, graph.models)
-            all_metrics.update(graph.metrics)
+            collect_metrics(graph)
             all_parameters.update(graph.parameters)
         except Exception as e:
             error_source = malloy_source
@@ -402,6 +413,37 @@ def load_from_directory(
                 source_file=str(error_source.relative_to(directory)),
             )
             _handle_parse_error(error_source, e, strict=strict)
+
+    # AML relationships and partial models name definitions in other files, so a
+    # directory is parsed once as a project rather than file by file.
+    holistics_root = None
+    if only_file is None and any(file.suffix.lower() == ".aml" for file in project_files):
+        holistics_root = directory
+
+    if holistics_root:
+        from sidemantic.adapters.holistics import HolisticsAdapter
+
+        try:
+            graph = _parse_adapter_without_auto_registration(HolisticsAdapter(), holistics_root)
+            _collect_consumption_catalogs(consumption_catalogs, graph, layer.graph)
+            _merge_graph_passthrough_metadata(layer.graph, graph)
+            _extend_import_warnings(import_warnings, graph)
+            for model in graph.models.values():
+                if not hasattr(model, "_source_format"):
+                    model._source_format = "Holistics"
+                if not hasattr(model, "_source_file"):
+                    model._source_file = str(holistics_root.relative_to(directory))
+            _merge_models(all_models, graph.models)
+            collect_metrics(graph)
+            all_parameters.update(graph.parameters)
+        except Exception as e:
+            if strict:
+                _handle_parse_error(holistics_root, e, strict=True)
+            # Non-strict: one malformed .aml must not drop every valid sibling. Fall
+            # back to the per-file scan below, which loads what it can and reports
+            # the bad file (as the LookML project path does). Cross-file
+            # relationships are lost in that degraded mode.
+            holistics_root = None
 
     # Find and parse all files (just the requested one in single-file mode).
     scan_files = [only_file] if only_file is not None else project_files
@@ -497,6 +539,8 @@ def load_from_directory(
         elif suffix == ".aml":
             from sidemantic.adapters.holistics import HolisticsAdapter
 
+            if holistics_root:
+                continue  # already parsed as one project above
             adapter = HolisticsAdapter()
         elif suffix == ".tml":
             adapter = ThoughtSpotAdapter()
@@ -618,7 +662,7 @@ def load_from_directory(
                 # still be stripped even when the name is reused by a registerable model.
                 template_target_names |= {n for n, m in graph.models.items() if not _is_registerable_model(m)}
                 _merge_models(all_models, graph.models)
-                all_metrics.update(graph.metrics)
+                collect_metrics(graph)
                 all_parameters.update(graph.parameters)
                 all_pending_table_metrics.extend(getattr(graph, "_pending_table_metrics", []))
                 all_pending_relationships.extend(getattr(graph, "_pending_relationships", []))
@@ -650,6 +694,11 @@ def load_from_directory(
     # table pair.
     _apply_snowflake_pending_relationships(all_models, all_pending_relationships)
 
+    # Omni keeps joins in project-level relationships/model files, while its
+    # views were parsed one file at a time above. Attach them before inference.
+    if only_file is None:
+        _apply_omni_relationship_files(project_files, all_models, strict=strict)
+
     # Drop non-queryable template models (LookML `extension: required` abstract bases /
     # unsupported derived tables) BEFORE inference + registration, so FK inference never
     # targets a model that won't be registered (which would leave a dangling relationship)
@@ -671,6 +720,8 @@ def load_from_directory(
     for metric in all_metrics.values():
         if metric.name not in layer.graph.metrics:
             layer.add_metric(metric)
+            if metric.name in all_metric_owners:
+                layer.graph.metric_owners[metric.name] = all_metric_owners[metric.name]
 
     for parameter in all_parameters.values():
         if parameter.name not in layer.graph.parameters:
@@ -1632,6 +1683,28 @@ def _apply_snowflake_pending_relationships(all_models: dict, pending: list) -> N
 
     SnowflakeAdapter().apply_pending_relationships(pending, all_models)
     pending.clear()
+
+
+def _apply_omni_relationship_files(project_files: list[Path], all_models: dict, *, strict: bool) -> None:
+    """Attach joins from Omni relationships/model files to the loaded Omni views."""
+    views = {name: model for name, model in all_models.items() if getattr(model, "_source_format", None) == "Omni"}
+    if not views:
+        return
+    from types import SimpleNamespace
+
+    from sidemantic.adapters.omni import OmniAdapter
+
+    adapter = OmniAdapter()
+    loaded = SimpleNamespace(models=views)
+    for file_path in project_files:
+        name = file_path.name.lower()
+        try:
+            if name in ("relationships.yaml", "relationships.yml"):
+                adapter._parse_relationships_list(adapter._load_relationships_list(file_path), loaded)
+            elif name in ("model.yaml", "model.yml"):
+                adapter._parse_relationships(file_path, loaded)
+        except Exception as e:
+            _handle_parse_error(file_path, e, strict=strict)
 
 
 def _deep_merge_metadata(target: dict, source: dict) -> None:

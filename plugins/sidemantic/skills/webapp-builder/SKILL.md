@@ -276,7 +276,7 @@ Analytics webapps should feel work-focused:
 ## Common Failures
 
 - Building UI before the model validates. Validate first.
-- Running interactive validation in automation. If `sidemantic validate` requires `textual` or opens a TUI, use `sidemantic info` plus `inspect_layer.py` as the noninteractive check.
+- Running interactive tools in automation. `sidemantic validate` and `sidemantic info` are noninteractive (add `--json` for machine-readable output); `sidemantic workbench` is a TUI, so never script it.
 - Trusting compiled SQL alone. Use `inspect_layer.py --require-execute` when possible so result columns and sample rows are checked and failures are nonzero.
 - Running parallel DuckDB checks against the same database file. Run them serially or use separate database copies.
 - Treating Python API examples as the default user path. Sidemantic is CLI-first; use API calls as app internals.

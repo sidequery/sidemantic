@@ -620,6 +620,15 @@ impl Metric {
     pub fn is_simple_aggregation(&self) -> bool {
         self.r#type == MetricType::Simple && self.agg.is_some()
     }
+
+    /// Whether this metric can only be evaluated over a time dimension in the
+    /// grouping: running totals, period comparisons and offset ratios.
+    pub fn requires_time_axis(&self) -> bool {
+        matches!(
+            self.r#type,
+            MetricType::Cumulative | MetricType::TimeComparison
+        ) || (self.r#type == MetricType::Ratio && self.offset_window.is_some())
+    }
 }
 
 /// Relationship type between models

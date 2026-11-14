@@ -29,6 +29,7 @@ class ParsedExpr:
     column: str | None = None
     aggregation: str | None = None
     date_part: str | None = None  # year, month, day, etc.
+    where: str | None = None  # SQL predicate from an aggregate's ``where=`` argument
 
 
 # Aggregation method to sidemantic agg type
@@ -663,6 +664,25 @@ def _render_sql_node_as_bsl(node: exp.Expression | None) -> str | None:
     return None
 
 
+def sql_predicate_to_bsl(sql: str) -> str | None:
+    """Render a SQL row predicate as a BSL boolean expression for ``where=``.
+
+    Returns ``None`` unless the importer reads the rendered predicate back as
+    SQL, so an exported measure filter is never one the importer would reject.
+    """
+    try:
+        rendered = _render_sql_node_as_bsl(sqlglot.parse_one(sql))
+    except sqlglot.errors.SqlglotError:
+        return None
+    if rendered is None:
+        return None
+    try:
+        bsl_filter_to_sql(rendered)
+    except ValueError:
+        return None
+    return rendered
+
+
 def parse_bsl_expr(expr: str) -> ParsedExpr:
     """Parse BSL expression like '_.column.sum()' into components.
 
@@ -705,16 +725,27 @@ def parse_bsl_expr(expr: str) -> ParsedExpr:
         method = node.func.attr
         attrs = _collect_attrs(node.func.value)
 
+        # Ibis aggregates take a row filter as ``where=``. Dropping it would turn
+        # a filtered measure into an unfiltered one, so an untranslatable
+        # predicate is an error rather than an ignored argument.
+        where = None
+        if method in AGG_METHOD_MAP:
+            where_node = next((argument.value for argument in node.keywords if argument.arg == "where"), None)
+            if where_node is not None:
+                where = _filter_node_to_sql(where_node)
+                if where is None:
+                    raise ValueError(f"Cannot translate BSL measure filter to SQL: {expr!r}")
+
         # _.count() - no column, just aggregation
         if not attrs and isinstance(node.func.value, ast.Name) and node.func.value.id == "_":
             if method in AGG_METHOD_MAP:
-                return ParsedExpr(aggregation=method)
+                return ParsedExpr(aggregation=method, where=where)
 
         # _.column.sum() or _.nested.field.sum()
         if attrs:
             column = ".".join(attrs)
             if method in AGG_METHOD_MAP:
-                return ParsedExpr(column=column, aggregation=method)
+                return ParsedExpr(column=column, aggregation=method, where=where)
             elif method in DATE_METHODS:
                 return ParsedExpr(column=column, date_part=method)
 
@@ -726,7 +757,7 @@ def parse_bsl_expr(expr: str) -> ParsedExpr:
         ):
             sql_expr = _expr_to_sql(base)
             if sql_expr:
-                return ParsedExpr(column=sql_expr, aggregation=method)
+                return ParsedExpr(column=sql_expr, aggregation=method, where=where)
 
     # Case 2: Attribute access like _.column or _.nested.field
     if isinstance(node, ast.Attribute):

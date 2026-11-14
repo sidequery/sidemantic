@@ -32,9 +32,9 @@ def estore_graph():
 
 
 def test_estore_loads_all_views(estore_graph):
-    """All 6 estore view files parse into models."""
+    """Views in both the views and snapshots directories are discovered."""
     model_names = sorted(estore_graph.models.keys())
-    assert len(model_names) == 6
+    assert len(model_names) == 7
     # Views are named by Omni's reference convention {schema}__{table_name}
     # (e.g. dim_users.view.yaml in schema omni_dbt_marts -> omni_dbt_marts__dim_users).
     for expected in [
@@ -444,7 +444,7 @@ def test_estore_relationship_metadata(estore_graph):
     events = estore_graph.models["omni_dbt_marts__fct_events"]
     to_products = next(r for r in events.relationships if r.name == "omni_dbt_marts__dim_products")
     assert to_products.metadata is not None
-    assert to_products.metadata["join_type"] == "always_left"
+    assert to_products.metadata["omni_join_type"] == "always_left"
     assert to_products.metadata["reversible"] is False
 
 

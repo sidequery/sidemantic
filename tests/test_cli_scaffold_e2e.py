@@ -121,6 +121,175 @@ def test_init_from_csvs_project_passes_test_and_live_validate(
     assert validate_result.exit_code == 0, validate_result.output
 
 
+def _query_values(project: Path, monkeypatch: pytest.MonkeyPatch, sql: str, *extra: str) -> list[dict]:
+    monkeypatch.chdir(project)
+    cli_module._loaded_config = None
+    result = runner.invoke(app, ["query", sql, "--format", "json", *extra])
+    assert result.exit_code == 0, result.output
+    return json.loads(result.output)
+
+
+@pytest.mark.parametrize(
+    "from_args",
+    [
+        pytest.param(["--from", "data/*.csv"], id="quoted-glob"),
+        # What a shell passes for an unquoted `--from data/*.csv` matching two files.
+        pytest.param(["--from", "data/customers.csv", "data/orders.csv"], id="shell-expanded-glob"),
+    ],
+)
+def test_init_from_glob_bootstraps_every_matching_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, csv_sources: tuple[Path, Path], from_args: list[str]
+):
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["init", "analytics", *from_args])
+
+    assert result.exit_code == 0, result.output
+    project = tmp_path / "analytics"
+    assert sorted(path.name for path in (project / "models").iterdir()) == ["customers.yml", "orders.yml"]
+    assert _query_values(project, monkeypatch, "SELECT orders.total_amount FROM orders") == [{"total_amount": 30.0}]
+
+
+def test_init_from_shell_expanded_glob_without_directory_uses_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, csv_sources: tuple[Path, Path]
+):
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["init", "--from", "data/customers.csv", "data/orders.csv"])
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "models" / "orders.yml").is_file()
+    assert (tmp_path / "models" / "customers.yml").is_file()
+    assert not (tmp_path / "data" / "orders.csv" / "models").exists()
+
+
+def test_init_from_glob_matching_nothing_fails_with_pattern(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["init", "analytics", "--from", "data/*.parquet"])
+
+    assert result.exit_code == 2
+    assert "matched no files: data/*.parquet" in result.output
+
+
+def test_init_extra_positional_argument_explains_how_to_pass_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["init", "analytics", "other"])
+
+    assert result.exit_code == 2
+    assert "other" in result.output
+    assert "--from 'data/*.csv'" in result.output
+    assert not (tmp_path / "analytics").exists()
+
+
+@pytest.mark.parametrize("source", ["data/orders.csv", "data/warehouse.duckdb"])
+def test_init_from_writes_paths_relative_to_project_that_survive_a_move(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, csv_sources: tuple[Path, Path], source: str
+):
+    import shutil
+
+    import duckdb
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (tmp_path / "data").rename(workspace / "data")
+    with duckdb.connect(str(workspace / "data" / "warehouse.duckdb")) as con:
+        con.execute("CREATE TABLE orders AS SELECT * FROM read_csv_auto(?)", [str(workspace / "data" / "orders.csv")])
+    monkeypatch.chdir(workspace)
+    assert runner.invoke(app, ["init", "analytics", "--from", source]).exit_code == 0
+
+    config_text = (workspace / "analytics" / "sidemantic.yaml").read_text()
+    assert str(tmp_path) not in config_text
+    assert f"../{source}" in config_text
+
+    moved = shutil.copytree(workspace, tmp_path / "moved")
+    shutil.rmtree(workspace)
+    assert _query_values(moved / "analytics", monkeypatch, "SELECT orders.record_count FROM orders") == [
+        {"record_count": 2}
+    ]
+
+
+def test_init_from_connection_explains_how_to_supply_the_connection(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    import duckdb
+
+    database = tmp_path / "warehouse.duckdb"
+    with duckdb.connect(str(database)) as con:
+        con.execute("CREATE TABLE customers AS SELECT * FROM (VALUES (1, 'North'), (2, 'South')) t(id, region)")
+    monkeypatch.chdir(tmp_path)
+    connection = f"duckdb:///{database}"
+
+    result = runner.invoke(app, ["init", "conn", "--from-connection", connection])
+
+    assert result.exit_code == 0, result.output
+    project = tmp_path / "conn"
+    # The printed next steps carry the connection, so running them works.
+    assert f"sidemantic test --connection {connection}" in result.output
+    assert _query_values(
+        project, monkeypatch, "SELECT customers.record_count FROM customers", "--connection", connection
+    ) == [{"record_count": 2}]
+    cli_module._loaded_config = None
+    assert runner.invoke(app, ["test", "--connection", connection]).exit_code == 0
+
+    # Uncommenting the block the generated config suggests saves the connection.
+    config_path = project / "sidemantic.yaml"
+    lines = config_path.read_text().splitlines()
+    start = lines.index("# connection:")
+    suggested = [line.removeprefix("# ") for line in lines[start:] if line.startswith("# ")]
+    config_path.write_text("\n".join([*lines[:start], *suggested, *lines[start + len(suggested) :]]) + "\n")
+    assert _query_values(project, monkeypatch, "SELECT customers.record_count FROM customers") == [{"record_count": 2}]
+
+
+def test_init_from_connection_hides_password_in_next_steps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    from sidemantic.bootstrap import BootstrapResult
+
+    monkeypatch.setattr(
+        "sidemantic.bootstrap.bootstrap_models",
+        lambda connection, init_sql=None: BootstrapResult(
+            tables=[], model_dicts={"orders": {"name": "orders", "table": "orders", "metrics": []}}
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        app, ["init", "pg", "--from-connection", "postgres://analyst:s3cret@db.internal:5432/analytics"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "s3cret" not in result.output
+    assert "--connection 'postgres://analyst:****@db.internal:5432/analytics'" in result.output
+    config_text = (tmp_path / "pg" / "sidemantic.yaml").read_text()
+    assert "s3cret" not in config_text
+    assert "#   password_file: .secrets/db-password" in config_text
+
+
+def test_init_from_connection_with_url_options_suggests_no_weaker_config_block(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from sidemantic.bootstrap import BootstrapResult
+
+    monkeypatch.setattr(
+        "sidemantic.bootstrap.bootstrap_models",
+        lambda connection, init_sql=None: BootstrapResult(
+            tables=[], model_dicts={"events": {"name": "events", "table": "events", "metrics": []}}
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        app, ["init", "ch", "--from-connection", "clickhouse://reader:s3cret@cloud.internal:8443/events?secure=true"]
+    )
+
+    assert result.exit_code == 0, result.output
+    # The next steps keep the TLS option; no config block that would drop it is offered.
+    assert "--connection 'clickhouse://reader:****@cloud.internal:8443/events?secure=true'" in result.output
+    assert "uncomment" not in result.output
+    config_text = (tmp_path / "ch" / "sidemantic.yaml").read_text()
+    assert "# connection:" not in config_text
+    assert "keep using --connection" in config_text
+    assert "connection" not in yaml.safe_load(config_text)
+
+
 # --- demo ---------------------------------------------------------------------
 
 
@@ -217,6 +386,31 @@ def test_validate_live_db_csv_fails_on_missing_column(monkeypatch: pytest.Monkey
 
     assert result.exit_code == 1
     assert "does_not_exist" in result.output or "missing column" in result.output
+
+
+def test_validate_live_accepts_metrics_that_reference_other_metrics(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    (tmp_path / "orders.csv").write_text("id,status,amount\n1,completed,10\n2,pending,30\n")
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "orders.yml").write_text(
+        "models:\n"
+        "  - name: orders\n"
+        "    table: orders\n"
+        "    primary_key: id\n"
+        "    dimensions:\n"
+        "      - {name: status, type: categorical}\n"
+        "    metrics:\n"
+        "      - {name: revenue, agg: sum, sql: amount}\n"
+        "      - {name: completed_revenue, agg: sum, sql: amount, filters: [\"status = 'completed'\"]}\n"
+        "      - {name: completion_share, type: derived, sql: completed_revenue / revenue}\n"
+        "      - {name: cumulative_revenue, type: cumulative, sql: revenue}\n"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["validate", "models", "--live", "--db", str(tmp_path / "orders.csv")])
+
+    assert result.exit_code == 0, result.output
+    assert "missing column" not in result.output
 
 
 def test_validate_live_db_csv_passes_on_correct_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

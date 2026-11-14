@@ -1,5 +1,6 @@
 """MetricFlow adapter for importing dbt semantic layer models."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import yaml
@@ -10,7 +11,7 @@ from sidemantic.core.metric import Metric
 from sidemantic.core.model import Model
 from sidemantic.core.relationship import Relationship
 from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.fidelity import record_import_note
+from sidemantic.fidelity import record_export_note, record_import_note
 from sidemantic.yaml_compat import safe_load as _yaml_safe_load
 
 
@@ -22,7 +23,8 @@ class MetricFlowAdapter(BaseAdapter):
     - Entities → Entities (direct mapping)
     - Dimensions → Dimensions
     - Measures → Measures
-    - Metrics → Metrics (all 5 types)
+    - Simple/ratio/derived/cumulative metrics → Metrics
+    - Conversion metrics and saved queries → retained source metadata
 
     Supports both the legacy MetricFlow YAML spec (top-level ``semantic_models:`` /
     ``metrics:`` with ``type_params``) and the latest spec used by dbt Core 1.12 /
@@ -39,6 +41,7 @@ class MetricFlowAdapter(BaseAdapter):
         # retained here (and on ``graph.metadata["saved_queries"]``) rather than
         # turned into models or metrics.
         self.saved_queries: dict[str, dict] = {}
+        self.saved_query_definitions: dict[str, dict] = {}
         # Parsed conversion metrics keyed by name. MetricFlow conversion metrics
         # reference base/conversion *measures*, which have no faithful mapping to
         # Sidemantic's event-filter conversion funnel. Rather than register a
@@ -64,6 +67,7 @@ class MetricFlowAdapter(BaseAdapter):
         # queries or conversion metrics from a previously parsed source into this
         # graph's metadata.
         self.saved_queries = {}
+        self.saved_query_definitions = {}
         self.conversion_metrics = {}
 
         if source_path.is_dir():
@@ -86,6 +90,7 @@ class MetricFlowAdapter(BaseAdapter):
         # Expose parsed saved queries on the graph for downstream consumers.
         if self.saved_queries:
             graph.metadata["saved_queries"] = self.saved_queries
+            graph.metadata["metricflow_saved_query_definitions"] = self.saved_query_definitions
 
         # Expose parsed conversion metrics (retained as non-queryable metadata).
         if self.conversion_metrics:
@@ -105,6 +110,8 @@ class MetricFlowAdapter(BaseAdapter):
 
         if not data:
             return
+        if "project_configuration" in data or any("node_relation" in m for m in data.get("semantic_models") or []):
+            raise ValueError("MetricFlowAdapter expects dbt source YAML, not a compiled semantic_manifest.json")
 
         # Latest spec (dbt Core 1.12 / Fusion): semantic models embedded under a
         # top-level ``models:`` block, each with a nested ``semantic_model:`` key.
@@ -260,6 +267,13 @@ class MetricFlowAdapter(BaseAdapter):
             name = sq.get("name")
             if not name:
                 continue
+            self.saved_query_definitions[name] = deepcopy(sq)
+            record_import_note(
+                "saved_query",
+                f"Saved query '{name}' is retained for export but not executed",
+                severity="unsupported",
+                source="MetricFlow",
+            )
             query_params = sq.get("query_params") or {}
             self.saved_queries[name] = {
                 "name": name,
@@ -319,6 +333,13 @@ class MetricFlowAdapter(BaseAdapter):
             entity_type = entity_def.get("type", "primary")
             entity_name = entity_def.get("name")
             entity_expr = entity_def.get("expr", entity_name)
+            if entity_type == "natural":
+                record_import_note(
+                    "natural_entity",
+                    f"Natural entity '{entity_name}' is retained for export; SCD joins are not executed",
+                    severity="unsupported",
+                    source="MetricFlow",
+                )
             if entity_name:
                 entity_column_by_name[entity_name] = entity_expr
 
@@ -391,7 +412,10 @@ class MetricFlowAdapter(BaseAdapter):
             extends=extends,
             default_time_dimension=default_time_dimension,
             default_grain=default_grain,
-            metadata={"metricflow_primary_entity": primary_entity_name},
+            metadata={
+                "metricflow_primary_entity": primary_entity_name,
+                "metricflow_entities": deepcopy(model_def.get("entities") or []),
+            },
         )
 
     def _parse_model_spec(self, model_def: dict) -> Model | None:
@@ -430,6 +454,7 @@ class MetricFlowAdapter(BaseAdapter):
         relationships = []
         dimensions = []
 
+        entity_definitions = []
         for column_def in model_def.get("columns") or []:
             if not isinstance(column_def, dict):
                 continue
@@ -444,6 +469,7 @@ class MetricFlowAdapter(BaseAdapter):
                 entity_name = entity_def.get("name") or column_name
                 # The column name is the SQL expression backing the entity.
                 entity_expr = entity_def.get("expr") or column_name
+                entity_definitions.append({**deepcopy(entity_def), "name": entity_name, "expr": entity_expr})
                 if entity_type == "primary":
                     primary_key = entity_expr
                     primary_entity_name = entity_name or name
@@ -488,7 +514,7 @@ class MetricFlowAdapter(BaseAdapter):
             dimensions=dimensions,
             metrics=measures,
             default_time_dimension=default_time_dimension,
-            metadata={"metricflow_primary_entity": primary_entity_name},
+            metadata={"metricflow_primary_entity": primary_entity_name, "metricflow_entities": entity_definitions},
         )
 
     def _parse_dimension(self, dim_def: dict) -> Dimension | None:
@@ -718,6 +744,12 @@ class MetricFlowAdapter(BaseAdapter):
                     # Aggregation Sidemantic cannot represent (e.g. ``percentile``).
                     # Skip the metric rather than coerce to ``sum``, which would
                     # silently return a wrong value.
+                    record_import_note(
+                        "unsupported_aggregation",
+                        f"metric '{name}' uses unsupported aggregation '{top_agg}'; dropped",
+                        severity="dropped",
+                        source="MetricFlow",
+                    )
                     return None
                 raw_expr = metric_def.get("expr")
                 expr = str(raw_expr) if raw_expr is not None else None
@@ -757,14 +789,40 @@ class MetricFlowAdapter(BaseAdapter):
             # base metric, which Sidemantic cannot yet express, so those aliases
             # are left intact (the metric stays as round-trip metadata).
             if expr and input_summary:
+                metadata["metricflow_source_expression"] = expr
                 expr = self._rewrite_input_aliases(expr, input_summary)
+                metadata["metricflow_imported_expression"] = expr
+                if any(
+                    any(item.get(key) is not None for key in ("offset_window", "offset_to_grain", "filter"))
+                    for item in input_summary
+                ):
+                    record_import_note(
+                        "derived_input_modifiers",
+                        f"Metric '{name}' retains input offsets/filters for export; they are not executed",
+                        severity="unsupported",
+                        source="MetricFlow",
+                    )
 
         elif metric_type == "cumulative":
             # Base measure: ``measure`` (legacy) or ``input_metric`` (latest).
+            cumulative_params = type_params.get("cumulative_type_params") or {}
             measure = type_params.get("measure")
             if measure is None:
-                measure = metric_def.get("input_metric")
+                measure = cumulative_params.get("metric", metric_def.get("input_metric"))
             expr = self._ref_name(measure)
+            if measure is not None:
+                metadata["metricflow_cumulative_input"] = deepcopy(measure)
+                metadata["metricflow_cumulative_input_key"] = "measure" if "measure" in type_params else "metric"
+                if isinstance(measure, dict) and any(
+                    measure.get(key) is not None
+                    for key in ("filter", "offset_window", "offset_to_grain", "fill_nulls_with", "join_to_timespine")
+                ):
+                    record_import_note(
+                        "cumulative_input_modifiers",
+                        f"Metric '{name}' retains input modifiers for export; they are not executed",
+                        severity="unsupported",
+                        source="MetricFlow",
+                    )
 
             # Window / grain_to_date / period_agg can sit directly under
             # type_params (legacy convenience), under cumulative_type_params
@@ -781,6 +839,12 @@ class MetricFlowAdapter(BaseAdapter):
             )
             if period_agg:
                 metadata["period_agg"] = period_agg
+                record_import_note(
+                    "cumulative_period_agg",
+                    f"Metric '{name}' retains period_agg '{period_agg}' for export; it is not executed",
+                    severity="unsupported",
+                    source="MetricFlow",
+                )
 
         # Parse filter (single string in MetricFlow)
         filter_expr = metric_def.get("filter")
@@ -926,7 +990,14 @@ class MetricFlowAdapter(BaseAdapter):
             "calculation": calculation,
             "constant_properties": constant_properties,
             "filter": metric_def.get("filter"),
+            "source_definition": deepcopy(metric_def),
         }
+        record_import_note(
+            "conversion_metric",
+            f"Metric '{name}' is retained for export but conversion semantics are not executed",
+            severity="unsupported",
+            source="MetricFlow",
+        )
         return None
 
     def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
@@ -954,6 +1025,7 @@ class MetricFlowAdapter(BaseAdapter):
             semantic_models.append(semantic_model)
 
         data = {"semantic_models": semantic_models}
+        folded_measures = {}
 
         # Export metrics if present
         if resolved_metrics:
@@ -985,7 +1057,12 @@ class MetricFlowAdapter(BaseAdapter):
                         suffix += 1
                     measure_names.add(measure_name)
                     model_def = next(model for model in semantic_models if model["name"] == owner)
-                    measure_def = {"name": measure_name, "agg": metric.agg, "expr": expression.sql()}
+                    folded_measures[metric.name] = measure_name
+                    measure_def = {
+                        "name": measure_name,
+                        "agg": "average" if metric.agg == "avg" else metric.agg,
+                        "expr": expression.sql(),
+                    }
                     if metric.filters:
                         # Simple-reference metrics are evaluated via their model
                         # measure on reload. Preserve row filters there as well
@@ -997,10 +1074,99 @@ class MetricFlowAdapter(BaseAdapter):
                     exported["type_params"] = {"measure": {"name": measure_name}}
                 data["metrics"].append(exported)
 
+        # Saved queries and conversion metrics have source representations even though
+        # they are not executable graph objects. Keep them out of native query planning.
+        saved_definitions = graph.metadata.get("metricflow_saved_query_definitions") or {}
+        if "saved_queries" in graph.metadata:
+            data["saved_queries"] = [
+                self._export_saved_query(sq, saved_definitions.get(name))
+                for name, sq in graph.metadata["saved_queries"].items()
+            ]
+        elif saved_definitions:
+            data["saved_queries"] = deepcopy(list(saved_definitions.values()))
+        for spec in (graph.metadata.get("metricflow_conversion_metrics") or {}).values():
+            data.setdefault("metrics", []).append(self._export_conversion_metric(spec, graph, folded_measures))
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(output_path, "w") as f:
             yaml.dump(data, f, sort_keys=False, default_flow_style=False)
+
+    @staticmethod
+    def _export_saved_query(spec: dict, source: dict | None = None) -> dict:
+        result = deepcopy(source or {})
+        for key in ("name", "description", "label", "exports"):
+            if spec.get(key) is None:
+                result.pop(key, None)
+            elif spec[key] != [] or key in result:
+                result[key] = deepcopy(spec[key])
+        params = result.setdefault("query_params", {})
+        for key in ("metrics", "group_by", "where", "order_by", "limit"):
+            if spec.get(key) is None:
+                params.pop(key, None)
+            elif spec[key] != [] or key in params:
+                params[key] = deepcopy(spec[key])
+        return result
+
+    @staticmethod
+    def _export_conversion_metric(spec: dict, graph: SemanticGraph, folded_measures: dict[str, str]) -> dict:
+        source = deepcopy(spec.get("source_definition") or {})
+        if source.get("type_params", {}).get("conversion_type_params"):
+            params = source["type_params"]["conversion_type_params"]
+            for key in ("name", "description", "label", "filter"):
+                if spec.get(key) is None:
+                    source.pop(key, None)
+                else:
+                    source[key] = deepcopy(spec[key])
+            for key in ("entity", "window", "calculation", "constant_properties"):
+                value = spec.get(key)
+                if value is None:
+                    params.pop(key, None)
+                elif key != "calculation" or key in params or value != "conversion_rate":
+                    params[key] = deepcopy(value)
+            for key in ("base_measure", "conversion_measure"):
+                reference = spec.get(key)
+                if not reference:
+                    raise ValueError(f"Conversion metric '{spec['name']}' requires {key} for export")
+                original_reference = params.get(key)
+                params[key] = (
+                    {**original_reference, "name": reference} if isinstance(original_reference, dict) else reference
+                )
+            return source
+        # Latest folded metrics must refer to their generated legacy measures.
+        params = {
+            key: deepcopy(spec[key])
+            for key in ("entity", "window", "calculation", "constant_properties")
+            if spec.get(key) is not None
+        }
+        for key in ("base_measure", "conversion_measure"):
+            reference = spec[key]
+            if source.get("base_metric") is not None or source.get("conversion_metric") is not None:
+                metric = graph.metrics.get(reference)
+                if reference in folded_measures:
+                    reference = folded_measures[reference]
+                elif metric is not None and metric.type is None and metric.agg is None and metric.sql:
+                    reference = metric.sql
+                else:
+                    raise ValueError(
+                        f"Cannot lower conversion metric '{spec['name']}' input '{reference}' to a legacy measure"
+                    )
+            source_key = "base_metric" if key == "base_measure" else "conversion_metric"
+            original_reference = source.get(source_key)
+            params[key] = (
+                {**deepcopy(original_reference), "name": reference}
+                if isinstance(original_reference, dict)
+                else reference
+            )
+        promoted = {"base_metric", "conversion_metric", "entity", "window", "calculation", "constant_properties"}
+        result = {key: value for key, value in source.items() if key not in promoted}
+        for key in ("name", "description", "label", "filter"):
+            if spec.get(key) is None:
+                result.pop(key, None)
+            else:
+                result[key] = deepcopy(spec[key])
+        result.update(type="conversion", type_params={"conversion_type_params": params})
+        return result
 
     def _export_semantic_model(self, model: Model) -> dict:
         """Export model to MetricFlow semantic model.
@@ -1015,8 +1181,21 @@ class MetricFlowAdapter(BaseAdapter):
 
         if model.sql:
             result["sql"] = model.sql
+            record_export_note(
+                "model_sql",
+                f"Model '{model.name}' uses SQL without a dbt model ref; emitted as a Sidemantic extension",
+                severity="unsupported",
+                source="MetricFlow",
+            )
         elif model.table:
             result["model"] = f"ref('{model.table.split('.')[-1]}')"
+            if "." in model.table:
+                record_export_note(
+                    "table_qualification",
+                    f"Model '{model.name}' loses warehouse qualification '{model.table}' when exported as a dbt ref",
+                    severity="approximated",
+                    source="MetricFlow",
+                )
 
         if model.description:
             result["description"] = model.description
@@ -1025,13 +1204,27 @@ class MetricFlowAdapter(BaseAdapter):
         result["entities"] = []
 
         # Add primary entity
-        result["entities"].append(
-            {
-                "name": (model.metadata or {}).get("metricflow_primary_entity", model.name),
-                "type": "primary",
-                "expr": model.primary_key,
-            }
-        )
+        source_entities = (model.metadata or {}).get("metricflow_entities")
+        if source_entities is None or any(e.get("type", "primary") == "primary" for e in source_entities):
+            result["entities"].append(
+                {
+                    "name": (model.metadata or {}).get("metricflow_primary_entity", model.name),
+                    "type": "primary",
+                    "expr": model.primary_key,
+                }
+            )
+
+        for entity in (model.metadata or {}).get("metricflow_entities", []):
+            if entity.get("type") == "unique":
+                result["entities"].append(deepcopy(entity))
+            elif entity.get("type") == "natural":
+                result["entities"].append(deepcopy(entity))
+                record_export_note(
+                    "natural_entity",
+                    f"Natural entity '{entity.get('name')}' is preserved without SCD execution",
+                    severity="unsupported",
+                    source="MetricFlow",
+                )
 
         # Add foreign entities from relationships
         for rel in model.relationships:
@@ -1043,12 +1236,19 @@ class MetricFlowAdapter(BaseAdapter):
                         "expr": rel.foreign_key or f"{rel.name}_id",
                     }
                 )
+            else:
+                record_export_note(
+                    "relationship",
+                    f"Relationship '{model.name}.{rel.name}' ({rel.type}) has no foreign entity translation; omitted",
+                    severity="unsupported",
+                    source="MetricFlow",
+                )
 
         # Export dimensions
         if model.dimensions:
             result["dimensions"] = []
             for dim in model.dimensions:
-                dim_def = {"name": dim.name, "type": dim.type}
+                dim_def = {"name": dim.name, "type": "time" if dim.type == "time" else "categorical"}
 
                 if dim.sql:
                     dim_def["expr"] = dim.sql
@@ -1081,6 +1281,13 @@ class MetricFlowAdapter(BaseAdapter):
             result["measures"] = []
             for measure in model.metrics:
                 measure_def = {"name": measure.name}
+                if measure.type is not None or measure.agg is None:
+                    record_export_note(
+                        "model_metric",
+                        f"Model metric '{model.name}.{measure.name}' cannot be represented as a legacy aggregate measure",
+                        severity="unsupported",
+                        source="MetricFlow",
+                    )
 
                 # Map agg types
                 agg_mapping = {
@@ -1162,6 +1369,13 @@ class MetricFlowAdapter(BaseAdapter):
         """
         # Determine export type - untyped metrics with sql should be exported as "simple"
         export_type = measure.type or ("simple" if measure.agg or measure.sql else None)
+        if export_type not in {"simple", "ratio", "derived", "cumulative"}:
+            record_export_note(
+                "metric_type",
+                f"Metric '{measure.name}' has no MetricFlow translation for type '{export_type}'",
+                severity="unsupported",
+                source="MetricFlow",
+            )
 
         result = {
             "name": measure.name,
@@ -1196,13 +1410,42 @@ class MetricFlowAdapter(BaseAdapter):
         elif measure.type == "derived":
             if measure.sql:
                 type_params["expr"] = measure.sql
-            # Auto-detect dependencies from expression using graph for resolution
-            dependencies = measure.get_dependencies(graph)
-            if dependencies:
-                type_params["metrics"] = [{"name": m} for m in dependencies]
+            metadata = measure.metadata or {}
+            inputs = metadata.get("input_metrics")
+            if inputs:
+                if measure.sql != metadata.get("metricflow_imported_expression"):
+                    raise ValueError(
+                        f"Derived metric '{measure.name}' was edited; reconcile its stored input aliases/modifiers before export"
+                    )
+                type_params["expr"] = metadata.get("metricflow_source_expression", measure.sql)
+                type_params["metrics"] = deepcopy(inputs)
+            else:
+                dependencies = measure.get_dependencies(graph)
+                if dependencies:
+                    type_params["metrics"] = [{"name": m} for m in sorted(dependencies)]
 
-        elif measure.type == "cumulative" and measure.window:
-            type_params["cumulative_type_params"] = {"window": measure.window}
+        elif measure.type == "cumulative":
+            metadata = measure.metadata or {}
+            params = {}
+            if measure.window:
+                params["window"] = measure.window
+            if measure.grain_to_date:
+                params["grain_to_date"] = measure.grain_to_date
+            if metadata.get("period_agg") is not None:
+                params["period_agg"] = metadata["period_agg"]
+            reference = metadata.get("metricflow_cumulative_input")
+            if self._ref_name(reference) != measure.sql:
+                reference = measure.sql
+            if not reference:
+                raise ValueError(
+                    f"Cumulative metric '{measure.name}' needs an input metric/measure for MetricFlow export"
+                )
+            if metadata.get("metricflow_cumulative_input_key", "measure") == "measure":
+                type_params["measure"] = deepcopy(reference)
+            else:
+                params["metric"] = deepcopy(reference)
+            if params:
+                type_params["cumulative_type_params"] = params
 
         if type_params:
             result["type_params"] = type_params
@@ -1230,24 +1473,35 @@ class MetricFlowAdapter(BaseAdapter):
     def _resolve_relationship_names(self, graph: SemanticGraph) -> None:
         """Resolve MetricFlow entity names to actual model names.
 
-        MetricFlow uses singular entity names (e.g., "customer") while models are often plural (e.g., "customers").
-        This method attempts to match entity names to actual models in the graph.
+        Declared primary/unique entities determine the model and backing key.
+        Singular/plural model names are a fallback for undeclared owners only.
 
         Args:
             graph: Semantic graph with models
         """
-        # Get all model names
-        model_names = set(graph.models.keys())
-
-        # For each model, check its relationships
+        model_names = set(graph.models)
+        owners: dict[str, list[tuple[str, str]]] = {}
+        for model in graph.models.values():
+            for entity in (model.metadata or {}).get("metricflow_entities", []):
+                if entity.get("type", "primary") in ("primary", "unique") and entity.get("name"):
+                    owners.setdefault(entity["name"], []).append((model.name, entity.get("expr") or entity["name"]))
         for model in graph.models.values():
             for rel in model.relationships:
-                # If the relationship name doesn't match any model, try to resolve it
-                if rel.related_model not in model_names:
+                candidates = [(name, key) for name, key in owners.get(rel.name, []) if name != model.name]
+                if len(candidates) == 1:
+                    resolved_name, key = candidates[0]
+                    rel.target_model = resolved_name if resolved_name != rel.name else None
+                    rel.primary_key = key
+                elif len(candidates) > 1:
+                    record_import_note(
+                        "ambiguous_entity",
+                        f"Entity '{rel.name}' on '{model.name}' has multiple primary/unique owners: {[name for name, _ in candidates]}",
+                        severity="unsupported",
+                        source="MetricFlow",
+                    )
+                elif rel.related_model not in model_names:
                     resolved_name = self._resolve_entity_to_model(rel.related_model, model_names)
                     if resolved_name:
-                        # Preserve the entity/role identifier while recording the
-                        # canonical model used by graph traversal.
                         rel.target_model = resolved_name if resolved_name != rel.name else None
 
     def _resolve_entity_to_model(self, entity_name: str, model_names: set[str]) -> str | None:

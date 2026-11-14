@@ -18,6 +18,15 @@ on stdout.
 
 ## CLI
 
+Install the optional Rust backend first:
+
+```bash
+uv tool install "sidemantic[rust]"
+```
+
+For a project environment, use `uv add "sidemantic[rust]"` instead. Python remains
+the default engine after installation; select Rust explicitly below.
+
 Validation:
 
 ```bash

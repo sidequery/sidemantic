@@ -123,6 +123,60 @@ def test_duckdb_absolute_file_paths():
     # Can't easily verify the exact path, but connection should work
 
 
+@pytest.mark.parametrize(
+    ("cwd", "url"),
+    [
+        (".", "duckdb://data/app.duckdb"),
+        ("data", "duckdb://app.duckdb"),
+        ("data", "duckdb://../data/app.duckdb?read_only=true"),
+        (".", "duckdb:///{root}/data/app.duckdb"),
+    ],
+)
+def test_duckdb_url_paths_open_the_named_database(tmp_path, monkeypatch, cwd, url):
+    """Two slashes name a path relative to the cwd; three slashes an absolute path.
+
+    The host part of ``duckdb://data/app.duckdb`` used to be dropped silently,
+    opening an empty in-memory database or a different file instead.
+    """
+    import duckdb
+
+    (tmp_path / "data").mkdir()
+    with duckdb.connect(str(tmp_path / "data" / "app.duckdb")) as con:
+        con.execute("CREATE TABLE orders AS SELECT 42 AS id")
+    monkeypatch.chdir(tmp_path / cwd)
+
+    adapter = DuckDBAdapter.from_url(url.format(root=tmp_path))
+    try:
+        assert adapter.execute("SELECT id FROM orders").fetchall() == [(42,)]
+    finally:
+        adapter.close()
+
+
+def test_semantic_layer_accepts_relative_duckdb_url(tmp_path, monkeypatch):
+    import duckdb
+
+    from sidemantic import SemanticLayer
+
+    with duckdb.connect(str(tmp_path / "warehouse.duckdb")) as con:
+        con.execute("CREATE TABLE orders AS SELECT 1 AS id")
+    monkeypatch.chdir(tmp_path)
+
+    layer = SemanticLayer(connection="duckdb://warehouse.duckdb", auto_register=False)
+    try:
+        assert layer.adapter.execute("SELECT count(*) FROM orders").fetchone() == (1,)
+    finally:
+        layer.adapter.close()
+
+
+@pytest.mark.parametrize("url", ["duckdb:///:memory:", "duckdb://:memory:", "duckdb:///", "duckdb://"])
+def test_duckdb_url_memory_forms_open_in_memory_database(url):
+    adapter = DuckDBAdapter.from_url(url)
+    try:
+        assert adapter.execute("SELECT current_database()").fetchone() == ("memory",)
+    finally:
+        adapter.close()
+
+
 def test_duckdb_memory_variations():
     """Test various :memory: URI formats."""
     from sidemantic import SemanticLayer

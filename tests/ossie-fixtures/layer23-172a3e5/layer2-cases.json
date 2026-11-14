@@ -1,0 +1,1031 @@
+[
+  {
+    "id": "grand_total_distinct_physical_rows",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(revenue), AGG(order_count), AGG(avg_amount), AGG(unique_customers) FROM commerce.orders",
+    "expected": [
+      [
+        280,
+        9,
+        35,
+        5
+      ]
+    ]
+  },
+  {
+    "id": "where_group_having_order",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT customer_id, AGG(revenue) AS revenue, AGG(order_count) AS n FROM commerce.orders WHERE amount >= 20 GROUP BY customer_id HAVING AGG(revenue) >= 40 ORDER BY AGG(revenue) DESC",
+    "expected": [
+      [
+        5,
+        70,
+        1
+      ],
+      [
+        null,
+        60,
+        1
+      ],
+      [
+        999,
+        50,
+        1
+      ],
+      [
+        3,
+        40,
+        1
+      ]
+    ],
+    "ordered": true
+  },
+  {
+    "id": "scalar_and_raw_aggregates",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT customer_id, AGG(revenue)/NULLIF(AGG(order_count),0), SUM(amount), COUNT(*) FROM commerce.orders GROUP BY customer_id",
+    "reference_sql": "SELECT customer_id,SUM(amount)/NULLIF(COUNT(*),0),SUM(amount),COUNT(*) FROM raw_orders GROUP BY customer_id"
+  },
+  {
+    "id": "group_by_all",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT status, AGG(revenue) FROM commerce.orders GROUP BY ALL",
+    "reference_sql": "SELECT status,SUM(amount) FROM raw_orders GROUP BY status"
+  },
+  {
+    "id": "group_expression",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT COALESCE(status,'missing'), AGG(revenue) FROM commerce.orders GROUP BY COALESCE(status,'missing')",
+    "reference_sql": "SELECT COALESCE(status,'missing'),SUM(amount) FROM raw_orders GROUP BY COALESCE(status,'missing')"
+  },
+  {
+    "id": "having_unselected_measure",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT status, AGG(revenue) AS total FROM commerce.orders GROUP BY status HAVING AGG(order_count)>2 ORDER BY AGG(order_count)",
+    "expected": [
+      [
+        "paid",
+        210
+      ]
+    ]
+  },
+  {
+    "id": "inner_many_to_many_no_duplication",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT o.customer_id, AGG(o.revenue), AGG(o.order_count), AGG(t.total_cost), AGG(t.ticket_count), COUNT(*) AS joined_rows, SUM(o.amount) AS ordinary_sum FROM commerce.orders o JOIN commerce.tickets t ON o.customer_id=t.customer_id GROUP BY o.customer_id",
+    "expected": [
+      [
+        1,
+        30,
+        4,
+        10,
+        2,
+        8,
+        60
+      ],
+      [
+        3,
+        40,
+        1,
+        5,
+        1,
+        1,
+        40
+      ],
+      [
+        5,
+        70,
+        1,
+        null,
+        1,
+        1,
+        70
+      ]
+    ]
+  },
+  {
+    "id": "left_join_keeps_unmatched",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT o.customer_id, AGG(o.revenue), AGG(t.ticket_count), AGG(t.total_cost) FROM commerce.orders o LEFT JOIN commerce.tickets t ON o.customer_id=t.customer_id GROUP BY o.customer_id",
+    "expected": [
+      [
+        1,
+        30,
+        2,
+        10
+      ],
+      [
+        2,
+        30,
+        0,
+        null
+      ],
+      [
+        3,
+        40,
+        1,
+        5
+      ],
+      [
+        999,
+        50,
+        0,
+        null
+      ],
+      [
+        null,
+        60,
+        0,
+        null
+      ],
+      [
+        5,
+        70,
+        1,
+        null
+      ]
+    ]
+  },
+  {
+    "id": "right_join_keeps_unmatched",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT t.customer_id, AGG(o.order_count), AGG(o.revenue), AGG(t.total_cost) FROM commerce.orders o RIGHT JOIN commerce.tickets t ON o.customer_id=t.customer_id GROUP BY t.customer_id",
+    "expected": [
+      [
+        1,
+        4,
+        30,
+        10
+      ],
+      [
+        3,
+        1,
+        40,
+        5
+      ],
+      [
+        4,
+        0,
+        null,
+        11
+      ],
+      [
+        null,
+        0,
+        null,
+        13
+      ],
+      [
+        5,
+        1,
+        70,
+        null
+      ]
+    ]
+  },
+  {
+    "id": "full_join_null_rows_are_distinct_sources",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT COALESCE(o.customer_id,t.customer_id) AS customer, AGG(o.order_count),AGG(o.revenue),AGG(t.ticket_count),AGG(t.total_cost) FROM commerce.orders o FULL JOIN commerce.tickets t ON o.customer_id=t.customer_id GROUP BY COALESCE(o.customer_id,t.customer_id)",
+    "expected": [
+      [
+        1,
+        4,
+        30,
+        2,
+        10
+      ],
+      [
+        2,
+        1,
+        30,
+        0,
+        null
+      ],
+      [
+        3,
+        1,
+        40,
+        1,
+        5
+      ],
+      [
+        4,
+        0,
+        null,
+        1,
+        11
+      ],
+      [
+        5,
+        1,
+        70,
+        1,
+        null
+      ],
+      [
+        999,
+        1,
+        50,
+        0,
+        null
+      ],
+      [
+        null,
+        1,
+        60,
+        1,
+        13
+      ]
+    ]
+  },
+  {
+    "id": "null_safe_join",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT o.customer_id, AGG(o.revenue),AGG(t.total_cost) FROM commerce.orders o JOIN commerce.tickets t ON o.customer_id IS NOT DISTINCT FROM t.customer_id GROUP BY o.customer_id",
+    "expected": [
+      [
+        1,
+        30,
+        10
+      ],
+      [
+        3,
+        40,
+        5
+      ],
+      [
+        5,
+        70,
+        null
+      ],
+      [
+        null,
+        60,
+        13
+      ]
+    ]
+  },
+  {
+    "id": "cross_join_independent_measures",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(o.revenue),AGG(t.total_cost),COUNT(*) FROM commerce.orders o CROSS JOIN commerce.tickets t",
+    "expected": [
+      [
+        280,
+        39,
+        54
+      ]
+    ]
+  },
+  {
+    "id": "non_equi_boolean_join",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(o.revenue),AGG(t.total_cost) FROM commerce.orders o JOIN commerce.tickets t ON o.amount>t.cost AND t.customer_id=1",
+    "expected": [
+      [
+        280,
+        10
+      ]
+    ]
+  },
+  {
+    "id": "self_join_independent_lineage",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(a.order_count), AGG(b.order_count), AGG(a.revenue), AGG(b.revenue) FROM commerce.orders a JOIN commerce.orders b ON a.customer_id=b.customer_id WHERE a.amount=10",
+    "expected": [
+      [
+        3,
+        4,
+        30,
+        30
+      ]
+    ]
+  },
+  {
+    "id": "duplicate_join_branches",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(o.revenue),AGG(t.total_cost),AGG(v.visit_count) FROM commerce.orders o JOIN commerce.tickets t ON o.customer_id=t.customer_id JOIN commerce.visits v ON o.customer_id=v.customer_id",
+    "expected": [
+      [
+        70,
+        null,
+        1
+      ]
+    ]
+  },
+  {
+    "id": "group_from_other_relation",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT c.region,AGG(o.revenue),AGG(t.total_cost) FROM commerce.customers c LEFT JOIN commerce.orders o ON c.id=o.customer_id LEFT JOIN commerce.tickets t ON c.id=t.customer_id GROUP BY c.region",
+    "expected": [
+      [
+        "EAST",
+        60,
+        10
+      ],
+      [
+        "WEST",
+        40,
+        5
+      ],
+      [
+        "NORTH",
+        null,
+        11
+      ],
+      [
+        "SOUTH",
+        null,
+        null
+      ],
+      [
+        null,
+        70,
+        null
+      ]
+    ]
+  },
+  {
+    "id": "field_domain_no_selected_measure_rows",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT c.region,AGG(o.revenue) FROM commerce.customers c LEFT JOIN commerce.orders o ON c.id=o.customer_id GROUP BY c.region",
+    "expected": [
+      [
+        "EAST",
+        60
+      ],
+      [
+        "WEST",
+        40
+      ],
+      [
+        "NORTH",
+        null
+      ],
+      [
+        "SOUTH",
+        null
+      ],
+      [
+        null,
+        70
+      ]
+    ]
+  },
+  {
+    "id": "empty_global_aggregate",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(revenue),AGG(order_count),SUM(amount),COUNT(*) FROM commerce.orders WHERE FALSE",
+    "expected": [
+      [
+        null,
+        0,
+        null,
+        0
+      ]
+    ]
+  },
+  {
+    "id": "empty_grouped_aggregate",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT status,AGG(revenue) FROM commerce.orders WHERE FALSE GROUP BY status",
+    "expected": []
+  },
+  {
+    "id": "projection_rename_cte",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "WITH p AS (SELECT customer_id AS c, revenue AS r, order_count AS n FROM commerce.orders WHERE amount>=20) SELECT c,AGG(r),AGG(n) FROM p GROUP BY c",
+    "expected": [
+      [
+        2,
+        30,
+        1
+      ],
+      [
+        3,
+        40,
+        1
+      ],
+      [
+        999,
+        50,
+        1
+      ],
+      [
+        null,
+        60,
+        1
+      ],
+      [
+        5,
+        70,
+        1
+      ]
+    ]
+  },
+  {
+    "id": "star_passthrough_nested",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT customer_id,AGG(revenue) FROM (SELECT * FROM (SELECT * FROM commerce.orders WHERE status='paid') a) b GROUP BY customer_id",
+    "expected": [
+      [
+        1,
+        20
+      ],
+      [
+        2,
+        30
+      ],
+      [
+        3,
+        40
+      ],
+      [
+        999,
+        50
+      ],
+      [
+        5,
+        70
+      ]
+    ]
+  },
+  {
+    "id": "projection_hides_aggregate_input",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(r) FROM (SELECT revenue AS r FROM commerce.orders WHERE amount=10) q",
+    "expected": [
+      [
+        30
+      ]
+    ]
+  },
+  {
+    "id": "cte_join_keeps_prior_filter",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "WITH paid AS (SELECT customer_id,revenue FROM commerce.orders WHERE status='paid') SELECT AGG(p.revenue),AGG(t.total_cost) FROM paid p JOIN commerce.tickets t ON p.customer_id=t.customer_id",
+    "expected": [
+      [
+        130,
+        15
+      ]
+    ]
+  },
+  {
+    "id": "scalar_subquery_filter",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(revenue) FROM commerce.orders WHERE amount > (SELECT AGG(cost_average) FROM commerce.tickets)",
+    "expected": [
+      [
+        280
+      ]
+    ]
+  },
+  {
+    "id": "correlated_scalar_subquery",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT c.id,(SELECT AGG(o.revenue) FROM commerce.orders o WHERE o.customer_id=c.id) AS revenue FROM commerce.customers c",
+    "expected": [
+      [
+        1,
+        30
+      ],
+      [
+        2,
+        30
+      ],
+      [
+        3,
+        40
+      ],
+      [
+        4,
+        null
+      ],
+      [
+        5,
+        70
+      ],
+      [
+        6,
+        null
+      ]
+    ]
+  },
+  {
+    "id": "two_stage_aggregation",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AVG(r) FROM (SELECT customer_id,AGG(revenue) AS r FROM commerce.orders GROUP BY customer_id) q",
+    "expected": [
+      [
+        46.666666666666664
+      ]
+    ]
+  },
+  {
+    "id": "top_n_self_join_closure",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT o.status,AGG(o.revenue) FROM commerce.orders o JOIN (SELECT customer_id,AGG(revenue) AS r FROM commerce.orders GROUP BY customer_id ORDER BY r DESC LIMIT 2) topn ON o.customer_id IS NOT DISTINCT FROM topn.customer_id GROUP BY o.status",
+    "expected": [
+      [
+        "paid",
+        70
+      ],
+      [
+        "open",
+        60
+      ]
+    ]
+  },
+  {
+    "id": "union_after_evaluation",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(revenue) FROM commerce.orders WHERE status='paid' UNION ALL SELECT AGG(revenue) FROM commerce.orders WHERE status='open'",
+    "expected": [
+      [
+        210
+      ],
+      [
+        70
+      ]
+    ]
+  },
+  {
+    "id": "distinct_after_evaluation",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT DISTINCT r FROM (SELECT status,AGG(revenue) AS r FROM commerce.orders GROUP BY status) q",
+    "expected": [
+      [
+        210
+      ],
+      [
+        70
+      ]
+    ]
+  },
+  {
+    "id": "set_after_projection_drops_measures",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT customer_id FROM commerce.orders UNION SELECT customer_id FROM commerce.tickets",
+    "expected": [
+      [
+        1
+      ],
+      [
+        2
+      ],
+      [
+        3
+      ],
+      [
+        4
+      ],
+      [
+        5
+      ],
+      [
+        999
+      ],
+      [
+        null
+      ]
+    ]
+  },
+  {
+    "id": "rollup",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT status,customer_id,GROUPING(status),GROUPING(customer_id),AGG(revenue) FROM commerce.orders GROUP BY ROLLUP(status,customer_id)",
+    "reference_sql": "SELECT status,customer_id,GROUPING(status),GROUPING(customer_id),SUM(amount) FROM raw_orders GROUP BY ROLLUP(status,customer_id)"
+  },
+  {
+    "id": "cube",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT status,customer_id,GROUPING(status),GROUPING(customer_id),AGG(order_count) FROM commerce.orders GROUP BY CUBE(status,customer_id)",
+    "reference_sql": "SELECT status,customer_id,GROUPING(status),GROUPING(customer_id),COUNT(*) FROM raw_orders GROUP BY CUBE(status,customer_id)"
+  },
+  {
+    "id": "grouping_sets",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT status,customer_id,GROUPING_ID(status,customer_id),AGG(revenue) FROM commerce.orders GROUP BY GROUPING SETS ((status),(customer_id),())",
+    "reference_sql": "SELECT status,customer_id,GROUPING_ID(status,customer_id),SUM(amount) FROM raw_orders GROUP BY GROUPING SETS ((status),(customer_id),())"
+  },
+  {
+    "id": "measure_definition_base",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT status,AGG(m) FROM (SELECT status,TO_MEASURE(SUM(amount)) AS m FROM commerce.orders) q GROUP BY status",
+    "expected": [
+      [
+        "paid",
+        210
+      ],
+      [
+        "open",
+        70
+      ]
+    ]
+  },
+  {
+    "id": "measure_definition_provisional_syntax",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(m) FROM (SELECT SUM(amount) TO MEASURE AS m FROM commerce.orders) q",
+    "expected": [
+      [
+        280
+      ]
+    ]
+  },
+  {
+    "id": "derived_measure_definition",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT status,AGG(mean) FROM (SELECT status, TO_MEASURE(AGG(revenue)/NULLIF(AGG(order_count),0)) AS mean FROM commerce.orders) q GROUP BY status",
+    "expected": [
+      [
+        "paid",
+        30
+      ],
+      [
+        "open",
+        35
+      ]
+    ]
+  },
+  {
+    "id": "definition_join_grain",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(m),AGG(original) FROM (SELECT TO_MEASURE(SUM(o.amount)) AS m,o.revenue AS original FROM commerce.orders o JOIN commerce.tickets t ON o.customer_id=t.customer_id) q",
+    "expected": [
+      [
+        170,
+        140
+      ]
+    ]
+  },
+  {
+    "id": "derived_multirelation",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(ratio) FROM (SELECT TO_MEASURE(AGG(o.revenue)/NULLIF(AGG(t.total_cost),0)) AS ratio FROM commerce.orders o JOIN commerce.tickets t ON o.customer_id=t.customer_id) q",
+    "expected": [
+      [
+        9.333333333333334
+      ]
+    ]
+  },
+  {
+    "id": "measure_definition_field_not_projected",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT AGG(m) FROM (SELECT TO_MEASURE(COUNT(*)) AS m FROM commerce.orders WHERE status='paid') q",
+    "expected": [
+      [
+        7
+      ]
+    ]
+  },
+  {
+    "id": "agg_inside_scalar_expression",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT COALESCE(AGG(revenue),0)*2+AGG(order_count) FROM commerce.orders",
+    "expected": [
+      [
+        569
+      ]
+    ]
+  },
+  {
+    "id": "ordinary_sql_source_with_measure_join",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT x.flag,AGG(o.revenue) FROM commerce.orders o JOIN (VALUES (1),(1),(2)) x(flag) ON TRUE GROUP BY x.flag",
+    "expected": [
+      [
+        1,
+        280
+      ],
+      [
+        2,
+        280
+      ]
+    ]
+  },
+  {
+    "id": "calculated_field_measure",
+    "rule": "L2 \u00a7\u00a77\u20138",
+    "query": "SELECT status,AGG(doubled_total) FROM commerce.orders GROUP BY status",
+    "expected": [
+      [
+        "paid",
+        420
+      ],
+      [
+        "open",
+        140
+      ]
+    ]
+  },
+  {
+    "id": "order_limit_offset_after_evaluation",
+    "rule": "L2 \u00a78 ordinary post-aggregate relational clauses",
+    "query": "SELECT customer_id,AGG(revenue) AS total FROM commerce.orders GROUP BY customer_id ORDER BY total DESC LIMIT 2 OFFSET 1",
+    "expected": [
+      [
+        null,
+        60
+      ],
+      [
+        999,
+        50
+      ]
+    ],
+    "ordered": true
+  },
+  {
+    "id": "full_join_using_merged_key",
+    "rule": "L2 \u00a78 ordinary SQL USING merged fields",
+    "query": "SELECT customer_id, AGG(o.order_count),AGG(o.revenue),AGG(t.ticket_count),AGG(t.total_cost) FROM commerce.orders o FULL JOIN commerce.tickets t USING(customer_id) GROUP BY customer_id",
+    "expected": [
+      [
+        1,
+        4,
+        30,
+        2,
+        10
+      ],
+      [
+        2,
+        1,
+        30,
+        0,
+        null
+      ],
+      [
+        3,
+        1,
+        40,
+        1,
+        5
+      ],
+      [
+        4,
+        0,
+        null,
+        1,
+        11
+      ],
+      [
+        5,
+        1,
+        70,
+        1,
+        null
+      ],
+      [
+        999,
+        1,
+        50,
+        0,
+        null
+      ],
+      [
+        null,
+        1,
+        60,
+        1,
+        13
+      ]
+    ]
+  },
+  {
+    "id": "right_join_using_merged_key",
+    "rule": "L2 \u00a78 ordinary SQL USING merged fields",
+    "query": "SELECT customer_id,AGG(o.order_count),AGG(o.revenue),AGG(t.total_cost) FROM commerce.orders o RIGHT JOIN commerce.tickets t USING(customer_id) GROUP BY customer_id",
+    "expected": [
+      [
+        1,
+        4,
+        30,
+        10
+      ],
+      [
+        3,
+        1,
+        40,
+        5
+      ],
+      [
+        4,
+        0,
+        null,
+        11
+      ],
+      [
+        null,
+        0,
+        null,
+        13
+      ],
+      [
+        5,
+        1,
+        70,
+        null
+      ]
+    ]
+  },
+  {
+    "id": "full_using_star_projection_retains_measures",
+    "rule": "L2 \u00a7\u00a78\u201310 USING merged field through star",
+    "query": "WITH j AS (SELECT * FROM (SELECT customer_id,revenue FROM commerce.orders) o FULL JOIN (SELECT customer_id,total_cost FROM commerce.tickets) t USING(customer_id)) SELECT customer_id,AGG(revenue),AGG(total_cost) FROM j GROUP BY customer_id",
+    "expected": [
+      [
+        1,
+        30,
+        10
+      ],
+      [
+        2,
+        30,
+        null
+      ],
+      [
+        3,
+        40,
+        5
+      ],
+      [
+        4,
+        null,
+        11
+      ],
+      [
+        5,
+        70,
+        null
+      ],
+      [
+        999,
+        50,
+        null
+      ],
+      [
+        null,
+        60,
+        13
+      ]
+    ]
+  },
+  {
+    "id": "agg_filter_preserves_other_measure_population",
+    "rule": "L2 \u00a76 ordinary aggregate FILTER",
+    "query": "SELECT AGG(revenue) FILTER(WHERE status='paid'),AGG(order_count) FROM commerce.orders",
+    "expected": [
+      [
+        210,
+        9
+      ]
+    ]
+  },
+  {
+    "id": "agg_filter_joined_identity_subset",
+    "rule": "L2 \u00a7\u00a76\u20138 aggregate FILTER then identity membership",
+    "query": "SELECT AGG(o.revenue) FILTER(WHERE t.cost>5), AGG(o.order_count), AGG(t.ticket_count) FILTER(WHERE o.status='paid'),COUNT(*) FROM commerce.orders o JOIN commerce.tickets t ON o.customer_id=t.customer_id",
+    "expected": [
+      [
+        30,
+        6,
+        4,
+        10
+      ]
+    ]
+  },
+  {
+    "id": "agg_filter_empty_population",
+    "rule": "L2 \u00a78 empty aggregate-filter population",
+    "query": "SELECT AGG(revenue) FILTER(WHERE FALSE),AGG(order_count) FILTER(WHERE FALSE),AGG(order_count) FROM commerce.orders",
+    "expected": [
+      [
+        null,
+        0,
+        9
+      ]
+    ]
+  },
+  {
+    "id": "base_measure_on_physical_relation_then_fanout",
+    "rule": "L2 \u00a75 query-defined base measure on ordinary SQL relation",
+    "query": "SELECT AGG(m) FROM (SELECT TO_MEASURE(SUM(amount)) AS m FROM raw_orders) q CROSS JOIN (VALUES (1),(2)) x(n)",
+    "expected": [
+      [
+        280
+      ]
+    ]
+  },
+  {
+    "id": "ordinary_scalar_aggregate_window",
+    "rule": "L2 ordinary scalar SQL retained independently of measure window deferral",
+    "query": "SELECT amount,SUM(amount) OVER(ORDER BY amount) AS running FROM commerce.orders",
+    "reference_sql": "SELECT amount,SUM(amount) OVER(ORDER BY amount) AS running FROM raw_orders"
+  },
+  {
+    "id": "recursive_scalar_cte_with_measure_join",
+    "query": "WITH RECURSIVE nums(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM nums WHERE n<3) SELECT n,AGG(o.revenue) FROM nums CROSS JOIN commerce.orders o GROUP BY n ORDER BY n",
+    "expected": [
+      [
+        1,
+        280
+      ],
+      [
+        2,
+        280
+      ],
+      [
+        3,
+        280
+      ]
+    ],
+    "ordered": true,
+    "rule": "L2 \u00a7\u00a75\u201310 relational closure and ordinary SQL aggregate modifiers"
+  },
+  {
+    "id": "recursive_scalar_cte_semantic_seed",
+    "query": "WITH RECURSIVE nums(n) AS (SELECT DISTINCT customer_id FROM commerce.orders WHERE customer_id=1 UNION ALL SELECT n+1 FROM nums WHERE n<3) SELECT SUM(n) FROM nums",
+    "expected": [
+      [
+        6
+      ]
+    ],
+    "rule": "L2 \u00a7\u00a75\u201310 relational closure and ordinary SQL aggregate modifiers"
+  },
+  {
+    "id": "set_result_order_limit",
+    "query": "SELECT AGG(revenue) AS total FROM commerce.orders WHERE status='open' UNION ALL SELECT AGG(revenue) AS total FROM commerce.orders WHERE status='paid' ORDER BY total DESC LIMIT 1",
+    "expected": [
+      [
+        210
+      ]
+    ],
+    "ordered": true,
+    "rule": "L2 \u00a7\u00a75\u201310 relational closure and ordinary SQL aggregate modifiers"
+  },
+  {
+    "id": "set_result_order_limit_offset",
+    "query": "SELECT AGG(revenue) AS total FROM commerce.orders WHERE status='paid' UNION ALL SELECT AGG(revenue) AS total FROM commerce.orders WHERE status='open' ORDER BY total DESC LIMIT 1 OFFSET 1",
+    "expected": [
+      [
+        70
+      ]
+    ],
+    "ordered": true,
+    "rule": "L2 \u00a7\u00a75\u201310 relational closure and ordinary SQL aggregate modifiers"
+  },
+  {
+    "id": "derived_measure_outer_filter",
+    "query": "SELECT AGG(mean) FILTER(WHERE status='paid'), AGG(mean) FILTER(WHERE status='open'), AGG(mean) FROM (SELECT status,TO_MEASURE(AGG(revenue)/NULLIF(AGG(order_count),0)) AS mean FROM commerce.orders) q",
+    "expected": [
+      [
+        30,
+        35,
+        31.11111111111111
+      ]
+    ],
+    "rule": "L2 \u00a7\u00a75\u201310 relational closure and ordinary SQL aggregate modifiers"
+  },
+  {
+    "id": "derived_multirelation_outer_filter",
+    "query": "SELECT AGG(ratio) FILTER(WHERE status='paid'),AGG(ratio) FILTER(WHERE status='open'),AGG(ratio) FROM (SELECT o.status,TO_MEASURE(AGG(o.revenue)/NULLIF(AGG(t.total_cost),0)) AS ratio FROM commerce.orders o JOIN commerce.tickets t ON o.customer_id=t.customer_id) q",
+    "expected": [
+      [
+        8.666666666666666,
+        1,
+        9.333333333333334
+      ]
+    ],
+    "rule": "L2 \u00a7\u00a75\u201310 relational closure and ordinary SQL aggregate modifiers"
+  },
+  {
+    "id": "order_only_measure_aggregate_context",
+    "query": "SELECT 'total' AS label FROM commerce.orders ORDER BY AGG(revenue)",
+    "expected": [
+      [
+        "total"
+      ]
+    ],
+    "rule": "L2 \u00a76 ordinary aggregate behavior in ORDER BY determines aggregation"
+  },
+  {
+    "id": "order_only_raw_aggregate_context",
+    "query": "SELECT 'total' AS label FROM commerce.orders ORDER BY SUM(amount)",
+    "reference_sql": "SELECT 'total' AS label FROM raw_orders ORDER BY SUM(amount)",
+    "rule": "L2 \u00a76 ordinary aggregate behavior in ORDER BY determines aggregation"
+  },
+  {
+    "id": "exists_correlated_predicate",
+    "rule": "L2 ordinary SQL correlated predicate subquery closure",
+    "query": "SELECT AGG(o.revenue),AGG(o.order_count) FROM commerce.orders o WHERE EXISTS (SELECT 1 FROM commerce.tickets t WHERE t.customer_id=o.customer_id)",
+    "reference_sql": "SELECT SUM(o.amount),COUNT(*) FROM raw_orders o WHERE EXISTS (SELECT 1 FROM raw_tickets t WHERE t.customer_id=o.customer_id)"
+  },
+  {
+    "id": "not_exists_correlated_predicate",
+    "rule": "L2 ordinary SQL correlated predicate subquery closure",
+    "query": "SELECT AGG(o.revenue),AGG(o.order_count) FROM commerce.orders o WHERE NOT EXISTS (SELECT 1 FROM commerce.tickets t WHERE t.customer_id=o.customer_id)",
+    "reference_sql": "SELECT SUM(o.amount),COUNT(*) FROM raw_orders o WHERE NOT EXISTS (SELECT 1 FROM raw_tickets t WHERE t.customer_id=o.customer_id)"
+  }
+]

@@ -138,10 +138,8 @@ class TestServerConnectionAdapterIntegration:
         adapter_calls = []
 
         class MockResult:
-            def fetch_record_batch(self):
-                import pyarrow as pa
-
-                return pa.RecordBatchReader.from_batches(pa.schema([("word", pa.string())]), [])
+            def fetchall(self):
+                return [("main", "source_table", "id", "INTEGER")]
 
         class MockAdapter:
             dialect = "duckdb"
@@ -170,13 +168,21 @@ class TestServerConnectionAdapterIntegration:
             layer=MockLayer(),
         )
 
-        conn.send_reader = lambda reader, callback: callback(True)
+        rows = []
+        conn.send_reader = lambda reader, callback: rows.extend(reader.read_all().to_pylist())
 
         # Test pg_get_keywords system query
         conn._handle_query("SELECT * FROM pg_get_keywords()", lambda x: None)
 
-        # Should have called adapter.execute with duckdb_keywords
-        assert any("duckdb_keywords" in sql for sql in adapter_calls)
+        # The server answers from its own catalog; the client's SQL never reaches the adapter.
+        assert any(row["word"] == "select" for row in rows)
+        assert not any("pg_get_keywords" in sql for sql in adapter_calls)
+
+        # Source tables shown in the catalog are discovered through the adapter.
+        rows.clear()
+        conn._handle_query("SELECT table_schema, table_name FROM information_schema.tables", lambda x: None)
+        assert rows == [{"table_schema": "main", "table_name": "source_table"}]
+        assert any("information_schema.columns" in sql for sql in adapter_calls)
 
     def test_connection_handler_uses_adapter_for_pg_namespace(self):
         """Test that pg_namespace queries use layer.adapter.execute."""
@@ -188,10 +194,8 @@ class TestServerConnectionAdapterIntegration:
         adapter_calls = []
 
         class MockResult:
-            def fetch_record_batch(self):
-                import pyarrow as pa
-
-                return pa.RecordBatchReader.from_batches(pa.schema([("nspname", pa.string())]), [])
+            def fetchall(self):
+                return [("analytics", "source_table", "id", "INTEGER")]
 
         class MockAdapter:
             dialect = "duckdb"
@@ -220,13 +224,15 @@ class TestServerConnectionAdapterIntegration:
             layer=MockLayer(),
         )
 
-        conn.send_reader = lambda reader, callback: callback(True)
+        rows = []
+        conn.send_reader = lambda reader, callback: rows.extend(reader.read_all().to_pylist())
 
         # Test pg_catalog.pg_namespace query
-        conn._handle_query("SELECT * FROM pg_catalog.pg_namespace", lambda x: None)
+        conn._handle_query("SELECT nspname FROM pg_catalog.pg_namespace ORDER BY 1", lambda x: None)
 
-        # Should have called adapter.execute with duckdb_schemas
-        assert any("duckdb_schemas" in sql for sql in adapter_calls)
+        # Schemas come from the source tables the adapter reported plus the semantic schema.
+        assert [row["nspname"] for row in rows] == ["analytics", "main", "semantic_layer"]
+        assert any("information_schema.columns" in sql for sql in adapter_calls)
 
 
 class TestServerCatalogAdapterIntegration:

@@ -37,6 +37,40 @@ def test_dimension_native_defaults_remain_unchanged():
     assert dimension.declared_is_time is None
 
 
+@pytest.mark.parametrize("datatype", ["Date", "Time", "DateTime", "DateTimeTz"])
+def test_ossie_temporal_fields_validate_without_inventing_grain(datatype):
+    import json
+
+    from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+    from sidemantic.validation import validate_model
+
+    document = {
+        "version": "0.2.0.dev0",
+        "name": "events",
+        "datasets": [
+            {
+                "name": "events",
+                "source": "events",
+                "fields": [{"name": "recorded_at", "datatype": datatype, "expression": {"sql": "recorded_at"}}],
+            }
+        ],
+    }
+    parsed = parse_ossie_document(json.dumps(document).encode(), options=OssieParseOptions(validate_schema=True))
+    lowered = lower_ossie_document(parsed, target_dialect="duckdb")
+    assert lowered.valid, lowered.diagnostics
+    model = lowered.catalog.resolve_scope().graph.models["events"]
+    assert model.dimensions[0].type == "time"
+    assert model.dimensions[0].granularity is None
+    assert validate_model(model) == []
+
+
+def test_native_temporal_fields_still_require_grain():
+    from sidemantic.validation import validate_model
+
+    model = Model(name="events", table="events", dimensions=[Dimension(name="recorded_at", type="time")])
+    assert any("granularity" in error for error in validate_model(model))
+
+
 def test_metric_preserves_logical_result_type():
     metric = Metric(name="revenue", agg="sum", sql="amount", logical_data_type="Decimal")
 

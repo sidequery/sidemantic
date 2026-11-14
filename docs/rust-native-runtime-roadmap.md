@@ -927,7 +927,7 @@ sidemantic-rs query \
   --models ./models \
   --metric orders.total_revenue \
   --dimension orders.status \
-  --connection duckdb://data.db
+  --db data.db
 ```
 
 Also support direct ADBC:

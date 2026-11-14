@@ -165,12 +165,31 @@ fn prepare_with_dialects(
     // may belong to several models and must be checked together, not per child.
     let required: Vec<_> = population.models.iter().cloned().collect();
     let query_models = required.iter().cloned().collect();
-    for (index, from) in required.iter().enumerate() {
-        for to in required.iter().skip(index + 1) {
-            let path = graph.find_join_path_with_context(from, to, Some(&query_models))?;
-            for step in path.steps {
-                population.models.insert(step.from_model);
-                population.models.insert(step.to_model);
+    // Latest Ossie stitches independent metric populations; connectivity is
+    // checked by its directed wide-table planner, not this legacy join gate.
+    // Preserve the existing complete-path policy/visibility checks whenever
+    // any control is active, including policies on an intermediate or otherwise
+    // unselected model.
+    let independent_ossie_populations = !enforce_visibility
+        && policies
+            .values()
+            .all(|policy| policy.security.is_none() && policy.invariant_filters.is_empty())
+        && graph.models().next().is_some()
+        && graph.models().all(|model| {
+            model
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata["ossie_schema_revision"].as_str())
+                == Some(crate::adapters::ossie::LATEST_SCHEMA_REVISION)
+        });
+    if !independent_ossie_populations {
+        for (index, from) in required.iter().enumerate() {
+            for to in required.iter().skip(index + 1) {
+                let path = graph.find_join_path_with_context(from, to, Some(&query_models))?;
+                for step in path.steps {
+                    population.models.insert(step.from_model);
+                    population.models.insert(step.to_model);
+                }
             }
         }
     }
@@ -515,7 +534,28 @@ fn check_visibility(
             }
         }
     }
-    if !query.skip_default_time_dimensions {
+    // A query that names its own grain receives a default time dimension only
+    // for metrics needing a time axis. Stay conservative: once any selected
+    // metric needs one, check every metric model's default.
+    let grain_is_explicit = query.explicit_projection || !query.dimensions.is_empty();
+    let selects_time_axis_metric = || {
+        query.metrics.iter().any(|reference| {
+            if let Some(metric) = graph.get_metric(reference) {
+                return metric.requires_time_axis();
+            }
+            let (owners, name): (Vec<&str>, &str) = match reference.split_once('.') {
+                Some((model, name)) => (vec![model], name),
+                None => (candidates.iter().map(String::as_str).collect(), reference),
+            };
+            owners.into_iter().any(|model| {
+                graph
+                    .get_model(model)
+                    .and_then(|model| model.get_metric(name))
+                    .is_some_and(|metric| metric.requires_time_axis())
+            })
+        })
+    };
+    if !query.skip_default_time_dimensions && (!grain_is_explicit || selects_time_axis_metric()) {
         for model in metric_models {
             if let Some(default_time) = graph
                 .get_model(model)
@@ -1100,5 +1140,55 @@ mod tests {
             DialectType::DuckDB
         )
         .is_ok());
+    }
+    #[test]
+    fn independent_ossie_populations_keep_native_and_active_control_gates() {
+        for latest in [false, true] {
+            let mut graph = SemanticGraph::new();
+            for name in ["orders", "returns", "unselected"] {
+                let mut model = Model::new(name, "id")
+                    .with_table(name)
+                    .with_metric(Metric::sum("total", "amount"));
+                if latest {
+                    model.metadata = Some(json!({
+                        "ossie_schema_revision": crate::adapters::ossie::LATEST_SCHEMA_REVISION
+                    }));
+                }
+                graph.add_model(model).unwrap();
+            }
+            let query = SemanticQuery::new()
+                .with_metrics(vec!["orders.total".into(), "returns.total".into()]);
+            let no_policies = HashMap::new();
+            assert_eq!(
+                prepare(
+                    &graph,
+                    &no_policies,
+                    &query,
+                    None,
+                    false,
+                    DialectType::DuckDB
+                )
+                .is_ok(),
+                latest
+            );
+            assert!(prepare(
+                &graph,
+                &no_policies,
+                &query,
+                None,
+                true,
+                DialectType::DuckDB
+            )
+            .is_err());
+            for control in [
+                json!({"name": "unselected", "security": {}}),
+                json!({"name": "unselected", "invariant_filters": ["id > 0"]}),
+            ] {
+                let policies = decode(&[control]).unwrap();
+                assert!(
+                    prepare(&graph, &policies, &query, None, false, DialectType::DuckDB).is_err()
+                );
+            }
+        }
     }
 }

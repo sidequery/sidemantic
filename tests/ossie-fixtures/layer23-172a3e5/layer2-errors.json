@@ -1,0 +1,86 @@
+[
+  {
+    "id": "scalar_measure",
+    "query": "SELECT revenue+1 FROM commerce.orders"
+  },
+  {
+    "id": "predicate_measure",
+    "query": "SELECT id FROM commerce.orders WHERE revenue>1"
+  },
+  {
+    "id": "join_measure",
+    "query": "SELECT a.id FROM commerce.orders a JOIN commerce.orders b ON a.revenue=b.revenue"
+  },
+  {
+    "id": "group_measure",
+    "query": "SELECT COUNT(*) FROM commerce.orders GROUP BY revenue"
+  },
+  {
+    "id": "bare_aggregated_measure",
+    "query": "SELECT status,revenue FROM commerce.orders GROUP BY status"
+  },
+  {
+    "id": "bare_group_by_all",
+    "query": "SELECT status,revenue FROM commerce.orders GROUP BY ALL"
+  },
+  {
+    "id": "aggregate_in_where",
+    "query": "SELECT id FROM commerce.orders WHERE AGG(revenue)>1"
+  },
+  {
+    "id": "aggregate_in_group",
+    "query": "SELECT COUNT(*) FROM commerce.orders GROUP BY AGG(revenue)"
+  },
+  {
+    "id": "agg_field_argument",
+    "query": "SELECT AGG(amount) FROM commerce.orders"
+  },
+  {
+    "id": "agg_scalar_measure_argument",
+    "query": "SELECT AGG(revenue+1) FROM commerce.orders"
+  },
+  {
+    "id": "agg_distinct_argument",
+    "query": "SELECT AGG(DISTINCT revenue) FROM commerce.orders"
+  },
+  {
+    "id": "scalar_function_measure",
+    "query": "SELECT COALESCE(revenue,0) FROM commerce.orders"
+  },
+  {
+    "id": "ordinary_aggregate_measure",
+    "query": "SELECT SUM(revenue) FROM commerce.orders"
+  },
+  {
+    "id": "distinct_unevaluated",
+    "query": "SELECT DISTINCT revenue FROM commerce.orders"
+  },
+  {
+    "id": "union_unevaluated",
+    "query": "SELECT revenue FROM commerce.orders UNION ALL SELECT revenue FROM commerce.orders"
+  },
+  {
+    "id": "intersect_unevaluated",
+    "query": "SELECT revenue FROM commerce.orders INTERSECT SELECT revenue FROM commerce.orders"
+  },
+  {
+    "id": "except_unevaluated",
+    "query": "SELECT revenue FROM commerce.orders EXCEPT SELECT revenue FROM commerce.orders"
+  },
+  {
+    "id": "nested_aggregate",
+    "query": "SELECT SUM(AGG(revenue)) FROM commerce.orders"
+  },
+  {
+    "id": "nonaggregate_definition",
+    "query": "SELECT TO_MEASURE(amount) AS m FROM commerce.orders"
+  },
+  {
+    "id": "unknown_namespace",
+    "query": "SELECT AGG(revenue) FROM nonexistent.orders"
+  },
+  {
+    "id": "top_level_unevaluated",
+    "query": "SELECT revenue FROM commerce.orders"
+  }
+]

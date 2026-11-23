@@ -6,11 +6,11 @@ Enforcement (query-path integration) is a separate work item and is not tested h
 
 import pytest
 
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.model import Model
-from sidemantic.core.security import SecurityPolicy, render_row_filter
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import SecurityError
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.model import Model
+from sqlctx.core.security import SecurityPolicy, render_row_filter
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import SecurityError
 
 
 def test_security_policy_defaults():
@@ -70,7 +70,7 @@ def test_security_policy_yaml_round_trip(tmp_path):
         )
     )
 
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
     export_path = tmp_path / "with_security.yml"
     adapter.export(graph, export_path)
 
@@ -96,7 +96,7 @@ def test_security_policy_yaml_round_trip_default_access(tmp_path):
         )
     )
 
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
     export_path = tmp_path / "default_access.yml"
     adapter.export(graph, export_path)
 

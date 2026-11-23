@@ -18,7 +18,7 @@ result = subprocess.run(
     ["git", "log", "--since", since_date, "--format=%cd", "--date=iso"],
     capture_output=True,
     text=True,
-    cwd="/Users/nico/Code/sidemantic",
+    cwd="/Users/nico/Code/sqlctx",
 )
 
 # Parse timestamps and group by hour

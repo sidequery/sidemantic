@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic"]
+# dependencies = ["sqlctx @ git+https://github.com/sidequery/sqlctx"]
 # ///
-"""Superset Demo: Export sidemantic models to Superset with DuckDB.
+"""Superset Demo: Export sqlctx models to Superset with DuckDB.
 
 This demo:
-1. Loads a sidemantic YAML definition
+1. Loads a sqlctx YAML definition
 2. Exports to Superset dataset YAML format
 3. Starts Superset via docker-compose with DuckDB
 4. Creates a DuckDB database with sample data from parquet
@@ -15,7 +15,7 @@ Prerequisites:
 - Docker installed and running
 
 Usage:
-    git clone https://github.com/sidequery/sidemantic && cd sidemantic
+    git clone https://github.com/sidequery/sqlctx && cd sqlctx
     uv run examples/superset_demo/run_demo.py
 """
 
@@ -53,26 +53,26 @@ def wait_for_superset(max_wait: int = 300) -> bool:
 
 def main():
     demo_dir = Path(__file__).parent
-    sidemantic_yaml = demo_dir / "sidemantic.yaml"
+    sqlctx_yaml = demo_dir / "sqlctx.yaml"
     superset_datasets_dir = demo_dir / "superset_datasets"
 
     print("=" * 60)
-    print("  Sidemantic to Superset Demo")
+    print("  sqlctx to Superset Demo")
     print("=" * 60)
 
-    # Step 1: Load sidemantic YAML
-    print("\n[1/7] Loading sidemantic.yaml...")
-    from sidemantic.adapters.sidemantic import SidemanticAdapter
+    # Step 1: Load sqlctx YAML
+    print("\n[1/7] Loading sqlctx.yaml...")
+    from sqlctx.adapters.sqlctx import SqlctxAdapter
 
-    adapter = SidemanticAdapter()
-    graph = adapter.parse(sidemantic_yaml)
+    adapter = SqlctxAdapter()
+    graph = adapter.parse(sqlctx_yaml)
     print(f"      Loaded {len(graph.models)} model(s)")
     for model_name, model in graph.models.items():
         print(f"      - {model_name}: {len(model.dimensions)} dimensions, {len(model.metrics)} metrics")
 
     # Step 2: Export to Superset
     print("\n[2/7] Exporting to Superset dataset format...")
-    from sidemantic.adapters.superset import SupersetAdapter
+    from sqlctx.adapters.superset import SupersetAdapter
 
     # Clean previous output
     if superset_datasets_dir.exists():
@@ -227,7 +227,7 @@ else:
     print(f"Failed to create dataset: {ds_resp.text}")
     exit(1)
 
-# Define metrics from sidemantic model
+# Define metrics from sqlctx model
 metrics = [
     {"metric_name": "ad_spend", "verbose_name": "Ad Spend ($)", "expression": "SUM(media_spend_usd)/1000"},
     {"metric_name": "bids", "verbose_name": "Bids", "expression": "SUM(bid_cnt)"},

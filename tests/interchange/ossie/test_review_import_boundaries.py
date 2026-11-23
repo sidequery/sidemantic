@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from sidemantic.interchange.ossie import (
+from sqlctx.interchange.ossie import (
     LATEST_OSSIE_SCHEMA_COMMIT,
     OssieParseOptions,
     lower_ossie_document,

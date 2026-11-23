@@ -23,7 +23,7 @@ import {
 } from "./dashboardState";
 
 const document: DashboardDocument = {
-  schema: "sidemantic.dashboard.v1",
+  schema: "sqlctx.dashboard.v1",
   title: "Revenue",
   tabs: [
     {

@@ -3,7 +3,7 @@ import os
 import pytest
 from typer.testing import CliRunner
 
-from sidemantic.cli import app
+from sqlctx.cli import app
 
 runner = CliRunner()
 
@@ -40,7 +40,7 @@ models:
     emulator_host = os.getenv("BIGQUERY_EMULATOR_HOST", "localhost:9050")
     os.environ["BIGQUERY_EMULATOR_HOST"] = emulator_host
 
-    config_file = tmp_path / "sidemantic.yaml"
+    config_file = tmp_path / "sqlctx.yaml"
     config_file.write_text(
         f"""
 models_dir: ./models

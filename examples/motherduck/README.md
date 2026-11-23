@@ -1,6 +1,6 @@
 # MotherDuck Example
 
-This example demonstrates using Sidemantic with MotherDuck, a cloud-based DuckDB service.
+This example demonstrates using sqlctx with MotherDuck, a cloud-based DuckDB service.
 
 ## Features
 
@@ -38,9 +38,9 @@ Sign up at [motherduck.com](https://motherduck.com) to get a token.
 
 ## Configuration
 
-The semantic layer is defined in `sidemantic.yaml`:
+The semantic layer is defined in `sqlctx.yaml`:
 
-- **Connection**: MotherDuck (`md:sidemantic_demo`)
+- **Connection**: MotherDuck (`md:sqlctx_demo`)
 - **Models**: orders, customers
 - **Pre-aggregations**: daily_status, monthly_summary
 - **Metrics**: revenue, order_count, avg_order_value
@@ -68,7 +68,7 @@ The example includes queries demonstrating:
 ## Database Structure
 
 ```
-sidemantic_demo/
+sqlctx_demo/
 ├── analytics/
 │   ├── orders (10,000 rows)
 │   └── customers (20 rows)

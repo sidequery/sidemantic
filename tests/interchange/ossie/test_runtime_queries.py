@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+from sqlctx import SemanticLayer
+from sqlctx.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
 
 
 def field(name, expression=None):

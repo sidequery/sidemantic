@@ -3,7 +3,7 @@
 import pytest
 from typer.testing import CliRunner
 
-from sidemantic.cli import app
+from sqlctx.cli import app
 
 runner = CliRunner()
 
@@ -14,7 +14,7 @@ def test_preagg_recommend_with_queries_file(tmp_path):
     queries_file.write_text(
         """
         SELECT revenue FROM orders
-        -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
+        -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
         """
         * 15  # 15 queries to exceed default min_count of 10
     )
@@ -37,7 +37,7 @@ def test_preagg_recommend_no_recommendations(tmp_path):
     queries_file.write_text(
         """
         SELECT revenue FROM orders
-        -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status;
+        -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status;
         """  # Only 1 query, below min_count of 10
     )
 
@@ -79,7 +79,7 @@ models:
     queries_file.write_text(
         """
         SELECT revenue FROM orders
-        -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
+        -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
         """
         * 15
     )
@@ -129,7 +129,7 @@ models:
     queries_file.write_text(
         """
         SELECT revenue FROM orders
-        -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
+        -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status granularities=day;
         """
         * 15
     )
@@ -154,7 +154,7 @@ def test_preagg_recommend_with_thresholds(tmp_path):
     queries_file.write_text(
         """
         SELECT revenue FROM orders
-        -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status;
+        -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status;
         """
         * 5  # 5 queries
     )
@@ -198,12 +198,12 @@ models:
     queries_file.write_text(
         """
         SELECT revenue FROM orders
-        -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status;
+        -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status;
         """
         * 20
         + """
         SELECT count FROM orders
-        -- sidemantic: models=orders metrics=orders.count dimensions=orders.region;
+        -- sqlctx: models=orders metrics=orders.count dimensions=orders.region;
         """
         * 15
     )

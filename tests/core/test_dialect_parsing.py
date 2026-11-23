@@ -1,6 +1,6 @@
-"""Tests for Sidemantic SQL dialect parsing."""
+"""Tests for sqlctx SQL dialect parsing."""
 
-from sidemantic.core.dialect import (
+from sqlctx.core.dialect import (
     is_definition,
     is_dimension_def,
     is_metric_def,

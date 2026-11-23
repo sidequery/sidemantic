@@ -2,10 +2,10 @@
 
 import pytest
 
-from sidemantic.core.dependency_analyzer import extract_column_references
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.core.dependency_analyzer import extract_column_references
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 @pytest.mark.parametrize(

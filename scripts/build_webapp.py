@@ -2,8 +2,8 @@
 """Build the embeddable web UI and copy the bundle into both backends.
 
 Produces `webapp/dist/` (via bun) and syncs it to the committed embed locations:
-  - `sidemantic/ui/static/`   (served by the Python `api-serve --ui`)
-  - `sidemantic-rs/ui/`       (baked into the Rust `sidemantic-server` via rust-embed)
+  - `sqlctx/ui/static/`   (served by the Python `api-serve --ui`)
+  - `sqlctx-rs/ui/`       (baked into the Rust `sqlctx-server` via rust-embed)
 
 These copies are committed (mirroring the committed `widget.js`), so neither backend's build
 needs a JS toolchain. Re-run this whenever the webapp changes and commit the result.
@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WEBAPP = ROOT / "webapp"
 DIST = WEBAPP / "dist"
-TARGETS = [ROOT / "sidemantic" / "ui" / "static", ROOT / "sidemantic-rs" / "ui"]
+TARGETS = [ROOT / "sqlctx" / "ui" / "static", ROOT / "sqlctx-rs" / "ui"]
 
 
 def directories_match(source: Path, target: Path) -> bool:

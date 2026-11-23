@@ -1,21 +1,21 @@
-# Sidemantic versus official Apache Ossie converters
+# sqlctx versus official Apache Ossie converters
 
-Research date: November 6, 2026. Six parallel investigations covered all **23 projects** in the official converter registry, Sidemantic's complete format registry, source implementations, fixtures, selected unit suites, and targeted conversion probes. This is a conversion comparison, not a query-engine benchmark or vendor certification.
+Research date: November 6, 2026. Six parallel investigations covered all **23 projects** in the official converter registry, sqlctx's complete format registry, source implementations, fixtures, selected unit suites, and targeted conversion probes. This is a conversion comparison, not a query-engine benchmark or vendor certification.
 
-**Recommendation:** retain Sidemantic's broad source-format importers and CLI, prioritize semantic fidelity in existing exports, and selectively integrate official converters for missing formats. Replacing our adapters wholesale would lose useful input directions and source-language support. Treating every official converter as a reliable drop-in would also be incorrect: several silently omit newer dataset-scoped metrics.
+**Recommendation:** retain sqlctx's broad source-format importers and CLI, prioritize semantic fidelity in existing exports, and selectively integrate official converters for missing formats. Replacing our adapters wholesale would lose useful input directions and source-language support. Treating every official converter as a reliable drop-in would also be incorrect: several silently omit newer dataset-scoped metrics.
 
 ## Reproducible baseline
 
 | Component | Inspected revision |
 |---|---|
-| Sidemantic | [`a7df3c9eae7c1a9a916ebe317ee378408d7d721b`](https://github.com/sidequery/sidemantic/tree/a7df3c9eae7c1a9a916ebe317ee378408d7d721b) |
+| sqlctx | [`a7df3c9eae7c1a9a916ebe317ee378408d7d721b`](https://github.com/sidequery/sqlctx/tree/a7df3c9eae7c1a9a916ebe317ee378408d7d721b) |
 | Official converters | [`011ea9f9a1e2c941f351e18e071622339ccae881`](https://github.com/apache/ossie-converters/tree/011ea9f9a1e2c941f351e18e071622339ccae881) |
 | Official converters' Ossie submodule | [`01a5488d840deda309aac68cc0b312c195369b8d`](https://github.com/apache/ossie/tree/01a5488d840deda309aac68cc0b312c195369b8d) |
 | Our latest supported Ossie draft pin | [`172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1`](https://github.com/apache/ossie/tree/172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1) |
 
 “Official” here means checked-in implementation in `apache/ossie-converters`, rather than an ecosystem member, issue proposal, or README illustration. The repository was located through current web/GitHub research and checked out with its pinned core submodule. Open issues were used as leads and status context, not as proof of current defects.
 
-Our [registry](../../sidemantic/formats.py) has **20 formats: 20 import-capable, 17 export-capable**, including native Sidemantic and Ossie. This is **18 external format families, 15 with export**. These counts are declarations of entry points, not fidelity scores. Apache's 23 projects also include ontology infrastructure, a catalog service integration, and a deliberately fixture-scoped pipeline; the counts are not directly comparable.
+Our [registry](../../sqlctx/formats.py) has **20 formats: 20 import-capable, 17 export-capable**, including native sqlctx and Ossie. This is **18 external format families, 15 with export**. These counts are declarations of entry points, not fidelity scores. Apache's 23 projects also include ontology infrastructure, a catalog service integration, and a deliberately fixture-scoped pipeline; the counts are not directly comparable.
 
 ## Complete official inventory
 
@@ -72,7 +72,7 @@ These are bounded source/probe findings at the pinned revisions, not assertions 
 | **P1** | Our MetricFlow export loses saved queries, conversion specifications and parts of cumulative/derived semantics; official dbt also drops some metadata. | Keep source-YAML and manifest support as separate declared capabilities; preserve or report unsupported features in each direction. |
 | **P1** | GoodData composite reference mapping loses the target's full key identity locally. | Test ordered source→target column pairs, not just relationship counts. |
 
-The existing CLI already stages output and checks an import-fidelity report. The missing step is complete instrumentation and an **export/conversion report**: several adapters do not emit structured fidelity diagnostics, and valid graph construction says nothing about losses in the destination exporter. See [CLI conversion](../../sidemantic/cli.py), [fidelity reporting](../../sidemantic/fidelity.py), and [generic graph conversion](../../sidemantic/formats.py).
+The existing CLI already stages output and checks an import-fidelity report. The missing step is complete instrumentation and an **export/conversion report**: several adapters do not emit structured fidelity diagnostics, and valid graph construction says nothing about losses in the destination exporter. See [CLI conversion](../../sqlctx/cli.py), [fidelity reporting](../../sqlctx/fidelity.py), and [generic graph conversion](../../sqlctx/formats.py).
 
 ## Ossie interoperability is a separate axis
 
@@ -80,7 +80,7 @@ Our active `osi` alias resolves to the newer `OssieAdapter`; the older `adapters
 
 The official converters pin an older core snapshot despite sharing the `0.2.0.dev0` version string with newer drafts. Our newer parser supports constructs such as `expression.sql` and open dialect labels. **Pin age alone is not a compatibility failure**: our default native synthesis emits `expression.dialects`, and a simple native SUM model passed the official validator and selected exporters.
 
-There is nevertheless a real feature mismatch: **dataset-scoped metrics are omitted by official Cube, dbt, Snowflake and Omni in the probes**, whereas official BigQuery/LookML retains them. Ordinary native Sidemantic model metrics synthesize at the root; imported Ossie dataset metrics retain their scope through metadata and can trigger the mismatch on re-export. This requires a consumer-specific capability check or a proven normalization, not simply a schema-version switch.
+There is nevertheless a real feature mismatch: **dataset-scoped metrics are omitted by official Cube, dbt, Snowflake and Omni in the probes**, whereas official BigQuery/LookML retains them. Ordinary native sqlctx model metrics synthesize at the root; imported Ossie dataset metrics retain their scope through metadata and can trigger the mismatch on re-export. This requires a consumer-specific capability check or a proven normalization, not simply a schema-version switch.
 
 Inbound tests also found narrower incompatibilities: the official Flights example fails our strict model-name identifier check, and quoted source names require an API source-dialect option that our conversion CLI does not expose. Seven of ten official contract fixtures lower cleanly with default DuckDB settings; two more need their matching target dialect, and the quoted-source case works with the explicit API source dialect. The official TPC-DS example lowers cleanly. A separate outbound probe found that a native `numeric` dimension without `logical_data_type` emits no Ossie datatype and can become a string downstream.
 
@@ -91,7 +91,7 @@ Likewise, these operations have different guarantees:
 - **Vendor A → graph/Ossie → vendor B:** additionally depends on both adapters, expression translation, key/predicate representation, and target capabilities.
 - **Native state stored in a vendor extension:** may restore a same-vendor round trip while remaining unusable to other consumers.
 
-Our `SIDEMANTIC` runtime extension preserves otherwise inexpressible semantics and uses an empty portable core placeholder. That is deliberately not useful executable content for official tools that do not understand the extension. Use portable-only synthesis when the destination requires portable core, and report refusal clearly; do not advertise extension restoration as universal interchange.
+Our `SQLCTX` runtime extension preserves otherwise inexpressible semantics and uses an empty portable core placeholder. That is deliberately not useful executable content for official tools that do not understand the extension. Use portable-only synthesis when the destination requires portable core, and report refusal clearly; do not advertise extension restoration as universal interchange.
 
 ## Recommended sequence
 
@@ -113,6 +113,6 @@ Our `SIDEMANTIC` runtime extension preserves otherwise inexpressible semantics a
 
 Each note distinguishes executed tests/probes from source/test inspection. Passing existing unit suites does not contradict the demonstrated gaps: those suites do not assert all cross-format semantics. No production adapter code was changed. No live vendor deployment, full pairwise matrix, or query-equivalence certification was performed.
 
-The disjoint selected Sidemantic adapter suites recorded **1,029 passed, 29 skipped**. Selected official suites recorded **4,610 passed, 60 skipped**; a further focused Cube rerun recorded 43 passed/10 skipped and is excluded from those totals. Skips/exclusions include optional DAX, vendor CLIs, built Cube compiler, packaging and Microsoft TOM integration. Databricks/Polaris Java and the nine ontology/remaining projects were source/test-inspected, not executed; official Hex was also not executed. The notes record exact commands and boundaries. These counts measure checks run, not comparative quality.
+The disjoint selected sqlctx adapter suites recorded **1,029 passed, 29 skipped**. Selected official suites recorded **4,610 passed, 60 skipped**; a further focused Cube rerun recorded 43 passed/10 skipped and is excluded from those totals. Skips/exclusions include optional DAX, vendor CLIs, built Cube compiler, packaging and Microsoft TOM integration. Databricks/Polaris Java and the nine ontology/remaining projects were source/test-inspected, not executed; official Hex was also not executed. The notes record exact commands and boundaries. These counts measure checks run, not comparative quality.
 
 The official interop harness is a useful starting point, but its default mode returns success even when individual conversions fail, and strict mode still permits `LOSSY` outcomes. Its broad structural checks do not prove general SQL equivalence, type preservation or access-policy preservation. See the pinned [interop grading and exit rules](https://github.com/apache/ossie-converters/blob/011ea9f9a1e2c941f351e18e071622339ccae881/interop/README.md#L150). This research did not run the full harness.

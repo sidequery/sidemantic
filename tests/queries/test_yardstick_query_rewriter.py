@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.loaders import load_from_directory
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx import SemanticLayer
+from sqlctx.loaders import load_from_directory
+from sqlctx.sql.query_rewriter import QueryRewriter
 from tests.duckdb_compat import date_bucket
 from tests.utils import fetch_dicts
 

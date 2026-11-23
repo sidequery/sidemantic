@@ -5,7 +5,7 @@ model plus a short-lived token; no Power BI client is included in the package.
 
 Run with::
 
-    SIDEMANTIC_DAX_ENGINE_CONFORMANCE=1 \
+    SQLCTX_DAX_ENGINE_CONFORMANCE=1 \
     POWERBI_WORKSPACE_ID=... POWERBI_DATASET_ID=... POWERBI_ACCESS_TOKEN=... \
     uv run pytest -m integration tests/dax/test_engine_conformance.py -q
 
@@ -25,7 +25,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-dax_ast = pytest.importorskip("sidemantic_dax.ast")
+dax_ast = pytest.importorskip("sqlctx_dax.ast")
 pa = pytest.importorskip("pyarrow")
 ipc = pytest.importorskip("pyarrow.ipc")
 
@@ -190,7 +190,7 @@ def _execute_query(
             "queryTimeout": query_timeout,
             "schemaOnly": True,
             "resultSetRowCountLimit": 1,
-            "applicationContext": json.dumps({"application": "sidemantic-dax-conformance"}),
+            "applicationContext": json.dumps({"application": "sqlctx-dax-conformance"}),
         }
     ).encode("utf-8")
     request = Request(
@@ -227,8 +227,8 @@ def _local_accepts(dax: str) -> bool:
 
 
 def _engine_configuration() -> tuple[str, str, str]:
-    if os.environ.get("SIDEMANTIC_DAX_ENGINE_CONFORMANCE") != "1":
-        pytest.skip("set SIDEMANTIC_DAX_ENGINE_CONFORMANCE=1 to probe Power BI")
+    if os.environ.get("SQLCTX_DAX_ENGINE_CONFORMANCE") != "1":
+        pytest.skip("set SQLCTX_DAX_ENGINE_CONFORMANCE=1 to probe Power BI")
     names = ("POWERBI_WORKSPACE_ID", "POWERBI_DATASET_ID", "POWERBI_ACCESS_TOKEN")
     missing = [name for name in names if not os.environ.get(name)]
     if missing:

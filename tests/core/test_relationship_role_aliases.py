@@ -2,15 +2,15 @@ import duckdb
 import pytest
 import yaml
 
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import SemanticLayer
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
+from sqlctx.sql.generator import SQLGenerator
 
 
 def _flight_graph() -> SemanticGraph:
@@ -75,7 +75,7 @@ def test_two_roles_to_same_target_use_distinct_join_instances():
 def test_role_alias_native_yaml_roundtrip(tmp_path):
     graph = _flight_graph()
     output = tmp_path / "semantic.yml"
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
     adapter.export(graph, output)
 
     payload = yaml.safe_load(output.read_text())

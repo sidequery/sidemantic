@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from sidemantic.adapters.malloy import MalloyAdapter, MalloyModelVisitor
+from sqlctx.adapters.malloy import MalloyAdapter, MalloyModelVisitor
 
 
 def test_expression_transforms_ignore_malloy_syntax_inside_strings():

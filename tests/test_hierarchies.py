@@ -1,6 +1,6 @@
 """Test dimension hierarchies."""
 
-from sidemantic import Dimension, Metric, Model
+from sqlctx import Dimension, Metric, Model
 
 
 def test_dimension_parent_field():
@@ -76,8 +76,8 @@ def test_hierarchy_adapter_roundtrip():
     import tempfile
     from pathlib import Path
 
-    from sidemantic.adapters.sidemantic import SidemanticAdapter
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.adapters.sqlctx import SqlctxAdapter
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     original = Model(
         name="geography",
@@ -95,7 +95,7 @@ def test_hierarchy_adapter_roundtrip():
     graph = SemanticGraph()
     graph.add_model(original)
 
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
         temp_path = Path(f.name)

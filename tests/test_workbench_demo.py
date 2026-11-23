@@ -4,9 +4,9 @@ import importlib.util
 import sys
 from pathlib import Path
 
-from sidemantic import SemanticLayer, load_from_directory
-from sidemantic.sql.query_rewriter import QueryRewriter
-from sidemantic.workbench.examples import EXAMPLE_QUERIES
+from sqlctx import SemanticLayer, load_from_directory
+from sqlctx.sql.query_rewriter import QueryRewriter
+from sqlctx.workbench.examples import EXAMPLE_QUERIES
 
 
 def _load_demo_data_module():

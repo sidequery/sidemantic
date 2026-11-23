@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic[ossie]", "duckdb", "pandas"]
+# dependencies = ["sqlctx[ossie] @ git+https://github.com/sidequery/sqlctx", "duckdb", "pandas"]
 # ///
 """OSI demo with a complex adtech semantic layer.
 
@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import duckdb
 
 if TYPE_CHECKING:
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
 
 def create_demo_data(conn: duckdb.DuckDBPyConnection) -> None:
@@ -221,8 +221,8 @@ def create_demo_data(conn: duckdb.DuckDBPyConnection) -> None:
 
 def load_osi_layer(conn: duckdb.DuckDBPyConnection) -> "SemanticLayer":
     """Load OSI file and build a SemanticLayer."""
-    from sidemantic import Metric, SemanticLayer
-    from sidemantic.adapters.osi import OSIAdapter
+    from sqlctx import Metric, SemanticLayer
+    from sqlctx.adapters.osi import OSIAdapter
 
     model_path = Path(__file__).parent / "adtech_semantic_model.yaml"
     graph = OSIAdapter().parse(model_path)

@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.adapters.ossie import OssieAdapter
-from sidemantic.rust_bridge import rewrite_semantic_input
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.adapters.ossie import OssieAdapter
+from sqlctx.rust_bridge import rewrite_semantic_input
 
 
 def expression(sql):
@@ -18,7 +18,7 @@ def field(name, sql=None):
 
 
 def load_layer(tmp_path, datasets, metrics, relationships=()):
-    pytest.importorskip("sidemantic_rs", reason="Requires the source-built Rust runtime")
+    pytest.importorskip("sqlctx_rs", reason="Requires the source-built Rust runtime")
     source = tmp_path / "aggregates.ossie.json"
     source.write_text(
         json.dumps(
@@ -203,7 +203,7 @@ def test_native_complete_sql_keeps_physical_input_semantics(joined):
 @pytest.mark.parametrize("logical_name", ["amount", "gross"])
 @pytest.mark.parametrize("model_owned", [False, True])
 def test_graph_measures_preserve_input_scope(plan, filtered, logical_name, model_owned):
-    pytest.importorskip("sidemantic_rs")
+    pytest.importorskip("sqlctx_rs")
     layer = SemanticLayer(engine="rust", fallback=False, auto_register=False)
     layer.add_model(
         Model(

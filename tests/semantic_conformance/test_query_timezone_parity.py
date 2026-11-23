@@ -2,14 +2,14 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.core.pre_aggregation import PreAggregation
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.core.pre_aggregation import PreAggregation
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires the real Rust extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(

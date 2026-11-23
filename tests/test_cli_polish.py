@@ -10,7 +10,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from sidemantic.cli_polish import (
+from sqlctx.cli_polish import (
     DEPRECATIONS,
     SuggestionGroup,
     _model_names,
@@ -146,14 +146,14 @@ def test_next_steps_are_concise_and_suppressible() -> None:
     emit_next_step("validate", human_output=True, emit_diagnostic=messages.append)
     emit_next_step("convert", human_output=False, emit_diagnostic=messages.append)
 
-    assert messages == ["Next: inspect the model with 'sidemantic info'."]
+    assert messages == ["Next: inspect the model with 'sqlctx info'."]
 
 
 @pytest.mark.parametrize(
     ("message", "fragment"),
     [
         ("Destination already exists: output.yml", "--force"),
-        ("No models found", "sidemantic validate"),
+        ("No models found", "sqlctx validate"),
         ("Unknown semantic format 'foo'", "help convert"),
     ],
 )
@@ -192,11 +192,11 @@ def test_redirected_long_output_is_written_directly(monkeypatch: pytest.MonkeyPa
     assert stream.getvalue() == "one\ntwo\n"
 
 
-def test_sidemantic_pager_overrides_pager_only_during_page(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sqlctx_pager_overrides_pager_only_during_page(monkeypatch: pytest.MonkeyPatch) -> None:
     selected: list[str | None] = []
     monkeypatch.setenv("TERM", "xterm-256color")
     monkeypatch.setenv("PAGER", "less")
-    monkeypatch.setenv("SIDEMANTIC_PAGER", "most")
+    monkeypatch.setenv("SQLCTX_PAGER", "most")
     monkeypatch.setattr(click, "echo_via_pager", lambda *_args, **_kwargs: selected.append(os.environ.get("PAGER")))
 
     emit_long_output("long", stream=TTYBuffer(), human_output=True, pager_enabled=True)
@@ -216,7 +216,7 @@ def test_format_completion_filters_import_and_export_capabilities() -> None:
     assert source_values[0] == "auto"
     assert "graphene" in source_values
     assert "graphene" not in target_values
-    assert "sidemantic" in target_values
+    assert "sqlctx" in target_values
 
 
 def test_model_completion_reads_names_from_selected_project(tmp_path: Path) -> None:

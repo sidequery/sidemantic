@@ -10,7 +10,7 @@ import pytest
 
 @pytest.fixture
 def rust():
-    return pytest.importorskip("sidemantic_rs")
+    return pytest.importorskip("sqlctx_rs")
 
 
 def source():

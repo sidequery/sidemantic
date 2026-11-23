@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from sidemantic.db.bigquery import BigQueryAdapter, BigQueryResult
+from sqlctx.db.bigquery import BigQueryAdapter, BigQueryResult
 
 
 def _block_import(monkeypatch, module_prefix: str) -> None:
@@ -224,7 +224,7 @@ def test_bigquery_query_history_sql():
 
     class FakeResult:
         def fetchall(self):
-            return [["select 1 -- sidemantic: ok"], [None]]
+            return [["select 1 -- sqlctx: ok"], [None]]
 
     def fake_execute(sql):
         captured["sql"] = sql
@@ -238,10 +238,10 @@ def test_bigquery_query_history_sql():
     assert "LIMIT 9" in captured["sql"]
     assert "error_result IS NULL" in captured["sql"]
     assert "INFORMATION_SCHEMA\\.JOBS_BY_PROJECT" in captured["sql"]
-    assert results == ["select 1 -- sidemantic: ok"]
+    assert results == ["select 1 -- sqlctx: ok"]
 
     adapter.get_query_history(days_back=4, limit=9, instrumented_only=False)
-    assert "query LIKE '%-- sidemantic:%'" not in captured["sql"]
+    assert "query LIKE '%-- sqlctx:%'" not in captured["sql"]
 
 
 def test_bigquery_result_fetchone_fetchall():

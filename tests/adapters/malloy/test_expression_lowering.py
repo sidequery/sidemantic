@@ -3,7 +3,7 @@
 Integration contract for ``MalloyModelVisitor``:
 
 1. Visit ``fieldExpr`` children and construct only nodes exported by
-   ``sidemantic.adapters.malloy_expressions``; never construct a raw-SQL node.
+   ``sqlctx.adapters.malloy_expressions``; never construct a raw-SQL node.
 2. Represent safe casts, filter strings, ranges, raw functions, parameters,
    locality/all/exclude, and records as ``RejectedExpression`` nodes.
 3. Call ``lower_expression`` with the destination dialect's declared capability
@@ -19,7 +19,7 @@ import duckdb
 import pytest
 from sqlglot import exp, parse_one
 
-from sidemantic.adapters.malloy_expressions import (
+from sqlctx.adapters.malloy_expressions import (
     ArrayExpression,
     BinaryExpression,
     CaseBranch,

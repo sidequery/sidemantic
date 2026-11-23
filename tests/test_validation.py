@@ -2,15 +2,15 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship
-from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
-from sidemantic.validation import (
+from sqlctx import Dimension, Metric, Model, Relationship
+from sqlctx.core.pre_aggregation import Index, PreAggregation, RefreshKey
+from sqlctx.validation import (
     MetricValidationError,
     ModelValidationError,
     QueryValidationError,
     validate_model_warnings,
 )
-from sidemantic.validation_runner import validate_directory
+from sqlctx.validation_runner import validate_directory
 
 
 def test_model_without_primary_key_remains_explicitly_keyless(layer):
@@ -317,7 +317,7 @@ def _model_with_preagg(preagg: PreAggregation) -> Model:
     ],
 )
 def test_inert_preagg_type_warns(preagg_type, needle):
-    """Pre-aggregation types Sidemantic does not execute are flagged as warnings."""
+    """Pre-aggregation types sqlctx does not execute are flagged as warnings."""
     model = _model_with_preagg(PreAggregation(name="r", type=preagg_type, measures=["order_count"]))
 
     warnings = validate_model_warnings(model)
@@ -410,7 +410,7 @@ def test_indexes_do_not_warn_now_that_they_materialize():
 
 
 def test_inert_refresh_key_sql_warns():
-    """refresh_key.sql is Cube change-detection; Sidemantic has no scheduler to run it."""
+    """refresh_key.sql is Cube change-detection; sqlctx has no scheduler to run it."""
     model = _model_with_preagg(
         PreAggregation(
             name="r",

@@ -15,14 +15,14 @@ on:
         type: boolean
   push:
     tags:
-      - "sidemantic-rs-v*"
+      - "sqlctx-rs-v*"
       - "rust-runtime-v*"
 
   pull_request:
     paths:
       - ".github/actions/**"
       - ".github/workflows/rust-runtime-release.yml"
-      - "sidemantic-rs/tests/packaged_cli_smoke.py"
+      - "sqlctx-rs/tests/packaged_cli_smoke.py"
 
 permissions:
   contents: read
@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: sidemantic-rs
+        working-directory: sqlctx-rs
 
     steps:
       - uses: actions/checkout@v4
@@ -96,7 +96,7 @@ jobs:
 
     defaults:
       run:
-        working-directory: sidemantic-rs
+        working-directory: sqlctx-rs
 
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +112,7 @@ jobs:
           suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Build CLI
-        run: cargo build --release --locked --bin sidemantic
+        run: cargo build --release --locked --bin sqlctx
 
       - name: Package CLI artifact
         shell: bash
@@ -120,10 +120,10 @@ jobs:
           mkdir -p dist
 
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cp ../target/release/sidemantic.exe "dist/sidemantic-${{ matrix.artifact }}.exe"
+            cp ../target/release/sqlctx.exe "dist/sqlctx-${{ matrix.artifact }}.exe"
           else
-            cp ../target/release/sidemantic "dist/sidemantic-${{ matrix.artifact }}"
-            tar -czf "dist/sidemantic-${{ matrix.artifact }}.tar.gz" -C dist "sidemantic-${{ matrix.artifact }}"
+            cp ../target/release/sqlctx "dist/sqlctx-${{ matrix.artifact }}"
+            tar -czf "dist/sqlctx-${{ matrix.artifact }}.tar.gz" -C dist "sqlctx-${{ matrix.artifact }}"
           fi
 
       - name: Install uv
@@ -137,19 +137,19 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            uv run --no-project tests/packaged_cli_smoke.py dist/sidemantic-${{ matrix.artifact }}.exe
+            uv run --no-project tests/packaged_cli_smoke.py dist/sqlctx-${{ matrix.artifact }}.exe
           else
             mkdir -p dist/smoke
-            tar -xzf dist/sidemantic-${{ matrix.artifact }}.tar.gz -C dist/smoke
-            uv run --no-project tests/packaged_cli_smoke.py dist/smoke/sidemantic-${{ matrix.artifact }}
+            tar -xzf dist/sqlctx-${{ matrix.artifact }}.tar.gz -C dist/smoke
+            uv run --no-project tests/packaged_cli_smoke.py dist/smoke/sqlctx-${{ matrix.artifact }}
             rm -r dist/smoke
           fi
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sidemantic-cli-${{ matrix.artifact }}
-          path: sidemantic-rs/dist/*
+          name: sqlctx-cli-${{ matrix.artifact }}
+          path: sqlctx-rs/dist/*
           if-no-files-found: error
 
       - name: Save completed build caches
@@ -184,8 +184,8 @@ jobs:
           if [ "${{ github.ref_type }}" = "tag" ]; then
             TAG="${{ github.ref_name }}"
           else
-            VERSION=$(grep '^version = ' sidemantic-rs/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-            TAG="sidemantic-rs-v${VERSION}"
+            VERSION=$(grep '^version = ' sqlctx-rs/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+            TAG="sqlctx-rs-v${VERSION}"
           fi
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"

@@ -2,14 +2,14 @@
 
 import pytest
 
-from sidemantic import SemanticLayer
+from sqlctx import SemanticLayer
 
 
 @pytest.mark.parametrize(
     "suffix",
     [
         "\n-- used_preagg=true",
-        "\n-- used_preagg=true\n-- sidemantic: models=orders",
+        "\n-- used_preagg=true\n-- sqlctx: models=orders",
         " -- source comment",
         "\r\n-- source comment",
     ],

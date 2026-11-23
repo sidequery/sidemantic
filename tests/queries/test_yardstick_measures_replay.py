@@ -14,8 +14,8 @@ import pytest
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.yardstick import YardstickAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.yardstick import YardstickAdapter
 from tests.duckdb_compat import date_bucket
 from tests.utils import fetch_rows
 
@@ -104,15 +104,15 @@ def _yardstick_upstream_checkout() -> Path:
             pytest.fail(f"YARDSTICK_UPSTREAM_PATH does not exist: {path}")
         return path
 
-    if not _env_flag("SIDEMANTIC_YARDSTICK_UPSTREAM_TESTS"):
-        pytest.skip("Set SIDEMANTIC_YARDSTICK_UPSTREAM_TESTS=1 to fetch and replay live upstream Yardstick tests")
+    if not _env_flag("SQLCTX_YARDSTICK_UPSTREAM_TESTS"):
+        pytest.skip("Set SQLCTX_YARDSTICK_UPSTREAM_TESTS=1 to fetch and replay live upstream Yardstick tests")
 
     repo_url = os.environ.get("YARDSTICK_UPSTREAM_REPO", "https://github.com/sidequery/yardstick.git")
     ref = os.environ.get("YARDSTICK_UPSTREAM_REF", "main")
     checkout = Path(
         os.environ.get(
             "YARDSTICK_UPSTREAM_CACHE_DIR",
-            str(Path(tempfile.gettempdir()) / "sidemantic-yardstick-upstream"),
+            str(Path(tempfile.gettempdir()) / "sqlctx-yardstick-upstream"),
         )
     ).expanduser()
 

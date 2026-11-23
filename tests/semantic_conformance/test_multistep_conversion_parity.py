@@ -4,14 +4,14 @@ from datetime import date
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
-from sidemantic.core.semantic_layer import SecurityError
+from sqlctx import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
+from sqlctx.core.semantic_layer import SecurityError
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Funnel acceptance requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Funnel acceptance requires the real Rust extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(

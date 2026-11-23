@@ -1,4 +1,4 @@
-"""End-to-end integration tests for the sidemantic semantic layer.
+"""End-to-end integration tests for the sqlctx semantic layer.
 
 These tests exercise the full workflow from model definition through query execution,
 including YAML/BSL loading, SQL compilation, and DuckDB execution with real data.
@@ -10,7 +10,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from sidemantic import (
+from sqlctx import (
     Dimension,
     Metric,
     Model,
@@ -19,10 +19,10 @@ from sidemantic import (
     Segment,
     SemanticLayer,
 )
-from sidemantic.adapters.bsl import BSLAdapter
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.preagg_matcher import PreAggregationMatcher
-from sidemantic.validation import QueryValidationError
+from sqlctx.adapters.bsl import BSLAdapter
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.preagg_matcher import PreAggregationMatcher
+from sqlctx.validation import QueryValidationError
 from tests.utils import fetch_dicts, fetch_rows
 
 # =============================================================================
@@ -1102,7 +1102,7 @@ class TestErrorScenarios:
         layer.conn = sample_db
         layer.add_model(orders_model)
 
-        from sidemantic.validation import MetricValidationError
+        from sqlctx.validation import MetricValidationError
 
         # Direct self-reference should be caught
         self_ref_metric = Metric(
@@ -1340,12 +1340,12 @@ class TestSQLRewriterIntegration:
 
 
 # =============================================================================
-# Test 10: Sidemantic native adapter integration
+# Test 10: sqlctx native adapter integration
 # =============================================================================
 
 
-class TestSidemanticAdapterIntegration:
-    """Test the native Sidemantic YAML adapter."""
+class TestSqlctxAdapterIntegration:
+    """Test the native sqlctx YAML adapter."""
 
     def test_full_yaml_with_metrics(self, sample_db):
         """Test loading full YAML with models and graph-level metrics."""
@@ -1375,7 +1375,7 @@ metrics:
             yaml_path = f.name
 
         try:
-            adapter = SidemanticAdapter()
+            adapter = SqlctxAdapter()
             graph = adapter.parse(yaml_path)
 
             layer = SemanticLayer()

@@ -1,7 +1,7 @@
 """Independent relational-query results for the pinned Ossie Layer 2 contract.
 
 Expected rows are hand-derived or conventional SQL over physical fixture tables.
-Neither Sidemantic engine is used as an oracle for another engine.
+Neither sqlctx engine is used as an oracle for another engine.
 """
 
 from __future__ import annotations
@@ -14,9 +14,9 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx import SemanticLayer
+from sqlctx.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+from sqlctx.sql.query_rewriter import QueryRewriter
 from tests.rust_layer_adapter import _rust_request
 
 ROOT = Path(__file__).resolve().parents[2] / "ossie-fixtures/layer23-172a3e5"

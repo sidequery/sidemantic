@@ -14,9 +14,9 @@ on:
       - ".github/actions/**"
       - ".github/workflows/yardstick-upstream.yml"
       - "docs/compatibility/yardstick.md"
-      - "sidemantic/adapters/yardstick.py"
-      - "sidemantic/sql/aggregation_detection.py"
-      - "sidemantic/sql/query_rewriter.py"
+      - "sqlctx/adapters/yardstick.py"
+      - "sqlctx/sql/aggregation_detection.py"
+      - "sqlctx/sql/query_rewriter.py"
       - "tests/queries/test_yardstick_measures_replay.py"
       - "tests/queries/test_yardstick_query_rewriter.py"
 
@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      SIDEMANTIC_YARDSTICK_UPSTREAM_TESTS: "1"
+      SQLCTX_YARDSTICK_UPSTREAM_TESTS: "1"
       YARDSTICK_UPSTREAM_REF: ${{ github.event.inputs.yardstick_ref || 'main' }}
 
     steps:

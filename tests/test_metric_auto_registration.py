@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.core.registry import get_current_layer
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.core.registry import get_current_layer
 
 
 def test_explicit_registration_mode_has_no_ambient_side_effect():

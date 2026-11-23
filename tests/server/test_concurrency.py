@@ -24,8 +24,8 @@ pytest.importorskip("httpx")
 import duckdb
 from fastapi.testclient import TestClient
 
-from sidemantic import SemanticLayer, load_from_directory
-from sidemantic.api_server import create_app
+from sqlctx import SemanticLayer, load_from_directory
+from sqlctx.api_server import create_app
 
 # A single-threaded DuckDB scan over this range takes ~150-250ms, which is slow
 # enough to expose serialization but small enough to stay well under any test

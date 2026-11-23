@@ -25,10 +25,10 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from sidemantic import SemanticLayer
-from sidemantic.cli import app
-from sidemantic.fidelity import ConversionFidelityError, ExportReport, capture_export_report
-from sidemantic.formats import (
+from sqlctx import SemanticLayer
+from sqlctx.cli import app
+from sqlctx.fidelity import ConversionFidelityError, ExportReport, capture_export_report
+from sqlctx.formats import (
     OutputKind,
     export_semantic_graph,
     get_semantic_format,
@@ -156,7 +156,7 @@ EXPECTED_LOSSES: dict[str, tuple[Loss, ...]] = {
             "ossie.synthesis.runtime_extension_required",
             "runtime extension",
             None,
-            "Ossie core has no time granularity or implicit keys; they ride in a Sidemantic extension",
+            "Ossie core has no time granularity or implicit keys; they ride in a sqlctx extension",
             blocks=False,
         ),
     ),
@@ -165,7 +165,7 @@ EXPECTED_LOSSES: dict[str, tuple[Loss, ...]] = {
         Loss("relationship", "orders.customers", JOIN, "a metrics view reads one table and has no joins", blocks=False),
         *no_keys("a metrics view has no key"),
     ),
-    "sidemantic": (),
+    "sqlctx": (),
     "snowflake": (),
     "superset": (
         *no_graph_metrics("graph_metrics", "a Superset metric belongs to one dataset"),
@@ -268,7 +268,7 @@ def native_graph(directory: Path, dropped: frozenset[str]):
     directory.mkdir(parents=True, exist_ok=True)
     source = directory / "native.yml"
     source.write_text(yaml.safe_dump(native_model(dropped), sort_keys=False))
-    return source, load_semantic_source(source, source_format="sidemantic")
+    return source, load_semantic_source(source, source_format="sqlctx")
 
 
 def reference_queries(dropped: frozenset[str]) -> list[tuple[list[str], list[str]]]:
@@ -405,7 +405,7 @@ def test_export_round_trips_or_reports_each_loss(target, database, tmp_path):
             "convert",
             str(source),
             "--from",
-            "sidemantic",
+            "sqlctx",
             "--to",
             target,
             "--output",
@@ -456,7 +456,7 @@ def test_official_bridge_refuses_the_reference_model_by_name(target, tmp_path):
         assert construct in refusal
 
     destination = output_path(tmp_path / "cli", target)
-    arguments = ["convert", str(source), "--from", "sidemantic", "--to", target, "--output", str(destination)]
+    arguments = ["convert", str(source), "--from", "sqlctx", "--to", target, "--output", str(destination)]
     result = RUNNER.invoke(app, [*arguments, "--force", *CLI_OPTIONS[target]])
     assert result.exit_code == 1, result.output
     assert "Export readiness: blocked" in result.stderr
@@ -467,7 +467,7 @@ def test_official_bridge_refuses_the_reference_model_by_name(target, tmp_path):
 @pytest.mark.parametrize("target", ["holistics", "omni"])
 def test_directory_auto_detection_keeps_exported_relationships(target, database, tmp_path):
     """Joins live in a project-level file that format auto-detection must attach."""
-    from sidemantic.loaders import load_from_directory
+    from sqlctx.loaders import load_from_directory
 
     lost = frozenset(loss.construct for loss in EXPECTED_LOSSES[target] if loss.construct)
     _, graph = native_graph(tmp_path / "native", lost)

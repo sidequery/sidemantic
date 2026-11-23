@@ -6,9 +6,9 @@
   },
   "plugins": [
     {
-      "name": "sidemantic",
-      "source": "./plugins/sidemantic",
-      "description": "Build, validate, and query Sidemantic semantic models, and generate analytics webapps from them. Ships the modeler and webapp-builder skills."
+      "name": "sqlctx",
+      "source": "./plugins/sqlctx",
+      "description": "Build, validate, and query sqlctx semantic models, and generate analytics webapps from them. Ships the modeler and webapp-builder skills."
     }
   ]
 }

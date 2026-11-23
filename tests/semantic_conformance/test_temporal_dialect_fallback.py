@@ -4,13 +4,13 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sqlctx import Dimension, Metric, Model, SemanticLayer
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Temporal dialect parity requires the Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Temporal dialect parity requires the Rust extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.adapter.execute("""
         create table sales(id integer, day date, amount integer);

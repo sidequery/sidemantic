@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ExplorerProvider, useExplorer } from "../state/ExplorerContext";
-import type { SidemanticBackend } from "../data/backend";
+import type { SqlctxBackend } from "../data/backend";
 import type { Catalog, QueryResult } from "../data/types";
 import { ExplorerView } from "./ExplorerView";
 import { MetricTimeSeries } from "../components/MetricTimeSeries";
@@ -29,7 +29,7 @@ test("sparse comparison keeps its window alignment and stays off after a pending
       if (previous) return new Promise<QueryResult>((resolve) => { resolvePrevious = resolve; });
       return { columns: ["revenue"], rows: [{ revenue: 30 }], rowCount: 1, sql: "total" };
     },
-  } as SidemanticBackend;
+  } as SqlctxBackend;
   let tree!: ReactTestRenderer;
   try {
     await act(async () => {

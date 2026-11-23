@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.cube import CubeAdapter
+from sqlctx.adapters.cube import CubeAdapter
 
 FIXTURES_DIR = Path("tests/fixtures/cube")
 
@@ -61,7 +61,7 @@ class TestStripeSaaSMetrics:
         charges = graph.get_model("stripe_charges")
         captured = charges.get_dimension("captured")
         assert captured is not None
-        # Cube boolean maps to sidemantic boolean (round-trips back to Cube boolean)
+        # Cube boolean maps to sqlctx boolean (round-trips back to Cube boolean)
         assert captured.type == "boolean"
 
         paid = charges.get_dimension("paid")
@@ -864,8 +864,8 @@ class TestTesseractFeatures:
         """
         import duckdb
 
-        from sidemantic import SemanticLayer
-        from sidemantic.sql.generator import SQLGenerator
+        from sqlctx import SemanticLayer
+        from sqlctx.sql.generator import SQLGenerator
 
         gen = SQLGenerator(graph)
         con = duckdb.connect()
@@ -879,7 +879,7 @@ class TestTesseractFeatures:
         )
 
         for mref in ("orders.amount_p95", "orders.latest_order_at", "orders.any_completed", "orders.amount_total_agg"):
-            sql = gen.generate(metrics=[mref]).split("-- sidemantic")[0]
+            sql = gen.generate(metrics=[mref]).split("-- sqlctx")[0]
             assert "model AS model" not in sql, mref
             # Must execute against a real table that has no "model" column.
             con.execute(sql).fetchall()
@@ -897,7 +897,7 @@ class TestTesseractFeatures:
         """
         import duckdb
 
-        from sidemantic.sql.generator import SQLGenerator
+        from sqlctx.sql.generator import SQLGenerator
 
         gen = SQLGenerator(graph)
         con = duckdb.connect()
@@ -910,11 +910,11 @@ class TestTesseractFeatures:
 
         # Ungrouped: plain column projected directly.
         for mref in ("orders.last_status", "orders.last_order_time"):
-            sql = gen.generate(metrics=[mref], ungrouped=True).split("-- sidemantic")[0]
+            sql = gen.generate(metrics=[mref], ungrouped=True).split("-- sqlctx")[0]
             con.execute(sql).fetchall()
 
         # Grouped by the same dimension also compiles and executes.
-        sql = gen.generate(metrics=["orders.last_status"], dimensions=["orders.status"]).split("-- sidemantic")[0]
+        sql = gen.generate(metrics=["orders.last_status"], dimensions=["orders.status"]).split("-- sqlctx")[0]
         con.execute(sql).fetchall()
 
     def test_complete_measure_preserves_raw_timestamp(self, graph):
@@ -927,7 +927,7 @@ class TestTesseractFeatures:
         """
         import duckdb
 
-        from sidemantic.sql.generator import SQLGenerator
+        from sqlctx.sql.generator import SQLGenerator
 
         gen = SQLGenerator(graph)
         con = duckdb.connect()
@@ -940,13 +940,13 @@ class TestTesseractFeatures:
         )
 
         # plain-column time measure (ungrouped) keeps the time-of-day
-        sql = gen.generate(metrics=["orders.last_order_time"], ungrouped=True).split("-- sidemantic")[0]
+        sql = gen.generate(metrics=["orders.last_order_time"], ungrouped=True).split("-- sqlctx")[0]
         rows = sorted(con.execute(sql).fetchall())
         assert rows[0][0].hour == 10 and rows[0][0].minute == 30
         assert rows[1][0].hour == 9 and rows[1][0].minute == 15
 
         # aggregate time measure (MAX) returns the full raw timestamp
-        sql = gen.generate(metrics=["orders.latest_order_at"]).split("-- sidemantic")[0]
+        sql = gen.generate(metrics=["orders.latest_order_at"]).split("-- sqlctx")[0]
         (latest,) = con.execute(sql).fetchone()
         assert latest.hour == 9 and latest.minute == 15
 
@@ -959,8 +959,8 @@ class TestTesseractFeatures:
         """
         import duckdb
 
-        from sidemantic.core.metric import Metric
-        from sidemantic.sql.generator import SQLGenerator
+        from sqlctx.core.metric import Metric
+        from sqlctx.sql.generator import SQLGenerator
 
         orders = graph.get_model("orders")
         orders.metrics.append(
@@ -984,7 +984,7 @@ class TestTesseractFeatures:
             "t(id,status,amount,created_at)"
         )
 
-        sql = gen.generate(metrics=["orders.completed_total"]).split("-- sidemantic")[0]
+        sql = gen.generate(metrics=["orders.completed_total"]).split("-- sqlctx")[0]
         (total,) = con.execute(sql).fetchone()
         assert float(total) == 300.0  # 100 + 200, not 350
 
@@ -997,7 +997,7 @@ class TestTesseractFeatures:
         """
         import duckdb
 
-        from sidemantic.sql.generator import SQLGenerator
+        from sqlctx.sql.generator import SQLGenerator
 
         gen = SQLGenerator(graph)
         con = duckdb.connect()
@@ -1008,7 +1008,7 @@ class TestTesseractFeatures:
             "(2,'pending',TIMESTAMP '2024-02-01')) t(id,status,created_at)"
         )
 
-        sql = gen.generate(metrics=["orders.last_status"], dimensions=["orders.id"]).split("-- sidemantic")[0]
+        sql = gen.generate(metrics=["orders.last_status"], dimensions=["orders.id"]).split("-- sqlctx")[0]
         rows = sorted(con.execute(sql).fetchall())
         assert rows == [(1, "completed"), (2, "pending")]
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.hex import HexAdapter
+from sqlctx.adapters.hex import HexAdapter
 
 from ..helpers import (
     assert_dimension_equivalent,
@@ -14,8 +14,8 @@ from ..helpers import (
 )
 
 
-def test_hex_to_sidemantic_to_hex_roundtrip():
-    """Test that Hex -> Sidemantic -> Hex preserves structure."""
+def test_hex_to_sqlctx_to_hex_roundtrip():
+    """Test that Hex -> sqlctx -> Hex preserves structure."""
     # Import from Hex
     hex_adapter = HexAdapter()
     graph1 = hex_adapter.parse("tests/fixtures/hex/orders.yml")

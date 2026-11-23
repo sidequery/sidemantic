@@ -55,12 +55,12 @@ def test_imported_rust_cache_archive_is_removed_without_losing_build_state(tmp_p
 @pytest.mark.parametrize(
     ("package", "changed_file"),
     [
-        ("sidemantic-rs", "src/lib.rs"),
-        ("sidemantic-rs", "build.rs"),
-        ("sidemantic-rs", "../Cargo.lock"),
+        ("sqlctx-rs", "src/lib.rs"),
+        ("sqlctx-rs", "build.rs"),
+        ("sqlctx-rs", "../Cargo.lock"),
         ("crates/dax-pyo3", "src/lib.rs"),
         ("crates/dax-pyo3", "../dax-parser/src/functions.rs"),
-        ("crates/dax-pyo3", "python/sidemantic_dax/__init__.py"),
+        ("crates/dax-pyo3", "python/sqlctx_dax/__init__.py"),
     ],
 )
 def test_native_source_changes_invalidate_uv_wheels(tmp_path, package, changed_file):
@@ -142,7 +142,7 @@ def test_native_source_changes_invalidate_uv_wheels(tmp_path, package, changed_f
     first_builds = (project / "build-count").read_text()
     if package == "crates/dax-pyo3":
         # Import and editable-build outputs must not invalidate their own wheel.
-        generated = project / "python/sidemantic_dax"
+        generated = project / "python/sqlctx_dax"
         (generated / "__pycache__").mkdir(parents=True, exist_ok=True)
         (generated / "__pycache__/__init__.pyc").write_bytes(b"bytecode")
         (generated / "_native.so").write_bytes(b"compiled extension")

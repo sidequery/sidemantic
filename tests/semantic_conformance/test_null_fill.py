@@ -2,13 +2,13 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Null-fill acceptance requires the matching Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Null-fill acceptance requires the matching Rust extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(

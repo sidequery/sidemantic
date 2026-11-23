@@ -1,4 +1,4 @@
-// Canonical public UI surface. Every Sidemantic runtime consumes a build of
+// Canonical public UI surface. Every sqlctx runtime consumes a build of
 // this module; component implementations must not be copied elsewhere.
 export { BarLineCombo } from "./components/BarLineCombo";
 export { ChartTooltip, TooltipRows, useChartTooltip } from "./components/ChartTooltip";

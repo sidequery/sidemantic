@@ -4,10 +4,10 @@ import json
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.rust_bridge import rewrite_semantic_input
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx import Dimension, Metric, Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.rust_bridge import rewrite_semantic_input
+from sqlctx.sql.query_rewriter import QueryRewriter
 
 
 def graph():
@@ -38,7 +38,7 @@ def test_rollup_preference_reaches_native_compiler(monkeypatch, method, sql):
         calls.append(options)
         return "SELECT 42 AS revenue"
 
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", rewrite)
+    monkeypatch.setattr("sqlctx.sql.query_rewriter.rewrite_semantic_input", rewrite)
     rewriter = QueryRewriter(graph(), use_rust_rewriter=True, rust_no_fallback=True, use_preaggregations=True)
     result = getattr(rewriter, method)(sql)
     assert (result if method == "rewrite" else result.rewritten_sql) == "SELECT 42 AS revenue"

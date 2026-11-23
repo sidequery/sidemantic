@@ -1,6 +1,6 @@
 # Malloy compatibility
 
-Sidemantic imports `.malloy` files with the bundled ANTLR grammar and maps the supported subset into native `Model`, `Dimension`, `Metric`, `Relationship`, `Explore`, and `SavedQuery` objects. It can also export semantic models back to Malloy.
+sqlctx imports `.malloy` files with the bundled ANTLR grammar and maps the supported subset into native `Model`, `Dimension`, `Metric`, `Relationship`, `Explore`, and `SavedQuery` objects. It can also export semantic models back to Malloy.
 
 The statuses below describe the Python adapter and query engine:
 
@@ -38,7 +38,7 @@ Lenient import records blocked or unsupported features and omits unsafe partial 
 | `accept:` | **Supported.** The allowlist is enforced during physical schema introspection, before excluded columns can become public dimensions. |
 | `except:` | **Supported.** Exclusions compose with inherited controls. When both `accept` and `except` are present, the effective allowlist is narrowed. |
 | Primary-key exposure | **Supported.** `SchemaExposure.include_primary_key` keeps an explicitly declared physical key available even when schema controls are active. No key is inferred when absent. |
-| `private` / `internal` dimensions, measures, and renames | **Supported with native visibility.** Fields are non-public; metric visibility and Malloy access metadata are retained and exported. Internal and private both enforce a non-public runtime boundary, although Sidemantic cannot reproduce every Malloy-internal visibility nuance. |
+| `private` / `internal` dimensions, measures, and renames | **Supported with native visibility.** Fields are non-public; metric visibility and Malloy access metadata are retained and exported. Internal and private both enforce a non-public runtime boundary, although sqlctx cannot reproduce every Malloy-internal visibility nuance. |
 | Private renamed physical columns | **Supported.** Both the public alias and underlying physical name are excluded from intrinsic public exposure. |
 | Inherited exposure controls | **Supported.** Child `accept`, `except`, and private fields narrow or compose with the parent; flattened export/reparse preserves the effective boundary. |
 | `include { ... }` blocks | **Unsupported/rejected.** Include projection and access modifiers are not applied. The limitation is reported in lenient mode and rejected in strict mode rather than silently broadening or narrowing inherited fields. |
@@ -74,7 +74,7 @@ Dialect-sensitive expressions use the source connection's resolved SQL dialect. 
 | Filtered measures and chained filter refinements | **Supported.** Filters are lowered separately, kept in source order, and conjoined. |
 | Dialect-sensitive aggregate arguments and filters | **Supported with a resolved dialect.** The aggregate root remains a native metric while casts, date truncation, and regex predicates render for the target dialect. |
 | Rejected aggregate descendant | **Rejected atomically.** No partial metric or unsafe raw fallback is produced. |
-| Measure references inside derived SQL | **Partial.** Native derived metric references are supported by the Sidemantic compiler, but Malloy symmetric/ungroup locality semantics are not inferred. |
+| Measure references inside derived SQL | **Partial.** Native derived metric references are supported by the sqlctx compiler, but Malloy symmetric/ungroup locality semantics are not inferred. |
 | `all`, `exclude`, `source.count()` locality/symmetric semantics | **Unsupported.** These require Malloy query semantics not represented by a native metric. |
 
 ## Joins and relationship roles
@@ -162,4 +162,4 @@ The following remain **unsupported** in adapter integration:
 
 ## Differential coverage
 
-The opt-in harness under `tests/malloy_differential/` compares the official Malloy DuckDB runtime with the Python Sidemantic path for manifest entries marked `compatible`. Executable fixtures cover core measures, empty results, a typed arithmetic dimension, conjunctive source filters, exact joins with additional predicates, ordered composite joins with fanout-safe aggregation, and intrinsic physical fields on a source without a declared primary key. Unsupported families remain declarative in the manifest and are reported without claiming runtime equivalence.
+The opt-in harness under `tests/malloy_differential/` compares the official Malloy DuckDB runtime with the Python sqlctx path for manifest entries marked `compatible`. Executable fixtures cover core measures, empty results, a typed arithmetic dimension, conjunctive source filters, exact joins with additional predicates, ordered composite joins with fanout-safe aggregation, and intrinsic physical fields on a source without a declared primary key. Unsupported families remain declarative in the manifest and are reported without claiming runtime equivalence.

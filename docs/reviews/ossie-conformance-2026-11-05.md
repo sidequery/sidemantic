@@ -176,7 +176,7 @@ Reproduce the maintained query corpus with a current source-built Rust extension
   tests/interchange/ossie/test_layer2_conformance.py \
   tests/interchange/ossie/test_layer3_conformance.py
 RUST_MIN_STACK=16777216 CARGO_BUILD_JOBS=2 \
-  cargo test -p sidemantic --lib --test ossie_forward -- --test-threads=2
+  cargo test -p sqlctx --lib --test ossie_forward -- --test-threads=2
 ```
 
 ## Coverage limits

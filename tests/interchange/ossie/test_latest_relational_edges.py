@@ -3,7 +3,7 @@
 import duckdb
 import pytest
 
-from sidemantic.sql.ossie_relational import compile_ossie_view_definition
+from sqlctx.sql.ossie_relational import compile_ossie_view_definition
 from tests.interchange.ossie.test_layer2_conformance import (
     ROUTES,
     assert_rows,
@@ -93,7 +93,7 @@ def test_zero_row_metadata_preserves_measure_columns_and_hides_internal_inputs(r
     ],
 )
 def test_direct_rewriter_rejects_unsupported_security_controls(use_rust, query):
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.sql.query_rewriter import QueryRewriter
 
     graph = next(iter(shared_catalog(model()).scopes.values())).graph
     rewriter = QueryRewriter(graph, enforce_visibility=True, use_rust_rewriter=use_rust, rust_no_fallback=True)
@@ -111,8 +111,8 @@ def test_agg_rejects_scalar_field_from_physical_relation_before_execution(route)
 
 @pytest.mark.parametrize("use_rust", [False, True])
 def test_sql_measure_definitions_need_no_imported_model(use_rust):
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.query_rewriter import QueryRewriter
 
     query = "SELECT AGG(m) FROM (SELECT TO_MEASURE(SUM(amount)) AS m FROM raw_orders) q CROSS JOIN (VALUES(1),(2)) x(n)"
     sql = QueryRewriter(SemanticGraph(), use_rust_rewriter=use_rust, rust_no_fallback=True).rewrite(query)
@@ -123,7 +123,7 @@ def test_sql_measure_definitions_need_no_imported_model(use_rust):
 
 @pytest.mark.parametrize("use_rust", [False, True])
 def test_qualified_physical_relation_does_not_bind_same_named_semantic_model(use_rust):
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.sql.query_rewriter import QueryRewriter
     from tests.interchange.ossie.test_latest_discovery import _layer
 
     layer = _layer("python")

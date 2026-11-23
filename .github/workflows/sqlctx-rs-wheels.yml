@@ -1,0 +1,215 @@
+name: sqlctx-rs Python Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: "Publish wheels and sdist when MATURIN_PYPI_TOKEN is available"
+        required: false
+        default: false
+        type: boolean
+      create_github_release:
+        description: "Create or update a GitHub release with wheel artifacts"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "sqlctx-rs-v*"
+
+  pull_request:
+    paths:
+      - ".github/actions/**"
+      - ".github/workflows/sqlctx-rs-wheels.yml"
+      - "sqlctx-rs/pyproject.toml"
+      - "sqlctx-rs/tests/python_wheel_smoke.py"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-wheels:
+    name: Build wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64
+          - os: macos-15-intel
+            target: x86_64
+          - os: macos-14
+            target: aarch64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust compilation
+        if: github.event_name == 'pull_request'
+        id: rust-cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --manifest-path sqlctx-rs/Cargo.toml --out sqlctx-rs/dist
+          manylinux: auto
+          docker-options: ${{ github.event_name == 'pull_request' && '--env MBX_CACHE_DIR --env MBX_CACHE_EXPORT_GROUP --env MBX_TARGET_VIEWS=0 --env MBX_CACHE_LINKS --env MBX_GC_AUTO' || '' }}
+          before-script-linux: |
+            if [ -x "$GITHUB_WORKSPACE/.ci-cache-bin/cargo" ]; then
+              export PATH="$GITHUB_WORKSPACE/.ci-cache-bin:$PATH"
+            fi
+          target: ${{ matrix.target }}
+
+      - name: Restore ownership of the container compiler cache
+        if: ${{ !cancelled() && runner.os == 'Linux' && github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          if [ -d "$MBX_CACHE_DIR" ]; then
+            sudo chown -R "$(id -u):$(id -g)" "$MBX_CACHE_DIR"
+          fi
+
+      - name: Install uv
+        id: uv
+        uses: ./.github/actions/setup-uv
+        with:
+          enable-cache: ${{ github.event_name == 'pull_request' }}
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
+      - name: Smoke built wheel on its target host
+        shell: bash
+        run: |
+          uv run --no-project --with sqlctx-rs/dist/*.whl sqlctx-rs/tests/python_wheel_smoke.py
+          uv run --no-project --with sqlctx-rs/dist/*.whl sqlctx-rs/tests/python_wheel_python_smoke.py
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlctx-rs-wheel-${{ matrix.os }}-${{ matrix.target }}
+          path: sqlctx-rs/dist/*.whl
+          if-no-files-found: error
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          rust-key: ${{ steps.rust-cache.outputs.key }}
+          uv-key: ${{ steps.uv.outputs.cache-key }}
+
+  build-sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sqlctx-rs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        id: uv
+        uses: ./.github/actions/setup-uv
+        with:
+          enable-cache: ${{ github.event_name == 'pull_request' }}
+          suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Build source distribution
+        run: uvx maturin sdist --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlctx-rs-sdist
+          path: sqlctx-rs/dist/*.tar.gz
+          if-no-files-found: error
+
+      - name: Save completed build caches
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: ./.github/actions/save-build-caches
+        with:
+          uv-key: ${{ steps.uv.outputs.cache-key }}
+
+  release:
+    name: Publish or attach wheel artifacts
+    needs:
+      - build-wheels
+      - build-sdist
+    if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && (inputs.publish_pypi == true || inputs.create_github_release == true)) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true }}
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true }}
+        env:
+          MATURIN_PYPI_TOKEN: ${{ secrets.MATURIN_PYPI_TOKEN }}
+        run: |
+          if [ -z "$MATURIN_PYPI_TOKEN" ]; then
+            echo "Skipping PyPI publish because MATURIN_PYPI_TOKEN is not configured."
+            exit 0
+          fi
+
+          uvx maturin upload dist/*
+
+      - name: Resolve release tag
+        if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.create_github_release == true) }}
+        id: release
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            VERSION=$(grep '^version = ' sqlctx-rs/pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+            TAG="sqlctx-rs-v${VERSION}"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub release
+        if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.create_github_release == true) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --generate-notes
+          fi

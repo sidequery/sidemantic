@@ -2,11 +2,11 @@
 
 import pytest
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import AmbiguousJoinPathError, JoinPath, SemanticGraph
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import AmbiguousJoinPathError, JoinPath, SemanticGraph
 
 
 def _graph_with_models(*models: Model) -> SemanticGraph:
@@ -41,8 +41,8 @@ def test_dimension_native_defaults_remain_unchanged():
 def test_ossie_temporal_fields_validate_without_inventing_grain(datatype):
     import json
 
-    from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
-    from sidemantic.validation import validate_model
+    from sqlctx.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+    from sqlctx.validation import validate_model
 
     document = {
         "version": "0.2.0.dev0",
@@ -65,7 +65,7 @@ def test_ossie_temporal_fields_validate_without_inventing_grain(datatype):
 
 
 def test_native_temporal_fields_still_require_grain():
-    from sidemantic.validation import validate_model
+    from sqlctx.validation import validate_model
 
     model = Model(name="events", table="events", dimensions=[Dimension(name="recorded_at", type="time")])
     assert any("granularity" in error for error in validate_model(model))

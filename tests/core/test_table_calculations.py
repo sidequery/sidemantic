@@ -9,8 +9,8 @@ Tests cover:
 
 import pytest
 
-from sidemantic.core.table_calculation import TableCalculation
-from sidemantic.sql.table_calc_processor import TableCalculationProcessor
+from sqlctx.core.table_calculation import TableCalculation
+from sqlctx.sql.table_calc_processor import TableCalculationProcessor
 
 # =============================================================================
 # TableCalculation Model Tests

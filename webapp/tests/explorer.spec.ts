@@ -55,6 +55,7 @@ test("crossfilter, reset, and metric re-rank change rendered data", async ({ pag
   const params = new URLSearchParams({
     view: "explore",
     model: "customers",
+    range: "all",
     pmetrics: JSON.stringify(["customers.customer_count", "repeat_customer_rate", "cancellation_rate"]),
   });
   await page.goto(`/?${params}`);
@@ -100,7 +101,7 @@ test("crossfilter, reset, and metric re-rank change rendered data", async ({ pag
 });
 
 test("brush-to-zoom on the chart sets a date range and shows the comparison overlay", async ({ page }) => {
-  await page.goto("/?view=explore&model=orders&metric=orders.revenue&grain=month");
+  await page.goto("/?view=explore&model=orders&metric=orders.revenue&grain=month&range=all");
   const chart = page.locator('svg[height="280"]');
   await expect(chart).toBeVisible();
   const box = await chart.boundingBox();
@@ -128,14 +129,15 @@ test("brush-to-zoom on the chart sets a date range and shows the comparison over
   await rangeControl.locator("summary").click();
   await expect(rangeControl.getByRole("button", { name: "Last 28 days" })).toBeVisible();
   await rangeControl.getByRole("button", { name: "Last 28 days" }).click();
-  await expect.poll(() => new URL(page.url()).searchParams.get("from")).not.toBeNull();
+  await expect.poll(() => new URL(page.url()).searchParams.has("range")).toBe(false);
+  await expect(rangeControl.locator("summary")).not.toContainText("All time");
   await rangeControl.locator("summary").click();
   await rangeControl.getByRole("button", { name: "All time" }).click();
-  await expect.poll(() => new URL(page.url()).searchParams.get("from")).toBeNull();
+  await expect.poll(() => new URL(page.url()).searchParams.get("range")).toBe("all");
 });
 
 test("filter editor: open, search, exclude a value, persist to URL, and restore on reload", async ({ page }) => {
-  await page.goto("/?view=explore&model=customers&metric=customers.customer_count");
+  await page.goto("/?view=explore&model=customers&metric=customers.customer_count&range=all");
 
   const kpi = page.locator('button[data-metric="customers.customer_count"]');
   await expect.poll(async () => number(await kpi.textContent())).toBeGreaterThan(0);
@@ -202,6 +204,7 @@ test("pivot table paginates large grouped results and SQL is highlighted", async
   const params = new URLSearchParams({
     view: "pivot",
     model: "orders",
+    range: "all",
     pdims: JSON.stringify(["orders.created_at"]),
     pmetrics: JSON.stringify(["orders.revenue"]),
   });

@@ -21,12 +21,12 @@ from tests.optional_dep_stubs import ensure_fake_mcp
 _mcp_modules_before = {name for name in sys.modules if name == "mcp" or name.startswith("mcp.")}
 ensure_fake_mcp()
 
-from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
-from sidemantic.api_server import create_app
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.mcp_server import get_models, get_semantic_graph, initialize_layer
-from sidemantic.mcp_server import run_query as mcp_run_query
-from sidemantic.mcp_server import run_sql as mcp_run_sql
+from sqlctx import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
+from sqlctx.api_server import create_app
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.mcp_server import get_models, get_semantic_graph, initialize_layer
+from sqlctx.mcp_server import run_query as mcp_run_query
+from sqlctx.mcp_server import run_sql as mcp_run_sql
 
 for _module_name in list(sys.modules):
     if (_module_name == "mcp" or _module_name.startswith("mcp.")) and _module_name not in _mcp_modules_before:
@@ -119,7 +119,7 @@ def _mcp_layer(
 def _headers(attrs: dict) -> dict[str, str]:
     return {
         "Authorization": "Bearer secret",
-        "X-Sidemantic-User": json.dumps(attrs),
+        "X-sqlctx-User": json.dumps(attrs),
     }
 
 
@@ -203,19 +203,19 @@ def test_unsupported_rust_shape_preserves_secured_transport_fallback(tmp_path, m
     attrs = {"role": "analyst", "tenant_id": 2}
     query = "SELECT tenant_id, total_amount FROM orders"
     # Exercise legacy fallback independently of the shared-suite engine selection.
-    monkeypatch.delenv("SIDEMANTIC_ENGINE", raising=False)
-    monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
+    monkeypatch.delenv("SQLCTX_ENGINE", raising=False)
+    monkeypatch.setenv("SQLCTX_RS_REWRITER", "1")
 
     calls = []
 
     def unsupported_rust_rewrite(graph, sql, **kwargs):
-        from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+        from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 
         calls.append(kwargs)
         assert kwargs["user_attributes"] == attrs
         raise UnsupportedSemanticFeaturesError(["rewrite.policy_select_shape"])
 
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", unsupported_rust_rewrite)
+    monkeypatch.setattr("sqlctx.sql.query_rewriter.rewrite_semantic_input", unsupported_rust_rewrite)
 
     client = TestClient(create_app(_layer(), auth_token="secret", trust_user_header=True))
     response = client.post("/sql", json={"query": query}, headers=_headers(attrs))
@@ -316,7 +316,7 @@ def test_hidden_column_is_rejected_and_omitted_across_http_and_mcp(tmp_path):
     ],
 )
 def test_nonquery_forms_fail_closed_across_transports(tmp_path, query):
-    from sidemantic.core.transport_security import rewrite_transport_sql
+    from sqlctx.core.transport_security import rewrite_transport_sql
 
     attrs = {"role": "analyst", "tenant_id": 1}
     layer = _layer()
@@ -337,7 +337,7 @@ def test_nonquery_forms_fail_closed_across_transports(tmp_path, query):
 
 @pytest.mark.parametrize("query", ["select 1 as ok", "select 1 as ok;", "select 1 as ok union all select 2 as ok"])
 def test_projection_queries_remain_available_with_controls(query):
-    from sidemantic.core.transport_security import rewrite_transport_sql
+    from sqlctx.core.transport_security import rewrite_transport_sql
 
     layer = _layer()
     rewritten = rewrite_transport_sql(layer, query, user_attributes=None, transport="test", strict=False)

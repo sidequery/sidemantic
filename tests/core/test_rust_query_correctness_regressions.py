@@ -4,7 +4,7 @@ import duckdb
 import pytest
 import yaml
 
-native = pytest.importorskip("sidemantic_rs")
+native = pytest.importorskip("sqlctx_rs")
 
 
 def execute(models, **query):
@@ -179,7 +179,7 @@ def test_distinct_cannot_be_silently_discarded_from_a_row_input():
 @pytest.mark.parametrize("input_kind", ["simple", "derived", "ratio", "complete", "window_expression"])
 @pytest.mark.parametrize("graph_owner", [False, True])
 def test_filtered_cumulative_semantic_handoff_preserves_model_state(input_kind, graph_owner):
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
 
     base = {
         "simple": "revenue",
@@ -228,13 +228,13 @@ def test_filtered_cumulative_semantic_handoff_preserves_model_state(input_kind, 
             indexes = [names.index(name) for name in ("running", "paid_running")]
             rows = [tuple(row[index] for index in indexes) for row in result.fetchall()]
             assert rows == ([(105, 10), (320, 40)] if input_kind == "derived" else [(105, 5), (320, 20)])
-            assert not any(name.startswith("__sidemantic_filtered") for name in names)
+            assert not any(name.startswith("__sqlctx_filtered") for name in names)
             assert model.model_dump() == before
             assert layer.last_engine_selection == {"engine": "rust", "reason": None}
 
 
 def test_private_cumulative_input_name_is_safe_as_a_caller_alias():
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
 
     with SemanticLayer(engine="rust", fallback=False, auto_register=False) as layer:
         layer.add_model(
@@ -253,10 +253,10 @@ def test_private_cumulative_input_name_is_safe_as_a_caller_alias():
         sql = layer.compile(
             metrics=["facts.running"],
             dimensions=["facts.day"],
-            aliases={"facts.running": "__sidemantic_filtered_2"},
+            aliases={"facts.running": "__sqlctx_filtered_2"},
         )
         result = layer.adapter.execute(sql)
-        assert [column[0] for column in result.description] == ["day", "__sidemantic_filtered_2"]
+        assert [column[0] for column in result.description] == ["day", "__sqlctx_filtered_2"]
         assert result.fetchall()[0][-1] == 10
 
 
@@ -269,7 +269,7 @@ def test_private_cumulative_input_name_is_safe_as_a_caller_alias():
     ],
 )
 def test_nested_filter_aliases_do_not_add_outer_source_columns(subquery):
-    from sidemantic import Metric, Model, SemanticLayer
+    from sqlctx import Metric, Model, SemanticLayer
 
     with SemanticLayer(engine="rust", fallback=False, auto_register=False) as layer:
         layer.add_model(
@@ -296,7 +296,7 @@ def test_nested_filter_aliases_do_not_add_outer_source_columns(subquery):
     ],
 )
 def test_cumulative_filter_keeps_its_owner_when_base_belongs_to_another_model(qualified, base_kind):
-    from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
     with SemanticLayer(engine="rust", fallback=False, auto_register=False) as layer:
         predicate = "facts.category = 'a'" if qualified else "category = 'a'"
@@ -382,7 +382,7 @@ def test_native_inline_input_preserves_model_names_ending_in_cte():
 
 @pytest.mark.parametrize("column", ["category", "{model}.category"])
 def test_cumulative_filter_preserves_placeholder_text_in_literals(column):
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
 
     with SemanticLayer(engine="rust", fallback=False, auto_register=False) as layer:
         layer.add_model(
@@ -407,7 +407,7 @@ def test_cumulative_filter_preserves_placeholder_text_in_literals(column):
 @pytest.mark.parametrize("quantile", ["0.9", "[0.5, 0.9]"])
 @pytest.mark.parametrize("filtered", [False, True])
 def test_complete_approximate_quantiles_keep_filters_and_entity_grain(quantile, filtered):
-    from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
     expression = f"APPROX_QUANTILE(amount, {quantile})"
     if filtered:
@@ -444,7 +444,7 @@ def test_complete_approximate_quantiles_keep_filters_and_entity_grain(quantile, 
 
 
 def test_complete_fanout_aggregate_preserves_literal_model_tokens():
-    from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
     with SemanticLayer(engine="rust", fallback=False, auto_register=False) as layer:
         layer.add_model(
@@ -474,7 +474,7 @@ def test_complete_fanout_aggregate_preserves_literal_model_tokens():
 
 
 def test_complete_joined_aggregate_prefers_real_model_name_over_cte_alias():
-    from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
     with SemanticLayer(engine="rust", fallback=False, auto_register=False) as layer:
         layer.add_model(

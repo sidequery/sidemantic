@@ -1,10 +1,10 @@
 # Testing and trust
 
-Sidemantic treats "will my metrics stay correct?" as a first-class product
+sqlctx treats "will my metrics stay correct?" as a first-class product
 question. Three mechanisms cover it: golden-query tests, live schema
 validation, and the cross-surface SQL guarantee.
 
-## Golden-query tests (`sidemantic test`)
+## Golden-query tests (`sqlctx test`)
 
 Golden tests pin a query to its expected result so a metric definition cannot
 drift silently. They live in the project's `tests/` directory as YAML files
@@ -45,23 +45,23 @@ tests:
 Run them with:
 
 ```bash
-sidemantic test                      # project tests/ directory
-sidemantic test tests/revenue.yml    # specific files or directories
-sidemantic test --json               # machine-readable report
+sqlctx test                      # project tests/ directory
+sqlctx test tests/revenue.yml    # specific files or directories
+sqlctx test --json               # machine-readable report
 ```
 
 The command exits 1 when any test fails, so it slots directly into CI.
-`sidemantic init` and `sidemantic demo` scaffold a starting test file.
+`sqlctx init` and `sqlctx demo` scaffold a starting test file.
 
-## Live schema validation (`sidemantic validate --live`)
+## Live schema validation (`sqlctx validate --live`)
 
 Static validation cannot see a column that was dropped or renamed in the
 warehouse; the model still parses and only fails at query time. `--live` probes
 the configured database and fails validation instead:
 
 ```bash
-sidemantic validate --live                      # uses the project connection
-sidemantic validate --live --db data.duckdb
+sqlctx validate --live                      # uses the project connection
+sqlctx validate --live --db data.duckdb
 ```
 
 Every table-backed model is probed with a zero-row select, and plainly

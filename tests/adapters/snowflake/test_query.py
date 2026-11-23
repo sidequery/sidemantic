@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.snowflake import SnowflakeAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.snowflake import SnowflakeAdapter
 
 
 @pytest.fixture

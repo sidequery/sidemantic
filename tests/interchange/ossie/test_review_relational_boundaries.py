@@ -4,7 +4,7 @@ import duckdb
 import pytest
 import yaml
 
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx.sql.query_rewriter import QueryRewriter
 from tests.interchange.ossie.test_layer2_conformance import ROUTES, execute, shared_catalog
 from tests.rust_layer_adapter import _graph_yaml_from_graph, _rust_request
 

@@ -5,7 +5,7 @@ import tempfile
 
 import pytest
 
-from sidemantic.adapters.cube import CubeAdapter, CubeImportWarning
+from sqlctx.adapters.cube import CubeAdapter, CubeImportWarning
 
 
 def _parse(yaml_str: str):

@@ -4,7 +4,7 @@ from datetime import date, datetime
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sqlctx import Dimension, Metric, Model, SemanticLayer
 
 
 @pytest.mark.parametrize("engine", ["python", "rust"])

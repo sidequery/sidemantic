@@ -7,7 +7,7 @@ This script demonstrates how to:
 3. Get pre-aggregation recommendations based on usage
 """
 
-from sidemantic import Dimension, Metric, Model, PreAggregationRecommender, SemanticLayer
+from sqlctx import Dimension, Metric, Model, PreAggregationRecommender, SemanticLayer
 
 # 1. Set up semantic layer
 sl = SemanticLayer()

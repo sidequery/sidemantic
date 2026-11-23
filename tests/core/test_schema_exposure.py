@@ -5,12 +5,12 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from sidemantic import Model, SchemaExposure, SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.inheritance import merge_model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import SchemaIntrospectionError
-from sidemantic.db.duckdb import DuckDBAdapter
+from sqlctx import Model, SchemaExposure, SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.inheritance import merge_model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import SchemaIntrospectionError
+from sqlctx.db.duckdb import DuckDBAdapter
 
 
 @pytest.fixture
@@ -163,7 +163,7 @@ models:
       private: [secret_token]
 """
     )
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
     graph = adapter.parse(source)
     exposure = graph.models["accounts"].schema_exposure
     assert exposure is not None
@@ -186,7 +186,7 @@ models:
 
 
 def test_rust_bridge_omits_python_only_schema_exposure():
-    from sidemantic.rust_bridge import graph_to_rust_yaml
+    from sqlctx.rust_bridge import graph_to_rust_yaml
 
     graph = SemanticGraph()
     graph.add_model(

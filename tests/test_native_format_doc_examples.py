@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.validation_runner import validate_directory
+from sqlctx.validation_runner import validate_directory
 
 DOC = Path(__file__).resolve().parents[1] / "docs" / "native-format.md"
 

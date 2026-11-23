@@ -29,7 +29,7 @@ FAMILIES = (
 
 
 def generate_case(seed: int, index: int) -> Case:
-    rng = random.Random(f"sidemantic-differential-v1:{seed}:{index}")
+    rng = random.Random(f"sqlctx-differential-v1:{seed}:{index}")
     family = FAMILIES[index % len(FAMILIES)]
     numeric_type = rng.choice(["integer", "double", "decimal(12,2)"])
     amount = rng.choice(["amount", "amount * quantity", "coalesce(amount, 0)", "amount - quantity"])
@@ -277,7 +277,7 @@ def data_variant(case: Case, variant: int) -> Case:
         return deepcopy(case)
     result = deepcopy(case)
     result.data_variant = variant
-    rng = random.Random(f"sidemantic-population-v1:{case.seed}:{case.index}:{variant}")
+    rng = random.Random(f"sqlctx-population-v1:{case.seed}:{case.index}:{variant}")
     models_by_table = {model["table"]: model for model in result.models}
     models_by_name = {model["name"]: model for model in result.models}
     table_by_name = {table["name"]: table for table in result.tables}

@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.semantic_layer import UnsupportedMetricError
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.semantic_layer import UnsupportedMetricError
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
+from sqlctx.sql.generator import SQLGenerator
 
 
 def _model(non_additive: bool, window: str = "max"):
@@ -152,7 +152,7 @@ def test_grouping_by_non_additive_dimension_is_additive():
 
     # No snapshot window is needed -- each snapshot_date bucket stands on its own.
     sql = layer.compile(metrics=["accounts.balance"], dimensions=["accounts.snapshot_date"])
-    assert "__sidemantic_snapshot_field" not in sql
+    assert "__sqlctx_snapshot_field" not in sql
 
     rows = layer.query(
         metrics=["accounts.balance"], dimensions=["accounts.snapshot_date"], order_by=["accounts.snapshot_date"]
@@ -169,7 +169,7 @@ def test_escape_hatch_reverts_to_naive():
 
     sql = layer.compile(metrics=["accounts.balance"], dimensions=["accounts.account_id"])
     # No snapshot marker -> aggregates naively over all snapshots (over-counted, unsafe).
-    assert "__sidemantic_snapshot_field" not in sql
+    assert "__sqlctx_snapshot_field" not in sql
     rows = layer.query(
         metrics=["accounts.balance"], dimensions=["accounts.account_id"], order_by=["accounts.account_id"]
     ).fetchall()
@@ -182,7 +182,7 @@ def test_query_without_non_additive_metric_unaffected():
     # revenue has no non_additive_dimension, so querying it alone must not raise.
     sql = layer.compile(metrics=["accounts.revenue"], dimensions=["accounts.region"])
     assert "accounts" in sql.lower()
-    assert "__sidemantic_snapshot_field" not in sql
+    assert "__sqlctx_snapshot_field" not in sql
 
 
 def test_model_without_non_additive_metric_unaffected():
@@ -190,7 +190,7 @@ def test_model_without_non_additive_metric_unaffected():
     layer.add_model(_model(non_additive=False))
     sql = layer.compile(metrics=["accounts.balance"], dimensions=["accounts.region"])
     assert "accounts" in sql.lower()
-    assert "__sidemantic_snapshot_field" not in sql
+    assert "__sqlctx_snapshot_field" not in sql
 
 
 def test_semi_additive_compiles_without_qualify_on_postgres():
@@ -258,7 +258,7 @@ def test_adapter_round_trips_non_additive_dimension():
     graph_layer = SemanticLayer()
     graph_layer.add_model(_model(non_additive=True))
 
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "models.yml"
         adapter.export(graph_layer.graph, out)
@@ -272,7 +272,7 @@ def test_adapter_round_trips_non_additive_dimension():
 def test_semi_additive_window_groupings_partition(monkeypatch):
     """window_groupings scope the snapshot per declared dims even when the query does not group by them."""
 
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
 
     layer = SemanticLayer()
     con = layer.adapter.conn
@@ -311,7 +311,7 @@ def test_semi_additive_window_groupings_partition(monkeypatch):
 
 
 def test_opening_and_closing_snapshot_metrics_compose():
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
 
     layer = SemanticLayer()
     con = layer.adapter.conn
@@ -343,7 +343,7 @@ def test_opening_and_closing_snapshot_metrics_compose():
 
 def test_graph_metric_wrapping_semi_additive_measure_is_planned():
     """A graph metric wrapping a non-additive measure retains its snapshot plan."""
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
 
     layer = SemanticLayer()
     con = layer.adapter.conn

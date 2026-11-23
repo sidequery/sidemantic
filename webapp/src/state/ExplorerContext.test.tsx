@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { SidemanticBackend } from "../data/backend";
+import type { SqlctxBackend } from "../data/backend";
 import type { Catalog, DashboardSpec } from "../data/types";
 import { dashboardTabConfig } from "../lib/dashboard";
 import { composeFilters } from "../lib/queries";
@@ -33,7 +33,7 @@ const backend = {
   getDashboard: async () => null,
   compile: async () => "",
   runQuery: async () => ({ columns: [], rows: [], rowCount: 0, sql: "" }),
-} satisfies SidemanticBackend;
+} satisfies SqlctxBackend;
 
 function Probe() {
   const { state } = useExplorer();

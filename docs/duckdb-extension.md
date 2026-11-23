@@ -1,52 +1,34 @@
 # DuckDB Extension
 
-The Sidemantic DuckDB extension embeds the Rust native runtime in DuckDB. It is a native-format deployment path, separate from the Python CLI and Python adapter ecosystem.
+The sqlctx DuckDB extension embeds the Rust native runtime in DuckDB. It is a native-format deployment path, separate from the Python CLI and Python adapter ecosystem.
 
 ## Status
 
 The extension is experimental and targets **DuckDB 1.5.6** only. It is **not** in the
-DuckDB community extension registry, so `INSTALL sidemantic FROM community` fails.
+DuckDB community extension registry, so `INSTALL sqlctx FROM community` fails.
 Community publication is planned; once it lands, installation will be:
 
 ```sql
-INSTALL sidemantic FROM community;
-LOAD sidemantic;
+INSTALL sqlctx FROM community;
+LOAD sqlctx;
 ```
 
-Until then, use a prebuilt GitHub release artifact or build from source. Both are
-unsigned, so start the DuckDB CLI with unsigned-extension loading enabled:
+Build sqlctx from source until a release artifact is available. Start the
+DuckDB CLI with unsigned-extension loading enabled:
 
 ```bash
 duckdb -unsigned
 ```
 
-## Install a Release Artifact
-
-The [`sidemantic-duckdb-v0.1.0`](https://github.com/sidequery/sidemantic/releases/tag/sidemantic-duckdb-v0.1.0)
-release ships unsigned builds for DuckDB 1.5.6:
-
-- `sidemantic-duckdb-1.5.6-linux_amd64.duckdb_extension`
-- `sidemantic-duckdb-1.5.6-linux_arm64.duckdb_extension`
-- `sidemantic-duckdb-1.5.6-osx_amd64.duckdb_extension`
-- `sidemantic-duckdb-1.5.6-osx_arm64.duckdb_extension`
-
-Linux builds use a glibc 2.28 baseline. Download the asset for your platform,
-verify it against the release's `SHA256SUMS`, rename it to
-`sidemantic.duckdb_extension`, and load it by absolute path from a DuckDB 1.5.6
-shell started with `-unsigned`:
-
-```sql
-LOAD '/absolute/path/to/sidemantic.duckdb_extension';
-```
-
-There are no Windows builds and no builds for other DuckDB versions.
+[The pre-rename release](https://github.com/sidequery/sqlctx/releases/tag/sidemantic-duckdb-v0.1.0)
+contains builds for DuckDB 1.5.6 under the original extension name.
 
 ## Build From Source
 
 The extension build needs Rust, DuckDB extension build tooling, and Ninja.
 
 ```bash
-cd sidemantic-duckdb
+cd sqlctx-duckdb
 make deps DUCKDB_VERSION=v1.5.6
 make
 make test
@@ -61,7 +43,7 @@ different DuckDB tag.
 The local loadable extension is produced at:
 
 ```text
-sidemantic-duckdb/build/release/extension/sidemantic/sidemantic.duckdb_extension
+sqlctx-duckdb/build/release/extension/sqlctx/sqlctx.duckdb_extension
 ```
 
 Load it in the DuckDB shell built by the extension workflow:
@@ -71,17 +53,21 @@ Load it in the DuckDB shell built by the extension workflow:
 ```
 
 ```sql
-LOAD 'build/release/extension/sidemantic/sidemantic.duckdb_extension';
+LOAD 'build/release/extension/sqlctx/sqlctx.duckdb_extension';
 ```
 
 For embedded clients, set DuckDB's `allow_unsigned_extensions` database configuration before opening the connection.
+
+The extension reads existing `__sidemantic_catalog` snapshots and
+`.sidemantic.sql` sidecars. A catalog mutation stores the updated snapshot in
+`__sqlctx_catalog`.
 
 ## Runtime API
 
 Load native YAML:
 
 ```sql
-SELECT * FROM sidemantic_load('
+SELECT * FROM sqlctx_load('
 version: 1
 models:
   - name: orders
@@ -97,13 +83,13 @@ models:
 Load native YAML from disk:
 
 ```sql
-SELECT * FROM sidemantic_load_file('/path/to/models.yml');
+SELECT * FROM sqlctx_load_file('/path/to/models.yml');
 ```
 
 Load native SQL definitions from disk:
 
 ```sql
-SELECT * FROM sidemantic_load_file('/path/to/models.sql');
+SELECT * FROM sqlctx_load_file('/path/to/models.sql');
 ```
 
 Native SQL definitions can also be entered directly through the parser extension:
@@ -128,13 +114,13 @@ model orders from orders (
 Inspect loaded models:
 
 ```sql
-SELECT * FROM sidemantic_models();
+SELECT * FROM sqlctx_models();
 ```
 
 Rewrite semantic SQL without executing it:
 
 ```sql
-SELECT sidemantic_rewrite_sql('SELECT orders.revenue FROM orders');
+SELECT sqlctx_rewrite_sql('SELECT orders.revenue FROM orders');
 ```
 
 Run a semantic query through the parser override:
@@ -155,7 +141,7 @@ The workflow:
 - builds the Rust-backed extension for `linux_amd64`, `linux_arm64`, `osx_amd64`, and `osx_arm64`,
 - runs the DuckDB sqllogictests, including native YAML load, native SQL definition file load, relationship rewrite, semantic select, persistence, and invalid-version coverage,
 - uploads the four extension artifacts with their checksums,
-- on a `sidemantic-duckdb-v*` tag push (or a manual run with `create_github_release`), creates the GitHub release with the artifacts, `SHA256SUMS`, and `LICENSE`. It never overwrites an existing release.
+- on a `sqlctx-duckdb-v*` tag push (or a manual run with `create_github_release`), creates the GitHub release with the artifacts, `SHA256SUMS`, and `LICENSE`. It never overwrites an existing release.
 
 It does not publish to the DuckDB community extension registry.
 

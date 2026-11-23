@@ -4,7 +4,7 @@ import tempfile
 
 import pytest
 
-from sidemantic.adapters.holistics import HolisticsAdapter
+from sqlctx.adapters.holistics import HolisticsAdapter
 
 from ..helpers import (
     assert_dimension_equivalent,

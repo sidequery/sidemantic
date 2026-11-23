@@ -16,10 +16,10 @@ pip install adbc-driver-snowflake
 
 ## Config (CLI)
 
-Copy `sidemantic.yaml.example` to `sidemantic.yaml` and fill in your Snowflake details.
+Copy `sqlctx.yaml.example` to `sqlctx.yaml` and fill in your Snowflake details.
 
 ```bash
-sidemantic query "SELECT orders.total_revenue, orders.region FROM orders"
+sqlctx query "SELECT orders.total_revenue, orders.region FROM orders"
 ```
 
 ## Python API
@@ -29,8 +29,8 @@ When your semantic model YAML is generated from another tool (Cube, dbt, etc.) a
 ### Option 1: Pass ADBCAdapter directly
 
 ```python
-from sidemantic import SemanticLayer, load_from_directory
-from sidemantic.db.adbc import ADBCAdapter
+from sqlctx import SemanticLayer, load_from_directory
+from sqlctx.db.adbc import ADBCAdapter
 
 adapter = ADBCAdapter(
     driver="snowflake",

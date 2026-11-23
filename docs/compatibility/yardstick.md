@@ -1,6 +1,6 @@
 # Yardstick Compatibility
 
-Sidemantic's Yardstick adapter parses SQL files containing `CREATE VIEW` statements that use the `AS MEASURE` syntax from Julian Hyde's ["Measures in SQL" proposal](https://arxiv.org/abs/2307.14009). It maps Yardstick concepts to Sidemantic's semantic model (Model, Dimension, Metric) and supports `SEMANTIC SELECT`, optional-prefix `AGGREGATE()`, and `AT` query modifiers for measure-aware SQL queries.
+sqlctx's Yardstick adapter parses SQL files containing `CREATE VIEW` statements that use the `AS MEASURE` syntax from Julian Hyde's ["Measures in SQL" proposal](https://arxiv.org/abs/2307.14009). It maps Yardstick concepts to sqlctx's semantic model (Model, Dimension, Metric) and supports `SEMANTIC SELECT`, optional-prefix `AGGREGATE()`, and `AT` query modifiers for measure-aware SQL queries.
 
 Features are marked **supported**, **partial support**, or **unsupported**. Partial support entries include notes explaining the limitation.
 
@@ -119,7 +119,7 @@ When a measure expression contains aggregate functions (detected by walking the 
 
 ## Query Semantics
 
-The Yardstick adapter works in tandem with Sidemantic's query rewriter to support `SEMANTIC SELECT`, optional-prefix `AGGREGATE()`, and `AT` modifiers described in the Measures in SQL proposal.
+The Yardstick adapter works in tandem with sqlctx's query rewriter to support `SEMANTIC SELECT`, optional-prefix `AGGREGATE()`, and `AT` modifiers described in the Measures in SQL proposal.
 
 ### SEMANTIC Prefix
 
@@ -148,10 +148,10 @@ The Yardstick adapter works in tandem with Sidemantic's query rewriter to suppor
 
 ### Upstream Parity Tests
 
-The default test suite replays a vendored Yardstick `measures.test` fixture for stable CI coverage. To check against the live upstream Yardstick repository without copying fixtures into Sidemantic, run:
+The default test suite replays a vendored Yardstick `measures.test` fixture for stable CI coverage. To check against the live upstream Yardstick repository without copying fixtures into sqlctx, run:
 
 ```bash
-SIDEMANTIC_YARDSTICK_UPSTREAM_TESTS=1 uv run pytest -q tests/queries/test_yardstick_measures_replay.py -m yardstick_upstream
+SQLCTX_YARDSTICK_UPSTREAM_TESTS=1 uv run pytest -q tests/queries/test_yardstick_measures_replay.py -m yardstick_upstream
 ```
 
 The same command runs in the `Yardstick Upstream Parity` GitHub Actions workflow. That workflow runs nightly, can be triggered manually with a Yardstick ref override, and runs on pull requests that touch Yardstick-specific code or tests.
@@ -161,18 +161,18 @@ The live replay fetches `https://github.com/sidequery/yardstick.git` at `main` b
 | Facet | Coverage |
 |-------|----------|
 | Model/metric definitions | Checks every parsed `CREATE VIEW ... AS MEASURE`, including definitions within batches, asserting model name, source table/base SQL, primary key, Yardstick metadata, dimension SQL/type/granularity, and metric `agg`/`sql`/`filters`/`type` |
-| Query execution | Replays every upstream query block against Sidemantic's Yardstick rewriter and compares result rows |
+| Query execution | Replays every upstream query block against sqlctx's Yardstick rewriter and compares result rows |
 
-The live definition check covers the `CREATE VIEW ... AS MEASURE` definitions used by Yardstick's SQL tests. Sidemantic's native SQL definition parser owns `MODEL(...)`, `METRIC(...)`, and `DIMENSION(...)` files separately from the Yardstick adapter; the live upstream replay does not treat Yardstick's top-level `yardstick_definitions.sql` helper file as part of the SQL-test corpus.
+The live definition check covers the `CREATE VIEW ... AS MEASURE` definitions used by Yardstick's SQL tests. sqlctx's native SQL definition parser owns `MODEL(...)`, `METRIC(...)`, and `DIMENSION(...)` files separately from the Yardstick adapter; the live upstream replay does not treat Yardstick's top-level `yardstick_definitions.sql` helper file as part of the SQL-test corpus.
 
 The replay preserves complete SQLLogicTest records, including regex error
 expectations and statements after the final query. Its setup runner executes
 batches transactionally, restores model metadata on rollback, manages permanent
 and temporary measure views, and applies warning policy when prepared statements
-execute. Query expansion uses Sidemantic's production rewriter. This test setup
+execute. Query expansion uses sqlctx's production rewriter. This test setup
 does not enable multi-statement execution on the public query API.
 
-Sidemantic emits `YardstickWarning` when `AT (ALL ...)` drops an outer filter that
+sqlctx emits `YardstickWarning` when `AT (ALL ...)` drops an outer filter that
 the remaining evaluation context does not preserve. Python callers can treat
 that warning as an error using the standard `warnings` module. Repeated queries
 observe the current warning policy. The literal `yardstick('SELECT ...')` table

@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from sidemantic import SemanticLayer
-from sidemantic.core.migrator import Migrator
+from sqlctx import SemanticLayer
+from sqlctx.core.migrator import Migrator
 
 
 def test_generate_models_parses_bigquery_history_with_source_dialect():
@@ -277,7 +277,7 @@ def test_write_graph_metrics_file(tmp_path):
 
 def test_generated_graph_metrics_load_from_directory(tmp_path):
     """Test generated graph metrics are loadable from a models directory."""
-    from sidemantic.loaders import load_from_directory
+    from sqlctx.loaders import load_from_directory
 
     layer = SemanticLayer(auto_register=False)
     analyzer = Migrator(layer)
@@ -424,7 +424,7 @@ def test_generate_models_uses_finest_observed_time_granularity():
 
 def test_migrator_example_generates_self_validating_models(tmp_path):
     """The documented raw-query example produces models accepted by validation."""
-    from sidemantic.validation_runner import validate_directory
+    from sqlctx.validation_runner import validate_directory
 
     layer = SemanticLayer(auto_register=False)
     analyzer = Migrator(layer)
@@ -1345,7 +1345,7 @@ def test_subquery_where_does_not_leak_into_filters():
 
 def test_count_star_not_covered_by_count_column_metric():
     """COUNT(*) and COUNT(col) differ on NULLs; one must not satisfy the other."""
-    from sidemantic import Dimension, Metric, Model
+    from sqlctx import Dimension, Metric, Model
 
     layer = SemanticLayer(auto_register=False)
     layer.graph.add_model(
@@ -1385,10 +1385,10 @@ def test_no_relationship_from_non_key_equality():
 
 
 def test_split_sql_statements_respects_literals_and_comments():
-    from sidemantic.core.migrator import split_sql_statements
+    from sqlctx.core.migrator import split_sql_statements
 
     content = """
-    -- sidemantic: models=orders metrics=orders.revenue
+    -- sqlctx: models=orders metrics=orders.revenue
     SELECT * FROM orders WHERE note = 'a;b';
     /* block; comment */
     SELECT * FROM customers;
@@ -1397,5 +1397,5 @@ def test_split_sql_statements_respects_literals_and_comments():
 
     assert len(statements) == 2
     assert "'a;b'" in statements[0]
-    assert "-- sidemantic:" in statements[0]
+    assert "-- sqlctx:" in statements[0]
     assert statements[1].startswith("/* block; comment */")

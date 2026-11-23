@@ -28,7 +28,7 @@ Generate model definitions and rewritten queries from your raw SQL:
 cd examples/migrator
 
 # Generate models and rewritten queries
-uv run sidemantic migrate generate raw_queries/ --output output/
+uv run sqlctx migrate generate raw_queries/ --output output/
 ```
 
 This will create:
@@ -41,10 +41,10 @@ If you already have a semantic layer, analyze which queries can be rewritten:
 
 ```bash
 # Compare queries against existing semantic layer
-uv run sidemantic migrate check raw_queries/ --models models/
+uv run sqlctx migrate check raw_queries/ --models models/
 
 # Show detailed analysis for each query
-uv run sidemantic migrate check raw_queries/ --models models/ --verbose
+uv run sqlctx migrate check raw_queries/ --models models/ --verbose
 ```
 
 ## What Gets Generated

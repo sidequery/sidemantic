@@ -5,12 +5,12 @@ import lkml
 import pytest
 import yaml
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.adapters.lookml import LookMLAdapter
-from sidemantic.adapters.snowflake import SnowflakeAdapter
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.fidelity import capture_import_report
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.snowflake import SnowflakeAdapter
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.fidelity import capture_import_report
 
 
 def test_native_compound_transitive_joins_execute_after_roundtrip(tmp_path):
@@ -161,7 +161,7 @@ def test_composite_key_encoding_prevents_concatenation_collisions():
 
 
 def test_graph_only_metric_rejects_with_diagnostic(tmp_path):
-    from sidemantic.fidelity import capture_export_report
+    from sqlctx.fidelity import capture_export_report
 
     graph = SemanticGraph()
     graph.add_model(Model(name="orders", table="orders", metrics=[Metric(name="amount", agg="sum", sql="amount")]))

@@ -3,8 +3,8 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship
-from sidemantic.core.semantic_graph import JoinPath, SemanticGraph
+from sqlctx import Dimension, Metric, Model, Relationship
+from sqlctx.core.semantic_graph import JoinPath, SemanticGraph
 
 # =============================================================================
 # JOINPATH TESTS

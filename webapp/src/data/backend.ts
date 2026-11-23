@@ -2,10 +2,10 @@ import type { DashboardDocument } from "./dashboardTypes";
 import type { Catalog, QueryResult, StructuredQuery } from "./types";
 
 // One interface, two implementations. The HTTP adapter targets the shared contract both the
-// Python (`sidemantic api-serve`) and Rust (`sidemantic-server`) backends expose identically.
+// Python (`sqlctx api-serve`) and Rust (`sqlctx-server`) backends expose identically.
 // A future `wasmAdapter` (Rust-WASM compile + DuckDB-WASM execute, fully in-browser) can drop
 // in behind the same interface without any UI change.
-export interface SidemanticBackend {
+export interface SqlctxBackend {
   /** GET /health — true when the backend is reachable and a layer is loaded. */
   health(): Promise<boolean>;
   /** Rich semantic catalog from /describe, falling back to /graph (+/models) when absent. */

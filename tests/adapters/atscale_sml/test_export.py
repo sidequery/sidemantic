@@ -3,12 +3,12 @@
 import pytest
 import yaml
 
-from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.atscale_sml import AtScaleSMLAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 class TestAtScaleSMLExport:

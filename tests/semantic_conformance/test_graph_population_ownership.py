@@ -4,17 +4,17 @@ from datetime import date
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.rust_bridge import compile_semantic_input, rewrite_semantic_input
-from sidemantic.semantic_handoff import graph_to_semantic_input
+from sqlctx import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.rust_bridge import compile_semantic_input, rewrite_semantic_input
+from sqlctx.semantic_handoff import graph_to_semantic_input
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs")
+        pytest.importorskip("sqlctx_rs")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(
@@ -67,7 +67,7 @@ def population_metric(kind):
 @pytest.mark.parametrize("prefix", ["analytics", "events"])
 @pytest.mark.parametrize("reference_location", ["select", "filter", "order"])
 def test_native_dotted_graph_population_visibility(entrypoint, prefix, reference_location):
-    pytest.importorskip("sidemantic_rs")
+    pytest.importorskip("sqlctx_rs")
     graph = SemanticGraph()
     graph.add_model(Model(name="events", table="events", dimensions=[Dimension(name="user_id", type="categorical")]))
     graph.add_model(Model(name="analytics", table="must_not_read"))

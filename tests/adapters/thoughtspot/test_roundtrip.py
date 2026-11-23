@@ -4,10 +4,10 @@ from pathlib import Path
 
 import yaml
 
-from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.thoughtspot import ThoughtSpotAdapter
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 def test_thoughtspot_roundtrip_table(tmp_path: Path):

@@ -15,7 +15,7 @@ on:
         type: boolean
   push:
     tags:
-      - "sidemantic-duckdb-v*"
+      - "sqlctx-duckdb-v*"
 
   pull_request:
     paths:
@@ -93,31 +93,31 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Fetch DuckDB dependencies
-        working-directory: sidemantic-duckdb
+        working-directory: sqlctx-duckdb
         env:
           DUCKDB_VERSION: ${{ steps.duckdb.outputs.version }}
         run: make deps DUCKDB_VERSION="$DUCKDB_VERSION"
 
       - name: Build extension
-        working-directory: sidemantic-duckdb
+        working-directory: sqlctx-duckdb
         env:
           DUCKDB_PLATFORM: ${{ matrix.platform }}
         run: make
 
       - name: Run extension tests
-        working-directory: sidemantic-duckdb
+        working-directory: sqlctx-duckdb
         run: make test
 
       - name: Package extension artifact
-        working-directory: sidemantic-duckdb
+        working-directory: sqlctx-duckdb
         env:
           DUCKDB_VERSION: ${{ steps.duckdb.outputs.version }}
           PLATFORM: ${{ matrix.platform }}
         run: |
           mkdir -p dist
           DUCKDB_VERSION="${DUCKDB_VERSION#v}"
-          ASSET="sidemantic-duckdb-${DUCKDB_VERSION}-${PLATFORM}.duckdb_extension"
-          cp build/release/extension/sidemantic/sidemantic.duckdb_extension "dist/$ASSET"
+          ASSET="sqlctx-duckdb-${DUCKDB_VERSION}-${PLATFORM}.duckdb_extension"
+          cp build/release/extension/sqlctx/sqlctx.duckdb_extension "dist/$ASSET"
           cd dist
           if command -v sha256sum >/dev/null; then
             sha256sum "$ASSET" > "$ASSET.sha256"
@@ -128,8 +128,8 @@ jobs:
       - name: Upload extension artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sidemantic-duckdb-extension-${{ matrix.platform }}
-          path: sidemantic-duckdb/dist/*
+          name: sqlctx-duckdb-extension-${{ matrix.platform }}
+          path: sqlctx-duckdb/dist/*
           if-no-files-found: error
 
       - name: Save completed build caches
@@ -152,7 +152,7 @@ jobs:
       - name: Download extension artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: sidemantic-duckdb-extension-*
+          pattern: sqlctx-duckdb-extension-*
           path: dist
           merge-multiple: true
 
@@ -165,11 +165,11 @@ jobs:
           if [ "$REF_TYPE" = "tag" ]; then
             TAG="$REF_NAME"
           else
-            VERSION=$(grep '^version = ' sidemantic-rs/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-            TAG="sidemantic-duckdb-v${VERSION}"
+            VERSION=$(grep '^version = ' sqlctx-rs/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+            TAG="sqlctx-duckdb-v${VERSION}"
           fi
 
-          if [[ ! "$TAG" =~ ^sidemantic-duckdb-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "$TAG" =~ ^sqlctx-duckdb-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Invalid extension release tag" >&2
             exit 1
           fi
@@ -192,7 +192,7 @@ jobs:
           fi
           cd dist
           for PLATFORM in linux_amd64 linux_arm64 osx_amd64 osx_arm64; do
-            ASSET="sidemantic-duckdb-1.5.6-${PLATFORM}.duckdb_extension"
+            ASSET="sqlctx-duckdb-1.5.6-${PLATFORM}.duckdb_extension"
             test -s "$ASSET"
             sha256sum --check "$ASSET.sha256"
           done

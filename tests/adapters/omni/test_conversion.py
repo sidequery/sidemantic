@@ -7,13 +7,13 @@ import duckdb
 import lkml
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.lookml import LookMLAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic.adapters.omni import OmniAdapter
-from sidemantic.adapters.rill import RillAdapter
-from sidemantic.adapters.superset import SupersetAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.omni import OmniAdapter
+from sqlctx.adapters.rill import RillAdapter
+from sqlctx.adapters.superset import SupersetAdapter
 
 
 def test_omni_to_cube_conversion():

@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: sidequery/sidemantic
+  IMAGE: sidequery/sqlctx
 
 jobs:
   source:

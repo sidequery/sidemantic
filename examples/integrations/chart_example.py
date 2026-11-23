@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # /// script
-# dependencies = ["sidemantic[charts]", "duckdb"]
+# dependencies = ["sqlctx[charts] @ git+https://github.com/sidequery/sqlctx", "duckdb"]
 # ///
 """Example demonstrating chart generation from semantic layer queries.
 
@@ -9,8 +9,8 @@ Run with: uv run examples/integrations/chart_example.py
 
 from pathlib import Path
 
-from sidemantic import SemanticLayer, load_from_directory
-from sidemantic.charts import chart_to_vega, create_chart
+from sqlctx import SemanticLayer, load_from_directory
+from sqlctx.charts import chart_to_vega, create_chart
 
 
 def setup_demo_data(layer):

@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import Explore, Metric, SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.semantic_layer import SecurityError
+from sqlctx import Explore, Metric, SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.semantic_layer import SecurityError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 DAY_COLUMNS = ["cohort_date", "days_since", "active_users", "cohort_size", "retention_pct"]
@@ -22,10 +22,10 @@ DAY_ROWS = [
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Retention parity requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Retention parity requires the real Rust extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     try:
-        layer.graph = SidemanticAdapter().parse(FIXTURES / "retention.yml")
+        layer.graph = SqlctxAdapter().parse(FIXTURES / "retention.yml")
         layer.adapter.execute((FIXTURES / "retention.sql").read_text())
         yield layer
     finally:
@@ -194,8 +194,8 @@ def test_retention_filter_literals_are_not_metric_references(layer):
 
 
 def test_selected_calculations_preserve_retention_fixed_projection(layer):
-    from sidemantic.core.table_calculation import TableCalculation
-    from sidemantic.sql.table_calc_processor import TableCalculationProcessor
+    from sqlctx.core.table_calculation import TableCalculation
+    from sqlctx.sql.table_calc_processor import TableCalculationProcessor
 
     calculations = [
         TableCalculation(name="sequence", type="row_number"),
@@ -213,15 +213,15 @@ def test_selected_calculations_preserve_retention_fixed_projection(layer):
     if layer.engine == "rust":
         import json
 
-        import sidemantic_rs
+        import sqlctx_rs
 
-        from sidemantic.semantic_handoff import graph_to_semantic_input
+        from sqlctx.semantic_handoff import graph_to_semantic_input
 
         # Reference validation keeps the complete output contract even without
         # caller attributes; compile separately performs authorization.
         payload = {**query, "metrics": ["events.retained"], "table_calculations": [c.name for c in calculations]}
         assert (
-            sidemantic_rs.validate_with_semantic_input(
+            sqlctx_rs.validate_with_semantic_input(
                 json.dumps(graph_to_semantic_input(layer.graph)), json.dumps(payload)
             )
             == []

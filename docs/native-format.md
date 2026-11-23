@@ -1,6 +1,6 @@
-# Native Sidemantic Format
+# Native sqlctx Format
 
-This document defines the native Sidemantic project format consumed by the Rust native runtime and the Python native adapter.
+This document defines the native sqlctx project format consumed by the Rust native runtime and the Python native adapter.
 
 The native format has two source forms:
 
@@ -14,8 +14,8 @@ The native format is the runtime contract. External formats such as LookML, Metr
 The Rust runtime and Rust CLI directory loader intentionally have a smaller direct
 input surface than Python:
 
-- `.yml` / `.yaml`: native Sidemantic YAML or Cube YAML.
-- `.sql`: native Sidemantic SQL definition files.
+- `.yml` / `.yaml`: native sqlctx YAML or Cube YAML.
+- `.sql`: native sqlctx SQL definition files.
 
 They do not auto-detect LookML, MetricFlow/dbt manifests, Hex, Rill, Malloy,
 Omni, Superset, GoodData, Snowflake Cortex, ThoughtSpot, Holistics, Tableau,
@@ -171,7 +171,7 @@ models:
 ```
 
 ```sh
-sidemantic query --models ./models --metric daily_activity.activity_count \
+sqlctx query --models ./models --metric daily_activity.activity_count \
   --dimension daily_activity.test_name \
   --filter "daily_activity.event_date >= '2026-01-01'"
 ```
@@ -572,9 +572,9 @@ explores:
 
 ```bash
 # Every customer region; regions without orders have NULL revenue and a zero count.
-sidemantic query --explore by_customer --metric orders.revenue --metric orders.order_count --dimension region
+sqlctx query --explore by_customer --metric orders.revenue --metric orders.order_count --dimension region
 # Both populations: regions without orders and orders without a region.
-sidemantic query --metric orders.revenue --metric customers.customer_count --dimension customers.region
+sqlctx query --metric orders.revenue --metric customers.customer_count --dimension customers.region
 ```
 
 Releases through 0.13.1 anchored a single-model metric query on its first
@@ -872,23 +872,23 @@ the Rust loader rejects it because it cannot pick a single owning model.
 
 ## Authoring contracts
 
-Use the default full Sidemantic contract for native semantics such as non-additive
+Use the default full sqlctx contract for native semantics such as non-additive
 metrics, policies, and other runtime features:
 
 ```bash
-sidemantic validate ./models --authoring-mode sidemantic
+sqlctx validate ./models --authoring-mode sqlctx
 ```
 
 To author a model intended for Ossie core interchange, check representability
 while editing, before exporting:
 
 ```bash
-sidemantic validate ./models --authoring-mode ossie-portable --ossie-expression-dialect ANSI_SQL
+sqlctx validate ./models --authoring-mode ossie-portable --ossie-expression-dialect ANSI_SQL
 ```
 
 This uses the same portable-only synthesis checks as `convert --ossie-portable-only`.
 It reports stable `ossie.synthesis.*` diagnostics and object paths for semantics
-that require Sidemantic or cannot be represented. Dropped or approximated source
+that require sqlctx or cannot be represented. Dropped or approximated source
 semantics are errors in this mode. The declared expression dialect must describe
 the actual SQL; validation does not translate SQL or rewrite source files.
 The default profile is `ossie-core` at the pinned `0.2.0.dev0` schema; select
@@ -899,10 +899,10 @@ the `0.1.0` dbt compatibility alias is not used for synthesized validation.
 Portable validation certifies a core representation, not execution by every
 consumer. Preserved external expressions still have to lower through the normal
 strict source importer; schema validity alone is insufficient. Extension-dependent
-native models remain valid under the full Sidemantic contract, but fail the
+native models remain valid under the full sqlctx contract, but fail the
 portable contract. Invalid source fails both. `--engine` controls separate runtime
 compatibility checks, and `--live` checks database schema; neither selects the
-authoring contract. The default authoring contract remains `sidemantic`.
+authoring contract. The default authoring contract remains `sqlctx`.
 
 Validation never exports, migrates, or replaces the authoritative source. When
 ready to export, continue to supply an explicit scope, expression dialect, and

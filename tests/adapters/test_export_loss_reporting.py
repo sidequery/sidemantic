@@ -3,21 +3,21 @@
 import pytest
 import yaml
 
-from sidemantic import Dimension, Metric, Model, Relationship
-from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
-from sidemantic.adapters.base import filtered_measure_sql
-from sidemantic.adapters.bsl import BSLAdapter
-from sidemantic.adapters.hex import HexAdapter
-from sidemantic.adapters.holistics import HolisticsAdapter
-from sidemantic.adapters.omni import OmniAdapter
-from sidemantic.adapters.rill import RillAdapter
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.adapters.snowflake import SnowflakeAdapter
-from sidemantic.adapters.superset import SupersetAdapter
-from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.fidelity import ConversionFidelityError, capture_export_report
-from sidemantic.formats import export_semantic_graph
+from sqlctx import Dimension, Metric, Model, Relationship
+from sqlctx.adapters.atscale_sml import AtScaleSMLAdapter
+from sqlctx.adapters.base import filtered_measure_sql
+from sqlctx.adapters.bsl import BSLAdapter
+from sqlctx.adapters.hex import HexAdapter
+from sqlctx.adapters.holistics import HolisticsAdapter
+from sqlctx.adapters.omni import OmniAdapter
+from sqlctx.adapters.rill import RillAdapter
+from sqlctx.adapters.snowflake import SnowflakeAdapter
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.adapters.superset import SupersetAdapter
+from sqlctx.adapters.thoughtspot import ThoughtSpotAdapter
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.fidelity import ConversionFidelityError, capture_export_report
+from sqlctx.formats import export_semantic_graph
 
 
 def graph_of(*models: Model) -> SemanticGraph:
@@ -303,8 +303,8 @@ def test_native_export_keeps_model_owned_ratio_operands(tmp_path):
         Metric(name="order_count", agg="count"),
         Metric(name="average_order", type="ratio", numerator="revenue", denominator="order_count"),
     )
-    SidemanticAdapter().export(graph_of(model), tmp_path / "models.yml")
-    ratio = SidemanticAdapter().parse(tmp_path / "models.yml").models["orders"].get_metric("average_order")
+    SqlctxAdapter().export(graph_of(model), tmp_path / "models.yml")
+    ratio = SqlctxAdapter().parse(tmp_path / "models.yml").models["orders"].get_metric("average_order")
     assert (ratio.type, ratio.numerator, ratio.denominator) == ("ratio", "revenue", "order_count")
 
 
@@ -312,7 +312,7 @@ def test_thoughtspot_joined_worksheet_is_queryable_and_reexports_its_bindings(tm
     """A joined worksheet imports as a derived table without losing its `table::column` bindings."""
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = ThoughtSpotAdapter().parse("tests/fixtures/thoughtspot/worksheet_ids.worksheet.tml")
     layer = SemanticLayer(auto_register=False)
@@ -343,7 +343,7 @@ def test_thoughtspot_joined_worksheet_is_queryable_and_reexports_its_bindings(tm
 
 
 def test_rill_rolling_measure_keeps_its_aggregate_through_native(tmp_path):
-    """Rill -> Sidemantic -> Rill: a windowed measure is still AVG(bid_price), not the bare column."""
+    """Rill -> sqlctx -> Rill: a windowed measure is still AVG(bid_price), not the bare column."""
     measure = {
         "name": "rolling_bid",
         "expression": "AVG(bid_price)",
@@ -353,8 +353,8 @@ def test_rill_rolling_measure_keeps_its_aggregate_through_native(tmp_path):
     (tmp_path / "source" / "bids.yaml").write_text(
         yaml.safe_dump({"type": "metrics_view", "model": "bids", "timeseries": "ts", "measures": [measure]})
     )
-    SidemanticAdapter().export(RillAdapter().parse(tmp_path / "source"), tmp_path / "native.yml")
-    native = SidemanticAdapter().parse(tmp_path / "native.yml")
+    SqlctxAdapter().export(RillAdapter().parse(tmp_path / "source"), tmp_path / "native.yml")
+    native = SqlctxAdapter().parse(tmp_path / "native.yml")
     rolling = native.models["bids"].get_metric("rolling_bid")
     assert (rolling.type, rolling.agg, rolling.sql) == ("cumulative", "avg", "bid_price")
 
@@ -394,7 +394,7 @@ def test_ratio_operand_owned_by_another_model_is_never_bound_to_a_local_namesake
 def test_superset_ratio_of_own_metrics_returns_the_native_number(tmp_path):
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     def rate(graph: SemanticGraph) -> float:
         layer = SemanticLayer(auto_register=False)

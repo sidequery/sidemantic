@@ -14,14 +14,14 @@ from typing import Any
 import duckdb
 import yaml
 
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import SemanticLayer as ProductionSemanticLayer
-from sidemantic.validation import MetricValidationError, ModelValidationError, QueryValidationError
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import SemanticLayer as ProductionSemanticLayer
+from sqlctx.validation import MetricValidationError, ModelValidationError, QueryValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
-RUST_MANIFEST = ROOT / "sidemantic-rs" / "Cargo.toml"
+RUST_MANIFEST = ROOT / "sqlctx-rs" / "Cargo.toml"
 
 
 class RustRuntimeSemanticLayer(ProductionSemanticLayer):
@@ -47,7 +47,7 @@ class RustRuntimeSemanticLayer(ProductionSemanticLayer):
 
 
 class RustSemanticLayerAdapter:
-    """Minimal SemanticLayer-compatible test adapter backed by sidemantic-rs.
+    """Minimal SemanticLayer-compatible test adapter backed by sqlctx-rs.
 
     This is intentionally test-only. It lets selected Python tests execute their
     original bodies against pure Rust load/compile behavior without introducing
@@ -848,8 +848,8 @@ def _segment_to_rust_dict(segment) -> dict[str, Any]:
 
 def _pre_aggregation_to_rust_dict(preagg) -> dict[str, Any]:
     # rollups / union_with_source_data are lambda-only fields absent from the
-    # sidemantic-rs YAML schema; exclude them to match the production serializer
-    # (sidemantic/rust_bridge.py::_serialize_pre_aggregation).
+    # sqlctx-rs YAML schema; exclude them to match the production serializer
+    # (sqlctx/rust_bridge.py::_serialize_pre_aggregation).
     return preagg.model_dump(mode="json", exclude_none=True, exclude={"rollups", "union_with_source_data"})
 
 

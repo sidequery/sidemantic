@@ -6,8 +6,8 @@ import pytest
 
 pytest.importorskip("mcp")  # Skip if mcp extra not installed
 
-from sidemantic.apps import _get_protocol_widget_html, build_chart_html, create_chart_resource
-from sidemantic.mcp_server import chart_widget_resource, create_chart, initialize_layer
+from sqlctx.apps import _get_protocol_widget_html, build_chart_html, create_chart_resource
+from sqlctx.mcp_server import chart_widget_resource, create_chart, initialize_layer
 
 
 @pytest.fixture
@@ -51,9 +51,9 @@ def test_build_chart_html():
     assert '"$schema"' in html
     assert '"mark"' in html
     assert "vega-embed" in html
-    assert 'data-sidemantic-vendor="vega"' in html
-    assert 'data-sidemantic-vendor="vega_lite"' in html
-    assert 'data-sidemantic-vendor="vega_embed"' in html
+    assert 'data-sqlctx-vendor="vega"' in html
+    assert 'data-sqlctx-vendor="vega_lite"' in html
+    assert 'data-sqlctx-vendor="vega_embed"' in html
     assert 'type="module"' not in html
     assert "esm.sh" not in html
     assert "<script src=" not in html
@@ -61,7 +61,7 @@ def test_build_chart_html():
 
 def test_protocol_widget_source_is_self_contained_and_csp_safe():
     """The source widget uses MCP Apps and the CSP-safe Vega interpreter."""
-    source_root = Path(__file__).parents[1] / "sidemantic" / "apps" / "web"
+    source_root = Path(__file__).parents[1] / "sqlctx" / "apps" / "web"
     app_source = (source_root / "chart-app.ts").read_text()
     config = (source_root / "vite.config.ts").read_text()
 
@@ -72,7 +72,7 @@ def test_protocol_widget_source_is_self_contained_and_csp_safe():
 
 
 def test_protocol_widget_lifecycle_cleans_up_stale_renders():
-    source = (Path(__file__).parents[1] / "sidemantic" / "apps" / "web" / "chart-app.ts").read_text()
+    source = (Path(__file__).parents[1] / "sqlctx" / "apps" / "web" / "chart-app.ts").read_text()
 
     assert "activeObserver.disconnect()" in source
     assert "activeView.finalize()" in source
@@ -81,7 +81,7 @@ def test_protocol_widget_lifecycle_cleans_up_stale_renders():
 
 
 def test_protocol_widget_resource_uses_lazy_built_asset(monkeypatch):
-    import sidemantic.apps as apps
+    import sqlctx.apps as apps
 
     monkeypatch.setattr(apps, "_get_protocol_widget_html", lambda: "<!DOCTYPE html><p>chart</p>")
 
@@ -89,7 +89,7 @@ def test_protocol_widget_resource_uses_lazy_built_asset(monkeypatch):
 
 
 def test_protocol_widget_loader_reports_missing_build(monkeypatch, tmp_path):
-    import sidemantic.apps as apps
+    import sqlctx.apps as apps
 
     monkeypatch.setattr(apps, "_PROTOCOL_WIDGET_HTML", None)
     monkeypatch.setattr(apps, "Path", lambda _path: tmp_path)
@@ -126,7 +126,7 @@ def test_create_chart_resource():
 
     dumped = resource.model_dump()
     assert dumped["type"] == "resource"
-    assert str(dumped["resource"]["uri"]) == "ui://sidemantic/chart"
+    assert str(dumped["resource"]["uri"]) == "ui://sqlctx/chart"
     assert dumped["resource"]["mimeType"] == "text/html;profile=mcp-app"
     assert "text" in dumped["resource"]
     assert "vega-embed" in dumped["resource"]["text"]
@@ -134,7 +134,7 @@ def test_create_chart_resource():
 
 def test_create_chart_with_apps_enabled(demo_layer):
     """Test that create_chart includes UIResource when apps mode is on."""
-    import sidemantic.mcp_server as _mcp_mod
+    import sqlctx.mcp_server as _mcp_mod
 
     original = _mcp_mod._apps_enabled
     try:
@@ -157,14 +157,14 @@ def test_create_chart_with_apps_enabled(demo_layer):
         ui_resource = result[1]
         dumped = ui_resource.model_dump()
         assert dumped["type"] == "resource"
-        assert str(dumped["resource"]["uri"]) == "ui://sidemantic/chart"
+        assert str(dumped["resource"]["uri"]) == "ui://sqlctx/chart"
     finally:
         _mcp_mod._apps_enabled = original
 
 
 def test_create_chart_without_apps_returns_dict(demo_layer):
     """Test that create_chart returns a plain dict when apps mode is off."""
-    import sidemantic.mcp_server as _mcp_mod
+    import sqlctx.mcp_server as _mcp_mod
 
     original = _mcp_mod._apps_enabled
     try:

@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic.db.motherduck import MotherDuckAdapter
+from sqlctx.db.motherduck import MotherDuckAdapter
 
 
 def test_motherduck_from_url_matrix(monkeypatch):

@@ -17,9 +17,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.rill import RillAdapter
-from sidemantic.validation import validate_model
+from sqlctx import SemanticLayer
+from sqlctx.adapters.rill import RillAdapter
+from sqlctx.validation import validate_model
 
 # =============================================================================
 # FIXTURES
@@ -225,7 +225,7 @@ class TestDerivedMetricsParsing:
         """A parent-only derived view is a valid, importable model.
 
         Without a table/sql/dax/source_uri fallback, validate_model rejects the
-        derived view, breaking the CLI import path (`sidemantic validate`).
+        derived view, breaking the CLI import path (`sqlctx validate`).
         """
         assert validate_model(derived_metrics) == []
 

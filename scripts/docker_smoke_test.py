@@ -1,4 +1,4 @@
-"""Smoke-test a built Sidemantic Docker image in its API, MCP, and PostgreSQL modes.
+"""Smoke-test a built sqlctx Docker image in its API, MCP, and PostgreSQL modes.
 
 Usage: python3 scripts/docker_smoke_test.py IMAGE [--api-port PORT] [--modes api,mcp,postgres]
 
@@ -66,7 +66,7 @@ def http_json(url: str, payload: dict | None = None, token: str | None = None) -
 
 
 def check_api(image: str, port: int) -> str:
-    name = f"sidemantic-smoke-api-{port}"
+    name = f"sqlctx-smoke-api-{port}"
     docker("rm", "-f", name, check=False)
     docker(
         "run",
@@ -74,9 +74,9 @@ def check_api(image: str, port: int) -> str:
         "--name",
         name,
         "--env",
-        "SIDEMANTIC_MODE=api",
+        "SQLCTX_MODE=api",
         "--env",
-        f"SIDEMANTIC_API_TOKEN={API_TOKEN}",
+        f"SQLCTX_API_TOKEN={API_TOKEN}",
         "--publish",
         f"127.0.0.1:{port}:4400",
         image,
@@ -113,7 +113,7 @@ def check_api(image: str, port: int) -> str:
 
 def check_mcp(image: str) -> str:
     process = subprocess.Popen(
-        ["docker", "run", "--interactive", "--rm", "--env", "SIDEMANTIC_MODE=mcp", image, "--demo"],
+        ["docker", "run", "--interactive", "--rm", "--env", "SQLCTX_MODE=mcp", image, "--demo"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         text=True,
@@ -185,7 +185,7 @@ def check_mcp(image: str) -> str:
 
 
 def check_postgres(image: str) -> str:
-    name = "sidemantic-smoke-postgres"
+    name = "sqlctx-smoke-postgres"
     docker("rm", "-f", name, check=False)
     docker("run", "--detach", "--name", name, image, "--demo")
 
@@ -202,7 +202,7 @@ def check_postgres(image: str) -> str:
             "--host=127.0.0.1",
             "--port=5433",
             "--username=any",
-            "--dbname=sidemantic",
+            "--dbname=sqlctx",
             "--no-psqlrc",
             "--tuples-only",
             "--no-align",

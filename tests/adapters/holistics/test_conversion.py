@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.holistics import HolisticsAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.holistics import HolisticsAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
 
 
 def test_holistics_to_cube_conversion():

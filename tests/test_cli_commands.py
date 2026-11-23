@@ -12,8 +12,8 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-import sidemantic.cli as cli_module
-from sidemantic.cli import app
+import sqlctx.cli as cli_module
+from sqlctx.cli import app
 from tests.optional_dep_stubs import ensure_fake_mcp, ensure_fake_riffq
 
 runner = CliRunner()
@@ -23,11 +23,11 @@ runner = CliRunner()
 def _clear_engine_env(monkeypatch):
     cli_module._loaded_config = None
     for name in (
-        "SIDEMANTIC_RS_SQL_GENERATOR",
-        "SIDEMANTIC_RS_QUERY_VALIDATION",
-        "SIDEMANTIC_RS_REWRITER",
-        "SIDEMANTIC_RS_SQL_GENERATOR_VERIFY",
-        "SIDEMANTIC_RS_NO_FALLBACK",
+        "SQLCTX_RS_SQL_GENERATOR",
+        "SQLCTX_RS_QUERY_VALIDATION",
+        "SQLCTX_RS_REWRITER",
+        "SQLCTX_RS_SQL_GENERATOR_VERIFY",
+        "SQLCTX_RS_NO_FALLBACK",
     ):
         monkeypatch.delenv(name, raising=False)
     yield
@@ -64,7 +64,7 @@ def test_version_option_prints_version():
     result = runner.invoke(app, ["--version"])
 
     assert result.exit_code == 0
-    assert "sidemantic " in result.stdout
+    assert "sqlctx " in result.stdout
 
 
 def test_info_prints_model_summary(tmp_path):
@@ -137,7 +137,7 @@ def test_migrator_generates_models_from_warehouse_query_history(monkeypatch, tmp
             captured["rewritten_dir"] = output_dir
 
     monkeypatch.setattr(cli_module, "SemanticLayer", FakeLayer)
-    monkeypatch.setattr("sidemantic.core.migrator.Migrator", FakeMigrator)
+    monkeypatch.setattr("sqlctx.core.migrator.Migrator", FakeMigrator)
 
     output = tmp_path / "generated"
     result = runner.invoke(
@@ -223,10 +223,10 @@ def test_explain_sql_outputs_planner_json(tmp_path):
 def test_query_engine_rust_routes_rewriter_without_environment_mutation(monkeypatch, tmp_path):
     _write_min_model(tmp_path)
     captured = {}
-    monkeypatch.setenv("SIDEMANTIC_RS_SQL_GENERATOR", "0")
-    monkeypatch.setenv("SIDEMANTIC_RS_QUERY_VALIDATION", "0")
-    monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "0")
-    monkeypatch.setenv("SIDEMANTIC_RS_NO_FALLBACK", "0")
+    monkeypatch.setenv("SQLCTX_RS_SQL_GENERATOR", "0")
+    monkeypatch.setenv("SQLCTX_RS_QUERY_VALIDATION", "0")
+    monkeypatch.setenv("SQLCTX_RS_REWRITER", "0")
+    monkeypatch.setenv("SQLCTX_RS_NO_FALLBACK", "0")
 
     class FakeRewriter:
         last_engine_selection = {"engine": "rust", "reason": None}
@@ -238,7 +238,7 @@ def test_query_engine_rust_routes_rewriter_without_environment_mutation(monkeypa
         def rewrite(self, _sql, **kwargs):
             return "select 1"
 
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.QueryRewriter", FakeRewriter)
+    monkeypatch.setattr("sqlctx.sql.query_rewriter.QueryRewriter", FakeRewriter)
 
     result = runner.invoke(
         app,
@@ -256,13 +256,13 @@ def test_query_engine_rust_routes_rewriter_without_environment_mutation(monkeypa
 
     assert result.exit_code == 0
     assert captured == {"rewriter": True, "no_fallback": False}
-    assert os.environ["SIDEMANTIC_RS_REWRITER"] == "0"
+    assert os.environ["SQLCTX_RS_REWRITER"] == "0"
 
 
 def test_query_uses_config_runtime_engine(monkeypatch, tmp_path):
     _write_min_model(tmp_path)
     captured = {}
-    config_path = tmp_path / "sidemantic.yaml"
+    config_path = tmp_path / "sqlctx.yaml"
     config_path.write_text(
         f"""
 models_dir: {tmp_path}
@@ -282,7 +282,7 @@ runtime:
         def rewrite(self, _sql, **kwargs):
             return "select 1"
 
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.QueryRewriter", FakeRewriter)
+    monkeypatch.setattr("sqlctx.sql.query_rewriter.QueryRewriter", FakeRewriter)
 
     result = runner.invoke(
         app,
@@ -315,7 +315,7 @@ def test_rewrite_engine_rust_routes_rewriter(monkeypatch, tmp_path):
         def rewrite(self, _sql, **kwargs):
             return "select 1"
 
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.QueryRewriter", FakeRewriter)
+    monkeypatch.setattr("sqlctx.sql.query_rewriter.QueryRewriter", FakeRewriter)
 
     result = runner.invoke(
         app,
@@ -356,7 +356,7 @@ def test_export_native_validate_rust_calls_bridge(monkeypatch, tmp_path):
         captured["yaml"] = yaml_content
         return object()
 
-    monkeypatch.setattr("sidemantic.rust_bridge.load_graph_from_yaml_with_rust", fake_load_graph_from_yaml_with_rust)
+    monkeypatch.setattr("sqlctx.rust_bridge.load_graph_from_yaml_with_rust", fake_load_graph_from_yaml_with_rust)
 
     result = runner.invoke(
         app,
@@ -428,7 +428,7 @@ def test_query_prefers_project_root_data_db(monkeypatch, tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     _write_orders_db(data_dir / "warehouse.duckdb")
-    (tmp_path / "sidemantic.yaml").write_text("models_dir: models\n")
+    (tmp_path / "sqlctx.yaml").write_text("models_dir: models\n")
     monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(app, ["query", "SELECT status, order_count FROM orders ORDER BY status"])
@@ -448,7 +448,7 @@ def test_workbench_calls_runner(monkeypatch, tmp_path):
         called["demo_mode"] = demo_mode
         called["connection"] = connection
 
-    monkeypatch.setattr("sidemantic.workbench.run_workbench", fake_run_workbench)
+    monkeypatch.setattr("sqlctx.workbench.run_workbench", fake_run_workbench)
 
     _write_min_model(tmp_path)
     result = runner.invoke(app, ["workbench", str(tmp_path)])
@@ -460,34 +460,37 @@ def test_workbench_calls_runner(monkeypatch, tmp_path):
 
 
 def test_workbench_missing_extra_prints_install_hint(monkeypatch, tmp_path):
-    from sidemantic.workbench import WorkbenchDependencyError
+    from sqlctx.workbench import WorkbenchDependencyError
 
     def fake_run_workbench(directory, demo_mode=False, connection=None):
         raise WorkbenchDependencyError(
-            "Missing optional dependency for `sidemantic workbench`: textual. "
+            "Missing optional dependency for `sqlctx workbench`: textual. "
             "Install the workbench extra or run it with uvx, for example: "
-            "`uvx --from 'sidemantic[workbench]' sidemantic workbench --demo`."
+            "`uvx --from 'sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx' sqlctx workbench --demo`."
         )
 
-    monkeypatch.setattr("sidemantic.workbench.run_workbench", fake_run_workbench)
+    monkeypatch.setattr("sqlctx.workbench.run_workbench", fake_run_workbench)
 
     _write_min_model(tmp_path)
     result = runner.invoke(app, ["workbench", str(tmp_path)])
 
     assert result.exit_code == 1
     assert "Missing optional dependency" in result.output
-    assert "uvx --from 'sidemantic[workbench]' sidemantic workbench --demo" in result.output
+    assert (
+        "uvx --from 'sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx' sqlctx workbench --demo"
+        in result.output
+    )
 
 
 def test_validate_python_runs_without_workbench_extra(monkeypatch, tmp_path):
     for module_name in list(sys.modules):
-        if module_name == "sidemantic.workbench" or module_name.startswith("sidemantic.workbench."):
+        if module_name == "sqlctx.workbench" or module_name.startswith("sqlctx.workbench."):
             monkeypatch.delitem(sys.modules, module_name, raising=False)
 
     real_import = builtins.__import__
 
     def blocked_workbench_import(name, *args, **kwargs):
-        if name == "sidemantic.workbench" or name.startswith("sidemantic.workbench."):
+        if name == "sqlctx.workbench" or name.startswith("sqlctx.workbench."):
             raise ImportError("simulated missing workbench extra")
         return real_import(name, *args, **kwargs)
 
@@ -548,8 +551,8 @@ def test_validate_engine_rust_uses_semantic_input(monkeypatch, tmp_path):
         called["python_directory"] = directory
         return FakeReport()
 
-    monkeypatch.setattr("sidemantic.rust_bridge.validate_semantic_input", fake_validate_semantic_input)
-    monkeypatch.setattr("sidemantic.validation_runner.validate_directory", fake_validate_directory)
+    monkeypatch.setattr("sqlctx.rust_bridge.validate_semantic_input", fake_validate_semantic_input)
+    monkeypatch.setattr("sqlctx.validation_runner.validate_directory", fake_validate_directory)
 
     result = runner.invoke(app, ["validate", str(tmp_path), "--engine", "rust", "--verbose"])
 
@@ -563,7 +566,7 @@ def test_validate_engine_rust_uses_semantic_input(monkeypatch, tmp_path):
 
 
 def test_validate_routes_fidelity_features_and_unknown_legacy_notes_fail_closed(monkeypatch, tmp_path):
-    from sidemantic.fidelity import record_import_feature, record_import_note
+    from sqlctx.fidelity import record_import_feature, record_import_note
 
     _write_min_model(tmp_path)
 
@@ -580,7 +583,7 @@ def test_validate_routes_fidelity_features_and_unknown_legacy_notes_fail_closed(
         record_import_note("future_construct", "Unknown fidelity severity", severity="future_status")
         return FakeReport()
 
-    monkeypatch.setattr("sidemantic.validation_runner.validate_directory", fake_validate_directory)
+    monkeypatch.setattr("sqlctx.validation_runner.validate_directory", fake_validate_directory)
 
     result = runner.invoke(app, ["validate", str(tmp_path), "--engine", "python", "--json"])
 
@@ -598,7 +601,7 @@ def test_lsp_command_calls_main(monkeypatch):
     def fake_main():
         called["count"] += 1
 
-    monkeypatch.setattr("sidemantic.lsp.main", fake_main)
+    monkeypatch.setattr("sqlctx.lsp.main", fake_main)
 
     result = runner.invoke(app, ["lsp"])
 
@@ -619,8 +622,8 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
         called["username"] = username
         called["password"] = password
 
-    monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
-    monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: events.append("warning"))
+    monkeypatch.setattr("sqlctx.server.server.start_server", fake_start_server)
+    monkeypatch.setattr("sqlctx.cli_contract.emit_warning", lambda _message: events.append("warning"))
 
     _write_min_model(tmp_path)
     result = runner.invoke(
@@ -636,13 +639,13 @@ def test_serve_calls_start_server(monkeypatch, tmp_path):
 
 def test_serve_missing_extra_prints_install_hint(monkeypatch, tmp_path):
     for module_name in list(sys.modules):
-        if module_name == "sidemantic.server.server" or module_name.startswith("sidemantic.server."):
+        if module_name == "sqlctx.server.server" or module_name.startswith("sqlctx.server."):
             monkeypatch.delitem(sys.modules, module_name, raising=False)
 
     real_import = builtins.__import__
 
     def blocked_server_import(name, *args, **kwargs):
-        if name == "sidemantic.server.server":
+        if name == "sqlctx.server.server":
             raise ImportError("simulated missing serve extra")
         return real_import(name, *args, **kwargs)
 
@@ -653,7 +656,7 @@ def test_serve_missing_extra_prints_install_hint(monkeypatch, tmp_path):
 
     assert result.exit_code == 1
     assert "requires the optional serve dependencies" in result.output
-    assert "sidemantic[serve]" in result.output
+    assert "sqlctx[serve]" in result.output
 
 
 def test_serve_rejects_partial_auth(monkeypatch, tmp_path):
@@ -662,7 +665,7 @@ def test_serve_rejects_partial_auth(monkeypatch, tmp_path):
     def fake_start_server(*args, **kwargs):
         raise AssertionError("start_server should not be called with partial auth config")
 
-    monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
+    monkeypatch.setattr("sqlctx.server.server.start_server", fake_start_server)
 
     _write_min_model(tmp_path)
     result = runner.invoke(app, ["server", "postgres", str(tmp_path), "--username", "u"])
@@ -676,7 +679,7 @@ def test_serve_uses_loaded_config_defaults(monkeypatch, tmp_path):
     called = {}
     models_dir = tmp_path / "models"
     _write_min_model(models_dir)
-    config_path = tmp_path / "sidemantic.yaml"
+    config_path = tmp_path / "sqlctx.yaml"
     config_path.write_text(
         f"""
 models_dir: {models_dir}
@@ -698,7 +701,7 @@ pg_server:
         called["username"] = username
         called["password"] = password
 
-    monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
+    monkeypatch.setattr("sqlctx.server.server.start_server", fake_start_server)
 
     cli_module._loaded_config = None
     result = runner.invoke(app, ["--config", str(config_path), "server", "postgres"])
@@ -735,7 +738,7 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
         result_cache_ttl=60.0,
         require_user_attrs=False,
         enforce_visibility=False,
-        user_header="X-Sidemantic-User",
+        user_header="X-sqlctx-User",
         dashboard=None,
         serve_mcp=False,
         server_limits=None,
@@ -755,7 +758,7 @@ def test_api_serve_calls_start_server(monkeypatch, tmp_path):
         called["user_header"] = user_header
         called["dashboard"] = dashboard
 
-    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
+    monkeypatch.setattr("sqlctx.api_server.start_api_server", fake_start_api_server)
 
     _write_min_model(tmp_path)
     result = runner.invoke(
@@ -791,8 +794,8 @@ def test_api_serve_legacy_warning_precedes_start_server(monkeypatch, tmp_path):
     def fake_start_api_server(_layer, **_kwargs):
         events.append("start")
 
-    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
-    monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: events.append("warning"))
+    monkeypatch.setattr("sqlctx.api_server.start_api_server", fake_start_api_server)
+    monkeypatch.setattr("sqlctx.cli_contract.emit_warning", lambda _message: events.append("warning"))
 
     _write_min_model(tmp_path)
     result = runner.invoke(app, ["api-serve", str(tmp_path), "--no-ui"])
@@ -833,8 +836,8 @@ def test_tree_alias_calls_workbench(monkeypatch, tmp_path):
         events.append("start")
         called["directory"] = directory
 
-    monkeypatch.setattr("sidemantic.workbench.run_workbench", fake_run_workbench)
-    monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: events.append("warning"))
+    monkeypatch.setattr("sqlctx.workbench.run_workbench", fake_run_workbench)
+    monkeypatch.setattr("sqlctx.cli_contract.emit_warning", lambda _message: events.append("warning"))
 
     _write_min_model(tmp_path)
     result = runner.invoke(app, ["tree", str(tmp_path)])
@@ -848,7 +851,7 @@ def test_cli_source_uses_public_adapter():
     """cli.py should not reference ._adapter anywhere."""
     import os
 
-    cli_path = os.path.join(os.path.dirname(__file__), "..", "sidemantic", "cli.py")
+    cli_path = os.path.join(os.path.dirname(__file__), "..", "sqlctx", "cli.py")
     with open(cli_path) as f:
         content = f.read()
 
@@ -879,9 +882,9 @@ def test_mcp_serve_calls_initialize(monkeypatch, tmp_path):
         events.append("start")
         called["run"] = True
 
-    monkeypatch.setattr("sidemantic.mcp_server.initialize_layer", fake_initialize_layer)
-    monkeypatch.setattr("sidemantic.mcp_server.mcp.run", fake_run)
-    monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: events.append("warning"))
+    monkeypatch.setattr("sqlctx.mcp_server.initialize_layer", fake_initialize_layer)
+    monkeypatch.setattr("sqlctx.mcp_server.mcp.run", fake_run)
+    monkeypatch.setattr("sqlctx.cli_contract.emit_warning", lambda _message: events.append("warning"))
 
     tmp_path.mkdir(parents=True, exist_ok=True)
     result = runner.invoke(app, ["mcp-serve", str(tmp_path)])
@@ -903,10 +906,10 @@ def test_docker_entrypoint_does_not_use_eval():
 
 
 def _run_docker_entrypoint(tmp_path, *args, **env_vars):
-    """Run docker-entrypoint.sh against a fake `sidemantic` that records each invocation's argv."""
+    """Run docker-entrypoint.sh against a fake `sqlctx` that records each invocation's argv."""
     entrypoint = Path(__file__).resolve().parent.parent / "docker-entrypoint.sh"
     log = tmp_path / "commands.jsonl"
-    executable = tmp_path / "sidemantic"
+    executable = tmp_path / "sqlctx"
     executable.write_text(
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
@@ -914,7 +917,7 @@ def _run_docker_entrypoint(tmp_path, *args, **env_vars):
         "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
     )
     executable.chmod(0o755)
-    env = {key: value for key, value in os.environ.items() if not key.startswith("SIDEMANTIC_")}
+    env = {key: value for key, value in os.environ.items() if not key.startswith("SQLCTX_")}
     env.update(PATH=f"{tmp_path}{os.pathsep}{env['PATH']}", COMMAND_LOG=str(log), TMPDIR=str(tmp_path), **env_vars)
     subprocess.run(["sh", str(entrypoint), *args], env=env, check=True, capture_output=True, timeout=10)
     return [json.loads(line) for line in log.read_text().splitlines()]
@@ -929,10 +932,10 @@ def test_docker_pg_modes_launch_postgres_command(mode, tmp_path):
     commands = _run_docker_entrypoint(
         tmp_path,
         "--demo",
-        SIDEMANTIC_MODE=mode,
-        SIDEMANTIC_USERNAME="demo_user",
-        SIDEMANTIC_PASSWORD="demo_password",
-        SIDEMANTIC_PORT="5433",
+        SQLCTX_MODE=mode,
+        SQLCTX_USERNAME="demo_user",
+        SQLCTX_PASSWORD="demo_password",
+        SQLCTX_PORT="5433",
     )
     postgres = next(args for args in commands if args[:2] == ["server", "postgres"])
     assert _option_value(postgres, "--username") == "demo_user"
@@ -950,9 +953,9 @@ def test_docker_api_mode_passes_token_as_file(tmp_path):
     (api,) = _run_docker_entrypoint(
         tmp_path,
         "--demo",
-        SIDEMANTIC_MODE="api",
-        SIDEMANTIC_API_TOKEN="secret-token",
-        SIDEMANTIC_CORS_ORIGINS="https://a.example,https://b.example",
+        SQLCTX_MODE="api",
+        SQLCTX_API_TOKEN="secret-token",
+        SQLCTX_CORS_ORIGINS="https://a.example,https://b.example",
     )
     assert api[:4] == ["server", "api", "--host", "0.0.0.0"]
     assert "--auth-token" not in api
@@ -965,7 +968,7 @@ def test_docker_api_mode_passes_token_as_file(tmp_path):
 
 
 def test_docker_mcp_mode_launches_stdio_server_with_connection(tmp_path):
-    (mcp,) = _run_docker_entrypoint(tmp_path, "/app/models", SIDEMANTIC_MODE="mcp", SIDEMANTIC_CONNECTION="duckdb:///x")
+    (mcp,) = _run_docker_entrypoint(tmp_path, "/app/models", SQLCTX_MODE="mcp", SQLCTX_CONNECTION="duckdb:///x")
     assert mcp == ["server", "mcp", "--connection", "duckdb:///x", "/app/models"]
 
 
@@ -985,9 +988,9 @@ def test_mcp_serve_applies_static_user_attributes_and_visibility(monkeypatch, tm
         called["user_attributes"] = user_attributes
         called["enforce_visibility"] = enforce_visibility
 
-    monkeypatch.setattr("sidemantic.mcp_server.initialize_layer", fake_initialize_layer)
-    monkeypatch.setattr("sidemantic.mcp_server.mcp.run", lambda *args, **kwargs: None)
-    monkeypatch.setattr("sidemantic.cli_contract.emit_warning", lambda _message: None)
+    monkeypatch.setattr("sqlctx.mcp_server.initialize_layer", fake_initialize_layer)
+    monkeypatch.setattr("sqlctx.mcp_server.mcp.run", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sqlctx.cli_contract.emit_warning", lambda _message: None)
 
     models_dir = tmp_path / "models"
     models_dir.mkdir()
@@ -1015,7 +1018,7 @@ def test_mcp_serve_apps_implies_http_and_uses_config(monkeypatch, tmp_path):
     called = {}
     models_dir = tmp_path / "models"
     _write_min_model(models_dir)
-    config_path = tmp_path / "sidemantic.yaml"
+    config_path = tmp_path / "sqlctx.yaml"
     config_path.write_text(
         """
 models_dir: .
@@ -1046,13 +1049,13 @@ connection:
         called["transport"] = "streamable-http"
         called["auth_token"] = kwargs["auth_token"]
 
-    monkeypatch.setattr("sidemantic.mcp_server.initialize_layer", fake_initialize_layer)
-    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_run)
-    monkeypatch.setattr("sidemantic.mcp_server.get_layer", lambda: object())
+    monkeypatch.setattr("sqlctx.mcp_server.initialize_layer", fake_initialize_layer)
+    monkeypatch.setattr("sqlctx.api_server.start_api_server", fake_run)
+    monkeypatch.setattr("sqlctx.mcp_server.get_layer", lambda: object())
     token_file = tmp_path / "token"
     token_file.write_text("secret")
 
-    import sidemantic.mcp_server as mcp_mod
+    import sqlctx.mcp_server as mcp_mod
 
     mcp_mod._apps_enabled = False
     cli_module._loaded_config = None
@@ -1084,7 +1087,7 @@ connection:
 def test_query_uses_loaded_config_init_sql(monkeypatch, tmp_path):
     models_dir = tmp_path / "models"
     _write_min_model(models_dir)
-    config_path = tmp_path / "sidemantic.yaml"
+    config_path = tmp_path / "sqlctx.yaml"
     config_path.write_text(
         f"""
 models_dir: {models_dir}
@@ -1118,8 +1121,8 @@ connection:
     def fake_load_from_directory(layer, directory):
         captured["directory"] = directory
 
-    monkeypatch.setattr("sidemantic.cli.SemanticLayer", FakeLayer)
-    monkeypatch.setattr("sidemantic.cli.load_from_directory", fake_load_from_directory)
+    monkeypatch.setattr("sqlctx.cli.SemanticLayer", FakeLayer)
+    monkeypatch.setattr("sqlctx.cli.load_from_directory", fake_load_from_directory)
 
     result = runner.invoke(
         app,
@@ -1166,9 +1169,9 @@ def test_http_entrypoints_forward_trusted_identity(monkeypatch, tmp_path, comman
     def fake_start_api_server(layer, **kwargs):
         called.update(kwargs)
 
-    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
-    monkeypatch.setattr("sidemantic.mcp_server.initialize_layer", lambda *args, **kwargs: None)
-    monkeypatch.setattr("sidemantic.mcp_server.get_layer", lambda: object())
+    monkeypatch.setattr("sqlctx.api_server.start_api_server", fake_start_api_server)
+    monkeypatch.setattr("sqlctx.mcp_server.initialize_layer", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sqlctx.mcp_server.get_layer", lambda: object())
     arguments = [*command, str(tmp_path), "--auth-token-file", str(token_file)]
     if trust_header:
         arguments.append("--trust-user-header")
@@ -1191,7 +1194,7 @@ def test_stdio_mcp_rejects_trusted_header_option(tmp_path):
 def test_http_entrypoints_forward_query_limits(monkeypatch, tmp_path, command):
     _write_min_model(tmp_path)
     called = {}
-    monkeypatch.setattr("sidemantic.api_server.start_api_server", lambda layer, **kwargs: called.update(kwargs))
+    monkeypatch.setattr("sqlctx.api_server.start_api_server", lambda layer, **kwargs: called.update(kwargs))
     result = runner.invoke(
         app,
         [

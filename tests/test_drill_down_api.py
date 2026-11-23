@@ -1,6 +1,6 @@
 """Test drill-down API helpers."""
 
-from sidemantic import Dimension, Metric, Model
+from sqlctx import Dimension, Metric, Model
 
 
 def test_get_hierarchy_path():

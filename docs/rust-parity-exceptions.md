@@ -88,7 +88,7 @@ Each count below is a unique declared function, not parametrized cases. Native c
 | `tests/adapters/bsl/test_parsing.py` | 0 | 0 | 6 |
 | `tests/adapters/cube/test_fixtures.py` | 0 | 0 | 5 |
 | `tests/adapters/metricflow/test_parsing.py` | 0 | 0 | 7 |
-| `tests/adapters/sidemantic_adapter/test_parsing.py` | 0 | 0 | 1 |
+| `tests/adapters/sqlctx_adapter/test_parsing.py` | 0 | 0 | 1 |
 | `tests/adapters/tableau/test_real_world.py` | 0 | 0 | 2 |
 | `tests/adapters/test_added_fixture_coverage.py` | 0 | 0 | 2 |
 | `tests/adapters/test_fixture_functionality_contracts.py` | 0 | 0 | 4 |
@@ -153,13 +153,13 @@ JUnit does not enumerate deselected tests. Historical results do not validate cu
 | Native source-dialect literal contract | 12 |
 | Native subquery scope regression | 1 |
 | PostgreSQL adapter available, tested in integration tests | 1 |
-| PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN | 44 |
-| PostgreSQL policy execution requires SIDEMANTIC_TEST_POSTGRES_DSN | 36 |
+| PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN | 44 |
+| PostgreSQL policy execution requires SQLCTX_TEST_POSTGRES_DSN | 36 |
 | Python joins physical keys; native computed-key identity has its own independent oracle | 1 |
 | Python reparses completed Redshift aggregates with its generic SQL parser | 3 |
 | Rust target emission; Python reparses Redshift using its generic parser | 3 |
-| Set SIDEMANTIC_YARDSTICK_UPSTREAM_TESTS=1 to fetch and replay live upstream Yardstick tests | 2 |
+| Set SQLCTX_YARDSTICK_UPSTREAM_TESTS=1 to fetch and replay live upstream Yardstick tests | 2 |
 | Strict Rust compiler validation contract | 9 |
 | could not import 'anywidget': No module named 'anywidget' | 8 |
 | could not import 'textual': No module named 'textual' | 2 |
-| set SIDEMANTIC_DAX_ONLINE_CONFORMANCE=1 to probe DAX Formatter | 11 |
+| set SQLCTX_DAX_ONLINE_CONFORMANCE=1 to probe DAX Formatter | 11 |

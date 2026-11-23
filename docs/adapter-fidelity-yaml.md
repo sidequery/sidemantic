@@ -48,6 +48,6 @@ explicit SQL source before importing.
 Omni relationship predicates and declared join types are executable native
 semantics. The `reversible` property must be Boolean and is retained for native
 roundtrips. Topic configuration is retained for native export, but topic field
-curation does not restrict Sidemantic queries; fidelity reporting identifies
+curation does not restrict sqlctx queries; fidelity reporting identifies
 that distinction. Retaining vendor configuration is not a guarantee that every
 vendor feature is executable outside that vendor.

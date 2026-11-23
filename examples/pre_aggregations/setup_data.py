@@ -80,7 +80,7 @@ def create_sample_data():
 
     conn.close()
     print(f"\nDatabase created at: {db_path}")
-    print("Ready to use with sidemantic!")
+    print("Ready to use with sqlctx!")
 
 
 if __name__ == "__main__":

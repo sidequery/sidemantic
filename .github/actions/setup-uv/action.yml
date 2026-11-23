@@ -24,17 +24,17 @@ runs:
         cache-dependency-glob: |
           uv.lock
           pyproject.toml
-          sidemantic-rs/pyproject.toml
+          sqlctx-rs/pyproject.toml
           crates/dax-pyo3/pyproject.toml
           crates/dax-pyo3/README.md
           .cargo/config.toml
           rust-toolchain*
           Cargo.lock
           Cargo.toml
-          sidemantic-rs/Cargo.toml
-          sidemantic-rs/build.rs
-          sidemantic-rs/src/**
-          sidemantic-rs/schemas/**
+          sqlctx-rs/Cargo.toml
+          sqlctx-rs/build.rs
+          sqlctx-rs/src/**
+          sqlctx-rs/schemas/**
           crates/*/Cargo.toml
           crates/*/src/**
           crates/dax-pyo3/python/**/*.py

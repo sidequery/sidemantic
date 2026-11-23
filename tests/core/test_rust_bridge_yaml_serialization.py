@@ -3,19 +3,19 @@
 import pytest
 import yaml
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.rust_bridge import find_relationship_path_with_rust, graph_to_rust_yaml, models_to_rust_yaml
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.pre_aggregation import Index, PreAggregation, RefreshKey
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.rust_bridge import find_relationship_path_with_rust, graph_to_rust_yaml, models_to_rust_yaml
 from tests.rust_layer_adapter import _dimension_to_rust_dict, _metric_to_rust_dict, _relationship_to_rust_dict
 
 
 @pytest.mark.parametrize("window,expected", [(None, "max"), ("min", "min"), ("max", "max")])
 def test_loaded_native_metric_restores_unset_non_additive_window(window, expected):
-    from sidemantic.rust_bridge import _graph_from_loaded_payload
+    from sqlctx.rust_bridge import _graph_from_loaded_payload
 
     graph = _graph_from_loaded_payload(
         {
@@ -219,7 +219,7 @@ def test_find_relationship_path_prefers_edge_aware_payload_and_preserves_legacy_
                 '"to_columns":["id"],"relationship":"many_to_one","edge_id":"orders_customer"}]'
             )
 
-    monkeypatch.setattr("sidemantic.rust_bridge.get_rust_module", lambda: EdgeAwareRustModule())
+    monkeypatch.setattr("sqlctx.rust_bridge.get_rust_module", lambda: EdgeAwareRustModule())
     path = find_relationship_path_with_rust(graph, "orders", "customers")
     assert path[0].edge_id == "orders_customer"
 
@@ -228,7 +228,7 @@ def test_find_relationship_path_prefers_edge_aware_payload_and_preserves_legacy_
         def find_relationship_path_with_yaml(_yaml, _from_model, _to_model):
             return [("orders", "customers", ["customer_id"], ["id"], "many_to_one")]
 
-    monkeypatch.setattr("sidemantic.rust_bridge.get_rust_module", lambda: LegacyRustModule())
+    monkeypatch.setattr("sqlctx.rust_bridge.get_rust_module", lambda: LegacyRustModule())
     legacy_path = find_relationship_path_with_rust(graph, "orders", "customers")
     assert legacy_path[0].edge_id is None
 

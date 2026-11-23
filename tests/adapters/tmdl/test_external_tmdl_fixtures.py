@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.tmdl import TMDLAdapter
-from sidemantic.core.introspection import describe_graph
+from sqlctx.adapters.tmdl import TMDLAdapter
+from sqlctx.core.introspection import describe_graph
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = ROOT / "fixtures" / "external_powerbi"
@@ -26,7 +26,7 @@ TMDL_FIXTURES = [
 
 def _dax_parser_available() -> bool:
     try:
-        from sidemantic_dax import parse_expression
+        from sqlctx_dax import parse_expression
     except Exception:
         return False
 

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.snowflake import SnowflakeAdapter
+from sqlctx.adapters.snowflake import SnowflakeAdapter
 
 
 @pytest.fixture
@@ -200,9 +200,9 @@ class TestRoundtrip:
 
     def test_top_level_sections_survive_native_roundtrip(self, adapter, graph, tmp_path):
         """Snowflake -> native (export-native) -> Snowflake preserves top-level sections."""
-        from sidemantic.adapters.sidemantic import SidemanticAdapter
+        from sqlctx.adapters.sqlctx import SqlctxAdapter
 
-        native = SidemanticAdapter()
+        native = SqlctxAdapter()
         native_path = tmp_path / "native.yml"
         native.export(graph, native_path)
 

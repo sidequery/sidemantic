@@ -11,10 +11,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 JS_ROOT = ROOT / "js"
 SOURCE = JS_ROOT / "widget.js"
-TARGET = ROOT / "sidemantic" / "widget" / "static" / "widget.js"
+TARGET = ROOT / "sqlctx" / "widget" / "static" / "widget.js"
 HOST_CSS = JS_ROOT / "widget.css"
-UI_CSS = ROOT / "plugins" / "sidemantic" / "skills" / "webapp-builder" / "assets" / "ui-dist" / "sidemantic-ui.css"
-CSS_TARGET = ROOT / "sidemantic" / "widget" / "static" / "widget.css"
+UI_CSS = ROOT / "plugins" / "sqlctx" / "skills" / "webapp-builder" / "assets" / "ui-dist" / "sqlctx-ui.css"
+CSS_TARGET = ROOT / "sqlctx" / "widget" / "static" / "widget.css"
 
 
 def build_css(target: Path) -> None:
@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         build_css(CSS_TARGET)
         return 0
 
-    with tempfile.TemporaryDirectory(prefix="sidemantic-widget-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="sqlctx-widget-") as temp_dir:
         candidate = Path(temp_dir) / "widget.js"
         css_candidate = Path(temp_dir) / "widget.css"
         subprocess.run(

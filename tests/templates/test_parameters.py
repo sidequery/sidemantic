@@ -3,10 +3,10 @@
 import duckdb
 import pytest
 
-from sidemantic.core.model import Dimension, Metric, Model
-from sidemantic.core.parameter import Parameter, ParameterSet
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx.core.model import Dimension, Metric, Model
+from sqlctx.core.parameter import Parameter, ParameterSet
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.generator import SQLGenerator
 from tests.utils import fetch_rows
 
 
@@ -455,7 +455,7 @@ def test_query_method_accepts_parameters():
     Bug: Documentation showed parameters argument but method didn't accept it.
     Fix: Add parameters argument and forward to compile().
     """
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
 
     layer = SemanticLayer()
 

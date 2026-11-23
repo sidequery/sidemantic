@@ -5,8 +5,8 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from sidemantic.interchange.ossie.portable import lower_ossie_sql
-from sidemantic.sql.rendering import render_ossie_sql
+from sqlctx.interchange.ossie.portable import lower_ossie_sql
+from sqlctx.sql.rendering import render_ossie_sql
 
 
 @pytest.mark.parametrize("target", ["snowflake", "bigquery", "duckdb"])
@@ -58,8 +58,8 @@ def test_count_normalization_does_not_rewrite_other_aggregates_or_qualified_star
 def test_layer2_filtered_count_window_reaches_target_emitter(route, target, argument, expected):
     import json
 
-    from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+    from sqlctx.sql.query_rewriter import QueryRewriter
     from tests.interchange.ossie.test_layer2_conformance import LATEST
     from tests.rust_layer_adapter import _rust_request
 

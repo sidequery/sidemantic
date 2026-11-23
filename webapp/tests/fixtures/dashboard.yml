@@ -1,4 +1,4 @@
-schema: sidemantic.dashboard.v1
+schema: sqlctx.dashboard.v1
 title: Revenue Operations
 defaults:
   renderer: crossfilter

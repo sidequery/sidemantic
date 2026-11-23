@@ -1,4 +1,4 @@
-# Minimal fixture to test millisecond granularity (unsupported in sidemantic Dimension model).
+# Minimal fixture to test millisecond granularity (unsupported in sqlctx Dimension model).
 # Used by test_millisecond_xfail.
 
 semantic_models:

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic", "duckdb"]
+# dependencies = ["sqlctx @ git+https://github.com/sidequery/sqlctx", "duckdb"]
 # ///
-"""Comprehensive demo of Sidemantic semantic layer features.
+"""Comprehensive demo of sqlctx semantic layer features.
 
 This script demonstrates:
 - Auto-detecting dependencies from SQL expressions
@@ -13,18 +13,18 @@ This script demonstrates:
 - Multiple metric types (simple, ratio, derived, cumulative)
 - View generation for reusable queries
 
-Run with: uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/advanced/comprehensive_demo.py
+Run with: uv run https://raw.githubusercontent.com/sidequery/sqlctx/main/examples/advanced/comprehensive_demo.py
 """
 
 import duckdb
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator import SQLGenerator
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.generator import SQLGenerator
+from sqlctx.sql.query_rewriter import QueryRewriter
 
 
 def print_section(title: str):
@@ -50,7 +50,7 @@ def print_results(results, description: str = "Results"):
 
 
 def main():
-    print_section("Sidemantic Comprehensive Demo")
+    print_section("sqlctx Comprehensive Demo")
 
     # =========================================================================
     # 1. Set up semantic layer models

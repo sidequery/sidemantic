@@ -1,7 +1,7 @@
 # Sigma compatibility
 
 `--from sigma` and `--to sigma` use the separately installed official
-`ossie-sigma` executable. Sidemantic never installs it, downloads dependencies,
+`ossie-sigma` executable. sqlctx never installs it, downloads dependencies,
 or calls Sigma automatically. Install it in a separate environment and expose
 its executable on `PATH`; the converter requires Python 3.11+. See the
 [upstream converter documentation](https://github.com/apache/ossie-converters/blob/011ea9f9a1e2c941f351e18e071622339ccae881/sigma/README.md).
@@ -14,10 +14,10 @@ different installed converter version is used.
 ## CLI
 
 ```sh
-sidemantic convert data-model.json --from sigma --to sidemantic \
+sqlctx convert data-model.json --from sigma --to sqlctx \
   --output models.yml
 
-sidemantic convert models.yml --from sidemantic --to sigma \
+sqlctx convert models.yml --from sqlctx --to sigma \
   --ossie-expression-dialect ANSI_SQL --ossie-scope commerce \
   --output data-model.json
 ```
@@ -30,7 +30,7 @@ Import uses the official converter's translated ANSI SQL and lowers to DuckDB by
 default. `--ossie-target-dialect` selects another supported execution dialect.
 Export requires `--ossie-expression-dialect ANSI_SQL`: other dialect labels are
 rejected, and the bridge does not relabel their SQL. `--ossie-scope` optionally
-names the intermediate semantic model (default `sidemantic`). Official-compatible,
+names the intermediate semantic model (default `sqlctx`). Official-compatible,
 portable Ossie export is applied internally; `--ossie-official-compatible` itself
 is reserved for `--to ossie`. Use `--force` only to replace an existing output.
 
@@ -73,7 +73,7 @@ be treated as a faithful update to existing Sigma objects.
 
 The pinned official exporter can synthesize a relationship's `targetColumnId`
 from the **source** element's column-ID map. The result can reference a column
-that does not exist on the target element. Sidemantic validates native IDs and
+that does not exist on the target element. sqlctx validates native IDs and
 ordered key pairs before publishing and **rejects those exports**, including the
 composite-key case exercised during validation. Prefer models without
 relationships for this pinned Sigma export path; do not assume relationship
@@ -86,14 +86,14 @@ The bridge stages conversion through validated Ossie, rejects empty output,
 checks model/field/metric/relationship counts, and compares relationship
 endpoints and ordered key pairs. It binds the official converter's quoted
 metric references to their exact logical declarations without changing physical
-field SQL. Export rejects features requiring Sidemantic runtime extensions.
+field SQL. Export rejects features requiring sqlctx runtime extensions.
 
 Upstream stderr is surfaced. Every upstream warning is checked; only the
 reported `OPAQUE_DATATYPE` approximation is allowed. Unknown warnings, dropped
 metrics, untranslatable expressions, and unresolved relationships fail the
 conversion. Existing destinations remain unchanged when conversion is rejected.
 
-Offline tests exercised native and Sidemantic-origin exports, reimports,
+Offline tests exercised native and sqlctx-origin exports, reimports,
 DuckDB aggregation results, composite-key import, and rejection of incorrect
 exported keys. They provide no blanket Sigma feature or deployment guarantee.
 See [conversion fidelity and Ossie interoperability](conversion.md) for the

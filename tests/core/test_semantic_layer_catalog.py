@@ -1,14 +1,14 @@
 import pytest
 
-from sidemantic.core.model import Model
-from sidemantic.core.registry import get_current_layer, reset_current_layer, set_current_layer
-from sidemantic.core.semantic_catalog import (
+from sqlctx.core.model import Model
+from sqlctx.core.registry import get_current_layer, reset_current_layer, set_current_layer
+from sqlctx.core.semantic_catalog import (
     AmbiguousSemanticScopeError,
     CompiledSemanticScope,
     SemanticCatalog,
 )
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import SemanticLayer
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import SemanticLayer
 
 
 def _scope(scope_id: str, table: str, *, target_dialect: str = "duckdb", valid: bool = True) -> CompiledSemanticScope:

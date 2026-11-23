@@ -4,15 +4,15 @@ import tempfile
 import warnings
 from pathlib import Path
 
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.parameter import Parameter
-from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.segment import Segment
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.parameter import Parameter
+from sqlctx.core.pre_aggregation import Index, PreAggregation, RefreshKey
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.segment import Segment
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 def _normalize_sql_text(value: object) -> object:
@@ -372,7 +372,7 @@ parameters:
         model_path.write_text(model_yaml)
         graph_path.write_text(graph_yaml)
 
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             model_graph = adapter.parse(model_path)
@@ -543,7 +543,7 @@ PARAMETER (
         model_path.write_text(model_sql)
         graph_path.write_text(graph_sql)
 
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             model_graph = adapter.parse(model_path)

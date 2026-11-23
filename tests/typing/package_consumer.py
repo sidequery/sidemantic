@@ -1,7 +1,7 @@
 """Downstream import smoke test for the PEP 561 package marker."""
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.adapters import (
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.adapters import (
     atscale_sml,
     bsl,
     cube,
@@ -15,8 +15,8 @@ from sidemantic.adapters import (
     omni,
     osi,
     rill,
-    sidemantic,
     snowflake,
+    sqlctx,
     superset,
     tableau,
     thoughtspot,
@@ -39,7 +39,7 @@ ADAPTER_MODULES = (
     omni,
     osi,
     rill,
-    sidemantic,
+    sqlctx,
     snowflake,
     superset,
     tableau,

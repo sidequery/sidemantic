@@ -1,17 +1,17 @@
 # Terminal help, paging, and completion
 
-The installed CLI is its own offline documentation. Use `sidemantic help` for
+The installed CLI is its own offline documentation. Use `sqlctx help` for
 the command index and pass a nested path for a specific workflow:
 
 ```console
-sidemantic help validate
-sidemantic help migrate generate
-sidemantic help preagg recommend
+sqlctx help validate
+sqlctx help migrate generate
+sqlctx help preagg recommend
 ```
 
 `-h` and `--help` work at the same command levels. The generated
-`sidemantic(1)` page is installed under `share/man/man1` by wheels, so standard
-environment managers can expose it through `man sidemantic`. The checked-in
+`sqlctx(1)` page is installed under `share/man/man1` by wheels, so standard
+environment managers can expose it through `man sqlctx`. The checked-in
 copy is generated from the live Click command tree:
 
 ```console
@@ -25,7 +25,7 @@ A behavioral test fails when the generated page is stale.
 Long human-readable `info`, `explain`, `validate`, and pre-aggregation reports
 use a pager only when stdout is an interactive terminal and the report exceeds
 the terminal height. `--pager` requests paging for any non-empty human report;
-`--no-pager` disables it. `SIDEMANTIC_PAGER` takes precedence over `PAGER`; if
+`--no-pager` disables it. `SQLCTX_PAGER` takes precedence over `PAGER`; if
 neither is set, the platform default is used.
 
 Paging is always disabled for redirected output, `TERM=dumb`, `--quiet`,
@@ -37,8 +37,8 @@ written to redirected stdout. Color follows the normal CLI color policy.
 Typer can install completion for Bash, Zsh, Fish, and PowerShell:
 
 ```console
-sidemantic --install-completion
-sidemantic --show-completion zsh
+sqlctx --install-completion
+sqlctx --show-completion zsh
 ```
 
 Completion covers command and option names plus relevant values:

@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.rill import RillAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.rill import RillAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 def test_import_real_rill_example():
@@ -176,9 +176,9 @@ def test_import_rill_format_preset():
 
 
 def test_export_rill_with_window_function():
-    """Test exporting Sidemantic model with window function to Rill format."""
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    """Test exporting sqlctx model with window function to Rill format."""
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     # Create model with window function metric
     model = Model(

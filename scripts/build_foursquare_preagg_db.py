@@ -5,7 +5,7 @@ from pathlib import Path
 
 import duckdb
 
-from sidemantic import Dimension, Metric, Model, PreAggregation
+from sqlctx import Dimension, Metric, Model, PreAggregation
 
 PLACES_URL = "https://sampledata.sidequery.dev/sidemantic-demo/places.parquet"
 CATEGORIES_URL = "https://sampledata.sidequery.dev/sidemantic-demo/categories.parquet"

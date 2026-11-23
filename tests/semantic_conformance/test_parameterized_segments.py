@@ -3,16 +3,16 @@
 import pytest
 import sqlglot
 
-from sidemantic import Dimension, Metric, Model, Parameter, Segment, SemanticLayer
-from sidemantic.rust_bridge import compile_semantic_input
-from sidemantic.semantic_handoff import graph_to_semantic_input
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx import Dimension, Metric, Model, Parameter, Segment, SemanticLayer
+from sqlctx.rust_bridge import compile_semantic_input
+from sqlctx.semantic_handoff import graph_to_semantic_input
+from sqlctx.sql.generator import SQLGenerator
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires matching native extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires matching native extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(

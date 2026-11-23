@@ -3,13 +3,13 @@
 count_distinct metrics without explicit sql should use the primary key,
 and segment filters should properly include referenced columns in CTEs.
 
-See: https://github.com/sidequery/sidemantic/issues/22
+See: https://github.com/sidequery/sqlctx/issues/22
 """
 
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Segment, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Segment, SemanticLayer
 from tests.utils import fetch_dicts
 
 

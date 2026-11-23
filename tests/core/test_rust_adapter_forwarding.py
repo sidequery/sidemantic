@@ -3,7 +3,7 @@
 import pytest
 import yaml
 
-from sidemantic import Metric, Model, Parameter
+from sqlctx import Metric, Model, Parameter
 from tests.rust_layer_adapter import RustSemanticLayerAdapter
 
 
@@ -79,7 +79,7 @@ def test_preaggregation_options_reach_native_compiler(layer, default, override, 
 
 
 def test_generator_preaggregation_options_reach_same_native_transport(monkeypatch):
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.semantic_graph import SemanticGraph
     from tests import rust_layer_adapter
 
     requests = []

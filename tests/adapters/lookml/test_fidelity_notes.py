@@ -3,8 +3,8 @@
 import os
 import tempfile
 
-from sidemantic.adapters.lookml import LookMLAdapter
-from sidemantic.fidelity import capture_import_report
+from sqlctx.adapters.lookml import LookMLAdapter
+from sqlctx.fidelity import capture_import_report
 
 
 def _parse(lkml_str: str):

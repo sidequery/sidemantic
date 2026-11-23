@@ -4,10 +4,10 @@ import duckdb
 import pytest
 import yaml
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.hex import HexAdapter
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx import SemanticLayer
+from sqlctx.adapters.hex import HexAdapter
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 def test_native_types_and_statistical_aggregates_roundtrip(tmp_path):

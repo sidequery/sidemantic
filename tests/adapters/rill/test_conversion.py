@@ -3,12 +3,12 @@
 import tempfile
 from pathlib import Path
 
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.lookml import LookMLAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic.adapters.omni import OmniAdapter
-from sidemantic.adapters.rill import RillAdapter
-from sidemantic.adapters.superset import SupersetAdapter
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.omni import OmniAdapter
+from sqlctx.adapters.rill import RillAdapter
+from sqlctx.adapters.superset import SupersetAdapter
 
 
 def test_rill_to_cube_conversion():

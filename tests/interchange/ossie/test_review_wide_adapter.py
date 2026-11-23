@@ -5,7 +5,7 @@ import json
 import duckdb
 import pytest
 
-from sidemantic import SemanticLayer
+from sqlctx import SemanticLayer
 from tests.interchange.ossie.test_layer2_conformance import LATEST, ROUTES, shared_catalog
 from tests.rust_layer_adapter import _rust_request
 

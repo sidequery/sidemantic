@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.hex import HexAdapter
+from sqlctx.adapters.hex import HexAdapter
 
 FIXTURE = "tests/fixtures/hex/subscriptions_project.yml"
 
@@ -48,13 +48,13 @@ class TestTypedMultiDocParsing:
         assert (model.metadata or {}).get("label") == "Subscriptions"
 
     def test_dimension_display_name_label(self, graph):
-        """Dimension `name` maps to the Sidemantic display label."""
+        """Dimension `name` maps to the sqlctx display label."""
         model = graph.models["subscriptions"]
         assert model.get_dimension("plan").label == "Plan Tier"
         assert model.get_dimension("customer_id").label == "Customer"
 
     def test_measure_display_name_label(self, graph):
-        """Measure `name` maps to the Sidemantic display label."""
+        """Measure `name` maps to the sqlctx display label."""
         model = graph.models["subscriptions"]
         assert model.get_metric("total_mrr").label == "Total MRR"
         assert model.get_metric("current_mrr").label == "Current MRR"
@@ -183,7 +183,7 @@ def test_export_emits_type_discriminator():
         temp_path = Path(f.name)
     try:
         # Single-file export requires explicitly selecting one resource.
-        from sidemantic.core.semantic_graph import SemanticGraph
+        from sqlctx.core.semantic_graph import SemanticGraph
 
         selected = SemanticGraph()
         selected.add_model(graph.models["subscriptions"])
@@ -322,7 +322,7 @@ def test_semi_additive_inline_dimension_object(tmp_path):
     """`semi_additive.over[].dimension` as an inline Dimension object parses.
 
     The Hex spec allows the `over` dimension to be either a bare dimension id or
-    an inline Dimension object (`{id: ..., type: ...}`). Sidemantic's
+    an inline Dimension object (`{id: ..., type: ...}`). sqlctx's
     `non_additive_dimension` is a plain string, so the inline object form must be
     reduced to its id; passing the dict through fails Pydantic validation and
     breaks the CLI load path for otherwise-valid snapshot measures.

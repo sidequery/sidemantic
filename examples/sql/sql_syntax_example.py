@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # /// script
-# dependencies = ["sidemantic", "duckdb", "pandas"]
+# dependencies = ["sqlctx @ git+https://github.com/sidequery/sqlctx", "duckdb", "pandas"]
 # ///
 """Complete example using SQL syntax to query the semantic layer.
 
@@ -10,15 +10,15 @@ This demonstrates:
 - Running queries against actual DuckDB data
 - Automatic metric aggregation and joins
 
-Run with: uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/sql/sql_syntax_example.py
+Run with: uv run https://raw.githubusercontent.com/sidequery/sqlctx/main/examples/sql/sql_syntax_example.py
 """
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_layer import SemanticLayer
+from sqlctx.sql.query_rewriter import QueryRewriter
 
 
 def setup_data(layer):

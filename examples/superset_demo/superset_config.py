@@ -1,4 +1,4 @@
-"""Minimal Superset configuration for the sidemantic demo.
+"""Minimal Superset configuration for the sqlctx demo.
 
 Uses SQLite for simplicity (built into the base Superset image).
 """

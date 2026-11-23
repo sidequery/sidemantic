@@ -46,7 +46,7 @@ runs:
       with:
         version: ${{ (runner.os != 'macOS' || runner.arch != 'X64') && '1.11.0' || '' }}
         github-cache-mode: objects
-        cache-generation: sidemantic-v1-${{ inputs.suffix }}
+        cache-generation: sqlctx-v1-${{ inputs.suffix }}
 
     - name: Remove imported Rust cache archive
       env:

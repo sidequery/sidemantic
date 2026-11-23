@@ -4,14 +4,14 @@ from datetime import date, datetime
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, PreAggregation, Relationship, SecurityPolicy, SemanticLayer
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.rust_bridge import generate_preaggregation_materialization_sql_with_rust
+from sqlctx import Dimension, Metric, Model, PreAggregation, Relationship, SecurityPolicy, SemanticLayer
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.rust_bridge import generate_preaggregation_materialization_sql_with_rust
 
 
 @pytest.fixture
 def layer():
-    pytest.importorskip("sidemantic_rs", reason="Rollup acceptance requires the matching Rust extension")
+    pytest.importorskip("sqlctx_rs", reason="Rollup acceptance requires the matching Rust extension")
     layer = SemanticLayer(engine="rust", fallback=False, auto_register=False)
     # Exercise the canonical Rust contract with raw timestamps. The Python
     # authoring validator requires a default grain, which would change this
@@ -258,9 +258,9 @@ def test_colliding_state_and_dimension_aliases_cannot_materialize_or_route(layer
     model = layer.graph.models["orders"]
     model.dimensions.append(Dimension(name="revenue_raw", type="numeric", sql="amount"))
     model.pre_aggregations = [PreAggregation(name="daily", measures=["revenue"], dimensions=["revenue_raw"])]
-    import sidemantic_rs
+    import sqlctx_rs
 
-    error = sidemantic_rs.UnsupportedSemanticFeaturesError if rust_build else ValueError
+    error = sqlctx_rs.UnsupportedSemanticFeaturesError if rust_build else ValueError
     with pytest.raises(error, match="colliding|output_alias_collision"):
         materialize(layer, rust=rust_build)
     # Poison an external table with the colliding dimension value; it must not

@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-import sidemantic.adapters.tableau as tableau_module
-from sidemantic import SemanticLayer
-from sidemantic.adapters.tableau import TableauAdapter
-from sidemantic.loaders import load_from_directory
+import sqlctx.adapters.tableau as tableau_module
+from sqlctx import SemanticLayer
+from sqlctx.adapters.tableau import TableauAdapter
+from sqlctx.loaders import load_from_directory
 
 FIXTURES = Path(__file__).parent.parent.parent / "fixtures" / "tableau"
 
@@ -213,7 +213,7 @@ def test_aggregation_mapping_all_aggs(adapter):
     assert model.get_metric("max_amount").agg == "max"
     assert model.get_metric("median_amount").agg == "median"
 
-    # attr -> derived (no sidemantic equivalent)
+    # attr -> derived (no sqlctx equivalent)
     attr_metric = model.get_metric("attr_amount")
     assert attr_metric is not None
     assert attr_metric.type == "derived"

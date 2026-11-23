@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.tableau import TableauAdapter
+from sqlctx.adapters.tableau import TableauAdapter
 
 FIXTURES = Path(__file__).parent.parent.parent / "fixtures" / "tableau"
 
@@ -114,7 +114,7 @@ def test_pivot_relation_sql_compiles_to_valid_duckdb(adapter):
     generator wraps it as "(<sql>) AS t"."""
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = adapter.parse(FIXTURES / "pivot.tds")
     model = graph.models["pivoted_sales"]

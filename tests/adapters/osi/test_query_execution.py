@@ -5,8 +5,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.osi import LegacyOSIAdapter as OSIAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.osi import LegacyOSIAdapter as OSIAdapter
 
 
 def _load_layer_from_graph(graph, conn: duckdb.DuckDBPyConnection) -> SemanticLayer:

@@ -3,9 +3,9 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.generator import SQLGenerator
 
 
 def _layer():
@@ -62,7 +62,7 @@ def test_timezone_dialect_specific_sql():
 
 def test_timezone_bypasses_preaggregation():
     """Pre-aggs are materialized in UTC, so a timezone query must not route to them."""
-    from sidemantic.core.pre_aggregation import PreAggregation
+    from sqlctx.core.pre_aggregation import PreAggregation
 
     conn = duckdb.connect(":memory:")
     conn.execute("create table ev as select 1 as id, TIMESTAMP '2024-01-02 02:00:00' as ts, 5 as amt")
@@ -95,7 +95,7 @@ def test_timezone_bypasses_preaggregation():
 
 def test_generator_timezone_bypasses_preagg_routing():
     """The bypass is enforced in SQLGenerator itself, covering direct (non-compile) use."""
-    from sidemantic.core.pre_aggregation import PreAggregation
+    from sqlctx.core.pre_aggregation import PreAggregation
 
     g = SemanticGraph()
     g.add_model(

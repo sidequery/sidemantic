@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.semantic_layer import SecurityError
+from sqlctx import SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.semantic_layer import SecurityError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -14,10 +14,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Population acceptance requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Population acceptance requires the real Rust extension")
     layer = SemanticLayer(engine=request.param, auto_register=False, enforce_visibility=True)
     try:
-        layer.graph = SidemanticAdapter().parse(FIXTURES / "policy_aggregate.yml")
+        layer.graph = SqlctxAdapter().parse(FIXTURES / "policy_aggregate.yml")
         layer.adapter.execute((FIXTURES / "policy_aggregate.sql").read_text())
         yield layer
     finally:

@@ -4,18 +4,18 @@ on:
   workflow_dispatch:
     inputs:
       publish_npm:
-        description: "Publish sidemantic-wasm to npm when NPM_TOKEN is available"
+        description: "Publish sqlctx-wasm to npm when NPM_TOKEN is available"
         required: false
         default: false
         type: boolean
   push:
     tags:
-      - "sidemantic-wasm-v*"
+      - "sqlctx-wasm-v*"
   pull_request:
     paths:
       - ".github/actions/**"
-      - "sidemantic-wasm/**"
-      - "sidemantic-rs/**"
+      - "sqlctx-wasm/**"
+      - "sqlctx-rs/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/wasm-package-release.yml"
@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: sidemantic-wasm
+        working-directory: sqlctx-wasm
 
     steps:
       - uses: actions/checkout@v4
@@ -69,10 +69,10 @@ jobs:
 
       - name: Check bundle output
         run: |
-          test -f wasm/sidemantic_bg.wasm
-          test -f wasm/sidemantic.js
+          test -f wasm/sqlctx_bg.wasm
+          test -f wasm/sqlctx.js
           ls -la wasm/
-          echo "raw wasm bytes: $(stat -c%s wasm/sidemantic_bg.wasm)"
+          echo "raw wasm bytes: $(stat -c%s wasm/sqlctx_bg.wasm)"
 
       - name: Smoke test the bundle
         run: |
@@ -83,25 +83,25 @@ jobs:
 
       - name: Pack and smoke test shipped package
         run: |
-          bun pm pack --ignore-scripts --filename sidemantic-wasm.tgz
-          bun run scripts/smoke_package.mjs sidemantic-wasm.tgz
+          bun pm pack --ignore-scripts --filename sqlctx-wasm.tgz
+          bun run scripts/smoke_package.mjs sqlctx-wasm.tgz
 
       - name: Upload tested package
         uses: actions/upload-artifact@v4
         with:
-          name: sidemantic-wasm-package
-          path: sidemantic-wasm/sidemantic-wasm.tgz
+          name: sqlctx-wasm-package
+          path: sqlctx-wasm/sqlctx-wasm.tgz
           if-no-files-found: error
 
       - name: Set up npm registry
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_npm == true) || startsWith(github.ref, 'refs/tags/sidemantic-wasm-v') }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_npm == true) || startsWith(github.ref, 'refs/tags/sqlctx-wasm-v') }}
         uses: actions/setup-node@v4
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
       - name: Publish to npm
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_npm == true) || startsWith(github.ref, 'refs/tags/sidemantic-wasm-v') }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish_npm == true) || startsWith(github.ref, 'refs/tags/sqlctx-wasm-v') }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -110,7 +110,7 @@ jobs:
             exit 0
           fi
           # Publish the exact tarball exercised by the isolated consumer above.
-          npm publish sidemantic-wasm.tgz --access public --ignore-scripts
+          npm publish sqlctx-wasm.tgz --access public --ignore-scripts
 
       - name: Save completed build caches
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}

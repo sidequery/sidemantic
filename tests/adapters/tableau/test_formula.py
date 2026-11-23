@@ -1,6 +1,6 @@
 """Tests for Tableau formula translation."""
 
-from sidemantic.adapters.tableau import _translate_formula
+from sqlctx.adapters.tableau import _translate_formula
 
 
 def test_field_reference():

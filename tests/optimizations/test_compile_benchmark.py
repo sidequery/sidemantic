@@ -9,7 +9,7 @@ The actual median/p95 are printed so regressions are visible in test output.
 import statistics
 import time
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
 
 def _build_layer() -> SemanticLayer:

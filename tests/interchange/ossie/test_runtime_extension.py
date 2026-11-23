@@ -4,18 +4,18 @@ import json
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
-from sidemantic.core.registry import reset_current_layer, set_current_layer
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.interchange.ossie import (
+from sqlctx import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
+from sqlctx.core.registry import reset_current_layer, set_current_layer
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.interchange.ossie import (
     OssieImportPolicy,
     OssieParseOptions,
     lower_ossie_document,
     parse_ossie_document,
 )
-from sidemantic.interchange.ossie.runtime_extension import decode_runtime_extension, encode_runtime_extension
+from sqlctx.interchange.ossie.runtime_extension import decode_runtime_extension, encode_runtime_extension
 
 
 def _document(graph, *, dialect="ANSI_SQL"):
@@ -24,7 +24,7 @@ def _document(graph, *, dialect="ANSI_SQL"):
         "datasets": [{"name": "runtime_required", "source": "SELECT NULL AS required WHERE 1 = 0"}],
     }
     scope["custom_extensions"] = [encode_runtime_extension(graph, scope, expression_dialect=dialect)]
-    return {"version": "0.2.0.dev0", "vendors": ["SIDEMANTIC"], "semantic_model": [scope]}
+    return {"version": "0.2.0.dev0", "vendors": ["SQLCTX"], "semantic_model": [scope]}
 
 
 def _lower(document, *, policy=OssieImportPolicy.STRICT, target="duckdb"):
@@ -37,7 +37,8 @@ def _lower(document, *, policy=OssieImportPolicy.STRICT, target="duckdb"):
     )
 
 
-def test_runtime_extension_restores_per_request_security_and_private_fields():
+@pytest.mark.parametrize("legacy_vendor", [False, True])
+def test_runtime_extension_restores_per_request_security_and_private_fields(legacy_vendor):
     original = SemanticLayer()
     original.add_model(
         Model(
@@ -52,6 +53,11 @@ def test_runtime_extension_restores_per_request_security_and_private_fields():
         )
     )
     document = _document(original.graph)
+    if legacy_vendor:
+        document["vendors"] = ["SIDEMANTIC"]
+        extension = document["semantic_model"][0]["custom_extensions"][0]
+        payload = json.loads(extension["data"])
+        extension.update(vendor_name="SIDEMANTIC", data=json.dumps({**payload, "format": "sidemantic.runtime"}))
     assert document["semantic_model"][0]["datasets"][0]["source"] == "SELECT NULL AS required WHERE 1 = 0"
     lowered = _lower(document)
     assert lowered.valid
@@ -96,7 +102,7 @@ def test_preserves_runtime_metrics_roles_and_inheritance():
     )
     graph.add_metric(Metric(name="owned", agg="sum", sql="amount"), model_name="orders")
     restored = _lower(_document(graph)).catalog["native"].graph
-    from sidemantic.core.inheritance import resolve_model_inheritance
+    from sqlctx.core.inheritance import resolve_model_inheritance
 
     assert restored.models["orders"].model_dump(mode="json") == resolve_model_inheritance(graph.models)[
         "orders"

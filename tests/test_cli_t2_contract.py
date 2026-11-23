@@ -14,8 +14,8 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-import sidemantic.cli as cli_module
-from sidemantic.cli import app
+import sqlctx.cli as cli_module
+from sqlctx.cli import app
 
 runner = CliRunner()
 
@@ -25,23 +25,23 @@ def _reset_cli_state(monkeypatch: pytest.MonkeyPatch, request):
     cli_module._loaded_config = None
     cli_module._project_context = None
     for name in (
-        "SIDEMANTIC_PROJECT",
-        "SIDEMANTIC_CONFIG",
-        "SIDEMANTIC_FORMAT",
-        "SIDEMANTIC_PLAIN",
-        "SIDEMANTIC_QUIET",
-        "SIDEMANTIC_VERBOSE",
-        "SIDEMANTIC_DEBUG",
-        "SIDEMANTIC_NO_COLOR",
-        "SIDEMANTIC_ENGINE",
-        "SIDEMANTIC_ENGINE_FALLBACK",
-        "SIDEMANTIC_RS_SQL_GENERATOR",
-        "SIDEMANTIC_RS_QUERY_VALIDATION",
-        "SIDEMANTIC_RS_REWRITER",
-        "SIDEMANTIC_RS_SQL_GENERATOR_VERIFY",
-        "SIDEMANTIC_RS_NO_FALLBACK",
-        "SIDEMANTIC_PG_PASSWORD_FILE",
-        "SIDEMANTIC_API_AUTH_TOKEN_FILE",
+        "SQLCTX_PROJECT",
+        "SQLCTX_CONFIG",
+        "SQLCTX_FORMAT",
+        "SQLCTX_PLAIN",
+        "SQLCTX_QUIET",
+        "SQLCTX_VERBOSE",
+        "SQLCTX_DEBUG",
+        "SQLCTX_NO_COLOR",
+        "SQLCTX_ENGINE",
+        "SQLCTX_ENGINE_FALLBACK",
+        "SQLCTX_RS_SQL_GENERATOR",
+        "SQLCTX_RS_QUERY_VALIDATION",
+        "SQLCTX_RS_REWRITER",
+        "SQLCTX_RS_SQL_GENERATOR_VERIFY",
+        "SQLCTX_RS_NO_FALLBACK",
+        "SQLCTX_PG_PASSWORD_FILE",
+        "SQLCTX_API_AUTH_TOKEN_FILE",
         "NO_COLOR",
         "FORCE_COLOR",
         "TERM",
@@ -49,7 +49,7 @@ def _reset_cli_state(monkeypatch: pytest.MonkeyPatch, request):
     ):
         monkeypatch.delenv(name, raising=False)
     # Preserve the selected engine after clearing host CLI settings.
-    monkeypatch.setenv("SIDEMANTIC_ENGINE", request.config.getoption("--test-engine"))
+    monkeypatch.setenv("SQLCTX_ENGINE", request.config.getoption("--test-engine"))
     yield
     cli_module._loaded_config = None
     cli_module._project_context = None
@@ -80,7 +80,7 @@ def project(tmp_path: Path) -> Path:
     connection.execute("CREATE TABLE orders (id INTEGER, status VARCHAR)")
     connection.execute("INSERT INTO orders VALUES (1, 'complete'), (2, 'pending')")
     connection.close()
-    (tmp_path / "sidemantic.yaml").write_text(
+    (tmp_path / "sqlctx.yaml").write_text(
         """models_dir: models
 connection:
   type: duckdb
@@ -328,8 +328,8 @@ def test_query_dry_run_defaults_to_raw_sql(project: Path):
 @pytest.mark.parametrize(
     ("environment", "config_default"),
     [
-        ({"SIDEMANTIC_FORMAT": "csv"}, None),
-        ({"SIDEMANTIC_FORMAT": "json"}, None),
+        ({"SQLCTX_FORMAT": "csv"}, None),
+        ({"SQLCTX_FORMAT": "json"}, None),
         ({}, "csv"),
         ({}, "jsonl"),
     ],
@@ -340,7 +340,7 @@ def test_query_dry_run_ignores_format_defaults(
     config_default: str | None,
 ):
     if config_default:
-        config = project / "sidemantic.yaml"
+        config = project / "sqlctx.yaml"
         config.write_text(f"{config.read_text()}cli:\n  format: {config_default}\n")
 
     result = runner.invoke(
@@ -366,9 +366,9 @@ def test_query_dry_run_ignores_format_defaults(
     [
         ([], {}, False),
         (["--format", "json"], {}, True),
-        ([], {"SIDEMANTIC_FORMAT": "json"}, False),
-        ([], {"SIDEMANTIC_FORMAT": "csv"}, False),
-        ([], {"SIDEMANTIC_PLAIN": "1"}, False),
+        ([], {"SQLCTX_FORMAT": "json"}, False),
+        ([], {"SQLCTX_FORMAT": "csv"}, False),
+        ([], {"SQLCTX_PLAIN": "1"}, False),
     ],
 )
 def test_explain_activates_machine_mode_only_for_requested_json(
@@ -383,7 +383,7 @@ def test_explain_activates_machine_mode_only_for_requested_json(
     def capture_json(_value: object) -> None:
         modes_at_emission.append(cli_module.cli_state().machine_output)
 
-    monkeypatch.setattr("sidemantic.cli.emit_json", capture_json)
+    monkeypatch.setattr("sqlctx.cli.emit_json", capture_json)
     result = runner.invoke(
         app,
         [
@@ -406,14 +406,14 @@ def test_explain_ignores_project_output_defaults(
     monkeypatch: pytest.MonkeyPatch,
     configuration: str,
 ):
-    config = project / "sidemantic.yaml"
+    config = project / "sqlctx.yaml"
     config.write_text(f"{config.read_text()}cli:\n  {configuration}\n")
     modes_at_emission: list[bool] = []
 
     def capture_json(_value: object) -> None:
         modes_at_emission.append(cli_module.cli_state().machine_output)
 
-    monkeypatch.setattr("sidemantic.cli.emit_json", capture_json)
+    monkeypatch.setattr("sqlctx.cli.emit_json", capture_json)
     result = runner.invoke(
         app,
         ["explain", "SELECT status, order_count FROM orders", "--project", str(project)],
@@ -457,8 +457,8 @@ def test_format_default_does_not_suppress_unstructured_server_status(
     monkeypatch: pytest.MonkeyPatch,
 ):
     pytest.importorskip("fastapi")
-    monkeypatch.setenv("SIDEMANTIC_FORMAT", "json")
-    monkeypatch.setattr("sidemantic.api_server.start_api_server", lambda *args, **kwargs: None)
+    monkeypatch.setenv("SQLCTX_FORMAT", "json")
+    monkeypatch.setattr("sqlctx.api_server.start_api_server", lambda *args, **kwargs: None)
 
     result = runner.invoke(app, ["server", "api", "--project", str(project), "--no-ui"])
 
@@ -542,7 +542,7 @@ def test_json_alias_matches_format_json(project: Path):
 
 @pytest.mark.parametrize(
     ("environment", "config_default"),
-    [({"SIDEMANTIC_FORMAT": "csv"}, None), ({}, "csv")],
+    [({"SQLCTX_FORMAT": "csv"}, None), ({}, "csv")],
 )
 def test_json_alias_overrides_non_cli_format_defaults(
     project: Path,
@@ -550,7 +550,7 @@ def test_json_alias_overrides_non_cli_format_defaults(
     config_default: str | None,
 ):
     if config_default:
-        config = project / "sidemantic.yaml"
+        config = project / "sqlctx.yaml"
         config.write_text(f"{config.read_text()}cli:\n  format: {config_default}\n")
 
     result = runner.invoke(app, ["--project", str(project), "info", "--json"], env=environment)
@@ -577,9 +577,9 @@ def test_plain_rejects_machine_format(project: Path):
 def test_explicit_plain_overrides_machine_format_defaults(project: Path, default_source: str):
     environment = {}
     if default_source == "environment":
-        environment["SIDEMANTIC_FORMAT"] = "json"
+        environment["SQLCTX_FORMAT"] = "json"
     else:
-        config = project / "sidemantic.yaml"
+        config = project / "sqlctx.yaml"
         config.write_text(f"{config.read_text()}cli:\n  format: json\n")
 
     result = runner.invoke(app, ["info", "--project", str(project), "--plain"], env=environment)
@@ -599,9 +599,9 @@ def test_explicit_plain_overrides_machine_format_defaults(project: Path, default
 def test_explicit_json_overrides_plain_defaults(project: Path, default_source: str):
     environment = {}
     if default_source == "environment":
-        environment["SIDEMANTIC_PLAIN"] = "1"
+        environment["SQLCTX_PLAIN"] = "1"
     else:
-        config = project / "sidemantic.yaml"
+        config = project / "sqlctx.yaml"
         config.write_text(f"{config.read_text()}cli:\n  plain: true\n")
 
     result = runner.invoke(app, ["info", "--project", str(project), "--json"], env=environment)
@@ -615,9 +615,9 @@ def test_explicit_json_overrides_plain_defaults(project: Path, default_source: s
 def test_explicit_format_overrides_plain_defaults(project: Path, output_format: str, default_source: str):
     environment = {}
     if default_source == "environment":
-        environment["SIDEMANTIC_PLAIN"] = "1"
+        environment["SQLCTX_PLAIN"] = "1"
     else:
-        config = project / "sidemantic.yaml"
+        config = project / "sqlctx.yaml"
         config.write_text(f"{config.read_text()}cli:\n  plain: true\n")
 
     result = runner.invoke(
@@ -675,7 +675,7 @@ def test_project_and_format_environment_defaults(project: Path):
     result = runner.invoke(
         app,
         ["info"],
-        env={"SIDEMANTIC_PROJECT": str(project), "SIDEMANTIC_FORMAT": "json"},
+        env={"SQLCTX_PROJECT": str(project), "SQLCTX_FORMAT": "json"},
     )
 
     assert result.exit_code == 0, result.output
@@ -686,7 +686,7 @@ def test_flags_override_environment(project: Path):
     result = runner.invoke(
         app,
         ["--project", str(project), "info", "--format", "csv"],
-        env={"SIDEMANTIC_FORMAT": "json", "SIDEMANTIC_QUIET": "1"},
+        env={"SQLCTX_FORMAT": "json", "SQLCTX_QUIET": "1"},
     )
 
     assert result.exit_code == 0, result.output
@@ -698,7 +698,7 @@ def test_config_environment_selects_project(project: Path, tmp_path: Path, monke
     result = runner.invoke(
         app,
         ["query", "SELECT order_count FROM orders", "--format", "json"],
-        env={"SIDEMANTIC_CONFIG": str(project / "sidemantic.yaml")},
+        env={"SQLCTX_CONFIG": str(project / "sqlctx.yaml")},
     )
 
     assert result.exit_code == 0, result.output
@@ -706,7 +706,7 @@ def test_config_environment_selects_project(project: Path, tmp_path: Path, monke
 
 
 def test_project_config_supplies_presentation_defaults(project: Path):
-    config = project / "sidemantic.yaml"
+    config = project / "sqlctx.yaml"
     config.write_text(f"{config.read_text()}cli:\n  format: json\n  quiet: true\n")
 
     result = runner.invoke(app, ["--project", str(project), "info"])
@@ -748,7 +748,7 @@ def test_validate_rust_failures_preserve_requested_output(
     def fail_to_load(*args, **kwargs):
         raise RuntimeError("bridge unavailable")
 
-    monkeypatch.setattr("sidemantic.rust_bridge.validate_semantic_input", fail_to_load)
+    monkeypatch.setattr("sqlctx.rust_bridge.validate_semantic_input", fail_to_load)
     arguments = ["validate", "--project", str(project), "--engine", "rust"]
     arguments.extend(["--plain"] if output_mode == "plain" else ["--format", output_mode])
 
@@ -773,7 +773,7 @@ def test_validate_rust_failures_preserve_requested_output(
 def test_empty_jsonl_result_emits_no_blank_record(tmp_path: Path):
     queries = tmp_path / "queries.sql"
     queries.write_text(
-        "SELECT revenue FROM orders\n-- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status;\n"
+        "SELECT revenue FROM orders\n-- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status;\n"
     )
 
     result = runner.invoke(
@@ -820,12 +820,12 @@ def test_root_and_complex_help_include_examples_docs_and_support():
         result = runner.invoke(app, arguments)
         assert result.exit_code == 0, result.output
         assert "Example" in result.stdout
-        assert "https://sidemantic.com" in result.stdout
-        assert "https://github.com/sidequery/sidemantic/issues" in result.stdout
+        assert "https://github.com/sidequery/sqlctx" in result.stdout
+        assert "https://github.com/sidequery/sqlctx/issues" in result.stdout
 
 
 def test_color_policy_precedence(monkeypatch: pytest.MonkeyPatch):
-    from sidemantic.cli_contract import color_enabled
+    from sqlctx.cli_contract import color_enabled
 
     monkeypatch.setenv("FORCE_COLOR", "1")
     assert color_enabled(is_tty=False)
@@ -839,7 +839,7 @@ def test_color_policy_precedence(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_terminal_detection_does_not_override_click_capture(monkeypatch: pytest.MonkeyPatch):
-    import sidemantic.cli_contract as cli_contract
+    import sqlctx.cli_contract as cli_contract
 
     monkeypatch.setattr(cli_contract, "color_enabled", lambda **_kwargs: True)
     result = runner.invoke(app, ["--help"], color=False)
@@ -855,7 +855,7 @@ def test_terminal_detection_does_not_override_click_capture(monkeypatch: pytest.
 
 
 def test_progress_policy_requires_human_tty(monkeypatch: pytest.MonkeyPatch):
-    from sidemantic.cli_contract import cli_state, is_terminal, progress_enabled
+    from sqlctx.cli_contract import cli_state, is_terminal, progress_enabled
 
     state = cli_state()
     assert is_terminal(io.StringIO()) is False
@@ -881,7 +881,7 @@ def test_click_and_typer_have_compatible_runtime_floors():
 
 
 def test_progress_falls_back_when_rich_is_unavailable(monkeypatch: pytest.MonkeyPatch):
-    import sidemantic.cli_contract as contract
+    import sqlctx.cli_contract as contract
 
     monkeypatch.setattr(contract, "progress_enabled", lambda: True)
     monkeypatch.setitem(sys.modules, "rich.console", None)
@@ -905,20 +905,20 @@ def test_convert_uses_shared_progress_seam(project: Path, tmp_path: Path, monkey
     output = tmp_path / "converted.yml"
     result = runner.invoke(
         app,
-        ["convert", "--project", str(project), "--output", str(output), "--to", "sidemantic"],
+        ["convert", "--project", str(project), "--output", str(output), "--to", "sqlctx"],
     )
 
     assert result.exit_code == 0, result.output
     assert output.exists()
-    assert messages == ["Converting semantic definitions to sidemantic"]
+    assert messages == ["Converting semantic definitions to sqlctx"]
 
 
 def test_safe_credential_file_environment_is_not_echoed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    from sidemantic.cli_contract import credential_file_from_env
+    from sqlctx.cli_contract import credential_file_from_env
 
     credential = tmp_path / "pg-password"
     credential.write_text("correct horse battery staple\n")
-    monkeypatch.setenv("SIDEMANTIC_PG_PASSWORD_FILE", str(credential))
+    monkeypatch.setenv("SQLCTX_PG_PASSWORD_FILE", str(credential))
 
-    assert credential_file_from_env("SIDEMANTIC_PG_PASSWORD_FILE") == credential
+    assert credential_file_from_env("SQLCTX_PG_PASSWORD_FILE") == credential
     assert "correct horse battery staple" not in repr(cli_module.cli_state())

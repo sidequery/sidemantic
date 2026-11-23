@@ -2,7 +2,7 @@
 
 The public query API remains single-statement. This runner owns the setup catalog,
 transaction, and temporary measure metadata needed to replay native test records.
-Query expansion itself always uses Sidemantic's production rewriter.
+Query expansion itself always uses sqlctx's production rewriter.
 """
 
 from __future__ import annotations
@@ -17,10 +17,10 @@ from sqlglot.errors import SqlglotError
 from sqlglot.optimizer.scope import traverse_scope
 from sqlglot.tokens import TokenType
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.yardstick import YardstickAdapter
-from sidemantic.core.registry import reset_current_layer, set_current_layer
-from sidemantic.sql.query_rewriter import QueryRewriter, YardstickBindingError, YardstickWarning
+from sqlctx import SemanticLayer
+from sqlctx.adapters.yardstick import YardstickAdapter
+from sqlctx.core.registry import reset_current_layer, set_current_layer
+from sqlctx.sql.query_rewriter import QueryRewriter, YardstickBindingError, YardstickWarning
 
 
 @dataclass

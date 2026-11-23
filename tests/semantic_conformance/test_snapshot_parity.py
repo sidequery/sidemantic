@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.semantic_layer import SecurityError
+from sqlctx import SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.semantic_layer import SecurityError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -15,10 +15,10 @@ FIXTURES = Path(__file__).parent / "fixtures"
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Snapshot parity requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Snapshot parity requires the real Rust extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     try:
-        layer.graph = SidemanticAdapter().parse(FIXTURES / "snapshots.yml")
+        layer.graph = SqlctxAdapter().parse(FIXTURES / "snapshots.yml")
         layer.adapter.execute((FIXTURES / "snapshots.sql").read_text())
         yield layer
     finally:
@@ -59,7 +59,7 @@ def test_simple_model_snapshot_is_not_silently_summed(layer):
 
 
 def test_explicit_unsafe_snapshot_option_preserves_all_authorized_rows(layer):
-    from sidemantic import Metric
+    from sqlctx import Metric
 
     layer.allow_non_additive_unsafe = True
     layer.add_metric(Metric(name="wrapped", type="derived", sql="snapshots.closing + 1"))
@@ -234,7 +234,7 @@ def test_snapshot_default_handles_empty_totals_without_creating_groups(layer):
 
 
 def test_filled_snapshot_calculated_wrapper_uses_final_aggregate_default(layer):
-    from sidemantic import Metric
+    from sqlctx import Metric
 
     layer.graph.models["snapshots"].get_metric("closing").fill_nulls_with = -9
     layer.add_metric(Metric(name="wrapped", type="derived", sql="snapshots.closing + 1"))

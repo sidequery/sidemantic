@@ -9,13 +9,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.interchange.ossie import (
+from sqlctx.interchange.ossie import (
     OssieParseOptions,
     lower_ossie_document,
     parse_ossie_document,
     serialize_ossie_document,
 )
-from sidemantic.interchange.ossie.mapping import validate_ossie_mapping
+from sqlctx.interchange.ossie.mapping import validate_ossie_mapping
 
 LATEST = "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1"
 FIXTURES = Path(__file__).parents[2] / "ossie-fixtures/upstream/172a3e5/examples"

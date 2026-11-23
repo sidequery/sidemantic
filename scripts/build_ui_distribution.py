@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "webapp" / "src" / "ui.ts"
 STATIC_ENTRY = ROOT / "webapp" / "src" / "static-api.tsx"
-DEST = ROOT / "plugins" / "sidemantic" / "skills" / "webapp-builder" / "assets" / "ui-dist"
+DEST = ROOT / "plugins" / "sqlctx" / "skills" / "webapp-builder" / "assets" / "ui-dist"
 
 
 def build(target: Path) -> None:
@@ -28,7 +28,7 @@ def build(target: Path) -> None:
             '--define=process.env.NODE_ENV="production"',
             "--external=react",
             "--external=react-dom",
-            f"--outfile={target / 'sidemantic-ui.js'}",
+            f"--outfile={target / 'sqlctx-ui.js'}",
         ],
         cwd=ROOT,
         check=True,
@@ -41,7 +41,7 @@ def build(target: Path) -> None:
             "--target=browser",
             "--format=esm",
             '--define=process.env.NODE_ENV="production"',
-            f"--outfile={target / 'sidemantic-ui-static.js'}",
+            f"--outfile={target / 'sqlctx-ui-static.js'}",
         ],
         cwd=ROOT,
         check=True,
@@ -55,7 +55,7 @@ def build(target: Path) -> None:
             "-i",
             str(ROOT / "webapp" / "src" / "index.css"),
             "-o",
-            str(target / "sidemantic-ui.css"),
+            str(target / "sqlctx-ui.css"),
             "--minify",
         ],
         cwd=ROOT / "webapp",
@@ -76,7 +76,7 @@ def main() -> int:
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     if args.check:
-        with tempfile.TemporaryDirectory(prefix="sidemantic-ui-") as directory:
+        with tempfile.TemporaryDirectory(prefix="sqlctx-ui-") as directory:
             candidate = Path(directory)
             build(candidate)
             if not DEST.exists() or not matches(candidate, DEST):

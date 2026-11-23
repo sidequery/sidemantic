@@ -1,4 +1,4 @@
-"""Basic tests for Sidemantic core functionality."""
+"""Basic tests for sqlctx core functionality."""
 
 from datetime import date
 
@@ -7,8 +7,8 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model, Relationship, Segment, SemanticLayer
-from sidemantic.validation import QueryValidationError
+from sqlctx import Dimension, Metric, Model, Relationship, Segment, SemanticLayer
+from sqlctx.validation import QueryValidationError
 from tests.utils import df_rows
 
 

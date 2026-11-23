@@ -2,14 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey
-from sidemantic.core.preagg_management import (
+from sqlctx.core.pre_aggregation import PreAggregation, RefreshKey
+from sqlctx.core.preagg_management import (
     PreAggregationTargetError,
     apply_recommendations_to_yaml,
     resolve_preaggregation_targets,
     resolve_refresh_mode,
 )
-from sidemantic.core.preagg_recommender import (
+from sqlctx.core.preagg_recommender import (
     PreAggRecommendation,
     PreAggregationRecommender,
     QueryPattern,

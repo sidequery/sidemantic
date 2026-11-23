@@ -3,12 +3,12 @@
 import pytest
 from sqlglot import exp
 
-import sidemantic.sql.parsing as sql_parsing
-import sidemantic.sql.query_rewriter as query_rewriter_module
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.aggregation_detection import sql_has_aggregate
-from sidemantic.sql.parsing import parse_fragment, try_parse_fragment
-from sidemantic.sql.query_rewriter import QueryRewriter
+import sqlctx.sql.parsing as sql_parsing
+import sqlctx.sql.query_rewriter as query_rewriter_module
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.aggregation_detection import sql_has_aggregate
+from sqlctx.sql.parsing import parse_fragment, try_parse_fragment
+from sqlctx.sql.query_rewriter import QueryRewriter
 
 
 def test_cached_fragment_parser_returns_independent_mutable_trees():
@@ -59,8 +59,8 @@ def test_non_strict_rewrite_does_not_hide_runtime_bug(monkeypatch):
 
 
 def test_rust_backend_fallback_is_observable(monkeypatch):
-    from sidemantic import Metric, Model
-    from sidemantic.semantic_handoff import RustBackendUnavailableError
+    from sqlctx import Metric, Model
+    from sqlctx.semantic_handoff import RustBackendUnavailableError
 
     def unavailable(*args, **kwargs):
         raise RustBackendUnavailableError("bindings are not installed")
@@ -76,7 +76,7 @@ def test_rust_backend_fallback_is_observable(monkeypatch):
 
 @pytest.mark.parametrize("error", [AttributeError("binding contract bug"), TypeError("rewrite binding contract bug")])
 def test_rust_rewrite_does_not_hide_api_contract_defect(monkeypatch, error):
-    from sidemantic import Metric, Model
+    from sqlctx import Metric, Model
 
     def fail_unexpectedly(*args, **kwargs):
         raise error

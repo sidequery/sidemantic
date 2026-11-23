@@ -2,17 +2,17 @@
 
 import pytest
 
-import sidemantic.rust_parity as rust_parity
-import sidemantic.validation as validation_module
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_layer import SemanticLayer
+import sqlctx.rust_parity as rust_parity
+import sqlctx.validation as validation_module
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_layer import SemanticLayer
 
 
 @pytest.fixture(autouse=True)
 def _reset_strict_targets_cache(monkeypatch):
-    monkeypatch.delenv("SIDEMANTIC_ENGINE", raising=False)
+    monkeypatch.delenv("SQLCTX_ENGINE", raising=False)
     rust_parity.strict_targets.cache_clear()
     yield
     rust_parity.strict_targets.cache_clear()
@@ -40,11 +40,11 @@ def _build_layer() -> SemanticLayer:
 
 
 def test_query_validation_routes_to_rust(monkeypatch):
-    import sidemantic.rust_bridge as rust_bridge
+    import sqlctx.rust_bridge as rust_bridge
 
-    monkeypatch.setenv("SIDEMANTIC_RS_QUERY_VALIDATION", "1")
-    monkeypatch.delenv("SIDEMANTIC_RS_STRICT_SUBSYSTEMS", raising=False)
-    monkeypatch.delenv("SIDEMANTIC_RS_NO_FALLBACK", raising=False)
+    monkeypatch.setenv("SQLCTX_RS_QUERY_VALIDATION", "1")
+    monkeypatch.delenv("SQLCTX_RS_STRICT_SUBSYSTEMS", raising=False)
+    monkeypatch.delenv("SQLCTX_RS_NO_FALLBACK", raising=False)
     _clear_strict_cache()
 
     layer = _build_layer()
@@ -60,11 +60,11 @@ def test_query_validation_routes_to_rust(monkeypatch):
 
 
 def test_query_validation_strict_raises_without_fallback(monkeypatch):
-    import sidemantic.rust_bridge as rust_bridge
+    import sqlctx.rust_bridge as rust_bridge
 
-    monkeypatch.setenv("SIDEMANTIC_RS_STRICT_SUBSYSTEMS", "semantic_core_query_validation")
-    monkeypatch.setenv("SIDEMANTIC_RS_NO_FALLBACK", "1")
-    monkeypatch.delenv("SIDEMANTIC_RS_QUERY_VALIDATION", raising=False)
+    monkeypatch.setenv("SQLCTX_RS_STRICT_SUBSYSTEMS", "semantic_core_query_validation")
+    monkeypatch.setenv("SQLCTX_RS_NO_FALLBACK", "1")
+    monkeypatch.delenv("SQLCTX_RS_QUERY_VALIDATION", raising=False)
     _clear_strict_cache()
 
     layer = _build_layer()
@@ -79,9 +79,9 @@ def test_query_validation_strict_raises_without_fallback(monkeypatch):
 
 
 def test_query_validation_with_rust_matches_python_error_text(monkeypatch):
-    monkeypatch.setenv("SIDEMANTIC_RS_QUERY_VALIDATION", "1")
-    monkeypatch.delenv("SIDEMANTIC_RS_STRICT_SUBSYSTEMS", raising=False)
-    monkeypatch.delenv("SIDEMANTIC_RS_NO_FALLBACK", raising=False)
+    monkeypatch.setenv("SQLCTX_RS_QUERY_VALIDATION", "1")
+    monkeypatch.delenv("SQLCTX_RS_STRICT_SUBSYSTEMS", raising=False)
+    monkeypatch.delenv("SQLCTX_RS_NO_FALLBACK", raising=False)
     _clear_strict_cache()
 
     layer = _build_layer()
@@ -93,11 +93,11 @@ def test_query_validation_with_rust_matches_python_error_text(monkeypatch):
 
 
 def test_query_validation_with_rust_accepts_subhour_time_granularities(monkeypatch):
-    import sidemantic.rust_bridge as rust_bridge
+    import sqlctx.rust_bridge as rust_bridge
 
-    monkeypatch.setenv("SIDEMANTIC_RS_QUERY_VALIDATION", "1")
-    monkeypatch.delenv("SIDEMANTIC_RS_STRICT_SUBSYSTEMS", raising=False)
-    monkeypatch.delenv("SIDEMANTIC_RS_NO_FALLBACK", raising=False)
+    monkeypatch.setenv("SQLCTX_RS_QUERY_VALIDATION", "1")
+    monkeypatch.delenv("SQLCTX_RS_STRICT_SUBSYSTEMS", raising=False)
+    monkeypatch.delenv("SQLCTX_RS_NO_FALLBACK", raising=False)
     _clear_strict_cache()
     monkeypatch.setattr(
         rust_bridge,
@@ -114,7 +114,7 @@ def test_query_validation_with_rust_accepts_subhour_time_granularities(monkeypat
 
 
 def test_validate_query_with_rust_prefers_reference_entrypoint(monkeypatch):
-    import sidemantic.rust_bridge as rust_bridge
+    import sqlctx.rust_bridge as rust_bridge
 
     calls = {"references": 0}
 
@@ -139,7 +139,7 @@ def test_validate_query_with_rust_prefers_reference_entrypoint(monkeypatch):
 
 
 def test_validate_query_with_rust_falls_back_to_legacy_payload_entrypoint(monkeypatch):
-    import sidemantic.rust_bridge as rust_bridge
+    import sqlctx.rust_bridge as rust_bridge
 
     calls = {"legacy": 0}
 
@@ -161,7 +161,7 @@ def test_validate_query_with_rust_falls_back_to_legacy_payload_entrypoint(monkey
 
 
 def test_validate_query_with_rust_falls_back_on_reference_signature_incompatibility(monkeypatch):
-    import sidemantic.rust_bridge as rust_bridge
+    import sqlctx.rust_bridge as rust_bridge
 
     calls = {"legacy": 0}
 
@@ -186,7 +186,7 @@ def test_validate_query_with_rust_falls_back_on_reference_signature_incompatibil
 
 
 def test_validate_query_with_rust_propagates_reference_validation_error(monkeypatch):
-    import sidemantic.rust_bridge as rust_bridge
+    import sqlctx.rust_bridge as rust_bridge
 
     class _ReferenceValidationErrorRustModule:
         def validate_query_references(self, models_yaml, metrics, dimensions):

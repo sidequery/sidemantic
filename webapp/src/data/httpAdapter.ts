@@ -1,5 +1,5 @@
 import { buildCatalogFromDescribe, buildCatalogFromGraph, withJoinablePairs } from "../lib/catalog";
-import type { SidemanticBackend } from "./backend";
+import type { SqlctxBackend } from "./backend";
 import { decodeArrow } from "./arrow";
 import { normalizeDashboardDocument, type DashboardDocument } from "./dashboardTypes";
 import type { Catalog, QueryResult, ResultRow, StructuredQuery } from "./types";
@@ -61,7 +61,7 @@ function toRequestBody(query: StructuredQuery): Record<string, unknown> {
   return body;
 }
 
-export class HttpBackend implements SidemanticBackend {
+export class HttpBackend implements SqlctxBackend {
   private readonly baseUrl: string;
   private token?: string;
   private sessionToken?: string;
@@ -86,7 +86,7 @@ export class HttpBackend implements SidemanticBackend {
 
   private headers(extra?: Record<string, string>): Record<string, string> {
     const headers: Record<string, string> = { ...extra };
-    if (this.sessionToken) headers.Authorization = `Sidemantic-Session ${this.sessionToken}`;
+    if (this.sessionToken) headers.Authorization = `sqlctx-Session ${this.sessionToken}`;
     else if (this.token) headers.Authorization = `Bearer ${this.token}`;
     return headers;
   }
@@ -207,7 +207,7 @@ export class HttpBackend implements SidemanticBackend {
     if (!res.ok) throw new Error(await this.errorText(res, "/query"));
     const bytes = new Uint8Array(await res.arrayBuffer());
     const { columns, rows } = decodeArrow(bytes);
-    const sql = res.headers.get("X-Sidemantic-Sql") ?? "";
+    const sql = res.headers.get("X-sqlctx-Sql") ?? "";
     return { columns, rows, rowCount: rows.length, sql };
   }
 
@@ -218,7 +218,7 @@ export class HttpBackend implements SidemanticBackend {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
-        ...(crossOrigin ? { "X-Sidemantic-Session-Mode": "header" } : {}),
+        ...(crossOrigin ? { "X-sqlctx-Session-Mode": "header" } : {}),
       },
       credentials: "include",
     });

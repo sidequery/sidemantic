@@ -1,7 +1,7 @@
 /* AnyWidget host layout layered on top of the canonical UI distribution. */
-/* Ported from the sidemantic-demo */
+/* Ported from the sqlctx-demo */
 
-.sidemantic-widget {
+.sqlctx-widget {
   --surface: #ffffff;
   --surface-soft: #eef1f4;
   --ink: #0b0d10;
@@ -40,7 +40,7 @@
   box-sizing: border-box;
 }
 
-.sidemantic-widget * {
+.sqlctx-widget * {
   box-sizing: border-box;
 }
 

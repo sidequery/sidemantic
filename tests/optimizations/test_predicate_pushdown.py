@@ -3,7 +3,7 @@
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model, Segment
+from sqlctx import Dimension, Metric, Model, Segment
 
 
 def test_single_model_filter_pushdown(layer):
@@ -239,7 +239,7 @@ def test_no_filters_no_where_clause(layer):
 
 def test_segment_filters_pushed_down(layer):
     """Test that segment filters get pushed down into CTEs."""
-    from sidemantic import Segment
+    from sqlctx import Segment
 
     model = Model(
         name="orders",
@@ -532,7 +532,7 @@ def test_window_dim_filter_pushed_into_model_subquery_in_preagg(layer):
     call. This preserves the preagg grain (no extra dimensions added) while the
     recursive generate() handles the window dim filter in its own outer WHERE.
     """
-    from sidemantic.core.model import Relationship
+    from sqlctx.core.model import Relationship
 
     orders = Model(
         name="orders",
@@ -612,7 +612,7 @@ def test_multi_model_window_dim_filter_pushed_into_model_subquery_in_preagg(laye
     window dimension, the filter is pushed into the owning model's subquery so
     the recursive generate() handles it correctly without changing the preagg grain.
     """
-    from sidemantic.core.model import Relationship
+    from sqlctx.core.model import Relationship
 
     orders = Model(
         name="orders",
@@ -694,7 +694,7 @@ def test_mixed_metric_and_window_dim_filter_pushed_into_model_subquery_in_preagg
     window dim check takes priority and the filter is pushed into the owning model's
     subquery to preserve the preagg grain.
     """
-    from sidemantic.core.model import Relationship
+    from sqlctx.core.model import Relationship
 
     orders = Model(
         name="orders",

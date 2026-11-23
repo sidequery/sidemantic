@@ -6,7 +6,7 @@ Date: 2026-05-22
 
 ## Scope Assumption
 
-This plan assumes the Rust port only needs to support the native Sidequery/Sidemantic adapter formats:
+This plan assumes the Rust port only needs to support the native Sidequery/sqlctx adapter formats:
 
 - Native YAML semantic projects.
 - Native SQL semantic definitions.
@@ -685,7 +685,7 @@ Recommended transition:
 
 1. Short term: Rust matches Python behavior on native fixtures.
 2. Medium term: Rust becomes the canonical engine for native compile/rewrite/validation.
-3. Long term: Python delegates native compile/rewrite/validation to Rust by default when `sidemantic_rs` is installed.
+3. Long term: Python delegates native compile/rewrite/validation to Rust by default when `sqlctx_rs` is installed.
 
 This avoids freezing Rust around Python implementation details that may be accidental.
 
@@ -876,7 +876,7 @@ Unsupported SQL
 Good:
 
 ```text
-Explicit JOIN syntax is not supported in semantic SQL. Reference fields from related models instead and let Sidemantic infer the join path.
+Explicit JOIN syntax is not supported in semantic SQL. Reference fields from related models instead and let sqlctx infer the join path.
 ```
 
 ## Phase 7: Make ADBC The Rust Execution Boundary
@@ -923,7 +923,7 @@ Gate with env/credentials:
 Recommended:
 
 ```bash
-sidemantic-rs query \
+sqlctx-rs query \
   --models ./models \
   --metric orders.total_revenue \
   --dimension orders.status \
@@ -933,7 +933,7 @@ sidemantic-rs query \
 Also support direct ADBC:
 
 ```bash
-sidemantic-rs query \
+sqlctx-rs query \
   --models ./models \
   --metric orders.total_revenue \
   --driver adbc_driver_duckdb \
@@ -948,10 +948,10 @@ The DuckDB extension is the strongest Rust-only product path. It should become a
 
 The extension should support:
 
-- `sidemantic_load(yaml)`
-- `sidemantic_load_file(path)`
-- `sidemantic_models()`
-- `sidemantic_rewrite_sql(sql)`
+- `sqlctx_load(yaml)`
+- `sqlctx_load_file(path)`
+- `sqlctx_models()`
+- `sqlctx_rewrite_sql(sql)`
 - `SEMANTIC SELECT`
 - `SEMANTIC CREATE MODEL`
 - `SEMANTIC CREATE METRIC`
@@ -1028,7 +1028,7 @@ Every Python adapter should be able to answer:
 Recommended CLI:
 
 ```bash
-sidemantic migrator convert \
+sqlctx migrator convert \
   --from lookml \
   --input ./lookml_project \
   --output ./native_models \
@@ -1038,7 +1038,7 @@ sidemantic migrator convert \
 Or:
 
 ```bash
-sidemantic convert \
+sqlctx convert \
   --from cube \
   --input ./cube_models \
   --output ./models \
@@ -1068,9 +1068,9 @@ Current Rust routing through environment variables is useful for internal testin
 Add explicit engine selection:
 
 ```bash
-sidemantic validate ./models --engine rust
-sidemantic query ./models --engine rust --metric orders.total_revenue
-sidemantic rewrite ./models --engine rust "select orders.total_revenue from metrics"
+sqlctx validate ./models --engine rust
+sqlctx query ./models --engine rust --metric orders.total_revenue
+sqlctx rewrite ./models --engine rust "select orders.total_revenue from metrics"
 ```
 
 ### Config Mode
@@ -1125,7 +1125,7 @@ Add an always-on native compatibility job:
 
 ```bash
 uv run pytest tests/native_compat
-cd sidemantic-rs && cargo test
+cd sqlctx-rs && cargo test
 ```
 
 More specific:
@@ -1188,8 +1188,8 @@ Keep these as separate artifacts:
 
 | Artifact | Purpose |
 |---|---|
-| `sidemantic` Python package | Main Python CLI, adapters, existing UX. |
-| `sidemantic-rs` Python extension | Rust runtime bridge for Python users. |
+| `sqlctx` Python package | Main Python CLI, adapters, existing UX. |
+| `sqlctx-rs` Python extension | Rust runtime bridge for Python users. |
 | Rust crate | Native runtime library and CLI. |
 | DuckDB extension | Embedded DuckDB semantic runtime. |
 | WASM package | Browser/runtime embedding. |
@@ -1199,14 +1199,14 @@ Keep these as separate artifacts:
 Recommended:
 
 ```bash
-uv add sidemantic
-uv add sidemantic-rs
+uv add git+https://github.com/sidequery/sqlctx
+uv add sqlctx-rs
 ```
 
 or optional extra if publication allows:
 
 ```bash
-uv add "sidemantic[rust]"
+uv add "sqlctx[rust]"
 ```
 
 The main Python package should not require Rust until Rust installation is reliable on all target platforms.
@@ -1216,13 +1216,13 @@ The main Python package should not require Rust until Rust installation is relia
 Potential options:
 
 ```bash
-cargo install sidemantic
+cargo install sqlctx
 ```
 
 or GitHub release binaries:
 
 ```bash
-curl -LsSf https://.../sidemantic-rs/install.sh | sh
+curl -LsSf https://.../sqlctx-rs/install.sh | sh
 ```
 
 The install path should be decided before documenting Rust as a primary runtime.
@@ -1232,8 +1232,8 @@ The install path should be decided before documenting Rust as a primary runtime.
 Target:
 
 ```sql
-install sidemantic from community;
-load sidemantic;
+install sqlctx from community;
+load sqlctx;
 ```
 
 Until then, docs should clearly say "build from source."
@@ -1523,7 +1523,7 @@ Tasks:
 
 - Decide crate/package names.
 - Add Rust release workflow.
-- Add `sidemantic-rs` wheel release workflow.
+- Add `sqlctx-rs` wheel release workflow.
 - Add DuckDB extension release workflow.
 - Add version compatibility docs.
 
@@ -1549,7 +1549,7 @@ Output:
 
 Use:
 
-> The Rust runtime supports native Sidemantic YAML and SQL projects. Use Python to import or convert third-party semantic formats into native projects.
+> The Rust runtime supports native sqlctx YAML and SQL projects. Use Python to import or convert third-party semantic formats into native projects.
 
 Avoid:
 
@@ -1561,7 +1561,7 @@ Use:
 
 Avoid:
 
-> Rust supports every Sidemantic adapter.
+> Rust supports every sqlctx adapter.
 
 Use:
 

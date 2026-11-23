@@ -7,7 +7,7 @@ ungrouped total. Expected rows come from hand-written SQL on the same data.
 
 import pytest
 
-from sidemantic import Dimension, Explore, Metric, Model, Relationship, Segment
+from sqlctx import Dimension, Explore, Metric, Model, Relationship, Segment
 
 
 @pytest.fixture

@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.core.table_calculation import TableCalculation
-from sidemantic.loaders import load_from_directory
-from sidemantic.sql.query_rewriter import QueryRewriter
-from sidemantic.sql.table_calc_processor import TableCalculationProcessor
+from sqlctx.core.semantic_layer import SemanticLayer
+from sqlctx.core.table_calculation import TableCalculation
+from sqlctx.loaders import load_from_directory
+from sqlctx.sql.query_rewriter import QueryRewriter
+from sqlctx.sql.table_calc_processor import TableCalculationProcessor
 
 FIXTURE_SUITE_ROOT = Path(__file__).parents[1] / "native-fixtures"
 

@@ -1,0 +1,93 @@
+{
+  "name": "sqlctx-wasm",
+  "version": "0.1.0",
+  "description": "In-browser sqlctx semantic layer: compile, validate, and rewrite semantic queries to SQL via WebAssembly. Pair with DuckDB-WASM to execute.",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "homepage": "https://github.com/sidequery/sqlctx",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sidequery/sqlctx.git",
+    "directory": "sqlctx-wasm"
+  },
+  "bugs": {
+    "url": "https://github.com/sidequery/sqlctx/issues"
+  },
+  "keywords": [
+    "sqlctx",
+    "semantic-layer",
+    "metrics",
+    "sql",
+    "wasm",
+    "webassembly",
+    "duckdb",
+    "analytics"
+  ],
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    },
+    "./client": {
+      "types": "./client.d.ts",
+      "import": "./client.js"
+    },
+    "./codegen": {
+      "types": "./codegen.d.ts",
+      "import": "./codegen.js"
+    },
+    "./vite": {
+      "types": "./vite.d.ts",
+      "import": "./vite.js"
+    },
+    "./adapters/wasm": {
+      "types": "./adapters/wasm.d.ts",
+      "import": "./adapters/wasm.js"
+    },
+    "./adapters/serve": {
+      "types": "./adapters/serve.d.ts",
+      "import": "./adapters/serve.js"
+    },
+    "./wasm": {
+      "types": "./wasm/sqlctx.d.ts",
+      "import": "./wasm/sqlctx.js"
+    },
+    "./sqlctx_bg.wasm": "./wasm/sqlctx_bg.wasm"
+  },
+  "main": "./index.js",
+  "module": "./index.js",
+  "types": "./index.d.ts",
+  "bin": {
+    "sqlctx-codegen": "./bin/sqlctx-codegen.js"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "client.js",
+    "client.d.ts",
+    "codegen.js",
+    "codegen.d.ts",
+    "vite.js",
+    "vite.d.ts",
+    "bin",
+    "adapters",
+    "wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bash scripts/build.sh",
+    "prepack": "bash scripts/build.sh"
+  },
+  "peerDependencies": {
+    "vite": "*"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

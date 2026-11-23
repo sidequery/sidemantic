@@ -2,8 +2,8 @@
 
 import os
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.sidemantic import substitute_env_vars
+from sqlctx import SemanticLayer
+from sqlctx.adapters.sqlctx import substitute_env_vars
 
 
 def test_substitute_env_vars_basic():
@@ -118,7 +118,7 @@ models:
 
     import yaml
 
-    from sidemantic.adapters.sidemantic import substitute_env_vars
+    from sqlctx.adapters.sqlctx import substitute_env_vars
 
     # Test substitution
     substituted = substitute_env_vars(yaml_content)

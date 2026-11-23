@@ -1,7 +1,7 @@
 """One result contract across the Python frontend, public Rust, and native import.
 
 Expected results come from fixed inputs and independent SQL, never from choosing
-one of the Sidemantic engines as the oracle for the other.
+one of the sqlctx engines as the oracle for the other.
 """
 
 import json
@@ -14,9 +14,9 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from sidemantic import SemanticLayer
-from sidemantic.cli import app
-from sidemantic.interchange.ossie import (
+from sqlctx import SemanticLayer
+from sqlctx.cli import app
+from sqlctx.interchange.ossie import (
     CURRENT_OSSIE_SCHEMA_COMMIT,
     OssieParseOptions,
     lower_ossie_document,
@@ -69,7 +69,7 @@ def _query(document, route, query, ddl=""):
     lowered = lower_ossie_document(parsed)
     assert lowered.valid, lowered.diagnostics
     if route == "public_rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires a source-built Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires a source-built Rust extension")
         layer = RustRuntimeSemanticLayer.from_catalog(lowered.catalog, auto_register=False)
     else:
         layer = SemanticLayer.from_catalog(lowered.catalog, engine="python", fallback=False, auto_register=False)
@@ -335,7 +335,7 @@ def test_portable_current_date_and_time_results(route, expression):
 @pytest.mark.parametrize("shape", ["current", "legacy"])
 def test_cli_ossie_query_and_rewrite_execute_same_results(engine, command, shape, tmp_path):
     if engine == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires a source-built Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires a source-built Rust extension")
     models = tmp_path / "models"
     models.mkdir()
     document = _document(

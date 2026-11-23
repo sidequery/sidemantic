@@ -7,7 +7,7 @@ revenue_per_order = total_revenue / total_orders
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model
+from sqlctx import Dimension, Metric, Model
 from tests.utils import fetch_columns, fetch_dicts
 
 

@@ -2,9 +2,9 @@
 
 from lsprotocol import types as lsp
 
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.lsp.server import (
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.lsp.server import (
     DEF_TYPE_TO_MODEL,
     DEF_TYPE_TO_SYMBOL_KIND,
     KEYWORDS,
@@ -19,7 +19,7 @@ from sidemantic.lsp.server import (
     extract_python_definitions,
     find_definition_by_name,
     find_python_definition_by_name,
-    format_sidemantic_document,
+    format_sqlctx_document,
     get_all_properties,
     get_completion_context,
     get_field_docs,
@@ -156,7 +156,7 @@ def test_find_definition_by_name_case_insensitive():
 
 def test_build_reference_locations_include_declaration():
     """Test references include declaration when requested."""
-    uri = "file:///workspace/orders.sidemantic.sql"
+    uri = "file:///workspace/orders.sqlctx.sql"
     text = """MODEL (
     name orders,
     table order_items
@@ -176,7 +176,7 @@ METRIC (
 
 def test_build_reference_locations_exclude_declaration():
     """Test references exclude declaration when requested."""
-    uri = "file:///workspace/orders.sidemantic.sql"
+    uri = "file:///workspace/orders.sqlctx.sql"
     text = """MODEL (
     name orders,
     table order_items
@@ -218,7 +218,7 @@ METRIC (
 
 def test_build_rename_workspace_edit():
     """Test workspace edits rename all identifier matches."""
-    uri = "file:///workspace/orders.sidemantic.sql"
+    uri = "file:///workspace/orders.sqlctx.sql"
     text = """MODEL (
     name orders,
     table order_items
@@ -246,7 +246,7 @@ METRIC (
 
 def test_build_rename_workspace_edit_skips_keywords():
     """Test renaming keywords is blocked."""
-    uri = "file:///workspace/orders.sidemantic.sql"
+    uri = "file:///workspace/orders.sqlctx.sql"
     text = "MODEL (name orders);"
     workspace_edit = build_rename_workspace_edit(
         uri=uri,
@@ -266,10 +266,10 @@ def test_range_equals():
     assert not range_equals(first, third)
 
 
-def test_format_sidemantic_document_roundtrip():
-    """Test formatting Sidemantic definitions into canonical multiline form."""
+def test_format_sqlctx_document_roundtrip():
+    """Test formatting sqlctx definitions into canonical multiline form."""
     unformatted = """MODEL (name orders,table order_items);\n\nMETRIC (name revenue,expression amount,agg sum);\n"""
-    formatted = format_sidemantic_document(unformatted)
+    formatted = format_sqlctx_document(unformatted)
     assert formatted is not None
     assert formatted.startswith("MODEL (")
     assert "    name orders," in formatted
@@ -278,10 +278,10 @@ def test_format_sidemantic_document_roundtrip():
     assert formatted.endswith("\n")
 
 
-def test_format_sidemantic_document_invalid_returns_none():
-    """Test invalid Sidemantic SQL returns no formatted text."""
+def test_format_sqlctx_document_invalid_returns_none():
+    """Test invalid sqlctx SQL returns no formatted text."""
     invalid = "asdf"
-    assert format_sidemantic_document(invalid) is None
+    assert format_sqlctx_document(invalid) is None
 
 
 def test_build_signature_help_inside_definition():
@@ -313,7 +313,7 @@ def test_build_signature_help_none_for_non_keyword_top_level():
 
 def test_get_python_constructor_context_inside_model():
     """Test Python constructor context detection."""
-    text = """from sidemantic import Model
+    text = """from sqlctx import Model
 
 orders = Model(
     name="orders",
@@ -324,8 +324,8 @@ orders = Model(
 
 
 def test_extract_python_definitions():
-    """Test extracting Sidemantic definitions from Python constructor calls."""
-    text = """from sidemantic import Model, Metric
+    """Test extracting sqlctx definitions from Python constructor calls."""
+    text = """from sqlctx import Model, Metric
 
 orders = Model(name="orders", table="orders")
 revenue = Metric(name="revenue", agg="sum", sql="amount")
@@ -337,7 +337,7 @@ revenue = Metric(name="revenue", agg="sum", sql="amount")
 
 def test_find_python_definition_by_name_case_insensitive():
     """Test case-insensitive definition lookup in Python files."""
-    text = """from sidemantic import Model
+    text = """from sqlctx import Model
 orders = Model(name="orders", table="orders")
 """
     definition = find_python_definition_by_name(text, "ORDERS")
@@ -347,7 +347,7 @@ orders = Model(name="orders", table="orders")
 
 def test_build_python_document_symbols():
     """Test document symbols for Python constructor definitions."""
-    text = """from sidemantic import Model, Metric
+    text = """from sqlctx import Model, Metric
 
 orders = Model(name="orders", table="orders")
 revenue = Metric(name="revenue", agg="sum", sql="amount")
@@ -362,7 +362,7 @@ revenue = Metric(name="revenue", agg="sum", sql="amount")
 
 def test_build_python_signature_help_inside_constructor():
     """Test signature help for Python constructor calls."""
-    text = """from sidemantic import Model
+    text = """from sqlctx import Model
 
 orders = Model(
     name="orders",
@@ -375,7 +375,7 @@ orders = Model(
 
 def test_build_code_actions_missing_name_quick_fix():
     """Test code action suggests missing name property fix."""
-    uri = "file:///workspace/orders.sidemantic.sql"
+    uri = "file:///workspace/orders.sqlctx.sql"
     text = """MODEL (
     table order_items
 );
@@ -388,7 +388,7 @@ def test_build_code_actions_missing_name_quick_fix():
             ),
             message="1 validation error for Model\nname\n  Field required",
             severity=lsp.DiagnosticSeverity.Error,
-            source="sidemantic",
+            source="sqlctx",
         )
     ]
     actions = build_code_actions(uri=uri, text=text, diagnostics=diagnostics)
@@ -404,7 +404,7 @@ def test_build_code_actions_missing_name_quick_fix():
 
 def test_build_code_actions_no_known_fix():
     """Test no code action is returned for unrelated diagnostics."""
-    uri = "file:///workspace/orders.sidemantic.sql"
+    uri = "file:///workspace/orders.sqlctx.sql"
     text = """MODEL (
     name orders,
     table order_items
@@ -418,7 +418,7 @@ def test_build_code_actions_no_known_fix():
             ),
             message="Some unrelated error",
             severity=lsp.DiagnosticSeverity.Error,
-            source="sidemantic",
+            source="sqlctx",
         )
     ]
     actions = build_code_actions(uri=uri, text=text, diagnostics=diagnostics)
@@ -433,18 +433,18 @@ def test_keywords_include_core_definitions():
 def test_real_pygls_server_publishes_diagnostics_for_sql_and_python(monkeypatch):
     from pygls.workspace import Workspace
 
-    from sidemantic.lsp.server import create_server, validate_document
+    from sqlctx.lsp.server import create_server, validate_document
 
     server = create_server()
     server.protocol._workspace = Workspace("file:///tmp")
     notifications = []
     monkeypatch.setattr(server.protocol, "notify", lambda method, params: notifications.append((method, params)))
     documents = [
-        ("valid.sidemantic.sql", "MODEL (name orders, table orders);", False),
-        ("invalid.sidemantic.sql", "SELECT (", True),
-        ("valid.sidemantic.py", 'Model(name="orders", table="orders")', False),
-        ("invalid.sidemantic.py", 'Metric(name="count", agg="invalid")', True),
-        ("syntax.sidemantic.py", "Model(", True),
+        ("valid.sqlctx.sql", "MODEL (name orders, table orders);", False),
+        ("invalid.sqlctx.sql", "SELECT (", True),
+        ("valid.sqlctx.py", 'Model(name="orders", table="orders")', False),
+        ("invalid.sqlctx.py", 'Metric(name="count", agg="invalid")', True),
+        ("syntax.sqlctx.py", "Model(", True),
     ]
     for filename, source, has_error in documents:
         uri = "file:///tmp/" + filename

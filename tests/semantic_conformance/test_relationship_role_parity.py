@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.validation import QueryValidationError
+from sqlctx import SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.validation import QueryValidationError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -14,12 +14,12 @@ FIXTURES = Path(__file__).parent / "fixtures"
 @pytest.fixture(params=["python", "rust"])
 def layer_for(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Scoped role acceptance requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Scoped role acceptance requires the real Rust extension")
     layers = []
 
     def create(source):
         layer = SemanticLayer(engine=request.param, auto_register=False)
-        layer.graph = SidemanticAdapter().parse(FIXTURES / f"{source}.yml")
+        layer.graph = SqlctxAdapter().parse(FIXTURES / f"{source}.yml")
         layer.adapter.execute((FIXTURES / "relationship_role_seed.sql").read_text())
         layers.append(layer)
         return layer

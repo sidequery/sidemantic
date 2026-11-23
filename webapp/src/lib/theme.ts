@@ -52,7 +52,7 @@ const TOKEN_PROPERTIES: Record<keyof ThemeTokens, `--${string}`> = {
   viz7: "--viz-7",
 };
 
-const KEY = "sidemantic-theme";
+const KEY = "sqlctx-theme";
 
 export function getTheme(): Theme {
   const stored = localStorage.getItem(KEY);

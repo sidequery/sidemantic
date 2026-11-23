@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.cube import CubeAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.cube import CubeAdapter
 
 
 def _parse(yaml_text: str):

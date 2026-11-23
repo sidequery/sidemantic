@@ -4,7 +4,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from sidemantic import (
+from sqlctx import (
     DashboardDocument,
     Dimension,
     Freshness,
@@ -14,9 +14,9 @@ from sidemantic import (
     SemanticLayer,
     load_from_directory,
 )
-from sidemantic.cli import app
-from sidemantic.dashboard import DashboardSpecError, generate_dashboard_typescript
-from sidemantic.viz import CrossfilterDashboard, CrossfilterTab
+from sqlctx.cli import app
+from sqlctx.dashboard import DashboardSpecError, generate_dashboard_typescript
+from sqlctx.viz import CrossfilterDashboard, CrossfilterTab
 
 runner = CliRunner()
 
@@ -59,7 +59,7 @@ def _build_layer() -> SemanticLayer:
 
 def _dashboard_payload() -> dict:
     return {
-        "schema": "sidemantic.dashboard.v1",
+        "schema": "sqlctx.dashboard.v1",
         "title": "Revenue Explorer",
         "defaults": {"renderer": "vega-lite", "query": {"interaction_preaggregations": True}},
         "tabs": [
@@ -92,16 +92,18 @@ def _dashboard_payload() -> dict:
     }
 
 
-def test_dashboard_document_builds_crossfilter_dashboard():
+@pytest.mark.parametrize("schema", ["sqlctx.dashboard.v1", "sidemantic.dashboard.v1"])
+def test_dashboard_document_builds_crossfilter_dashboard(schema):
     layer = _build_layer()
-    document = DashboardDocument.from_dict(_dashboard_payload())
+    document = DashboardDocument.from_dict({**_dashboard_payload(), "schema": schema})
 
     assert document.validate(layer) == []
+    assert document.to_dict()["schema"] == "sqlctx.dashboard.v1"
 
     dashboard = document.to_crossfilter_dashboard(layer)
     spec = dashboard.to_spec()
 
-    assert spec["renderer"] == "sidemantic-crossfilter-tabs"
+    assert spec["renderer"] == "sqlctx-crossfilter-tabs"
     assert spec["tabs"][0]["id"] == "overview"
     assert spec["tabs"][0]["spec"]["chart_renderer"] == "vega-lite"
     assert dashboard.tabs[0].session.interaction_preaggregations is True
@@ -166,15 +168,15 @@ def test_crossfilter_dashboard_asgi_app_routes_requests_without_eager_preagg():
 
     html = client.get("/crossfilter.html")
     assert html.status_code == 200
-    assert "__SIDEMANTIC_CROSSFILTER__" in html.text
+    assert "__SQLCTX_CROSSFILTER__" in html.text
 
     spec = client.get("/crossfilter.json")
     assert spec.status_code == 200
-    assert spec.json()["renderer"] == "sidemantic-crossfilter-tabs"
+    assert spec.json()["renderer"] == "sqlctx-crossfilter-tabs"
 
     response = client.post("/crossfilter/query", json={"tab": "overview", "filters": []})
     assert response.status_code == 200
-    assert response.json()["protocol"] == "sidemantic-crossfilter-v1"
+    assert response.json()["protocol"] == "sqlctx-crossfilter-v1"
     assert session._interaction_preagg_cache.info is None
 
 
@@ -216,7 +218,7 @@ def test_crossfilter_dashboard_asgi_app_loads_non_initial_tab_specs_lazily(monke
 
     query = client.post("/crossfilter/query", json={"tab": "second", "event": "tab", "filters": []})
     assert query.status_code == 200
-    assert query.json()["protocol"] == "sidemantic-crossfilter-v1"
+    assert query.json()["protocol"] == "sqlctx-crossfilter-v1"
 
 
 def test_crossfilter_metadata_spec_does_not_poison_full_spec_cache():
@@ -442,7 +444,7 @@ def test_dashboard_typescript_is_generated_from_semantic_layer():
 
     assert '"orders.revenue"' in ts
     assert '"orders.created_at__month"' in ts
-    assert "export type Metric = typeof sidemanticSchema.metrics[number];" in ts
+    assert "export type Metric = typeof sqlctxSchema.metrics[number];" in ts
     assert "export function defineDashboard" in ts
     assert '"orders.region": string;' in ts
     assert '"orders.created_at__month": string | Date;' in ts
@@ -474,7 +476,7 @@ models:
     spec_path.write_text(
         yaml.safe_dump(
             {
-                "schema": "sidemantic.dashboard.v1",
+                "schema": "sqlctx.dashboard.v1",
                 "title": "Orders",
                 "defaults": {"renderer": "plotly"},
                 "tabs": [
@@ -513,7 +515,7 @@ models:
         called["layer"] = layer
         called.update(kwargs)
 
-    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
+    monkeypatch.setattr("sqlctx.api_server.start_api_server", fake_start_api_server)
     serve_result = runner.invoke(
         app,
         [
@@ -536,7 +538,7 @@ models:
     assert help_result.exit_code == 0
     assert "serve" in help_result.output
 
-    types_path = tmp_path / "sidemantic.generated.ts"
+    types_path = tmp_path / "sqlctx.generated.ts"
     types_result = runner.invoke(app, ["dashboard", "types", "--models", str(models_dir), "--out", str(types_path)])
     assert types_result.exit_code == 0
     assert "orders.order_count" in types_path.read_text()
@@ -546,7 +548,7 @@ def test_committed_headless_dashboard_example_is_declarative():
     example_dir = Path(__file__).resolve().parents[1] / "examples" / "headless_dashboard"
     dashboard_yml = example_dir / "dashboard.yml"
     dashboard_ts = example_dir / "dashboard.ts"
-    generated_ts = example_dir / "sidemantic.generated.ts"
+    generated_ts = example_dir / "sqlctx.generated.ts"
 
     assert dashboard_yml.exists()
     assert dashboard_ts.exists()
@@ -562,5 +564,5 @@ def test_committed_headless_dashboard_example_is_declarative():
     generated_source = generated_ts.read_text()
     assert "defineDashboard" in dashboard_source
     assert '"orders.revenue"' in dashboard_source
-    assert "export type Metric = typeof sidemanticSchema.metrics[number];" in generated_source
+    assert "export type Metric = typeof sqlctxSchema.metrics[number];" in generated_source
     assert '"orders.created_at__month"' in generated_source

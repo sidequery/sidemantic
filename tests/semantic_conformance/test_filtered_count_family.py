@@ -5,15 +5,15 @@ from datetime import date
 
 import pytest
 
-from sidemantic import Dimension, Explore, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.semantic_handoff import graph_to_semantic_input
+from sqlctx import Dimension, Explore, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.semantic_handoff import graph_to_semantic_input
 
 
 @pytest.fixture(params=["python", "rust"])
 def engine(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Count family acceptance requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Count family acceptance requires the real Rust extension")
     return request.param
 
 
@@ -221,17 +221,17 @@ def test_owned_count_private_leaf_names_do_not_shadow_public_fields(counts):
     model = layer.graph.models["orders"]
     model.dimensions.extend(
         [
-            Dimension(name="__SIDEMANTIC_FILTERED_0", sql="region", type="categorical"),
-            Dimension(name="__sidemantic_filtered_1_raw", sql="region", type="categorical"),
+            Dimension(name="__SQLCTX_FILTERED_0", sql="region", type="categorical"),
+            Dimension(name="__sqlctx_filtered_1_raw", sql="region", type="categorical"),
         ]
     )
-    model.metrics.append(Metric(name="__sidemantic_filtered_2", agg="count", sql="value"))
+    model.metrics.append(Metric(name="__sqlctx_filtered_2", agg="count", sql="value"))
     layer.graph.add_metric(
-        Metric(name="__sidemantic_filtered_3", sql="COUNT(1)", sql_is_complete=True, filters=["status = 'orders.vip'"]),
+        Metric(name="__sqlctx_filtered_3", sql="COUNT(1)", sql_is_complete=True, filters=["status = 'orders.vip'"]),
         model_name="orders",
     )
-    assert result(counts, metrics=[refs["one"], "orders.__sidemantic_filtered_2", "__sidemantic_filtered_3"]) == (
-        ["one", "__sidemantic_filtered_2", "__sidemantic_filtered_3"],
+    assert result(counts, metrics=[refs["one"], "orders.__sqlctx_filtered_2", "__sqlctx_filtered_3"]) == (
+        ["one", "__sqlctx_filtered_2", "__sqlctx_filtered_3"],
         [(3, 2, 1)],
     )
 
@@ -239,7 +239,7 @@ def test_owned_count_private_leaf_names_do_not_shadow_public_fields(counts):
 @pytest.mark.parametrize("counts", ["graph"], indirect=True)
 @pytest.mark.parametrize("engine", ["python"])
 def test_owned_count_generator_sees_live_graph_changes(counts):
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.sql.generator import SQLGenerator
 
     layer, refs = counts
     generator = SQLGenerator(layer.graph)
@@ -279,10 +279,10 @@ def test_owned_count_as_cumulative_base_preserves_public_output(counts, name, ex
 @pytest.mark.parametrize("expression", ["COUNT(*)", "COUNT(1)", "COUNT(NULL)"])
 @pytest.mark.parametrize("predicate", ["other.status = 1", "count(*) > 0", "(select count(*) from orders) > 0"])
 def test_count_family_does_not_admit_other_filter_scopes(expression, predicate):
-    pytest.importorskip("sidemantic_rs")
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.rust_bridge import compile_semantic_input
-    from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+    pytest.importorskip("sqlctx_rs")
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.rust_bridge import compile_semantic_input
+    from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 
     graph = SemanticGraph()
     graph.add_model(Model(name="orders", table="orders", primary_key="id"))

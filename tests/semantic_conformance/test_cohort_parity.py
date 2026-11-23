@@ -4,16 +4,16 @@ from datetime import date, datetime
 
 import pytest
 
-from sidemantic import Dimension, Explore, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.semantic_handoff import graph_to_semantic_input
+from sqlctx import Dimension, Explore, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.semantic_handoff import graph_to_semantic_input
 
 
 @pytest.fixture(params=["python", "rust", "python_owned", "rust_owned"])
 def layer(request):
     engine = request.param.split("_")[0]
     if engine == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Cohort acceptance requires the real extension")
+        pytest.importorskip("sqlctx_rs", reason="Cohort acceptance requires the real extension")
     layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
     layer.add_model(
         Model(
@@ -391,8 +391,8 @@ def test_cohort_count_zero_is_not_replaced_by_default(layer):
 
 
 def test_selected_calculations_preserve_implicit_entity_dimensions(layer):
-    from sidemantic.core.table_calculation import TableCalculation
-    from sidemantic.sql.table_calc_processor import TableCalculationProcessor
+    from sqlctx.core.table_calculation import TableCalculation
+    from sqlctx.sql.table_calc_processor import TableCalculationProcessor
 
     cohort_metric(layer).entity_dimensions = ["region"]
     calculations = [
@@ -412,11 +412,11 @@ def test_selected_calculations_preserve_implicit_entity_dimensions(layer):
     if layer.engine == "rust":
         import json
 
-        import sidemantic_rs
+        import sqlctx_rs
 
         payload = {**query, "metrics": [cohort_reference(layer)], "table_calculations": [c.name for c in calculations]}
         assert (
-            sidemantic_rs.validate_with_semantic_input(
+            sqlctx_rs.validate_with_semantic_input(
                 json.dumps(graph_to_semantic_input(layer.graph)), json.dumps(payload)
             )
             == []

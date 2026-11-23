@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic.interchange.ossie import validation
+from sqlctx.interchange.ossie import validation
 
 
 @pytest.mark.parametrize("family", ["logical", "ontology", "mapping"])

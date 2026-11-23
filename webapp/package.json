@@ -1,9 +1,9 @@
 {
-  "name": "sidemantic-webapp",
+  "name": "sqlctx-webapp",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Embeddable analytics UI for the Sidemantic semantic layer (works against the Python or Rust backend over the shared HTTP contract).",
+  "description": "Embeddable analytics UI for the sqlctx semantic layer (works against the Python or Rust backend over the shared HTTP contract).",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

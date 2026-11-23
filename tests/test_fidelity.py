@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic.fidelity import (
+from sqlctx.fidelity import (
     FeatureDiagnostic,
     FidelityNote,
     ImportReport,

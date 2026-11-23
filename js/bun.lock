@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "sidemantic-widget-js",
+      "name": "sqlctx-widget-js",
       "dependencies": {
         "apache-arrow": "^17.0.0",
       },

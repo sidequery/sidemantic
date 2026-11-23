@@ -9,11 +9,11 @@ def test_core_imports_do_not_load_optional_dax_runtime():
     code = """
 import json
 import sys
-from sidemantic import Dimension, Metric, Model
+from sqlctx import Dimension, Metric, Model
 
 print(json.dumps({
     "classes": [Model.__name__, Dimension.__name__, Metric.__name__],
-    "sidemantic_dax_loaded": "sidemantic_dax" in sys.modules,
+    "sqlctx_dax_loaded": "sqlctx_dax" in sys.modules,
 }))
 """
 
@@ -21,7 +21,7 @@ print(json.dumps({
 
     assert json.loads(result.stdout) == {
         "classes": ["Model", "Dimension", "Metric"],
-        "sidemantic_dax_loaded": False,
+        "sqlctx_dax_loaded": False,
     }
 
 
@@ -44,12 +44,12 @@ models:
     code = f"""
 import json
 import sys
-from sidemantic import SemanticLayer
+from sqlctx import SemanticLayer
 
 layer = SemanticLayer.from_yaml({str(model_path)!r})
 print(json.dumps({{
     "models": list(layer.graph.models),
-    "sidemantic_dax_loaded": "sidemantic_dax" in sys.modules,
+    "sqlctx_dax_loaded": "sqlctx_dax" in sys.modules,
 }}))
 """
 
@@ -57,7 +57,7 @@ print(json.dumps({{
 
     assert json.loads(result.stdout) == {
         "models": ["orders"],
-        "sidemantic_dax_loaded": False,
+        "sqlctx_dax_loaded": False,
     }
 
 
@@ -75,7 +75,7 @@ def blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
 
 builtins.__import__ = blocked_import
 
-from sidemantic import SemanticLayer
+from sqlctx import SemanticLayer
 
 layer = SemanticLayer()
 try:

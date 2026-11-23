@@ -5,14 +5,14 @@ import os
 import pytest
 from typer.testing import CliRunner
 
-import sidemantic.cli as cli_module
-from sidemantic.cli import app
-from sidemantic.semantic_handoff import RustBackendUnavailableError
+import sqlctx.cli as cli_module
+from sqlctx.cli import app
+from sqlctx.semantic_handoff import RustBackendUnavailableError
 
 
 @pytest.fixture
 def models(tmp_path, monkeypatch):
-    monkeypatch.setattr("sidemantic.core.semantic_layer.get_rust_module", lambda: object())
+    monkeypatch.setattr("sqlctx.core.semantic_layer.get_rust_module", lambda: object())
     monkeypatch.setattr(cli_module, "_loaded_config", None)
     monkeypatch.setattr(cli_module, "_project_context", None)
     path = tmp_path / "orders.yml"
@@ -24,7 +24,7 @@ def models(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("command", [["rewrite"], ["query", "--dry-run"]])
 def test_explicit_cli_engine_is_forwarded_without_environment_mutation(models, monkeypatch, command):
-    monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "0")
+    monkeypatch.setenv("SQLCTX_RS_REWRITER", "0")
     before = dict(os.environ)
     calls = []
 
@@ -32,7 +32,7 @@ def test_explicit_cli_engine_is_forwarded_without_environment_mutation(models, m
         calls.append(sql)
         return "SELECT 42 AS rust_result"
 
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", rewrite)
+    monkeypatch.setattr("sqlctx.sql.query_rewriter.rewrite_semantic_input", rewrite)
     runner = CliRunner()
     arguments = [*command, "SELECT revenue FROM orders", "--models", str(models)]
     result = runner.invoke(app, [*arguments, "--engine", "rust"])
@@ -52,7 +52,7 @@ def test_cli_typed_unavailable_respects_engine_fallback(models, monkeypatch, eng
     def unavailable(*args, **kwargs):
         raise RustBackendUnavailableError("semantic entrypoint missing")
 
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", unavailable)
+    monkeypatch.setattr("sqlctx.sql.query_rewriter.rewrite_semantic_input", unavailable)
     result = CliRunner().invoke(
         app, ["rewrite", "SELECT revenue FROM orders", "--models", str(models), "--engine", engine]
     )
@@ -68,7 +68,7 @@ def test_cli_auto_propagates_unexpected_compiler_failure(models, monkeypatch):
     def broken(*args, **kwargs):
         raise RuntimeError("compiler defect")
 
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", broken)
+    monkeypatch.setattr("sqlctx.sql.query_rewriter.rewrite_semantic_input", broken)
     result = CliRunner().invoke(
         app, ["rewrite", "SELECT revenue FROM orders", "--models", str(models), "--engine", "auto"]
     )
@@ -91,7 +91,7 @@ def test_validate_uses_source_adapter_and_versioned_input(models, monkeypatch, s
             calls.append((json.loads(payload), json.loads(query)))
             return []
 
-    monkeypatch.setattr("sidemantic.rust_bridge.get_rust_module", RustModule)
+    monkeypatch.setattr("sqlctx.rust_bridge.get_rust_module", RustModule)
     result = CliRunner().invoke(app, ["validate", str(models.parent), "--engine", "rust", "--json"])
     assert result.exit_code == 0, result.output
     payload, query = calls[0]
@@ -107,7 +107,7 @@ def test_validate_uses_source_adapter_and_versioned_input(models, monkeypatch, s
 def test_validate_carries_unsupported_policy_to_runtime(models, monkeypatch, engine, success):
     import json
 
-    from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+    from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 
     models.write_text(
         models.read_text().replace("  table: orders", "  table: orders\n  invariant_filters: [amount > 0]")
@@ -122,7 +122,7 @@ def test_validate_carries_unsupported_policy_to_runtime(models, monkeypatch, eng
             assert "model.invariant_filters" in semantic_input["required_capabilities"]
             raise UnsupportedSemanticFeaturesError(["model.invariant_filters"])
 
-    monkeypatch.setattr("sidemantic.rust_bridge.get_rust_module", RustModule)
+    monkeypatch.setattr("sqlctx.rust_bridge.get_rust_module", RustModule)
     result = CliRunner().invoke(app, ["validate", str(models.parent), "--engine", engine, "--json"])
     assert (result.exit_code == 0) is success, result.output
     assert len(calls) == 1
@@ -137,7 +137,7 @@ def test_validate_auto_does_not_hide_compiler_defect(models, monkeypatch):
     def fail(*args, **kwargs):
         raise RuntimeError("compiler defect")
 
-    monkeypatch.setattr("sidemantic.rust_bridge.validate_semantic_input", fail)
+    monkeypatch.setattr("sqlctx.rust_bridge.validate_semantic_input", fail)
     result = CliRunner().invoke(app, ["validate", str(models.parent), "--engine", "auto", "--json"])
     assert result.exit_code == 1
     assert "compiler defect" in result.stdout
@@ -145,13 +145,13 @@ def test_validate_auto_does_not_hide_compiler_defect(models, monkeypatch):
 
 
 def test_python_validation_ignores_rust_environment(models, monkeypatch):
-    monkeypatch.setenv("SIDEMANTIC_RS_SQL_GENERATOR", "1")
-    monkeypatch.setenv("SIDEMANTIC_RS_NO_FALLBACK", "1")
+    monkeypatch.setenv("SQLCTX_RS_SQL_GENERATOR", "1")
+    monkeypatch.setenv("SQLCTX_RS_NO_FALLBACK", "1")
 
     def fail():
         raise AssertionError("Python authoring validation must not initialize Rust")
 
-    monkeypatch.setattr("sidemantic.core.semantic_layer.get_rust_module", fail)
+    monkeypatch.setattr("sqlctx.core.semantic_layer.get_rust_module", fail)
     result = CliRunner().invoke(app, ["validate", str(models.parent), "--engine", "python", "--json"])
     assert result.exit_code == 0, result.output
 
@@ -175,7 +175,7 @@ semantic_model:
         tables.append(graph.models["orders"].table)
         return []
 
-    monkeypatch.setattr("sidemantic.rust_bridge.validate_semantic_input", validate)
+    monkeypatch.setattr("sqlctx.rust_bridge.validate_semantic_input", validate)
     result = CliRunner().invoke(
         app, ["validate", str(models.parent), "--engine", "rust", "--ossie-scope", "marketing", "--json"]
     )

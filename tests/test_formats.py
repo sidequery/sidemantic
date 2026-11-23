@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.formats import (
+from sqlctx.formats import (
     OutputKind,
     UnknownFormatError,
     UnsupportedFormatOperationError,
@@ -33,7 +33,7 @@ def test_registry_has_stable_names_aliases_and_capabilities():
     names = [spec.name for spec in semantic_formats()]
 
     assert names == sorted(names)
-    assert get_semantic_format("native").name == "sidemantic"
+    assert get_semantic_format("native").name == "sqlctx"
     assert get_semantic_format("cube_js").name == "cube"
     assert get_semantic_format("powerbi").name == "tmdl"
     assert get_semantic_format("ossie").name == "ossie"

@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.ossie import OssieAdapter
-from sidemantic.interchange.ossie import validation
+from sqlctx.adapters.ossie import OssieAdapter
+from sqlctx.interchange.ossie import validation
 from tests.rust_layer_adapter import rust_ossie_select_scope, rust_ossie_validate
 
 FIXTURES = Path(__file__).resolve().parents[2] / "ossie-fixtures"

@@ -19,7 +19,7 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ENGINE_ENV = re.compile(r"SIDEMANTIC_(?:ENGINE|RS_|OSI_BACKEND)")
+ENGINE_ENV = re.compile(r"SQLCTX_(?:ENGINE|RS_|OSI_BACKEND)")
 HELPERS = {
     "SQLGenerator",
     "QueryRewriter",
@@ -133,13 +133,13 @@ def classify(path, scope, kind, source, context):
             "Explicit LegacyOSIAdapter alias bypasses canonical native OSI adapter; legacy compatibility coverage needs separate Rust evidence.",
         )
     if kind == "engine-control":
-        if "SIDEMANTIC_OSI_BACKEND" in source and '"python"' in source:
+        if "SQLCTX_OSI_BACKEND" in source and '"python"' in source:
             return (
                 "real-gap",
                 "OSI legacy adapter shim defaults to Python independently of --test-engine; separate backend override required.",
             )
         python_pin = bool(re.search(r"engine\s*=\s*['\"]python['\"]", source)) or bool(
-            re.search(r"setenv\(['\"]SIDEMANTIC_ENGINE['\"],\s*['\"]python['\"]", source)
+            re.search(r"setenv\(['\"]SQLCTX_ENGINE['\"],\s*['\"]python['\"]", source)
         )
         if not python_pin:
             return None, "Engine route control or default/reset observation; not a Python exclusion."
@@ -323,7 +323,7 @@ def scan_file(path, replay):
                 "category": "intentional-Python-only",
                 "evidence": "Direct private implementation-unit calls: " + ", ".join(sorted(set(private))),
             }
-        if "engine" in signature and "sidemantic_rs" in source:
+        if "engine" in signature and "sqlctx_rs" in source:
             return {
                 "test": relative + "::" + test,
                 "category": None,
@@ -384,7 +384,7 @@ def scan_file(path, replay):
                 kind = "engine-matrix"
             elif name.endswith(".addoption") and "--test-engine" in segment:
                 kind = "engine-control"
-            elif name == "os.environ.get" and "SIDEMANTIC_OSI_BACKEND" in segment:
+            elif name == "os.environ.get" and "SQLCTX_OSI_BACKEND" in segment:
                 kind = "engine-control"
             elif name.endswith((".setenv", ".delenv", ".setattr")) and (
                 ENGINE_ENV.search(segment)
@@ -394,15 +394,15 @@ def scan_file(path, replay):
         elif isinstance(node, ast.Attribute) and ast.unparse(node) == "pytest.mark.integration":
             kind = "integration-marker"
         elif isinstance(node, ast.ImportFrom):
-            if node.module == "sidemantic.adapters.osi" and any(a.name == "LegacyOSIAdapter" for a in node.names):
+            if node.module == "sqlctx.adapters.osi" and any(a.name == "LegacyOSIAdapter" for a in node.names):
                 kind = "legacy-adapter-import"
             elif (
                 node.module
-                and (node.module.startswith("sidemantic.sql.") or node.module == "tests.rust_layer_adapter")
+                and (node.module.startswith("sqlctx.sql.") or node.module == "tests.rust_layer_adapter")
                 and any(a.name in HELPERS for a in node.names)
             ):
                 kind = "implementation-import"
-            elif node.module == "sidemantic.core.semantic_layer" and any(a.name == "SemanticLayer" for a in node.names):
+            elif node.module == "sqlctx.core.semantic_layer" and any(a.name == "SemanticLayer" for a in node.names):
                 kind = "public-layer-import"
         elif isinstance(node, (ast.Assign, ast.AnnAssign)) and (
             re.search(r"\[['\"]engine['\"]\]", segment)
@@ -590,7 +590,7 @@ def main():
     selection = [{"path": "pyproject.toml", "source": config.get("addopts", ""), "category": "external-service"}]
     for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
         for lineno, line in enumerate(path.read_text().splitlines(), 1):
-            if re.search(r"pytest|test-engine|SIDEMANTIC_ENGINE|engine:|addopts=|--deselect|--ignore", line):
+            if re.search(r"pytest|test-engine|SQLCTX_ENGINE|engine:|addopts=|--deselect|--ignore", line):
                 selection.append({"path": path.relative_to(ROOT).as_posix(), "line": lineno, "source": line.strip()})
     collected = None
     if args.collected_nodeids:

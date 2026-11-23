@@ -1,14 +1,14 @@
-"""Generate the checked-in sidemantic(1) man page from the live CLI."""
+"""Generate the checked-in sqlctx(1) man page from the live CLI."""
 
 from pathlib import Path
 
 from typer.main import get_command
 
-from sidemantic import __version__
-from sidemantic.cli import app
-from sidemantic.manpage import render_manpage
+from sqlctx import __version__
+from sqlctx.cli import app
+from sqlctx.manpage import render_manpage
 
-OUTPUT = Path(__file__).parents[1] / "sidemantic" / "man" / "sidemantic.1"
+OUTPUT = Path(__file__).parents[1] / "sqlctx" / "man" / "sqlctx.1"
 
 
 def main() -> None:

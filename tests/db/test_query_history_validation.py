@@ -2,11 +2,11 @@
 
 import pytest
 
-from sidemantic.db.base import validate_query_history_params
-from sidemantic.db.bigquery import BigQueryAdapter
-from sidemantic.db.clickhouse import ClickHouseAdapter
-from sidemantic.db.databricks import DatabricksAdapter
-from sidemantic.db.snowflake import SnowflakeAdapter
+from sqlctx.db.base import validate_query_history_params
+from sqlctx.db.bigquery import BigQueryAdapter
+from sqlctx.db.clickhouse import ClickHouseAdapter
+from sqlctx.db.databricks import DatabricksAdapter
+from sqlctx.db.snowflake import SnowflakeAdapter
 
 
 def test_validate_query_history_params_coerces_safe_integer_strings():

@@ -57,12 +57,12 @@ jobs:
           uv run python - <<'PY'
           import sys
 
-          from sidemantic import Dimension, Metric, Model
+          from sqlctx import Dimension, Metric, Model
 
           assert Model.__name__ == "Model"
           assert Dimension.__name__ == "Dimension"
           assert Metric.__name__ == "Metric"
-          assert "sidemantic_dax" not in sys.modules
+          assert "sqlctx_dax" not in sys.modules
           PY
 
       - name: Install Rust and DAX dependencies
@@ -128,7 +128,7 @@ jobs:
           version_files = (
               Path("pyproject.toml"),
               Path("crates/dax-pyo3/pyproject.toml"),
-              Path("sidemantic-rs/pyproject.toml"),
+              Path("sqlctx-rs/pyproject.toml"),
               Path("crates/dax-pyo3/Cargo.toml"),
           )
           for path in version_files:
@@ -141,7 +141,7 @@ jobs:
                   + "\n"
               )
 
-          init_path = Path("sidemantic/__init__.py")
+          init_path = Path("sqlctx/__init__.py")
           init_lines = init_path.read_text().splitlines()
           init_path.write_text(
               "\n".join(
@@ -155,8 +155,8 @@ jobs:
           pyproject_lines = pyproject_path.read_text().splitlines()
           pyproject_path.write_text(
               "\n".join(
-                  f'    "sidemantic-dax>={version}",' if line.strip().startswith('"sidemantic-dax>=')
-                  else f'    "sidemantic-rs=={version}; sys_platform != \'emscripten\'",' if line.strip().startswith('"sidemantic-rs==')
+                  f'    "sqlctx-dax>={version}",' if line.strip().startswith('"sqlctx-dax>=')
+                  else f'    "sqlctx-rs=={version}; sys_platform != \'emscripten\'",' if line.strip().startswith('"sqlctx-rs==')
                   else line
                   for line in pyproject_lines
               )
@@ -177,8 +177,8 @@ jobs:
 
       - name: Validate release tree
         run: |
-          uv run ruff check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
-          uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
+          uv run ruff check . --exclude docs/_extensions --exclude sqlctx-duckdb/extension-ci-tools --exclude sqlctx-duckdb/scripts --exclude sqlctx-duckdb/duckdb --exclude sqlctx/adapters/malloy_grammar --exclude sqlctx/adapters/holistics_grammar
+          uv run ruff format --check . --exclude docs/_extensions --exclude sqlctx-duckdb/extension-ci-tools --exclude sqlctx-duckdb/scripts --exclude sqlctx-duckdb/duckdb --exclude sqlctx/adapters/malloy_grammar --exclude sqlctx/adapters/holistics_grammar
           uv run mypy
           uv run mypy --config-file tests/typing/mypy.ini tests/typing/package_consumer.py
           uv run pytest -v --cov-fail-under=76
@@ -188,20 +188,20 @@ jobs:
 
       - name: Build packages
         run: |
-          uv build sidemantic-rs --sdist --out-dir dist
+          uv build sqlctx-rs --sdist --out-dir dist
           uv build crates/dax-pyo3 --sdist --out-dir dist
           uv build --out-dir dist
-          unzip -l "$(find dist -name 'sidemantic-[0-9]*.whl' -print -quit)" | grep -q 'sidemantic/py.typed'
+          unzip -l "$(find dist -name 'sqlctx-[0-9]*.whl' -print -quit)" | grep -q 'sqlctx/py.typed'
 
       - name: Run installed-wheel DAX smoke
         run: |
           DIST_DIR=$(realpath dist)
-          SIDEMANTIC_WHEEL=$(realpath "$(find dist -name 'sidemantic-[0-9]*.whl' -print -quit)")
+          SQLCTX_WHEEL=$(realpath "$(find dist -name 'sqlctx-[0-9]*.whl' -print -quit)")
           cd /tmp
-          uv run --no-project --find-links "${DIST_DIR}" --with "${SIDEMANTIC_WHEEL}[dax]" -- python - <<'PY'
-          import sidemantic_dax
+          uv run --no-project --find-links "${DIST_DIR}" --with "${SQLCTX_WHEEL}[dax]" -- python - <<'PY'
+          import sqlctx_dax
 
-          sidemantic_dax.parse_expression("1")
+          sqlctx_dax.parse_expression("1")
           PY
 
       - name: Commit version bump and create tag
@@ -209,13 +209,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml sidemantic/__init__.py sidemantic/man/sidemantic.1 sidemantic-rs/pyproject.toml crates/dax-pyo3/pyproject.toml crates/dax-pyo3/Cargo.toml Cargo.lock uv.lock
+          git add pyproject.toml sqlctx/__init__.py sqlctx/man/sqlctx.1 sqlctx-rs/pyproject.toml crates/dax-pyo3/pyproject.toml crates/dax-pyo3/Cargo.toml Cargo.lock uv.lock
           git commit -m "Bump version to ${{ steps.version.outputs.new_version }}"
           git tag -a "v${{ steps.version.outputs.new_version }}" -m "Release v${{ steps.version.outputs.new_version }}"
           git push origin main
           git push origin "v${{ steps.version.outputs.new_version }}"
 
-      - name: Upload sdist and sidemantic wheel
+      - name: Upload sdist and sqlctx wheel
         uses: actions/upload-artifact@v4
         with:
           name: dist-base
@@ -223,7 +223,7 @@ jobs:
           if-no-files-found: error
 
   build-dax-wheels:
-    name: Build sidemantic-dax wheel (${{ matrix.target }})
+    name: Build sqlctx-dax wheel (${{ matrix.target }})
     needs: publish
     runs-on: ${{ matrix.os }}
     strategy:
@@ -267,7 +267,7 @@ jobs:
           if-no-files-found: error
 
   build-runtime-wheels:
-    name: Build sidemantic-rs wheel (${{ matrix.target }})
+    name: Build sqlctx-rs wheel (${{ matrix.target }})
     needs: publish
     runs-on: ${{ matrix.os }}
     strategy:
@@ -299,7 +299,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           command: build
-          args: --release --manifest-path sidemantic-rs/Cargo.toml --out sidemantic-rs/dist
+          args: --release --manifest-path sqlctx-rs/Cargo.toml --out sqlctx-rs/dist
           manylinux: auto
           target: ${{ matrix.target }}
 
@@ -310,13 +310,13 @@ jobs:
 
       - name: Smoke runtime wheel
         shell: bash
-        run: uv run --no-project --with sidemantic-rs/dist/*.whl sidemantic-rs/tests/python_wheel_python_smoke.py
+        run: uv run --no-project --with sqlctx-rs/dist/*.whl sqlctx-rs/tests/python_wheel_python_smoke.py
 
       - name: Upload abi3 wheel
         uses: actions/upload-artifact@v4
         with:
           name: dist-runtime-${{ matrix.os }}-${{ matrix.target }}
-          path: sidemantic-rs/dist/*.whl
+          path: sqlctx-rs/dist/*.whl
           if-no-files-found: error
 
   release:
@@ -347,9 +347,9 @@ jobs:
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
         run: |
-          uv publish dist/sidemantic_rs-* --token "$UV_PUBLISH_TOKEN"
-          uv publish dist/sidemantic_dax-* --token "$UV_PUBLISH_TOKEN"
-          uv publish dist/sidemantic-[0-9]* --token "$UV_PUBLISH_TOKEN"
+          uv publish dist/sqlctx_rs-* --token "$UV_PUBLISH_TOKEN"
+          uv publish dist/sqlctx_dax-* --token "$UV_PUBLISH_TOKEN"
+          uv publish dist/sqlctx-[0-9]* --token "$UV_PUBLISH_TOKEN"
 
       - name: Create GitHub Release
         env:

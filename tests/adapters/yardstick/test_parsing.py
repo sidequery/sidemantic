@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.yardstick import YardstickAdapter
-from sidemantic.loaders import load_from_directory
+from sqlctx import SemanticLayer
+from sqlctx.adapters.yardstick import YardstickAdapter
+from sqlctx.loaders import load_from_directory
 from tests.utils import fetch_dicts
 
 

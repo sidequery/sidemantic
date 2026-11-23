@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "sidemantic-rs",
+    "sqlctx-rs",
     "crates/dax-parser",
     "crates/dax-pyo3",
 ]

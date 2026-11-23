@@ -7,13 +7,13 @@ are compared with the independently compiled Python baseline.
 
 import pytest
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.pre_aggregation import PreAggregation
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.pre_aggregation import PreAggregation
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_layer import SemanticLayer
+from sqlctx.sql.query_rewriter import QueryRewriter
 from tests.utils import fetch_columns, fetch_dicts, fetch_rows
 
 
@@ -2021,9 +2021,9 @@ def test_explain_rust_rewriter_route(monkeypatch, semantic_layer):
         calls.append((graph, sql, kwargs))
         return "SELECT 1 AS from_rust"
 
-    monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
-    monkeypatch.delenv("SIDEMANTIC_RS_NO_FALLBACK", raising=False)
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", rewrite)
+    monkeypatch.setenv("SQLCTX_RS_REWRITER", "1")
+    monkeypatch.delenv("SQLCTX_RS_NO_FALLBACK", raising=False)
+    monkeypatch.setattr("sqlctx.sql.query_rewriter.rewrite_semantic_input", rewrite)
 
     explanation = QueryRewriter(semantic_layer.graph, dialect="duckdb").explain("SELECT orders.revenue FROM orders")
     candidates = _candidate_by_name(explanation)

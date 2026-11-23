@@ -40,10 +40,10 @@ Analyze query patterns to find which pre-aggregations would be most beneficial:
 ```bash
 # Analyze simulated query history (the sample history is small, so lower the
 # minimum query count from its default)
-uvx sidemantic preagg recommend --queries query_history.sql --min-count 5
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg recommend --queries query_history.sql --min-count 5
 
 # Or analyze real query history from your database (BigQuery, Snowflake, etc.)
-# uvx sidemantic preagg recommend --connection "bigquery://project/dataset" --days 7
+# uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg recommend --connection "bigquery://project/dataset" --days 7
 ```
 
 **Output:**
@@ -75,10 +75,10 @@ Automatically add pre-aggregations to your model YAML files:
 
 ```bash
 # Dry run to see what would be added
-uvx sidemantic preagg apply models/ --queries query_history.sql --min-count 5 --dry-run
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg apply models/ --queries query_history.sql --min-count 5 --dry-run
 
 # Apply the recommendations
-uvx sidemantic preagg apply models/ --queries query_history.sql --min-count 5
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg apply models/ --queries query_history.sql --min-count 5
 ```
 
 This updates `models/orders.yml` with pre-aggregation definitions:
@@ -109,11 +109,11 @@ pre_aggregations:
 Materialize the pre-aggregation tables:
 
 ```bash
-# Refresh all pre-aggregations (uses sidemantic.yaml config)
-uvx sidemantic preagg refresh
+# Refresh all pre-aggregations (uses sqlctx.yaml config)
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg refresh
 
 # Or specify connection explicitly
-uvx sidemantic preagg refresh --db data/warehouse.db
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg refresh --db data/warehouse.db
 ```
 
 This creates tables like:
@@ -127,13 +127,13 @@ Queries use pre-aggregations when routing is enabled:
 
 ```bash
 # Query from CLI with pre-aggregation routing enabled
-uvx sidemantic query "SELECT status, revenue FROM orders" --models models --use-preaggregations
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx query "SELECT status, revenue FROM orders" --models models --use-preaggregations
 
 # Or use the interactive workbench
-uvx --from "sidemantic[workbench]" sidemantic workbench
+uvx --from "sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx" sqlctx workbench
 ```
 
-The config in `sidemantic.yaml` sets the pre-aggregation schema. CLI query routing is explicit, so use `--use-preaggregations`.
+The config in `sqlctx.yaml` sets the pre-aggregation schema. CLI query routing is explicit, so use `--use-preaggregations`.
 
 ## How It Works
 
@@ -160,7 +160,7 @@ Pre-aggregations are added to model YAML files with sensible defaults:
 
 ### 4. Intelligent Query Routing
 
-At query time, Sidemantic:
+At query time, sqlctx:
 1. Checks if a pre-agg matches the query
 2. Verifies all metrics are available
 3. Confirms dimensions are compatible
@@ -171,19 +171,19 @@ At query time, Sidemantic:
 ### Full Refresh
 Rebuilds entire table from scratch:
 ```bash
-uvx sidemantic preagg refresh --mode full
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg refresh --mode full
 ```
 
 ### Incremental Refresh (Default)
 Only processes new data since last refresh:
 ```bash
-uvx sidemantic preagg refresh --mode incremental
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg refresh --mode incremental
 ```
 
 ### Merge Refresh
 Updates existing rows and adds new ones (idempotent):
 ```bash
-uvx sidemantic preagg refresh --mode merge
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg refresh --mode merge
 ```
 
 ## Working with Real Query History
@@ -191,7 +191,7 @@ uvx sidemantic preagg refresh --mode merge
 ### BigQuery
 
 ```bash
-uvx sidemantic preagg recommend \
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg recommend \
   --connection "bigquery://my-project/my-dataset" \
   --days 30 \
   --min-count 50
@@ -200,7 +200,7 @@ uvx sidemantic preagg recommend \
 ### Snowflake
 
 ```bash
-uvx sidemantic preagg recommend \
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg recommend \
   --connection "snowflake://user:pass@account/database/schema" \
   --days 7
 ```
@@ -209,15 +209,15 @@ uvx sidemantic preagg recommend \
 
 ```bash
 # From a SQL file with instrumentation comments
-uvx sidemantic preagg recommend --queries /path/to/queries.sql
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg recommend --queries /path/to/queries.sql
 
 # From a directory of SQL files
-uvx sidemantic preagg recommend --queries /path/to/queries/
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg recommend --queries /path/to/queries/
 ```
 
 ## Configuration
 
-Store config in `sidemantic.yaml`:
+Store config in `sqlctx.yaml`:
 
 ```yaml
 models_dir: models
@@ -239,7 +239,7 @@ preagg_schema: preagg  # Store in 'preagg' schema
 ### Cron
 ```bash
 # Refresh every hour
-0 * * * * cd /path/to/project && uvx sidemantic preagg refresh --mode incremental
+0 * * * * cd /path/to/project && uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg refresh --mode incremental
 ```
 
 ### Airflow
@@ -248,7 +248,7 @@ from airflow.operators.bash import BashOperator
 
 refresh_preaggs = BashOperator(
     task_id='refresh_preaggs',
-    bash_command='cd /path && uvx sidemantic preagg refresh --mode incremental',
+    bash_command='cd /path && uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg refresh --mode incremental',
 )
 ```
 
@@ -266,7 +266,7 @@ refresh_preaggs = BashOperator(
 
 Query from workbench or check the compiled SQL to see if pre-agg was used:
 ```bash
-uvx --from "sidemantic[workbench]" sidemantic workbench
+uvx --from "sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx" sqlctx workbench
 # Run a query and look for "used_preagg=true" in the generated SQL
 ```
 
@@ -274,16 +274,16 @@ uvx --from "sidemantic[workbench]" sidemantic workbench
 
 Try lowering thresholds:
 ```bash
-uvx sidemantic preagg recommend --queries query_history.sql --min-count 5 --min-score 0.1
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg recommend --queries query_history.sql --min-count 5 --min-score 0.1
 ```
 
 ### Pre-aggregation refresh fails?
 
-- Ensure database connection is valid in `sidemantic.yaml`
+- Ensure database connection is valid in `sqlctx.yaml`
 - Check that time_dimension column exists
 - Use `--mode full` to rebuild from scratch:
 ```bash
-uvx sidemantic preagg refresh --mode full
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg refresh --mode full
 ```
 
 ## Next Steps

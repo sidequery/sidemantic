@@ -1,8 +1,8 @@
 """Tests for BaseAdapter validation behavior."""
 
-from sidemantic.adapters.base import BaseAdapter
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.base import BaseAdapter
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 class DummyAdapter(BaseAdapter):

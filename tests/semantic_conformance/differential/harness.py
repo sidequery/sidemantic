@@ -19,10 +19,10 @@ import duckdb
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Metric, Model, SemanticLayer
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.db.duckdb import DuckDBAdapter
-from sidemantic.validation import validate_model, validate_query
+from sqlctx import Metric, Model, SemanticLayer
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.db.duckdb import DuckDBAdapter
+from sqlctx.validation import validate_model, validate_query
 
 
 @dataclass
@@ -98,7 +98,7 @@ def validate_case(case: Case) -> SemanticGraph:
 
     Engine compile/execute failures remain failures even when both engines raise.
     This intentionally validates the generated grammar rather than claiming to
-    validate every possible Sidemantic feature.
+    validate every possible sqlctx feature.
     """
     try:
         validate_population(case)
@@ -501,7 +501,7 @@ def outcome_dict(outcome: Outcome) -> dict:
 
 def runtime_provenance() -> dict:
     """Identify the actual source package and loaded native artifact in reports."""
-    native = importlib.import_module("sidemantic_rs.sidemantic_rs")
+    native = importlib.import_module("sqlctx_rs.sqlctx_rs")
     native_path = Path(native.__file__).resolve()
     with native_path.open("rb") as binary:
         digest = hashlib.file_digest(binary, "sha256").hexdigest()

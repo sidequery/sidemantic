@@ -4,25 +4,25 @@ import os
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.db.postgres import PostgreSQLAdapter
-from sidemantic.rust_bridge import compile_semantic_input, rewrite_semantic_input
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.db.postgres import PostgreSQLAdapter
+from sqlctx.rust_bridge import compile_semantic_input, rewrite_semantic_input
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
+from sqlctx.sql.query_rewriter import QueryRewriter
 
 
 @pytest.fixture(scope="module")
 def postgres():
-    dsn = os.environ.get("SIDEMANTIC_TEST_POSTGRES_DSN")
+    dsn = os.environ.get("SQLCTX_TEST_POSTGRES_DSN")
     if not dsn:
-        pytest.skip("PostgreSQL policy execution requires SIDEMANTIC_TEST_POSTGRES_DSN")
+        pytest.skip("PostgreSQL policy execution requires SQLCTX_TEST_POSTGRES_DSN")
     # A configured acceptance job must fail, not skip, if its driver or matching
     # extension is missing. Ordinary local Python suites need neither dependency.
-    import sidemantic_rs
+    import sqlctx_rs
 
-    assert callable(sidemantic_rs.rewrite_with_semantic_input_context)
+    assert callable(sqlctx_rs.rewrite_with_semantic_input_context)
     adapter = PostgreSQLAdapter.from_url(dsn)
     try:
         connection = adapter.raw_connection

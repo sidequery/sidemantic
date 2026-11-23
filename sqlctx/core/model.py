@@ -1,0 +1,227 @@
+"""Model definitions."""
+
+from typing import Any, Literal
+
+from pydantic import Field, model_validator
+
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.governance import GovernedObject
+from sqlctx.core.metric import Metric
+from sqlctx.core.pre_aggregation import PreAggregation
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.schema_exposure import SchemaExposure
+from sqlctx.core.security import SecurityPolicy
+from sqlctx.core.segment import Segment
+
+
+class Model(GovernedObject):
+    """Model (dataset) definition.
+
+    Models are the foundation of the semantic layer, mapping to physical tables
+    or SQL expressions. Auto-registers with the current semantic layer context if available.
+    """
+
+    name: str = Field(..., description="Unique model name")
+    table: str | None = Field(None, description="Physical table name (schema.table)")
+    sql: str | None = Field(None, description="SQL expression for derived tables")
+    dax: str | None = Field(None, description="DAX table expression source text")
+    expression_language: Literal["sql", "dax"] | None = Field(
+        None, description="Expression language for sql/dax derived table authoring"
+    )
+    source_uri: str | None = Field(None, description="Remote data source URI (e.g., https://, s3://, gs://)")
+    description: str | None = Field(None, description="Human-readable description")
+    extends: str | None = Field(None, description="Parent model to inherit from")
+    metadata: dict[str, Any] | None = Field(None, description="Adapter-specific metadata payload")
+
+    # Relationships
+    relationships: list[Relationship] = Field(default_factory=list, description="Relationships to other models")
+
+    # Primary key - single column or list for composite keys. None means "no known primary key".
+    # Keys are never inferred here: callers and adapters must preserve the source model's actual
+    # declaration rather than manufacturing an ``id`` column that may not exist.
+    primary_key: str | list[str] | None = Field(default=None, description="Primary key column(s), if known")
+
+    # Unique key constraints
+    unique_keys: list[list[str]] | None = Field(None, description="Unique key constraints (each is a list of columns)")
+
+    dimensions: list[Dimension] = Field(default_factory=list, description="Dimension definitions")
+    metrics: list[Metric] = Field(default_factory=list, description="Measure definitions")
+    segments: list[Segment] = Field(default_factory=list, description="Segment (named filter) definitions")
+    invariant_filters: list[str] = Field(
+        default_factory=list,
+        description="SQL predicates that always constrain this model before joins and aggregation",
+    )
+    required_filters: list[str] = Field(default_factory=list, description="Fields callers must filter")
+    required_filters_or_groups: list[str] = Field(
+        default_factory=list, description="Fields callers must filter or group by, independently for each field"
+    )
+
+    pre_aggregations: list[PreAggregation] = Field(
+        default_factory=list, description="Pre-aggregation definitions for query optimization"
+    )
+
+    # Default time dimension for all metrics in this model
+    default_time_dimension: str | None = Field(
+        None, description="Default time dimension for metrics (auto-included in queries)"
+    )
+    default_grain: Literal["second", "minute", "hour", "day", "week", "month", "quarter", "year"] | None = Field(
+        None, description="Default time granularity when using default_time_dimension"
+    )
+    # Auto-discover dimensions from database schema
+    auto_dimensions: bool = Field(
+        default=False,
+        description="Auto-discover dimensions from database schema when added to a SemanticLayer",
+    )
+    schema_exposure: SchemaExposure | None = Field(
+        default=None,
+        description="Optional strict schema-introspection and physical-column visibility controls",
+    )
+
+    # Arbitrary metadata (ai_context, custom_extensions, etc.)
+    meta: dict[str, Any] | None = Field(None, description="Arbitrary metadata for extensions")
+
+    # Access control and row-level security policy. When set, queries touching this model are
+    # subject to an access gate and per-request row filters enforced in the compile/query path.
+    security: SecurityPolicy | None = Field(
+        None, description="Model-level access control and row-level security policy"
+    )
+
+    @model_validator(mode="after")
+    def normalize_required_fields(self) -> "Model":
+        """Store local field names so inherited obligations bind to the child model."""
+        import re
+
+        for policy in ("required_filters", "required_filters_or_groups"):
+            normalized = []
+            for reference in getattr(self, policy):
+                field = reference.removeprefix(f"{self.name}.")
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", field):
+                    raise ValueError(f"{policy} must name fields on {self.name}: {reference!r}")
+                normalized.append(field)
+            normalized = list(dict.fromkeys(normalized))
+            if normalized != getattr(self, policy):
+                setattr(self, policy, normalized)
+        return self
+
+    def __init__(self, **data):
+        super().__init__(**data)
+
+        # Auto-register with current layer if in context
+        from .registry import auto_register_model
+
+        auto_register_model(self)
+
+    def __hash__(self) -> int:
+        return hash(self.name)
+
+    @property
+    def primary_key_columns(self) -> list[str]:
+        """Get primary key as list of columns (normalizes single string to list).
+
+        Returns an empty list when the model has no known primary key (``primary_key is None``),
+        so keyed-join logic naturally injects no key column for such a model.
+        """
+        if self.primary_key is None:
+            return []
+        if isinstance(self.primary_key, str):
+            return [self.primary_key]
+        return self.primary_key
+
+    @property
+    def has_untranslated_dax(self) -> bool:
+        """Whether this model preserves DAX source without a SQL/table translation."""
+        return bool(self.dax) and not self.sql and not self.table
+
+    def get_dimension(self, name: str) -> Dimension | None:
+        """Get dimension by name."""
+        for dimension in self.dimensions:
+            if dimension.name == name:
+                return dimension
+        return None
+
+    def get_metric(self, name: str) -> Metric | None:
+        """Get metric by name."""
+        for metric in self.metrics:
+            if metric.name == name:
+                return metric
+        return None
+
+    def get_segment(self, name: str) -> Segment | None:
+        """Get segment by name."""
+        for segment in self.segments:
+            if segment.name == name:
+                return segment
+        return None
+
+    def get_pre_aggregation(self, name: str) -> PreAggregation | None:
+        """Get pre-aggregation by name."""
+        for preagg in self.pre_aggregations:
+            if preagg.name == name:
+                return preagg
+        return None
+
+    def get_hierarchy_path(self, dimension_name: str) -> list[str]:
+        """Get the full hierarchy path from root to given dimension.
+
+        Args:
+            dimension_name: Name of dimension to find path for
+
+        Returns:
+            List of dimension names from root to given dimension
+
+        Examples:
+            >>> model.get_hierarchy_path("city")
+            ['country', 'state', 'city']
+        """
+        dim = self.get_dimension(dimension_name)
+        if not dim:
+            return []
+
+        path = [dimension_name]
+
+        # Walk up the parent chain with cycle detection
+        current: Dimension | None = dim
+        visited = {dimension_name}
+        while current and current.parent:
+            if current.parent in visited:
+                break
+            visited.add(current.parent)
+            path.insert(0, current.parent)
+            current = self.get_dimension(current.parent)
+
+        return path
+
+    def get_drill_down(self, dimension_name: str) -> str | None:
+        """Get the next dimension to drill down to from given dimension.
+
+        Args:
+            dimension_name: Current dimension name
+
+        Returns:
+            Name of child dimension, or None if no children
+
+        Examples:
+            >>> model.get_drill_down("country")
+            'state'
+        """
+        # Find dimension that has current dimension as parent
+        for dim in self.dimensions:
+            if dim.parent == dimension_name:
+                return dim.name
+        return None
+
+    def get_drill_up(self, dimension_name: str) -> str | None:
+        """Get the parent dimension to drill up to from given dimension.
+
+        Args:
+            dimension_name: Current dimension name
+
+        Returns:
+            Name of parent dimension, or None if at top level
+
+        Examples:
+            >>> model.get_drill_up("city")
+            'state'
+        """
+        dim = self.get_dimension(dimension_name)
+        return dim.parent if dim else None

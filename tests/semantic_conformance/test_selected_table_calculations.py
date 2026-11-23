@@ -5,19 +5,19 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.core.table_calculation import TableCalculation
-from sidemantic.sql.selected_table_calculations import wrap_table_calculations
-from sidemantic.sql.table_calc_processor import TableCalculationProcessor
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.core.table_calculation import TableCalculation
+from sqlctx.sql.selected_table_calculations import wrap_table_calculations
+from sqlctx.sql.table_calc_processor import TableCalculationProcessor
 
-FIXTURE = Path(__file__).parents[2] / "sidemantic-rs/tests/fixtures/selected_calculations.json"
+FIXTURE = Path(__file__).parents[2] / "sqlctx-rs/tests/fixtures/selected_calculations.json"
 DATA = json.loads(FIXTURE.read_text())
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires real native extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires real native extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(
@@ -154,8 +154,8 @@ def test_invalid_selections_fail_before_execution(layer, mutation):
 
 
 def test_helper_names_do_not_shadow_physical_tables(layer):
-    layer.adapter.execute('CREATE TABLE "__SIDEMANTIC_CALC_base" AS SELECT * FROM samples')
-    layer.graph.models["samples"].table = "__SIDEMANTIC_CALC_base"
+    layer.adapter.execute('CREATE TABLE "__SQLCTX_CALC_base" AS SELECT * FROM samples')
+    layer.graph.models["samples"].table = "__SQLCTX_CALC_base"
     query = dict(DATA["query"])
     actual = layer.query(**query).fetchall()
     assert_rows(actual, DATA["expected"])
@@ -169,7 +169,7 @@ def test_python_wrapper_has_no_hidden_columns_or_numeric_identifier_injection():
 
 @pytest.mark.parametrize("mutation", [None, "unknown", "dependency", "formula", "unknown_option"])
 def test_canonical_validation_checks_active_calculations(mutation):
-    runtime = pytest.importorskip("sidemantic_rs", reason="Requires real native extension")
+    runtime = pytest.importorskip("sqlctx_rs", reason="Requires real native extension")
     source = json.loads(json.dumps(DATA["source"]))
     query = dict(DATA["query"])
     if mutation == "unknown":
@@ -197,9 +197,9 @@ def test_canonical_validation_checks_active_calculations(mutation):
 def test_postgres_calculation_results_match_processor(layer, population):
     import os
 
-    dsn = os.environ.get("SIDEMANTIC_TEST_POSTGRES_DSN")
+    dsn = os.environ.get("SQLCTX_TEST_POSTGRES_DSN")
     if not dsn:
-        pytest.skip("PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN")
+        pytest.skip("PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN")
     import psycopg
 
     query = {**DATA["query"], **population, "dialect": "postgres"}
@@ -224,9 +224,9 @@ def test_bounded_formula_contract(layer, formula):
 
 
 def test_calculations_use_only_authorized_population(layer):
-    from sidemantic import SecurityPolicy
-    from sidemantic.core.semantic_layer import SecurityError
-    from sidemantic.semantic_handoff import graph_to_semantic_input
+    from sqlctx import SecurityPolicy
+    from sqlctx.core.semantic_layer import SecurityError
+    from sqlctx.semantic_handoff import graph_to_semantic_input
 
     layer.graph.models["samples"].security = SecurityPolicy(row_filters=["id <= {{ user.max_id }}"])
     layer.graph.models["samples"].invariant_filters = ["id != 1"]

@@ -1,0 +1,100 @@
+{
+  "name": "sqlctx",
+  "displayName": "sqlctx",
+  "description": "Language support for sqlctx semantic layer definitions (SQL dialect and YAML)",
+  "version": "0.1.0",
+  "publisher": "sidequery",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sidequery/sqlctx"
+  },
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "sqlctx",
+    "semantic layer",
+    "sql",
+    "yaml",
+    "metrics"
+  ],
+  "activationEvents": [
+    "onLanguage:sqlctx-sql",
+    "workspaceContains:**/*.sqlctx.yaml",
+    "workspaceContains:**/*.sqlctx.yml",
+    "workspaceContains:**/*.sqlctx.py",
+    "workspaceContains:**/sqlctx.py"
+  ],
+  "main": "./out/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "The language server loads executable semantic model definitions."
+    }
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "sqlctx-sql",
+        "aliases": ["sqlctx SQL", "sqlctx"],
+        "extensions": [".sqlctx.sql"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sqlctx-sql",
+        "scopeName": "source.sqlctx-sql",
+        "path": "./syntaxes/sqlctx-sql.tmLanguage.json"
+      }
+    ],
+    "yamlValidation": [
+      {
+        "fileMatch": ["*.sqlctx.yaml", "*.sqlctx.yml", "sqlctx.yaml", "sqlctx.yml"],
+        "url": "https://raw.githubusercontent.com/sidequery/sqlctx/main/sqlctx-schema.json"
+      }
+    ],
+    "configuration": {
+      "title": "sqlctx",
+      "properties": {
+        "sqlctx.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the sqlctx language server for .sqlctx.sql files"
+        },
+        "sqlctx.lsp.path": {
+          "type": "string",
+          "scope": "machine",
+          "default": "sqlctx",
+          "description": "Path to the sqlctx CLI executable"
+        },
+        "sqlctx.lsp.python.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable sqlctx language server intelligence for *.sqlctx.py files"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "bun run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "bun test",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.0.0",
+    "@vscode/vsce": "^2.0.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0"
+  }
+}

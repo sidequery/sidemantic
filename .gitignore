@@ -50,6 +50,7 @@ package.json
 !js/bun.lock
 !webapp/package.json
 !sqlctx/apps/web/package.json
+!vscode-sqlctx/package.json
 
 # Rust workspace build artifacts (dax local wheel builds)
 /target/

@@ -1131,3 +1131,39 @@ def test_definition_coverage_is_corpus_wide_without_dropping_plain_sql(tmp_path)
     _replay_yardstick_sql_test(ordinary)
     with pytest.raises(AssertionError, match="eligible upstream corpus"):
         _assert_definition_corpus_matches([ordinary])
+
+
+@pytest.mark.parametrize("keyword", ["ALL", "SET", "WHERE", "VISIBLE"])
+def test_at_where_quoted_modifier_word(keyword):
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute(
+        f"CREATE TABLE lexical(k VARCHAR, amount INTEGER); INSERT INTO lexical VALUES ('{keyword}', 1), ('other', 150)"
+    )
+    runtime.execute("CREATE VIEW lexical_v AS SELECT k, SUM(amount) AS MEASURE revenue FROM lexical")
+    assert runtime.execute(f"SELECT AGGREGATE(revenue) AT (WHERE k = '{keyword}') FROM lexical_v") == [(1,)]
+
+
+@pytest.mark.parametrize("star", ["*", "v.*"])
+def test_explicit_yardstick_star_can_exclude_logical_measures(star):
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute(
+        "CREATE TABLE named(year INTEGER, region VARCHAR, amount INTEGER, revenue INTEGER); "
+        "INSERT INTO named VALUES (2023,'N',1,100), (2024,'S',3,200)"
+    )
+    runtime.execute(
+        "CREATE VIEW named_v AS SELECT year, region, amount, SUM(amount) AS MEASURE revenue, "
+        "COUNT(*) AS MEASURE tally FROM named"
+    )
+    query = (
+        f"SELECT {star} EXCLUDE(amount, revenue, tally), AGGREGATE(revenue) AT (ALL) "
+        "FROM named_v v GROUP BY ALL ORDER BY year"
+    )
+    assert runtime.execute(query) == [(2023, "N", 4), (2024, "S", 4)]
+    with pytest.raises(Exception, match="missing_column"):
+        runtime.execute(query.replace("amount,", "missing_column,"))

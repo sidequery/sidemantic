@@ -3578,6 +3578,8 @@ class QueryRewriter:
                 candidate_expressions.extend(order_expr.this for order_expr in order_clause.expressions)
 
             for candidate_expr in candidate_expressions:
+                if candidate_expr.is_star:
+                    continue
                 for column in candidate_expr.find_all(exp.Column):
                     if self._resolve_implicit_yardstick_measure_reference(
                         column,
@@ -3711,6 +3713,7 @@ class QueryRewriter:
                     else:
                         measure_aliases.pop(alias, None)
 
+        select_scope = self._expand_yardstick_measure_exclusions(select_scope, source_models, default_alias)
         select_scope = self._expand_yardstick_dimension_references(
             select_scope,
             source_models=source_models,
@@ -4471,6 +4474,10 @@ class QueryRewriter:
 
         rewritten_projections: list[exp.Expression] = []
         for projection in rewritten.expressions:
+            if projection.is_star:
+                rewritten_projections.append(projection)
+                continue
+
             if isinstance(projection, exp.Alias):
                 projection.set("this", projection.this.transform(maybe_replace_column))
                 rewritten_projections.append(projection)
@@ -4556,6 +4563,60 @@ class QueryRewriter:
         )
         return expr, column.name
 
+    def _expand_yardstick_measure_exclusions(
+        self, select: exp.Select, source_models: dict[str, str], default_alias: str | None
+    ) -> exp.Select:
+        """Expand an explicitly declared view when its star excludes logical measures."""
+        if self.dialect != "duckdb" or not default_alias:
+            return select
+
+        model = self.graph.get_model(source_models[default_alias])
+        view_sql = (model.metadata or {}).get("yardstick", {}).get("view_sql")
+        if not view_sql:
+            return select
+
+        projections = []
+        metrics = {metric.name.lower() for metric in model.metrics}
+        dims = {dimension.name.lower() for dimension in model.dimensions}
+        explicit_view = None
+        for projection in select.expressions:
+            star = projection.this if isinstance(projection, exp.Column) else projection
+            if (
+                not isinstance(star, exp.Star)
+                or (isinstance(projection, exp.Column) and projection.table != default_alias)
+                or not star.args.get("except_")
+                or star.args.get("replace")
+                or star.args.get("rename")
+            ):
+                projections.append(projection)
+                continue
+
+            excludes = {item.name.lower() for item in star.args["except_"]}
+            if not metrics or metrics - excludes or len(excludes) != len(star.args["except_"]):
+                projections.append(projection)
+                continue
+
+            if explicit_view is None:
+                view = sqlglot.parse_one(view_sql, read=self.dialect)
+                explicit_view = not any(item.is_star for item in view.expressions)
+            if not explicit_view:
+                projections.append(projection)
+                continue
+
+            unknown = excludes - (dims | metrics)
+            if unknown:
+                unknown_name = sorted(unknown)[0]
+                raise ValueError(f'Binder Error: Column "{unknown_name}" in EXCLUDE list not found in {default_alias}')
+
+            visible = [dimension for dimension in model.dimensions if dimension.name.lower() not in excludes]
+            if not visible:
+                projections.append(projection)
+                continue
+            projections.extend(exp.column(dimension.name, table=default_alias, quoted=True) for dimension in visible)
+
+        select.set("expressions", projections)
+        return select
+
     def _expand_yardstick_dimension_references(
         self,
         select_scope: exp.Select,
@@ -4581,6 +4642,10 @@ class QueryRewriter:
         rewritten = select_scope.copy()
         rewritten_projections: list[exp.Expression] = []
         for projection in rewritten.expressions:
+            if projection.is_star:
+                rewritten_projections.append(projection)
+                continue
+
             if isinstance(projection, exp.Alias):
                 projection.set("this", projection.this.transform(replace_columns))
                 rewritten_projections.append(projection)
@@ -5040,7 +5105,7 @@ class QueryRewriter:
         if not tokens:
             return []
 
-        modifier_heads = {"ALL", "SET", "WHERE", "VISIBLE"}
+        modifier_heads = {TokenType.ALL, TokenType.SET, TokenType.WHERE}
         split_indexes = [0]
         depth = 0
 
@@ -5053,7 +5118,9 @@ class QueryRewriter:
             if idx == 0 or depth != 0:
                 continue
 
-            if token.text.upper() in modifier_heads:
+            if token.token_type in modifier_heads or (
+                token.token_type == TokenType.VAR and token.text.upper() == "VISIBLE"
+            ):
                 split_indexes.append(idx)
 
         parts: list[str] = []

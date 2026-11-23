@@ -22,9 +22,9 @@ Detailed compatibility documents describe field-level limitations where they exi
 | `omni` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 5 | [Detailed guide](omni.md) |
 | `ossie` | `apache-ossie`, `osi`, `open-semantic-interchange` | `file_or_directory` | `.yml`, `.yaml`, `.json` | Registered | Yes | 5 | [Detailed guide](ossie.md) |
 | `rill` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 8 | Registry summary only |
-| `sqlctx` | `native` | `file` | `.yml`, `.yaml`, `.sql` | Registered | Yes | 2 | Registry summary only |
 | `sigma` | — | `file` | `.json` | Registered | Yes | 0 | [Detailed guide](sigma.md) |
 | `snowflake` | `cortex`, `snowflake-cortex` | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 9 | [Detailed guide](snowflake.md) |
+| `sqlctx` | `native` | `file` | `.yml`, `.yaml`, `.sql` | Registered | Yes | 2 | Registry summary only |
 | `superset` | — | `file_or_directory` | `.yml`, `.yaml` | Registered | Yes | 5 | Registry summary only |
 | `tableau` | — | `file_or_directory` | `.tds`, `.twb`, `.tdsx`, `.twbx` | Registered | No | 4 | Registry summary only |
 | `thoughtspot` | `thought-spot`, `tml` | `file_or_directory` | `.tml`, `.yml`, `.yaml` | Registered | Yes | 4 | Registry summary only |

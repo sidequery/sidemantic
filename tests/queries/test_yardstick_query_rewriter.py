@@ -6,7 +6,7 @@ import pytest
 
 from sqlctx import SemanticLayer
 from sqlctx.loaders import load_from_directory
-from sqlctx.sql.query_rewriter import QueryRewriter
+from sqlctx.sql.query_rewriter import QueryRewriter, YardstickBindingError, YardstickWarning
 from tests.duckdb_compat import date_bucket
 from tests.utils import fetch_dicts
 
@@ -668,7 +668,7 @@ FROM sales_v
     }
 
 
-def test_yardstick_set_then_all_overrides_set(yardstick_layer):
+def test_yardstick_outer_all_runs_before_inner_set(yardstick_layer):
     result = yardstick_layer.sql(
         """
 SEMANTIC SELECT
@@ -678,11 +678,10 @@ FROM sales_yearly
 """
     )
     rows = fetch_dicts(result)
-    values = {row["year"]: float(row["prior_grand"]) for row in rows}
-    assert values == {2022: 375.0, 2023: 375.0}
+    assert {row["year"]: row["prior_grand"] for row in rows} == {2022: None, 2023: 150.0}
 
 
-def test_yardstick_where_then_all_keeps_remaining_correlation(yardstick_layer):
+def test_yardstick_where_resets_remaining_correlation(yardstick_layer):
     result = yardstick_layer.sql(
         """
 SEMANTIC SELECT
@@ -695,10 +694,10 @@ FROM sales_v
     rows = fetch_dicts(result)
     values = {(row["year"], row["region"]): float(row["us_year_total"]) for row in rows}
     assert values == {
-        (2022, "EU"): 100.0,
-        (2022, "US"): 100.0,
-        (2023, "EU"): 150.0,
-        (2023, "US"): 150.0,
+        (2022, "EU"): 250.0,
+        (2022, "US"): 250.0,
+        (2023, "EU"): 250.0,
+        (2023, "US"): 250.0,
     }
 
 
@@ -713,7 +712,101 @@ WHERE year = 2023
 """
     )
     rows = fetch_dicts(result)
-    assert rows == [{"year": 2023, "prior_year": 150.0}]
+    assert rows == [{"year": 2023, "prior_year": None}]
+
+
+def test_yardstick_compound_and_chained_modifiers_have_distinct_order(yardstick_layer):
+    rows = yardstick_layer.sql(
+        """
+SELECT
+    AGGREGATE(revenue) AT (WHERE region = 'US' VISIBLE),
+    AGGREGATE(revenue) AT (VISIBLE WHERE region = 'US'),
+    AGGREGATE(revenue) AT (WHERE region = 'US') AT (VISIBLE),
+    AGGREGATE(revenue) AT (VISIBLE) AT (WHERE region = 'US')
+FROM sales_v WHERE year = 2023
+"""
+    ).fetchall()
+    assert rows == [(150.0, 250.0, 250.0, 150.0)]
+
+
+def test_yardstick_all_visible_restores_outer_conjunction(yardstick_layer):
+    query = "SELECT AGGREGATE(revenue) AT ({}) FROM sales_v WHERE year = 2023 AND region = 'US'"
+    assert yardstick_layer.sql(query.format("ALL VISIBLE")).fetchall() == [(150.0,)]
+    with pytest.warns(YardstickWarning, match="does not preserve outer WHERE"):
+        assert yardstick_layer.sql(query.format("VISIBLE ALL")).fetchall() == [(375.0,)]
+
+
+def test_yardstick_current_reads_the_context_at_its_position(yardstick_layer):
+    rows = yardstick_layer.sql(
+        """
+SELECT
+    AGGREGATE(revenue) AT (SET year = 2023 SET year = CURRENT year - 1),
+    AGGREGATE(revenue) AT (WHERE year = 2023 SET year = CURRENT year - 1),
+    AGGREGATE(revenue) AT (SET year = CURRENT year - 1) AT (SET year = 2023),
+    AGGREGATE(revenue) AT (SET year = 2023 WHERE year = CURRENT year - 1),
+    AGGREGATE(revenue) AT (SET year = 2023 ALL SET year = COALESCE(CURRENT year, 2022)),
+    AGGREGATE(revenue) AT (SET year = 2023 WHERE year = CURRENT year - 1 SET year = CURRENT year + 1)
+FROM sales_yearly
+"""
+    ).fetchall()
+    assert rows == [(150.0, 150.0, 150.0, 150.0, 150.0, 225.0)]
+    assert yardstick_layer.sql(
+        "SELECT AGGREGATE(revenue) AT (SET year = 2022 VISIBLE SET year = CURRENT year) "
+        "FROM sales_yearly WHERE year = 2023"
+    ).fetchall() == [(225.0,)]
+
+
+def test_yardstick_visible_set_projects_conjuncts_and_rejects_mixed_predicates(yardstick_layer):
+    query = "SELECT year, AGGREGATE(revenue) AT (VISIBLE SET year = year - 1) FROM sales_v WHERE {}"
+    assert yardstick_layer.sql(query.format("year = 2023 AND region = 'US'")).fetchall() == [(2023, 100.0)]
+    with pytest.raises(YardstickBindingError, match="mixed VISIBLE predicate"):
+        yardstick_layer.sql(query.format("year = 2023 OR region = 'US'"))
+    # A subsequent reset discards the predicate before any projection is needed.
+    with pytest.warns(YardstickWarning, match="does not preserve outer WHERE"):
+        assert yardstick_layer.sql(
+            "SELECT year, AGGREGATE(revenue) AT (VISIBLE SET year = year - 1 ALL) "
+            "FROM sales_v WHERE year = 2023 OR region = 'US' ORDER BY year"
+        ).fetchall() == [(2022, 375.0), (2023, 375.0)]
+
+
+@pytest.mark.parametrize(
+    "predicate,expected",
+    [
+        ("NOT (year <> 2023 OR region <> 'US')", 100.0),
+        ("(year=2023 AND region='US') OR (year=2024 AND region='US')", 100.0),
+        ("NOT (year <> 2023 OR region IS DISTINCT FROM NULL)", 7.0),
+    ],
+)
+def test_yardstick_visible_set_factors_predicates_without_losing_null_semantics(yardstick_layer, predicate, expected):
+    yardstick_layer.adapter.execute("INSERT INTO sales VALUES (2022, NULL, 7), (2023, NULL, 11)")
+    assert yardstick_layer.sql(
+        f"SELECT year, AGGREGATE(revenue) AT (VISIBLE SET year=year-1) FROM sales_v WHERE {predicate}"
+    ).fetchall() == [(2023, expected)]
+
+
+def test_yardstick_visible_set_retains_independent_volatile_predicates(yardstick_layer):
+    query = "SELECT year, AGGREGATE(revenue) AT (VISIBLE SET year=year-1) FROM sales_v WHERE "
+    assert yardstick_layer.sql(query + "year=2023 AND (random() < 2 OR random() < 2)").fetchall() == [(2023, 150.0)]
+    for function in ("random() < 2", "unknown_predicate(region)"):
+        with pytest.raises(YardstickBindingError, match="volatile or unproven predicate"):
+            yardstick_layer.sql(query + f"(year=2023 AND {function}) OR (year=2024 AND {function})")
+
+
+def test_yardstick_dollar_quoted_wrapper_reaches_modifier_binding(yardstick_layer):
+    inner = "SELECT year, AGGREGATE(revenue) AT (VISIBLE SET year=year-1) FROM sales_v WHERE "
+    wrapped = "SELECT * FROM yardstick($context$" + "{}" + "$context$)"
+    assert yardstick_layer.sql(wrapped.format(inner + "NOT (year<>2023 OR region<>'US')")).fetchall() == [(2023, 100.0)]
+    with pytest.raises(YardstickBindingError, match="mixed VISIBLE predicate"):
+        yardstick_layer.sql(wrapped.format(inner + "year=2023 OR region='US'"))
+
+
+@pytest.mark.parametrize("word", ["ALL", "SET", "WHERE", "VISIBLE"])
+def test_yardstick_modifier_keywords_inside_string_literals(yardstick_layer, word):
+    yardstick_layer.adapter.execute(f"INSERT INTO sales VALUES (2023, '{word}', 1)")
+    rows = yardstick_layer.sql(
+        f"SELECT AGGREGATE(revenue) AT (WHERE region = '{word}' VISIBLE) FROM sales_v WHERE year = 2023"
+    ).fetchall()
+    assert rows == [(1.0,)]
 
 
 def test_yardstick_at_visible_without_where_is_identity(yardstick_layer):
@@ -876,7 +969,7 @@ def test_yardstick_correlated_scalar_context_collapses_to_maximum(tmp_path, reve
 def test_yardstick_overridden_set_self_reference_is_ignored(yardstick_layer, expression, override):
     rows = yardstick_layer.sql(
         "SEMANTIC SELECT region, AGGREGATE(revenue) "
-        f"AT (SET year = {expression}) AT ({override}) FROM sales_v v ORDER BY region"
+        f"AT ({override}) AT (SET year = {expression}) FROM sales_v v ORDER BY region"
     ).fetchall()
     assert rows == ([("EU", 375.0), ("US", 375.0)] if override == "ALL" else [("EU", 125.0), ("US", 250.0)])
 
@@ -1583,6 +1676,21 @@ GROUP   BY year, region
         (2023, "EU"): 225.0,
         (2023, "US"): 225.0,
     }
+
+
+def test_yardstick_group_by_all_uses_projection_grain_for_having(yardstick_layer):
+    result = fetch_dicts(
+        yardstick_layer.sql(
+            """
+SELECT year, UPPER(region) AS area, COUNT(*) AS n
+FROM sales_v
+GROUP BY ALL
+HAVING AGGREGATE(revenue) > 110
+ORDER BY year, area
+"""
+        )
+    )
+    assert result == [{"year": 2023, "area": "US", "n": 1}]
 
 
 def test_yardstick_group_by_positional_ordinal(yardstick_layer):
@@ -2534,4 +2642,3 @@ SEMANTIC SELECT * FROM (
 
     assert len(rows) == 1
     assert rows[0]["total_revenue"] == pytest.approx(375.0)
-

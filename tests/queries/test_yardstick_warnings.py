@@ -42,9 +42,8 @@ def query_with(modifiers, predicate="year = 2023"):
         "at (where year=2023) at (all)",
         "at (all) at (where year=2023)",
         "at (all) at (set year=2023)",
-        "at (set year=2023) at (all year)",
+        "at (all year) at (set year=2023)",
         "at (all region) at (where region='US') at (visible)",
-        "at (all region visible set region=current(region))",
         "at (all region) at (where region='US') at (where year=2023)",
     ],
 )
@@ -64,7 +63,8 @@ def test_lost_filter_warns_and_can_be_an_error(warning_layer, modifiers):
     [
         ("at (all region where year=2023)", [("EU", 225.0), ("US", 225.0)]),
         ("at (all region set year=2023)", [("EU", 225.0), ("US", 225.0)]),
-        ("at (all year) at (set year=2023)", [("EU", 75.0), ("US", 150.0)]),
+        ("at (set year=2023) at (all year)", [("EU", 75.0), ("US", 150.0)]),
+        ("at (all region visible set region=current(region))", [("EU", None), ("US", None)]),
         ("at (all region visible)", [("EU", 225.0), ("US", 225.0)]),
         ("at (all region) at (where year=2023) at (where region='US')", [("EU", 225.0), ("US", 225.0)]),
     ],
@@ -124,7 +124,10 @@ def test_literal_yardstick_table_function_preserves_results_and_warnings(warning
     assert result == [("EU", 375.0), ("US", 375.0)]
 
 
-@pytest.mark.parametrize("argument", ["'select 1; select 2'", "'delete from sales'", "'select 1 into sink'", "region"])
+@pytest.mark.parametrize(
+    "argument",
+    ["'select 1; select 2'", "$$select 1; select 2$$", "'delete from sales'", "'select 1 into sink'", "region"],
+)
 def test_yardstick_table_function_requires_single_literal_read(warning_layer, argument):
     with pytest.raises(ValueError):
         QueryRewriter(warning_layer.graph).rewrite(f"select * from yardstick({argument})")
@@ -162,10 +165,11 @@ def test_wrapper_explanation_matches_rewrite_and_emits_warning(warning_layer):
 
 
 def test_parenthesized_current_preserves_context_and_string_literals(warning_layer):
-    assert warning_layer.sql(query_with("at (set region=coalesce(current(region), 'US'))")).fetchall() == [
-        ("EU", 125.0),
-        ("US", 250.0),
-    ]
+    with pytest.warns(YardstickWarning, match="year"):
+        assert warning_layer.sql(query_with("at (set region=coalesce(current(region), 'US'))")).fetchall() == [
+            ("EU", 125.0),
+            ("US", 250.0),
+        ]
 
 
 @pytest.mark.parametrize(

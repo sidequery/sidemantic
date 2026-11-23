@@ -576,8 +576,8 @@ SEMANTIC SELECT
     AGGREGATE(revenue) AT (SET year = year - 1) AT (ALL year) as prior_grand
 FROM sales_yearly;
 ----
-2022	NULL	375.0
-2023	150.0	375.0
+2022	NULL	NULL
+2023	150.0	150.0
 
 # =============================================================================
 # Test: Negative and zero values

@@ -1585,6 +1585,21 @@ GROUP   BY year, region
     }
 
 
+def test_yardstick_group_by_all_uses_projection_grain_for_having(yardstick_layer):
+    result = fetch_dicts(
+        yardstick_layer.sql(
+            """
+SELECT year, UPPER(region) AS area, COUNT(*) AS n
+FROM sales_v
+GROUP BY ALL
+HAVING AGGREGATE(revenue) > 110
+ORDER BY year, area
+"""
+        )
+    )
+    assert result == [{"year": 2023, "area": "US", "n": 1}]
+
+
 def test_yardstick_group_by_positional_ordinal(yardstick_layer):
     result = fetch_dicts(
         yardstick_layer.sql(

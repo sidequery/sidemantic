@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -800,11 +801,35 @@ def _apply_statement(layer: SemanticLayer, adapter: YardstickAdapter, statement:
             )
 
 
-def _replay_yardstick_sql_test(path: Path) -> None:
+# Yardstick #72 added a mixed fixture to the legacy (non-PEG) corpus. Its
+# attached-store metadata, session/transaction behavior, and implicit measures
+# are native extension integration checks, not Sidemantic query capabilities.
+# Require review of any changed fixture so no new assertions disappear silently.
+_DEFINITION_STORE_FIXTURE_SHA256 = "8301ba931eee4043223d37efb30e819a2b957a4d1e9e93f92cf984fd33da6e82"
+_DEFINITION_STORE_PORTABLE_STATEMENTS = {13, 16, 28, 72}
+_DEFINITION_STORE_PORTABLE_QUERIES = {23, 42, 54, 75}
+
+
+def _portable_definition_store_records(path: Path) -> tuple[list[_StatementBlock], list[_QueryBlock]]:
+    digest = hashlib.sha256(path.read_text().rstrip("\n").encode()).hexdigest()
+    assert digest == _DEFINITION_STORE_FIXTURE_SHA256, (
+        f"{path}: upstream definition-store fixture changed; review the native/portable replay boundary"
+    )
+    statements, queries = _parse_measures_test(path)
+    portable_statements = [record for record in statements if record.line in _DEFINITION_STORE_PORTABLE_STATEMENTS]
+    portable_queries = [record for record in queries if record.line in _DEFINITION_STORE_PORTABLE_QUERIES]
+    assert {record.line for record in portable_statements} == _DEFINITION_STORE_PORTABLE_STATEMENTS
+    assert {record.line for record in portable_queries} == _DEFINITION_STORE_PORTABLE_QUERIES
+    return portable_statements, portable_queries
+
+
+def _replay_yardstick_sql_test(
+    path: Path, records: tuple[list[_StatementBlock], list[_QueryBlock]] | None = None
+) -> None:
     if not path.exists():
         pytest.skip(f"Yardstick SQL test file not found: {path}")
 
-    statements, queries = _parse_measures_test(path)
+    statements, queries = _parse_measures_test(path) if records is None else records
     assert queries, f"No query blocks parsed from Yardstick SQL test: {path}"
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
@@ -856,7 +881,18 @@ def test_yardstick_upstream_create_view_definitions():
 @pytest.mark.yardstick_upstream
 def test_yardstick_upstream_sql_replay():
     for path in _yardstick_upstream_sql_test_paths():
-        _replay_yardstick_sql_test(path)
+        if path.name == "definition_store.test":
+            _replay_yardstick_sql_test(path, _portable_definition_store_records(path))
+        else:
+            _replay_yardstick_sql_test(path)
+
+
+def test_changed_definition_store_fixture_requires_review(tmp_path):
+    path = tmp_path / "definition_store.test"
+    path.write_text("query I\nSELECT 123;\n----\n456\n")
+
+    with pytest.raises(AssertionError, match="review the native/portable replay boundary"):
+        _portable_definition_store_records(path)
 
 
 def test_parse_statement_record_preserves_batch_and_unterminated_error(tmp_path):

@@ -6,14 +6,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{parse_sql_with_dialect, table_name_and_alias, QueryRewriter};
+use super::{QueryRewriter, parse_sql_with_dialect, table_name_and_alias};
 use crate::core::MetricType;
 use crate::error::{Result, SqlctxError};
 use crate::semantic_input::dialects;
 use polyglot_sql::dialects::{DialectImpl, SnowflakeDialect};
 use polyglot_sql::expressions::{GroupBy, Identifier, Select, Where};
 use polyglot_sql::tokens::{Token, TokenType, Tokenizer};
-use polyglot_sql::{generate as polyglot_generate, Dialect, DialectType, Expression};
+use polyglot_sql::{Dialect, DialectType, Expression, generate as polyglot_generate};
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -562,6 +562,40 @@ impl Lowerer<'_, '_> {
                 });
             }
         }
+        if select
+            .group_by
+            .as_ref()
+            .is_some_and(|group| group.all == Some(true))
+            && !select
+                .expressions
+                .iter()
+                .any(|projection| matches!(projection, Expression::Star(_)))
+        {
+            let mut groups = Vec::new();
+            for projection in &select.expressions {
+                let expression = match projection {
+                    Expression::Alias(alias) => &alias.this,
+                    other => other,
+                };
+                if !contains_call(expression)?
+                    && !has_aggregate_semantics(&encode(expression)?)
+                    && !matches!(
+                        expression,
+                        Expression::Literal(_) | Expression::Null(_) | Expression::Boolean(_)
+                    )
+                {
+                    groups.push(expression.clone());
+                }
+            }
+            if !groups.is_empty() {
+                select.group_by = Some(GroupBy {
+                    expressions: groups,
+                    all: None,
+                    totals: false,
+                    comments: vec![],
+                });
+            }
+        }
         if let Some(group) = &mut select.group_by {
             for expression in &mut group.expressions {
                 if let Ok(index) = self.sql(expression)?.parse::<usize>() {
@@ -616,6 +650,18 @@ impl Lowerer<'_, '_> {
                 }
             }
         }
+        let mut having_calls = HashSet::new();
+        if let Some(having) = &select.having {
+            map_columns(&mut encode(&having.this)?, &mut |node| {
+                if let Some((None, name)) = reference(&node) {
+                    if scope_calls.contains(&name) {
+                        having_calls.insert(name);
+                    }
+                }
+                Ok(node)
+            })?;
+        }
+        let no_aliases = HashMap::new();
         let mut replacements = HashMap::new();
         for name in &scope_calls {
             let call = &self.calls[name];
@@ -636,7 +682,11 @@ impl Lowerer<'_, '_> {
                 &groups,
                 select.where_clause.as_ref(),
                 single,
-                &context_aliases,
+                if having_calls.contains(name) {
+                    &no_aliases
+                } else {
+                    &context_aliases
+                },
                 &mut HashSet::new(),
                 &mut correlated,
             )?;
@@ -1139,7 +1189,11 @@ impl Lowerer<'_, '_> {
             || contains_kind(&encode(&expression)?, "window_function")
         {
             let message = name.replace('\'', "''");
-            format!("(SELECT CASE WHEN COUNT(*) = 0 THEN NULL WHEN COUNT(DISTINCT __ys_window_value) = 1 THEN MIN(__ys_window_value) ELSE error('Window measure {message} returned multiple values for the evaluation context') END FROM (SELECT _inner.*, {aggregate} AS __ys_window_value FROM {source} AS _inner{}) AS _inner{})", predicate_clause(&base), predicate_clause(&post))
+            format!(
+                "(SELECT CASE WHEN COUNT(*) = 0 THEN NULL WHEN COUNT(DISTINCT __ys_window_value) = 1 THEN MIN(__ys_window_value) ELSE error('Window measure {message} returned multiple values for the evaluation context') END FROM (SELECT _inner.*, {aggregate} AS __ys_window_value FROM {source} AS _inner{}) AS _inner{})",
+                predicate_clause(&base),
+                predicate_clause(&post)
+            )
         } else {
             format!(
                 "(SELECT {aggregate} FROM {source} AS _inner{})",

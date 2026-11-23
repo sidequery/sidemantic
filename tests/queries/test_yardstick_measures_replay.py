@@ -859,6 +859,30 @@ def test_yardstick_upstream_sql_replay():
         _replay_yardstick_sql_test(path)
 
 
+def test_replay_binds_measure_and_grouping_projection_aliases(tmp_path):
+    path = tmp_path / "aliases.test"
+    path.write_text(
+        """statement ok
+CREATE TABLE sales(region VARCHAR, amount INT);
+
+statement ok
+INSERT INTO sales VALUES ('N', 10), ('N', 20), ('S', 50);
+
+statement ok
+CREATE VIEW sales_v AS SELECT region, SUM(amount) AS MEASURE revenue,
+    COUNT(*) AS MEASURE orders FROM sales;
+
+query TIIR rowsort
+SELECT LOWER(region) AS area, AGGREGATE(revenue) AS r, AGGREGATE(orders) AS n, r/n AS mean
+FROM sales_v GROUP BY area;
+----
+n\t30\t2\t15.0
+s\t50\t1\t50.0
+"""
+    )
+    _replay_yardstick_sql_test(path)
+
+
 def test_parse_statement_record_preserves_batch_and_unterminated_error(tmp_path):
     path = tmp_path / "batch.test"
     path.write_text(

@@ -3683,6 +3683,34 @@ class QueryRewriter:
         if not scope_placeholders:
             return select_scope
 
+        if single_model_scope and self.dialect == "duckdb":
+            model = self.graph.get_model(source_models[default_alias])
+            known_columns = {dimension.name.lower() for dimension in model.dimensions}
+            measure_aliases: dict[str, exp.Expression] = {}
+            for projection in select_scope.expressions:
+                expression = projection.this if isinstance(projection, exp.Alias) else projection
+                replacements = {
+                    id(column): measure_aliases[column.name.lower()]
+                    for column in self._columns_without_nested_scopes(expression)
+                    if not column.table
+                    and column.name.lower() in measure_aliases
+                    and column.name.lower() not in known_columns
+                }
+                if replacements:
+                    expanded = expression.transform(
+                        lambda node: replacements[id(node)].copy() if id(node) in replacements else node,
+                        copy=False,
+                    )
+                    if isinstance(projection, exp.Alias):
+                        projection.set("this", expanded)
+                        expression = expanded
+                if isinstance(projection, exp.Alias):
+                    alias = projection.alias.lower()
+                    if self._expression_contains_yardstick_placeholder(expression, scope_placeholders):
+                        measure_aliases[alias] = expression
+                    else:
+                        measure_aliases.pop(alias, None)
+
         select_scope = self._expand_yardstick_dimension_references(
             select_scope,
             source_models=source_models,
@@ -3747,6 +3775,22 @@ class QueryRewriter:
         if group_clause:
             self._resolve_yardstick_group_ordinals(group_clause, select_scope.expressions)
         if group_clause and default_alias and single_model_scope:
+            model = self.graph.get_model(source_models[default_alias])
+            group_aliases = {
+                item.alias.lower(): item.this for item in select_scope.expressions if isinstance(item, exp.Alias)
+            }
+            group_clause.set(
+                "expressions",
+                [
+                    group_aliases[expr.name.lower()].copy()
+                    if isinstance(expr, exp.Column)
+                    and not expr.table
+                    and expr.name.lower() in group_aliases
+                    and not model.get_dimension(expr.name)
+                    else expr
+                    for expr in group_clause.expressions
+                ],
+            )
             group_clause.set(
                 "expressions",
                 [
@@ -3775,13 +3819,19 @@ class QueryRewriter:
             signature = self._expr_signature_without_tables(projection.this)
             projection_aliases[signature] = projection.alias
 
+        having = select_scope.args.get("having")
+        having_placeholders = (
+            {column.name for column in self._columns_without_nested_scopes(having) if not column.table}
+            if having
+            else set()
+        )
         replacement_sql: dict[str, str] = {}
         for placeholder in scope_placeholders:
             replacement_sql[placeholder] = self._build_yardstick_call_sql(
                 call=call_map[placeholder],
                 source_models=source_models,
                 group_expressions=group_expressions,
-                projection_aliases=projection_aliases,
+                projection_aliases={} if placeholder in having_placeholders else projection_aliases,
                 outer_where=outer_where,
                 default_alias=default_alias,
                 single_model_scope=single_model_scope,

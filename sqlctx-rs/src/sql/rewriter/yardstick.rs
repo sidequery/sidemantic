@@ -929,8 +929,8 @@ impl Lowerer<'_, '_> {
         let mut context = Vec::new();
         for group in groups {
             let mut expanded = Vec::new();
-            expand_groups(group, &mut expanded)?;
-            for group in expanded {
+            expand_groups(group, false, &mut expanded)?;
+            for (group, optional) in expanded {
                 let mut columns = Vec::new();
                 map_columns(&mut encode(&group)?, &mut |node| {
                     if let Some(reference) = reference(&node) {
@@ -957,16 +957,21 @@ impl Lowerer<'_, '_> {
                     continue;
                 }
                 let signature = self.signature(group.clone())?;
-                if context.iter().any(|(key, _, _)| key == &signature) {
-                    continue;
-                }
                 let aliases = columns
                     .iter()
                     .filter_map(|(table, _)| table.as_deref())
                     .collect::<Vec<_>>();
                 let inner = self.remap(group.clone(), &aliases, "_inner", single)?;
                 let mut outer = self.remap(group, &[model_name], alias, single)?;
-                if let Some(output_alias) = context_aliases.get(&signature) {
+                // A subtotal omits this expression, rather than grouping its NULL values.
+                // GROUPING must refer to the group expression, not its output alias.
+                let grouping = optional.then(|| self.sql(&outer)).transpose()?;
+                if context.iter().any(|(key, _, _, existing_grouping)| {
+                    key == &signature && existing_grouping == &grouping
+                }) {
+                    continue;
+                }
+                if let Some(output_alias) = context_aliases.get(&signature).filter(|_| !optional) {
                     // SELECT * imports can expose physical grouping columns
                     // without declaring dimensions. An unqualified output
                     // alias with that same name would bind to the inner source
@@ -988,12 +993,12 @@ impl Lowerer<'_, '_> {
                         outer = Expression::Identifier(Identifier::new(output_alias));
                     }
                 }
-                context.push((signature, self.sql(&inner)?, self.sql(&outer)?));
+                context.push((signature, self.sql(&inner)?, self.sql(&outer)?, grouping));
             }
         }
         let mut current = context
             .iter()
-            .map(|(key, _, _)| key.clone())
+            .map(|(key, _, _, _)| key.clone())
             .collect::<HashSet<_>>();
         if let Some(predicate) = outer_where {
             self.fixed_context(&predicate.this, &mut current)?;
@@ -1026,7 +1031,7 @@ impl Lowerer<'_, '_> {
                 "ALL" => {
                     for target in self.all_targets(body)? {
                         let key = self.signature(target)?;
-                        active.retain(|(signature, _, _)| signature != &key);
+                        active.retain(|(signature, _, _, _)| signature != &key);
                         removed.insert(key);
                     }
                 }
@@ -1064,7 +1069,7 @@ impl Lowerer<'_, '_> {
                                 Ok(node)
                             })?;
                             if self_reference
-                                && !context.iter().any(|(signature, _, _)| signature == &key)
+                                && !context.iter().any(|(signature, _, _, _)| signature == &key)
                             {
                                 return Err(SqlctxError::YardstickBinding(format!(
                                     "AT ({modifier}) references {dimension}, but the query does not group by {dimension}. Add {dimension} to SELECT/GROUP BY or use a constant SET value."
@@ -1077,7 +1082,7 @@ impl Lowerer<'_, '_> {
                     match expression {
                         Expression::Eq(eq) => {
                             let key = self.signature(eq.left.clone())?;
-                            active.retain(|(signature, _, _)| signature != &key);
+                            active.retain(|(signature, _, _, _)| signature != &key);
                             if removed.contains(&key) {
                                 continue;
                             }
@@ -1119,7 +1124,7 @@ impl Lowerer<'_, '_> {
                             if removed.contains(&key) {
                                 continue;
                             }
-                            active.retain(|(signature, _, _)| signature != &key);
+                            active.retain(|(signature, _, _, _)| signature != &key);
                             let expression = self.remap(
                                 Expression::In(in_expr),
                                 &[model_name],
@@ -1163,11 +1168,13 @@ impl Lowerer<'_, '_> {
             base.push(self.sql(&expression)?);
         }
         let mut post = set_predicates.into_values().collect::<Vec<_>>();
-        post.extend(
-            active
-                .into_iter()
-                .map(|(_, inner, outer)| format!("({inner}) IS NOT DISTINCT FROM ({outer})")),
-        );
+        post.extend(active.into_iter().map(|(_, inner, outer, grouping)| {
+            let equality = format!("({inner}) IS NOT DISTINCT FROM ({outer})");
+            match grouping {
+                Some(group) => format!("GROUPING({group}) = 1 OR ({equality})"),
+                None => equality,
+            }
+        }));
         let source = model
             .sql
             .as_ref()
@@ -1212,7 +1219,7 @@ impl Lowerer<'_, '_> {
         name: &str,
         call: &Call,
         outer_where: Option<&Where>,
-        active: &[(String, String, String)],
+        active: &[(String, String, String, Option<String>)],
         where_predicates: &[String],
         set_predicates: &std::collections::BTreeMap<String, String>,
         visible: bool,
@@ -1267,7 +1274,7 @@ impl Lowerer<'_, '_> {
             return Ok(());
         }
         let mut encoded = HashSet::new();
-        for (_, inner, _) in active {
+        for (_, inner, _, _) in active {
             let expression = self.expression(inner)?;
             if reference(&expression).is_some() {
                 encoded.extend(source_columns(&expression)?);
@@ -1513,7 +1520,11 @@ fn has_aggregate_semantics(value: &Value) -> bool {
     }
 }
 
-fn expand_groups(expression: &Expression, output: &mut Vec<Expression>) -> Result<()> {
+fn expand_groups(
+    expression: &Expression,
+    optional: bool,
+    output: &mut Vec<(Expression, bool)>,
+) -> Result<()> {
     // The pinned parser represents inline ROLLUP/CUBE as ordinary functions,
     // but WITH ROLLUP/CUBE as the typed variants handled below.
     if let Expression::Function(function) = expression {
@@ -1522,7 +1533,7 @@ fn expand_groups(expression: &Expression, output: &mut Vec<Expression>) -> Resul
             .any(|name| function.name.eq_ignore_ascii_case(name))
         {
             for child in &function.args {
-                expand_groups(child, output)?;
+                expand_groups(child, true, output)?;
             }
             return Ok(());
         }
@@ -1531,18 +1542,18 @@ fn expand_groups(expression: &Expression, output: &mut Vec<Expression>) -> Resul
     let Some(fields) = value.as_object() else {
         return Ok(());
     };
-    if let Some(group) = ["rollup", "cube", "grouping_sets", "tuple"]
-        .iter()
-        .find_map(|kind| fields.get(*kind))
+    if let Some((kind, group)) = ["rollup", "cube", "grouping_sets", "tuple"]
+        .into_iter()
+        .find_map(|kind| fields.get(kind).map(|group| (kind, group)))
     {
         if let Some(children) = group.get("expressions").and_then(Value::as_array) {
             for child in children {
-                expand_groups(&decode(child.clone())?, output)?;
+                expand_groups(&decode(child.clone())?, optional || kind != "tuple", output)?;
             }
             return Ok(());
         }
     }
-    output.push(expression.clone());
+    output.push((expression.clone(), optional));
     Ok(())
 }
 
@@ -1651,6 +1662,56 @@ mod tests {
                 "{sql}"
             );
             assert!(!sql.contains("IS NOT DISTINCT FROM (product)"), "{sql}");
+            assert_eq!(
+                sql.contains("GROUPING(o.product) = 1"),
+                grouping != "o.product",
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn grouping_sets_keep_visible_filters_outside_grouping_guard() {
+        let mut model = Model::new("orders_v", "id")
+            .with_table("raw_orders")
+            .with_metric(Metric::sum("revenue", "amount"));
+        model.metadata = Some(serde_json::json!({"yardstick": {}}));
+        let mut graph = SemanticGraph::new();
+        graph.add_model(model).unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+        for grouping in [
+            "ROLLUP(o.product, o.year)",
+            "CUBE(o.product, o.year)",
+            "GROUPING SETS ((o.product), (o.year), ())",
+        ] {
+            let sql = rewriter.rewrite(&format!(
+                "SELECT o.product, o.year, COUNT(*) AS c, AGGREGATE(o.revenue) AS vis, o.revenue AS plain FROM orders_v o WHERE o.customer <> 'Bob' GROUP BY {grouping}"
+            )).unwrap();
+            assert_eq!(sql.matches("GROUPING(o.product) = 1").count(), 2, "{sql}");
+            assert_eq!(sql.matches("GROUPING(o.year) = 1").count(), 2, "{sql}");
+            assert_eq!(sql.matches("_inner.customer <> 'Bob'").count(), 1, "{sql}");
+            assert!(
+                sql.contains("(_inner.product) IS NOT DISTINCT FROM (o.product)"),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn optional_grouping_retains_relation_identity_and_ignores_output_aliases() {
+        let mut model = Model::new("orders_v", "id")
+            .with_table("raw_orders")
+            .with_dimension(crate::core::Dimension::categorical("year"))
+            .with_metric(Metric::count("orders"));
+        model.metadata = Some(serde_json::json!({"yardstick": {}}));
+        let mut graph = SemanticGraph::new();
+        graph.add_model(model).unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+        let sql = rewriter.rewrite(
+            "SELECT o.year AS order_year, y.year AS joined_year, AGGREGATE(o.orders) FROM orders_v o JOIN (SELECT DISTINCT year FROM raw_orders) y ON o.year = y.year GROUP BY GROUPING SETS ((o.year), (y.year), ())"
+        ).unwrap();
+        for qualifier in ["o", "y"] {
+            assert!(sql.contains(&format!("GROUPING({qualifier}.year) = 1 OR ((_inner.year) IS NOT DISTINCT FROM ({qualifier}.year))")), "{sql}");
         }
     }
 }

@@ -489,7 +489,7 @@ ORDER BY o.prodName
     ] == [
         ("Happy", 2, 13.0, 13.0, 17.0),
         ("Whizz", 1, 3.0, 3.0, 3.0),
-        (None, 3, None, None, None),
+        (None, 3, 16.0, 16.0, 20.0),
     ]
 
 
@@ -2534,3 +2534,4 @@ SEMANTIC SELECT * FROM (
 
     assert len(rows) == 1
     assert rows[0]["total_revenue"] == pytest.approx(375.0)
+

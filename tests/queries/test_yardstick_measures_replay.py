@@ -1167,3 +1167,44 @@ def test_explicit_yardstick_star_can_exclude_logical_measures(star):
     assert runtime.execute(query) == [(2023, "N", 4), (2024, "S", 4)]
     with pytest.raises(Exception, match="missing_column"):
         runtime.execute(query.replace("amount,", "missing_column,"))
+
+
+@pytest.mark.parametrize("grouping", ["ROLLUP(region)", "CUBE(region)", "GROUPING SETS ((region), ())"])
+def test_yardstick_subtotal_preserves_filter_mode_and_real_null(grouping):
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute(
+        "CREATE TABLE subtotal(region VARCHAR, amount INTEGER, included BOOLEAN); "
+        "INSERT INTO subtotal VALUES (NULL,2,true), (NULL,7,false), ('N',3,true), ('S',5,true)"
+    )
+    runtime.execute("CREATE VIEW subtotal_v AS SELECT region, included, SUM(amount) AS MEASURE revenue FROM subtotal")
+    assert runtime.execute(
+        "SELECT region, GROUPING(region) AS subtotal_flag, AGGREGATE(revenue), "
+        "revenue AT (VISIBLE), revenue FROM subtotal_v WHERE included "
+        f"GROUP BY {grouping} ORDER BY subtotal_flag, region NULLS FIRST"
+    ) == [(None, 0, 2, 2, 9), ("N", 0, 3, 3, 3), ("S", 0, 5, 5, 5), (None, 1, 10, 10, 17)]
+
+
+def test_yardstick_grouping_set_keeps_other_dimensions_and_ctas():
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute(
+        "CREATE TABLE mixed(year INTEGER, region VARCHAR, amount INTEGER); "
+        "INSERT INTO mixed VALUES (2023,NULL,2), (2023,'N',3), (2024,'N',5)"
+    )
+    runtime.execute(
+        "CREATE VIEW mixed_v AS SELECT year, region, COUNT(*) AS MEASURE tally FROM mixed; "
+        "CREATE TABLE subtotals AS SELECT year, region, GROUPING(region) AS subtotal_flag, "
+        "AGGREGATE(tally) AS n FROM mixed_v GROUP BY year, GROUPING SETS ((region), ())"
+    )
+    assert runtime.execute("SELECT * FROM subtotals ORDER BY year, subtotal_flag, region NULLS FIRST") == [
+        (2023, None, 0, 1),
+        (2023, "N", 0, 1),
+        (2023, None, 1, 2),
+        (2024, "N", 0, 1),
+        (2024, None, 1, 1),
+    ]

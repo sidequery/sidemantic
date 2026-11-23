@@ -231,7 +231,7 @@ Bare measure names in non-SEMANTIC queries default to evaluating at the full tab
 | Explicit `GROUP BY col1, col2` | Supported |
 | Positional `GROUP BY 1, 2` | Supported (ordinals resolved to SELECT dimensions) |
 | `GROUP BY` with extra whitespace | Supported |
-| `GROUP BY ROLLUP(...)` | Supported |
+| `GROUP BY ROLLUP(...)`, `CUBE(...)`, or `GROUPING SETS (...)` | Supported on DuckDB. Measures evaluate at each grouping set’s grain; a subtotal is distinct from a grouped NULL value. |
 | Omitted `GROUP BY` (grouping inferred from SELECT dimensions) | Supported |
 
 ---

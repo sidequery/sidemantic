@@ -4872,7 +4872,10 @@ class QueryRewriter:
 
         correlation_predicates: list[str] = []
         for dim in active_dimensions:
-            correlation_predicates.append(f"({dim['inner_sql']}) IS NOT DISTINCT FROM ({dim['outer_sql']})")
+            equality = f"({dim['inner_sql']}) IS NOT DISTINCT FROM ({dim['outer_sql']})"
+            if grouping_sql := dim.get("grouping_sql"):
+                equality = f"(GROUPING({grouping_sql}) = 1 OR ({equality}))"
+            correlation_predicates.append(equality)
 
         base_predicates = list(where_modifier_predicates)
         if include_visible and outer_where is not None:
@@ -4994,11 +4997,11 @@ class QueryRewriter:
     ) -> list[dict[str, str]]:
         context_dimensions: list[dict[str, str]] = []
         model = self.graph.get_model(model_name)
-        seen_signatures: set[str] = set()
+        seen_signatures: set[tuple[str, str]] = set()
 
         for raw_group_expr in group_expressions:
             expanded_group_expressions = self._expand_group_expression_for_yardstick_context(raw_group_expr)
-            for group_expr in expanded_group_expressions:
+            for group_expr, optional in expanded_group_expressions:
                 outer_base_expr = group_expr.copy()
                 expr_obj = group_expr.copy()
                 if default_alias and single_model_scope:
@@ -5027,10 +5030,14 @@ class QueryRewriter:
                     default_table="_inner" if single_model_scope else None,
                 )
                 signature = self._expr_signature_without_tables(inner_base_expr)
-                if signature in seen_signatures:
-                    continue
-                seen_signatures.add(signature)
                 outer_sql = outer_expr.sql(dialect=self.dialect)
+                # GROUPING distinguishes a subtotal (dimension omitted) from
+                # a detail row with a real NULL grouping key.
+                grouping_sql = outer_sql if optional and self.dialect == "duckdb" else ""
+                context_key = (signature, grouping_sql)
+                if context_key in seen_signatures:
+                    continue
+                seen_signatures.add(context_key)
                 projection_alias = projection_aliases.get(signature)
                 unsafe_aliases: set[str] = set()
                 for dimension in model.dimensions:
@@ -5051,31 +5058,30 @@ class QueryRewriter:
                         "signature": signature,
                         "outer_sql": outer_sql,
                         "inner_sql": inner_expr.sql(dialect=self.dialect),
+                        "grouping_sql": grouping_sql,
                     }
                 )
 
         return context_dimensions
 
-    def _expand_group_expression_for_yardstick_context(self, group_expr: exp.Expression) -> list[exp.Expression]:
-        if isinstance(group_expr, (exp.Rollup, exp.Cube)):
-            expanded: list[exp.Expression] = []
-            for sub_expr in group_expr.expressions:
-                expanded.extend(self._expand_group_expression_for_yardstick_context(sub_expr))
-            return expanded
-
-        if isinstance(group_expr, exp.GroupingSets):
-            expanded: list[exp.Expression] = []
-            for sub_expr in group_expr.expressions:
-                expanded.extend(self._expand_group_expression_for_yardstick_context(sub_expr))
-            return expanded
-
+    def _expand_group_expression_for_yardstick_context(
+        self, group_expr: exp.Expression, optional: bool = False
+    ) -> list[tuple[exp.Expression, bool]]:
+        if isinstance(group_expr, (exp.Rollup, exp.Cube, exp.GroupingSets)):
+            return [
+                item
+                for child in group_expr.expressions
+                for item in self._expand_group_expression_for_yardstick_context(child, optional=True)
+            ]
         if isinstance(group_expr, exp.Tuple):
-            expanded: list[exp.Expression] = []
-            for sub_expr in group_expr.expressions:
-                expanded.extend(self._expand_group_expression_for_yardstick_context(sub_expr))
-            return expanded
-
-        return [group_expr]
+            return [
+                item
+                for child in group_expr.expressions
+                for item in self._expand_group_expression_for_yardstick_context(child, optional)
+            ]
+        if isinstance(group_expr, exp.Paren):
+            return self._expand_group_expression_for_yardstick_context(group_expr.this, optional)
+        return [(group_expr, optional)]
 
     def _split_set_modifier(self, modifier_sql: str) -> tuple[str, str]:
         tokens = sqlglot.tokenize(modifier_sql, read=self.dialect)

@@ -3744,23 +3744,6 @@ class QueryRewriter:
                 scalar_aggregate = True
 
         group_clause = select_scope.args.get("group")
-        if (
-            group_clause
-            and group_clause.args.get("all")
-            and not any(projection.is_star for projection in select_scope.expressions)
-        ):
-            # Resolve the implicit grain before lowering measures to scalar subqueries.
-            # Otherwise a HAVING-only measure sees a grand total instead of its group.
-            group_expressions = []
-            for projection, is_metric, is_literal in zip(
-                select_scope.expressions, projection_is_metric, projection_is_literal, strict=True
-            ):
-                expression = projection.this if isinstance(projection, exp.Alias) else projection
-                if not is_metric and not is_literal and not expression.find(exp.AggFunc, exp.Window):
-                    group_expressions.append(expression.copy())
-            if group_expressions:
-                group_clause = exp.Group(expressions=group_expressions)
-                select_scope.set("group", group_clause)
         if group_clause:
             self._resolve_yardstick_group_ordinals(group_clause, select_scope.expressions)
         if group_clause and default_alias and single_model_scope:

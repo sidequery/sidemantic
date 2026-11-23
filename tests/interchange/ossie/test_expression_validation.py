@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from sidemantic.interchange.ossie.expression_validation import scalar_sql_expression_error
+from sqlctx.interchange.ossie.expression_validation import scalar_sql_expression_error
 
 
 @pytest.mark.parametrize(

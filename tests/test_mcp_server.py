@@ -15,12 +15,12 @@ from tests.optional_dep_stubs import ensure_fake_mcp
 
 ensure_fake_mcp()
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.core.pre_aggregation import PreAggregation
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_layer import PreaggregationStrictError
-from sidemantic.mcp_server import (
-    SIDEMANTIC_MCP_INSTRUCTIONS,
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.core.pre_aggregation import PreAggregation
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_layer import PreaggregationStrictError
+from sqlctx.mcp_server import (
+    SQLCTX_MCP_INSTRUCTIONS,
     _convert_to_json_compatible,
     _format_join_condition,
     catalog_resource,
@@ -52,9 +52,9 @@ def test_registered_query_tools_leave_event_loop_responsive(
 
     import httpx
 
-    import sidemantic.mcp_server as mcp_mod
-    from sidemantic.api_server import create_app
-    from sidemantic.server.common import ServerLimits, current_limits, request_limits
+    import sqlctx.mcp_server as mcp_mod
+    from sqlctx.api_server import create_app
+    from sqlctx.server.common import ServerLimits, current_limits, request_limits
 
     if not hasattr(mcp_mod.mcp, "call_tool"):
         pytest.skip("Real MCP SDK required for tool dispatch coverage")
@@ -102,7 +102,7 @@ def test_registered_query_tools_leave_event_loop_responsive(
 
 @pytest.fixture
 def stub_chart_rendering(monkeypatch):
-    import sidemantic.mcp_server as mcp_mod
+    import sqlctx.mcp_server as mcp_mod
 
     def fake_make_chart(data, chart_type="auto", title=None, width=600, height=400):
         return {
@@ -113,9 +113,9 @@ def stub_chart_rendering(monkeypatch):
             "data": {"values": data},
         }
 
-    monkeypatch.setattr("sidemantic.charts.create_chart", fake_make_chart)
-    monkeypatch.setattr("sidemantic.charts.chart_to_vega", lambda chart: chart)
-    monkeypatch.setattr("sidemantic.charts.chart_to_base64_png", lambda _chart: "data:image/png;base64,ZmFrZQ==")
+    monkeypatch.setattr("sqlctx.charts.create_chart", fake_make_chart)
+    monkeypatch.setattr("sqlctx.charts.chart_to_vega", lambda chart: chart)
+    monkeypatch.setattr("sqlctx.charts.chart_to_base64_png", lambda _chart: "data:image/png;base64,ZmFrZQ==")
     monkeypatch.setattr(mcp_mod, "_apps_enabled", False)
 
 
@@ -395,7 +395,7 @@ def _unbuilt_rollup_layer(*, strict: bool = False) -> SemanticLayer:
 
 
 def test_run_query_falls_back_when_rollup_is_missing(monkeypatch):
-    import sidemantic.mcp_server as mcp_server
+    import sqlctx.mcp_server as mcp_server
 
     monkeypatch.setattr(mcp_server, "_layer", _unbuilt_rollup_layer())
 
@@ -406,7 +406,7 @@ def test_run_query_falls_back_when_rollup_is_missing(monkeypatch):
 
 
 def test_run_query_strict_mode_rejects_missing_rollup(monkeypatch):
-    import sidemantic.mcp_server as mcp_server
+    import sqlctx.mcp_server as mcp_server
 
     monkeypatch.setattr(mcp_server, "_layer", _unbuilt_rollup_layer(strict=True))
 
@@ -702,10 +702,10 @@ def test_get_semantic_graph(demo_layer):
 
 
 def test_mcp_instructions_promote_semantic_first_analysis():
-    assert "authoritative semantic layer" in SIDEMANTIC_MCP_INSTRUCTIONS
-    assert "search_semantic_catalog" in SIDEMANTIC_MCP_INSTRUCTIONS
-    assert "explain_metric" in SIDEMANTIC_MCP_INSTRUCTIONS
-    assert "semantic_gap" in SIDEMANTIC_MCP_INSTRUCTIONS
+    assert "authoritative semantic layer" in SQLCTX_MCP_INSTRUCTIONS
+    assert "search_semantic_catalog" in SQLCTX_MCP_INSTRUCTIONS
+    assert "explain_metric" in SQLCTX_MCP_INSTRUCTIONS
+    assert "semantic_gap" in SQLCTX_MCP_INSTRUCTIONS
 
 
 def test_search_semantic_catalog_ranks_and_filters_results(demo_layer):
@@ -788,7 +788,7 @@ def test_explain_metric_returns_definition_and_provenance(demo_layer):
         "description": "Total revenue from orders",
         "depends_on": [],
         "source_models": ["orders"],
-        "source_format": "Sidemantic",
+        "source_format": "sqlctx",
         "source_file": "orders.yml",
     }
 
@@ -1192,12 +1192,12 @@ models:
 
 
 def test_create_chart_returns_ui_resource_when_apps_enabled(monkeypatch, demo_layer, stub_chart_rendering):
-    import sidemantic.mcp_server as mcp_mod
+    import sqlctx.mcp_server as mcp_mod
 
     def fake_resource(spec):
         return {"resource": spec["mark"]}
 
-    monkeypatch.setattr("sidemantic.apps.create_chart_resource", fake_resource)
+    monkeypatch.setattr("sqlctx.apps.create_chart_resource", fake_resource)
 
     old_value = mcp_mod._apps_enabled
     mcp_mod._apps_enabled = True

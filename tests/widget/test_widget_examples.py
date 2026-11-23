@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx import Dimension, Metric, Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.generator import SQLGenerator
 
 
 def test_notebook_metric_sql_parses_aggregations():
@@ -93,7 +93,7 @@ def test_auto_model_metrics_generate_without_dependency_errors():
 def test_build_auto_model_sets_simple_aggs():
     """Auto-model should create simple agg metrics (not inline SQL)."""
     pa = pytest.importorskip("pyarrow")
-    from sidemantic.widget._auto_model import build_auto_model
+    from sqlctx.widget._auto_model import build_auto_model
 
     schema = pa.schema(
         [

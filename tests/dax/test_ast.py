@@ -4,11 +4,11 @@ import importlib
 
 import pytest
 
-dax_ast = pytest.importorskip("sidemantic_dax.ast")
+dax_ast = pytest.importorskip("sqlctx_dax.ast")
 
 
 def test_public_exports_include_all_python_api_families():
-    sidemantic_dax = importlib.import_module("sidemantic_dax")
+    sqlctx_dax = importlib.import_module("sqlctx_dax")
     expected = {
         "Dialect",
         "ValidationCode",
@@ -33,9 +33,9 @@ def test_public_exports_include_all_python_api_families():
 
     assert len(dax_ast.__all__) == len(set(dax_ast.__all__))
     assert expected <= set(dax_ast.__all__)
-    assert expected <= set(sidemantic_dax.__all__)
+    assert expected <= set(sqlctx_dax.__all__)
     assert all(hasattr(dax_ast, name) for name in dax_ast.__all__)
-    assert all(hasattr(sidemantic_dax, name) for name in sidemantic_dax.__all__)
+    assert all(hasattr(sqlctx_dax, name) for name in sqlctx_dax.__all__)
 
 
 def test_from_raw_expr_function_call():
@@ -255,7 +255,7 @@ def test_datetime_literal_native_round_trip():
         token = dax_ast.lex('dt"2020-12-15T12:30:59"')[0]
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
     assert isinstance(expr, dax_ast.DateTime)
@@ -277,7 +277,7 @@ def test_function_parameter_default_native_round_trip():
         query = dax_ast.parse_query(query_text)
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
     assert query.define is not None
@@ -306,7 +306,7 @@ def test_visual_shape_native_round_trip():
         query = dax_ast.parse_query(query_text)
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
     assert query.define is not None
@@ -325,7 +325,7 @@ def test_omitted_function_arguments_native_round_trip():
         udf_call = dax_ast.parse_expression("f(1,,3)")
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
     assert isinstance(index, dax_ast.FunctionCall)
@@ -346,7 +346,7 @@ def test_start_at_native_accepts_constants_and_parameters_only():
         query = dax_ast.parse_query(query_text)
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
     values = query.evaluates[0].start_at
@@ -366,7 +366,7 @@ def test_multi_column_in_native_round_trip():
         expr = dax_ast.parse_expression("('Product'[Color], 'Product'[Brand]) IN {(\"Red\", \"Contoso\")}")
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
     assert isinstance(expr, dax_ast.Binary)
@@ -382,7 +382,7 @@ def test_datatable_native_round_trip_and_validation():
         expr = dax_ast.parse_expression('DATATABLE("Name", STRING, "Amount", DECIMAL, {{"A", 1.5}, {"B",}})')
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
     assert isinstance(expr, dax_ast.DataTable)
@@ -402,7 +402,7 @@ def test_static_validation_native_api():
         query_issues = dax_ast.validate_query("EVALUATE 1")
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
     assert [issue.code for issue in expression_issues] == [dax_ast.ValidationCode.function_arity]
@@ -430,7 +430,7 @@ def test_python_dialect_configuration():
         )
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
     assert isinstance(localized, dax_ast.FunctionCall)
@@ -459,7 +459,7 @@ def test_datetime_literal_native_lexical_validation():
         datetime_space = dax_ast.parse_expression('dt"2015-1-9 02:30:00"')
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
     assert date == dax_ast.DateTime(value="2015-1-9")

@@ -20,7 +20,7 @@ describe("AppBrand", () => {
 
     expect(html).toStartWith("<button");
     expect(html).toContain('aria-label="Home"');
-    expect(html).toContain("Sidemantic");
+    expect(html).toContain("sqlctx");
     expect(html).toContain("Orders");
   });
 });

@@ -1,25 +1,25 @@
 # Cloudflare Containers
 
-This example runs the Sidemantic HTTP API behind a Cloudflare Worker that proxies requests into Cloudflare Containers.
+This example runs the sqlctx HTTP API behind a Cloudflare Worker that proxies requests into Cloudflare Containers.
 
 ## Deployment shape
 
 - HTTPS terminates at the Worker.
-- The Worker starts a Sidemantic container and forwards requests to port `4400`.
-- The container runs `SIDEMANTIC_MODE=api`.
-- The example image uses the demo models and seeded `demo.duckdb` that the published image ships in `/app/models`.
+- The Worker starts a sqlctx container and forwards requests to port `4400`.
+- The container runs `SQLCTX_MODE=api`.
+- The example image uses the demo models and seeded `demo.duckdb` from `/app/models` in the base image.
 
 For a real deployment, the clean shape is:
 
 - bake your semantic models into the container image
-- point Sidemantic at an external database with `SIDEMANTIC_CONNECTION`
+- point sqlctx at an external database with `SQLCTX_CONNECTION`
 - keep DuckDB files out of the container unless they are disposable, because Cloudflare container disks reset on stop
 
 ## Files
 
 - `wrangler.jsonc`: Cloudflare Worker and container binding config
 - `src/index.ts`: Worker entrypoint and container proxy
-- `Dockerfile`: Sidemantic container image used by Cloudflare, built on the published `sidequery/sidemantic` image
+- `Dockerfile`: sqlctx container image used by Cloudflare, built on the `sidequery/sqlctx` image
 - `package.json`: Worker dependencies and the `deploy` script
 
 ## Prereqs
@@ -32,9 +32,10 @@ For a real deployment, the clean shape is:
 ## Deploy the demo
 
 ```bash
+docker build -t sidequery/sqlctx .
 cd examples/cloudflare_containers
 bun install
-bunx wrangler secret put SIDEMANTIC_API_TOKEN
+bunx wrangler secret put SQLCTX_API_TOKEN
 bun run deploy
 ```
 
@@ -63,10 +64,10 @@ curl -s https://YOUR-WORKER.workers.dev/query \
 Edit `Dockerfile` to bake in your models:
 
 ```dockerfile
-FROM sidequery/sidemantic:latest
+FROM sidequery/sqlctx:latest
 
-ENV SIDEMANTIC_MODE=api
-ENV SIDEMANTIC_API_PORT=4400
+ENV SQLCTX_MODE=api
+ENV SQLCTX_API_PORT=4400
 
 # Replace the demo models that ship in /app/models.
 RUN rm -rf /app/models/*
@@ -74,19 +75,19 @@ COPY models/ /app/models/
 WORKDIR /app/models
 ```
 
-Then remove `SIDEMANTIC_DB` from the default container env in [src/index.ts](src/index.ts).
+Then remove `SQLCTX_DB` from the default container env in [src/index.ts](src/index.ts).
 
 Then set your warehouse connection:
 
 ```bash
-bunx wrangler secret put SIDEMANTIC_CONNECTION
+bunx wrangler secret put SQLCTX_CONNECTION
 ```
 
-The Worker passes `SIDEMANTIC_CONNECTION`, `SIDEMANTIC_API_TOKEN`, and `SIDEMANTIC_CORS_ORIGINS` into the container at startup.
+The Worker passes `SQLCTX_CONNECTION`, `SQLCTX_API_TOKEN`, and `SQLCTX_CORS_ORIGINS` into the container at startup.
 
 ## Auth
 
-The container already supports bearer-token auth via `SIDEMANTIC_API_TOKEN`.
+The container already supports bearer-token auth via `SQLCTX_API_TOKEN`.
 
 If you want proper edge auth, put the deployed hostname behind Cloudflare Access and use service tokens or your IdP there. Keep the app bearer token as a second gate if you want defense in depth.
 

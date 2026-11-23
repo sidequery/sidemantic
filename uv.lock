@@ -3578,7 +3578,7 @@ wheels = [
 ]
 
 [[package]]
-name = "sidemantic"
+name = "sqlctx"
 version = "0.13.2"
 source = { editable = "." }
 dependencies = [
@@ -3641,7 +3641,7 @@ databricks = [
     { name = "pyarrow" },
 ]
 dax = [
-    { name = "sidemantic-dax" },
+    { name = "sqlctx-dax" },
 ]
 dev = [
     { name = "antlr4-python3-runtime" },
@@ -3678,8 +3678,8 @@ full = [
     { name = "plotext" },
     { name = "pyarrow" },
     { name = "pygls" },
-    { name = "sidemantic-dax" },
-    { name = "sidemantic-rs", marker = "sys_platform != 'emscripten'" },
+    { name = "sqlctx-dax" },
+    { name = "sqlctx-rs", marker = "sys_platform != 'emscripten'" },
     { name = "textual", extra = ["syntax"] },
     { name = "textual-plotext" },
     { name = "uvicorn" },
@@ -3710,7 +3710,7 @@ postgres = [
     { name = "pyarrow" },
 ]
 rust = [
-    { name = "sidemantic-rs", marker = "sys_platform != 'emscripten'" },
+    { name = "sqlctx-rs", marker = "sys_platform != 'emscripten'" },
 ]
 serve = [
     { name = "lkml" },
@@ -3821,10 +3821,10 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "riffq", marker = "extra == 'serve'", specifier = ">=0.4.1,<0.5" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "sidemantic", extras = ["postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc"], marker = "extra == 'all-databases'" },
-    { name = "sidemantic", extras = ["workbench", "mcp", "apps", "charts", "lsp", "dax", "lookml", "malloy", "metricflow", "widget", "api", "ossie", "rust"], marker = "extra == 'full'" },
-    { name = "sidemantic-dax", marker = "extra == 'dax'", directory = "crates/dax-pyo3" },
-    { name = "sidemantic-rs", marker = "sys_platform != 'emscripten' and extra == 'rust'", directory = "sidemantic-rs" },
+    { name = "sqlctx", extras = ["postgres", "bigquery", "snowflake", "clickhouse", "databricks", "spark", "adbc"], marker = "extra == 'all-databases'" },
+    { name = "sqlctx", extras = ["workbench", "mcp", "apps", "charts", "lsp", "dax", "lookml", "malloy", "metricflow", "widget", "api", "ossie", "rust"], marker = "extra == 'full'" },
+    { name = "sqlctx-dax", marker = "extra == 'dax'", directory = "crates/dax-pyo3" },
+    { name = "sqlctx-rs", marker = "sys_platform != 'emscripten' and extra == 'rust'", directory = "sqlctx-rs" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0.0" },
     { name = "sqlglot", specifier = ">=30.1.0" },
     { name = "sqlglot", extras = ["c"], marker = "extra == 'dev'", specifier = ">=30.1.0" },
@@ -3864,14 +3864,14 @@ dev = [
 ]
 
 [[package]]
-name = "sidemantic-dax"
+name = "sqlctx-dax"
 version = "0.13.2"
 source = { directory = "crates/dax-pyo3" }
 
 [[package]]
-name = "sidemantic-rs"
+name = "sqlctx-rs"
 version = "0.13.2"
-source = { directory = "sidemantic-rs" }
+source = { directory = "sqlctx-rs" }
 
 [[package]]
 name = "six"

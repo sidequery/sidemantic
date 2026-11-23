@@ -1,6 +1,0 @@
-{
-  "crate": "sidemantic-rs",
-  "profile": "release",
-  "target": "wasm32-unknown-unknown",
-  "bindings": "wasm-bindgen"
-}

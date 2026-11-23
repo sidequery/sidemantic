@@ -7,8 +7,8 @@ import duckdb
 import pytest
 import sqlglot
 
-from sidemantic import SemanticLayer
-from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+from sqlctx import SemanticLayer
+from sqlctx.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
 from tests.interchange.ossie.test_layer2_conformance import LATEST, ROUTES
 from tests.rust_layer_adapter import _rust_request
 

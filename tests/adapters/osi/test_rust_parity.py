@@ -1,8 +1,8 @@
-"""Differential parity: pure-Python OSIAdapter vs sidemantic-rs.
+"""Differential parity: pure-Python OSIAdapter vs sqlctx-rs.
 
 Runs every OSI fixture through both implementations and asserts the resulting
 semantic graphs (and re-exported OSI documents) are equivalent. Skipped when the
-``sidemantic_rs`` extension is not built.
+``sqlctx_rs`` extension is not built.
 """
 
 from __future__ import annotations
@@ -12,10 +12,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-pytest.importorskip("sidemantic_rs")
+pytest.importorskip("sqlctx_rs")
 
-from sidemantic.adapters.osi import LegacyOSIAdapter as PyOSIAdapter
-from sidemantic.rust_bridge import export_osi_with_rust, load_osi_graph_with_rust
+from sqlctx.adapters.osi import LegacyOSIAdapter as PyOSIAdapter
+from sqlctx.rust_bridge import export_osi_with_rust, load_osi_graph_with_rust
 
 FIXTURE_DIR = Path("tests/fixtures/osi")
 FIXTURES = sorted(FIXTURE_DIR.glob("*.yaml"))
@@ -33,7 +33,7 @@ def _eff_type(metric) -> str:
     """Effective metric type.
 
     Python's OSIAdapter leaves derived/simple metrics' ``type`` as ``None`` and
-    relies on ``agg``/``sql`` to disambiguate; sidemantic-rs records the explicit
+    relies on ``agg``/``sql`` to disambiguate; sqlctx-rs records the explicit
     type. Normalize both to compare semantics rather than representation.
     """
     if metric.type:
@@ -145,9 +145,9 @@ def test_osi_roundtrip_parity(fixture, tmp_path):
 
 def test_osi_export_resolves_model_inheritance(tmp_path):
     """A graph with unresolved Model.extends exports identically via both adapters."""
-    from sidemantic.core.dimension import Dimension
-    from sidemantic.core.model import Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.dimension import Dimension
+    from sqlctx.core.model import Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     base = Model(
         name="base_orders",

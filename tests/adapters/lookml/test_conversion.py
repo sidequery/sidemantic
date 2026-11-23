@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.lookml import LookMLAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
 
 # =============================================================================
 # CROSS-FORMAT CONVERSION TESTS

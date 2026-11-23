@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-sidemantic_dax = pytest.importorskip("sidemantic_dax")
+sqlctx_dax = pytest.importorskip("sqlctx_dax")
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "fixtures" / "external_powerbi" / "marfolger-powerbi-dax" / "business_logic_DAX.txt"
@@ -13,10 +13,10 @@ FIXTURE = ROOT / "fixtures" / "external_powerbi" / "marfolger-powerbi-dax" / "bu
 
 def _parse_expression(expression: str):
     try:
-        return sidemantic_dax.parse_expression(expression)
+        return sqlctx_dax.parse_expression(expression)
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
 

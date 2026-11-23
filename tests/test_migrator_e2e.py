@@ -4,8 +4,8 @@ from pathlib import Path
 
 import duckdb
 
-from sidemantic import SemanticLayer
-from sidemantic.core.migrator import Migrator
+from sqlctx import SemanticLayer
+from sqlctx.core.migrator import Migrator
 
 
 def test_coverage_analysis_example_queries_rewritable():
@@ -149,7 +149,7 @@ def test_coverage_analysis_queries_produce_same_results():
 
     # Register generated models with semantic layer
     for model_name, model_def in models.items():
-        from sidemantic import Dimension, Metric, Model
+        from sqlctx import Dimension, Metric, Model
 
         # Create dimensions
         dimensions = []

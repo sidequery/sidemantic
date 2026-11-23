@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from sidemantic import (
+from sqlctx import (
     Dimension,
     Explore,
     Metric,
@@ -14,13 +14,13 @@ from sidemantic import (
     SecurityPolicy,
     SemanticLayer,
 )
-from sidemantic.semantic_handoff import graph_to_semantic_input
+from sqlctx.semantic_handoff import graph_to_semantic_input
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Rollup execution requires the matching Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Rollup execution requires the matching Rust extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.graph.add_model(
         Model(
@@ -72,8 +72,8 @@ def build(layer, *, rust=False):
     model = layer.graph.models["orders"]
     rollup = model.pre_aggregations[0]
     if rust:
-        pytest.importorskip("sidemantic_rs")
-        from sidemantic.rust_bridge import generate_preaggregation_materialization_sql_with_rust
+        pytest.importorskip("sqlctx_rs")
+        from sqlctx.rust_bridge import generate_preaggregation_materialization_sql_with_rust
 
         sql = generate_preaggregation_materialization_sql_with_rust(model, rollup)
     else:
@@ -456,16 +456,16 @@ def test_postgres_rollup_reconstruction_executes(mode):
     import os
     from decimal import Decimal
 
-    dsn = os.environ.get("SIDEMANTIC_TEST_POSTGRES_DSN")
+    dsn = os.environ.get("SQLCTX_TEST_POSTGRES_DSN")
     if not dsn:
-        pytest.skip("PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN")
+        pytest.skip("PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN")
     import psycopg
-    import sidemantic_rs
+    import sqlctx_rs
 
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.rust_bridge import compile_semantic_input
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.rust_bridge import compile_semantic_input
 
-    assert callable(sidemantic_rs.compile_with_semantic_input)
+    assert callable(sqlctx_rs.compile_with_semantic_input)
     graph = SemanticGraph()
     model = Model(
         name="orders",

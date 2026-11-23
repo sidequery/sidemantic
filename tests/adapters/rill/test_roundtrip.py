@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from sidemantic.adapters.rill import RillAdapter
+from sqlctx.adapters.rill import RillAdapter
 from tests.adapters.helpers import (
     assert_dimension_equivalent,
     assert_graph_equivalent,
@@ -11,7 +11,7 @@ from tests.adapters.helpers import (
 )
 
 
-def test_rill_to_sidemantic_to_rill_roundtrip():
+def test_rill_to_sqlctx_to_rill_roundtrip():
     """Test Rill roundtrip conversion."""
     adapter = RillAdapter()
 

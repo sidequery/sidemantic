@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.malloy import MalloyAdapter, MalloySyntaxError
+from sqlctx.adapters.malloy import MalloyAdapter, MalloySyntaxError
 
 FIXTURES = Path("tests/fixtures/malloy")
 

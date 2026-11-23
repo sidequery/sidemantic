@@ -6,8 +6,8 @@ import duckdb
 import pytest
 import sqlglot
 
-from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
-from sidemantic.sql.ossie_wide import OssieWideQueryError, compile_ossie_wide_query
+from sqlctx.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+from sqlctx.sql.ossie_wide import OssieWideQueryError, compile_ossie_wide_query
 from tests.interchange.ossie.test_latest_logical import document, field, lower
 
 
@@ -91,7 +91,7 @@ def test_nonaggregate_dataset_measure_retains_source_but_cannot_execute(expressi
 
 
 def test_strict_binding_does_not_reinterpret_native_graph():
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     with pytest.raises(OssieWideQueryError, match="E_INVALID_QUERY"):
         compile_ossie_wide_query(SemanticGraph(), {"metrics": ["x"]})
@@ -99,7 +99,7 @@ def test_strict_binding_does_not_reinterpret_native_graph():
 
 @pytest.mark.parametrize("index_location", ["field", "metric"])
 def test_cross_output_dialect_preserves_stored_array_index_and_metric_inputs(index_location):
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     data = document()
     dataset = data["datasets"][0]

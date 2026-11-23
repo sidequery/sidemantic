@@ -1,0 +1,41 @@
+{
+  "name": "sqlctx",
+  "description": "Build, validate, and query sqlctx semantic models, answer business questions with trusted metrics, and generate analytics webapps.",
+  "version": "1.0.0",
+  "author": {
+    "name": "sqlctx",
+    "email": "hello@sidemantic.com",
+    "url": "https://github.com/sidequery/sqlctx"
+  },
+  "homepage": "https://github.com/sidequery/sqlctx",
+  "repository": "https://github.com/sidequery/sqlctx",
+  "license": "Apache-2.0",
+  "keywords": [
+    "analytics",
+    "semantic-layer",
+    "sql",
+    "dashboard"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "sqlctx",
+    "shortDescription": "Analyze trusted metrics and build semantic analytics.",
+    "longDescription": "sqlctx helps Codex answer business questions with trusted metrics; build, validate, query, and migrate SQL-first semantic models; and turn those models into analytics dashboards and app surfaces.",
+    "developerName": "sqlctx",
+    "category": "Data & Analytics",
+    "capabilities": [
+      "Semantic modeling",
+      "Semantic analysis",
+      "SQL generation",
+      "Analytics webapps"
+    ],
+    "websiteURL": "https://github.com/sidequery/sqlctx",
+    "defaultPrompt": [
+      "Create a sqlctx model from my schema.",
+      "Validate these metrics and dimensions.",
+      "Explain why revenue changed using our trusted metrics.",
+      "Build a dashboard from my sqlctx models."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

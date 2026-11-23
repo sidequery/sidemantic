@@ -11,7 +11,7 @@
       "seed": "core_measure.sql",
       "model": "orders",
       "malloy_query": "run: orders -> { group_by: order_status aggregate: order_count order_by: order_status }",
-      "sidemantic": {
+      "sqlctx": {
         "metrics": ["orders.order_count"],
         "dimensions": ["orders.order_status"],
         "order_by": ["orders.order_status"]
@@ -32,7 +32,7 @@
       "seed": "core_measure.sql",
       "model": "orders",
       "malloy_query": "run: orders -> { where: order_status = 'missing' group_by: order_status aggregate: order_count order_by: order_status }",
-      "sidemantic": {
+      "sqlctx": {
         "metrics": ["orders.order_count"],
         "dimensions": ["orders.order_status"],
         "filters": ["orders.order_status = 'missing'"],
@@ -50,7 +50,7 @@
       "seed": "core_measure.sql",
       "model": "orders",
       "malloy_query": "run: orders -> { group_by: adjusted_amount order_by: adjusted_amount }",
-      "sidemantic": {
+      "sqlctx": {
         "metrics": [],
         "dimensions": ["orders.adjusted_amount"],
         "order_by": ["orders.adjusted_amount"]
@@ -72,7 +72,7 @@
       "seed": "source_filters.sql",
       "model": "orders",
       "malloy_query": "run: orders -> { group_by: order_status aggregate: revenue order_by: order_status }",
-      "sidemantic": {
+      "sqlctx": {
         "metrics": ["orders.revenue"],
         "dimensions": ["orders.order_status"],
         "order_by": ["orders.order_status"]
@@ -92,7 +92,7 @@
       "seed": "exact_custom_join.sql",
       "model": "orders",
       "malloy_query": "run: orders -> { group_by: customer_name is customers.customer_name aggregate: revenue order_by: revenue }",
-      "sidemantic": {
+      "sqlctx": {
         "metrics": ["orders.revenue"],
         "dimensions": ["customers.customer_name"],
         "order_by": ["orders.revenue"]
@@ -112,7 +112,7 @@
       "seed": "composite_join_fanout.sql",
       "model": "orders",
       "malloy_query": "run: orders -> { group_by: item_category is items.item_category aggregate: revenue order_by: revenue }",
-      "sidemantic": {
+      "sqlctx": {
         "metrics": ["orders.revenue"],
         "dimensions": ["items.item_category"],
         "order_by": ["orders.revenue"]
@@ -132,7 +132,7 @@
       "seed": "intrinsic_fields.sql",
       "model": "orders",
       "malloy_query": "run: orders -> { group_by: order_id, region order_by: order_id }",
-      "sidemantic": {
+      "sqlctx": {
         "metrics": [],
         "dimensions": ["orders.order_id", "orders.region"],
         "order_by": ["orders.order_id"]

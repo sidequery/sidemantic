@@ -4,11 +4,11 @@ version = "0.13.2"
 edition = "2021"
 description = "Python bindings for dax-parser"
 license = "AGPL-3.0-only"
-repository = "https://github.com/sidequery/sidemantic"
+repository = "https://github.com/sidequery/sqlctx"
 publish = false
 
 [lib]
-name = "sidemantic_dax"
+name = "sqlctx_dax"
 crate-type = ["cdylib"]
 
 [dependencies]

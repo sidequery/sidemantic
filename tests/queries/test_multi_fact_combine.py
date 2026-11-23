@@ -4,7 +4,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 from tests.utils import fetch_rows
 
 ENGINES = ["python", "rust"]
@@ -12,7 +12,7 @@ ENGINES = ["python", "rust"]
 
 def _shop_layer(engine: str, dialect: str | None = None) -> SemanticLayer:
     if engine == "rust":
-        pytest.importorskip("sidemantic_rs")
+        pytest.importorskip("sqlctx_rs")
     layer = SemanticLayer(engine=engine, fallback=False, auto_register=False, dialect=dialect)
     layer.add_model(
         Model(

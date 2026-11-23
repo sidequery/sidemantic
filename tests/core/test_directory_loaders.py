@@ -2,13 +2,13 @@
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.loaders import load_from_directory
+from sqlctx import SemanticLayer
+from sqlctx.loaders import load_from_directory
 
 
 def test_load_from_directory_supports_sql_yaml_python(tmp_path):
-    """Load mixed Sidemantic SQL, YAML, and Python definitions from one directory."""
-    sql_file = tmp_path / "orders.sidemantic.sql"
+    """Load mixed sqlctx SQL, YAML, and Python definitions from one directory."""
+    sql_file = tmp_path / "orders.sqlctx.sql"
     sql_file.write_text(
         """
 MODEL (name orders, table orders, primary_key order_id);
@@ -17,7 +17,7 @@ METRIC (name order_count, agg count);
 """
     )
 
-    yaml_file = tmp_path / "customers.sidemantic.yaml"
+    yaml_file = tmp_path / "customers.sqlctx.yaml"
     yaml_file.write_text(
         """
 models:
@@ -31,10 +31,10 @@ models:
 """
     )
 
-    python_file = tmp_path / "events.sidemantic.py"
+    python_file = tmp_path / "events.sqlctx.py"
     python_file.write_text(
         """
-from sidemantic import Dimension, Metric, Model
+from sqlctx import Dimension, Metric, Model
 
 events = Model(
     name="events",
@@ -58,7 +58,7 @@ events = Model(
     assert events.table == "events"
     assert events.metrics[0].name == "event_count"
     assert getattr(events, "_source_format", None) == "Python"
-    assert getattr(events, "_source_file", None) == "events.sidemantic.py"
+    assert getattr(events, "_source_file", None) == "events.sqlctx.py"
 
 
 def test_load_from_directory_extracts_python_models_from_layer_variable(tmp_path):
@@ -66,7 +66,7 @@ def test_load_from_directory_extracts_python_models_from_layer_variable(tmp_path
     python_file = tmp_path / "definitions.py"
     python_file.write_text(
         """
-from sidemantic import Model, SemanticLayer
+from sqlctx import Model, SemanticLayer
 
 layer = SemanticLayer()
 Model(name="sessions", table="sessions", primary_key="id")
@@ -367,10 +367,10 @@ def test_validate_directory_flags_missing_hex_view_base(tmp_path):
     """A Hex view without a `base` reference is reported as an error, not a pass.
 
     Views are exempt from the physical-source check, so an omitted base would
-    otherwise let `sidemantic validate` report Validation Passed for an
+    otherwise let `sqlctx validate` report Validation Passed for an
     unresolvable view.
     """
-    from sidemantic.validation_runner import validate_directory
+    from sqlctx.validation_runner import validate_directory
 
     (tmp_path / "project.yml").write_text(
         _HEX_VIEW_BASE_MODEL
@@ -391,7 +391,7 @@ contents:
 
 def test_validate_directory_flags_unknown_hex_view_base(tmp_path):
     """A Hex view whose `base` names no loaded model is reported as an error."""
-    from sidemantic.validation_runner import validate_directory
+    from sqlctx.validation_runner import validate_directory
 
     (tmp_path / "project.yml").write_text(
         _HEX_VIEW_BASE_MODEL
@@ -417,7 +417,7 @@ def test_validate_directory_flags_hex_view_without_contents(tmp_path):
     Hex views require `contents`; without this check a view that omits it would
     report Validation Passed because views are exempt from the source check.
     """
-    from sidemantic.validation_runner import validate_directory
+    from sqlctx.validation_runner import validate_directory
 
     (tmp_path / "project.yml").write_text(
         _HEX_VIEW_BASE_MODEL
@@ -435,7 +435,7 @@ base: subscriptions
 
 def test_validate_directory_accepts_valid_hex_view_base(tmp_path):
     """A Hex view with a `base` naming a loaded model emits no view errors."""
-    from sidemantic.validation_runner import validate_directory
+    from sqlctx.validation_runner import validate_directory
 
     (tmp_path / "project.yml").write_text(
         _HEX_VIEW_BASE_MODEL
@@ -539,7 +539,7 @@ def test_load_from_directory_detects_dbt_profile_for_explicit_ossie_files(tmp_pa
 
 @pytest.mark.parametrize("relative_path", ["commerce.json", "models/commerce.json"])
 def test_load_from_directory_detects_current_flat_ossie_json(tmp_path, relative_path):
-    from sidemantic.validation_runner import validate_directory
+    from sqlctx.validation_runner import validate_directory
 
     source = tmp_path / relative_path
     source.parent.mkdir(parents=True, exist_ok=True)
@@ -603,7 +603,7 @@ def test_load_from_directory_accepts_osi_dir_as_loader_root(tmp_path):
     """Pointing the loader straight at the ``OSI/`` directory routes its JSON to OSI.
 
     dbt users are told to drop released-spec OSI documents in ``<project>/OSI/``,
-    so ``sidemantic validate OSI/`` points the loader root at that folder itself.
+    so ``sqlctx validate OSI/`` points the loader root at that folder itself.
     The file then sits directly in the root (relative_parts == ("model.json",)),
     and it must still be detected as OSI rather than reporting "No models found".
     """
@@ -655,7 +655,7 @@ def test_load_from_directory_accepts_osi_dir_as_loader_root(tmp_path):
 def test_load_from_directory_accepts_osi_dir_as_cwd_loader_root(tmp_path, monkeypatch):
     """Running from inside ``OSI/`` with the default ``.`` path still routes to OSI.
 
-    ``cd project/OSI && sidemantic validate`` (or ``load_from_directory(layer, ".")``
+    ``cd project/OSI && sqlctx validate`` (or ``load_from_directory(layer, ".")``
     after ``chdir``) passes ``Path(".")``, whose raw ``.name`` is empty. The loader
     must resolve the root before checking for the ``OSI/`` name so the document is
     not skipped as "No models found".
@@ -695,7 +695,7 @@ def test_load_from_directory_accepts_osi_dir_as_cwd_loader_root(tmp_path, monkey
     )
 
     layer = SemanticLayer()
-    # Emulate ``cd project/OSI && sidemantic validate`` (default path ".").
+    # Emulate ``cd project/OSI && sqlctx validate`` (default path ".").
     monkeypatch.chdir(osi_dir)
     load_from_directory(layer, ".")
 
@@ -803,7 +803,7 @@ def test_load_from_directory_skips_osi_json_outside_osi_tree(tmp_path):
     dbt's OSI consumer only scans ``<project_root>/OSI/``. An archived or scratch
     OSI document under another folder (or sitting at the project root) must not
     add stale models or collide with the real OSI/ sources during
-    ``sidemantic validate .``.
+    ``sqlctx validate .``.
     """
 
     def _osi_json(dataset_name: str, source: str) -> str:
@@ -1592,7 +1592,7 @@ def test_load_from_directory_preserves_snowflake_top_level_sections(tmp_path):
     """CLI-first load -> export-native must round-trip Snowflake Cortex top-level sections."""
     import yaml
 
-    from sidemantic.adapters.sidemantic import SidemanticAdapter
+    from sqlctx.adapters.sqlctx import SqlctxAdapter
 
     (tmp_path / "cortex.yaml").write_text(
         """
@@ -1636,12 +1636,12 @@ module_custom_instructions:
 
     # export-native emits a root metadata block carrying them.
     out = tmp_path / "native.yml"
-    SidemanticAdapter().export(graph, out)
+    SqlctxAdapter().export(graph, out)
     data = yaml.safe_load(out.read_text())
     assert data["metadata"]["snowflake"]["custom_instructions"] == "Prefer revenue."
 
     # And a native re-parse keeps them on graph.metadata.
-    graph2 = SidemanticAdapter().parse(out)
+    graph2 = SqlctxAdapter().parse(out)
     assert graph2.metadata["snowflake"]["verified_queries"]
 
 

@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.interchange.ossie import (
+from sqlctx import Dimension, Metric, Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.interchange.ossie import (
     LATEST_OSSIE_SCHEMA_COMMIT,
     serialize_ossie_document,
     synthesize_ossie_document,

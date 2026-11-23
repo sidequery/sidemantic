@@ -11,8 +11,8 @@ import pytest
 
 pa = pytest.importorskip("pyarrow")
 
-from sidemantic import Metric, Model, SemanticLayer
-from sidemantic.core.result_cache import ResultCache, build_result_key
+from sqlctx import Metric, Model, SemanticLayer
+from sqlctx.core.result_cache import ResultCache, build_result_key
 
 
 class _Clock:

@@ -1,13 +1,13 @@
 """Tests for server catalog registration."""
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sqlctx import Dimension, Metric, Model, SemanticLayer
 from tests.optional_dep_stubs import ensure_fake_riffq
 
 ensure_fake_riffq()
 
 
 def test_map_type():
-    from sidemantic.server.server import map_type
+    from sqlctx.server.server import map_type
 
     assert map_type("INTEGER") == "integer"
     assert map_type("BIGINT") == "bigint"
@@ -23,7 +23,7 @@ def test_map_type():
 
 
 def test_start_server_registers_tables(monkeypatch):
-    from sidemantic.server.server import start_server
+    from sqlctx.server.server import start_server
 
     calls = {"schemas": set(), "tables": []}
 
@@ -60,14 +60,14 @@ def test_start_server_registers_tables(monkeypatch):
 
     start_server(layer, port=5444)
 
-    assert ("sidemantic", "semantic_layer") in calls["schemas"]
+    assert ("sqlctx", "semantic_layer") in calls["schemas"]
     assert any(t[2] == "source_table" for t in calls["tables"])
     assert any(t[2] == "orders" and t[1] == "semantic_layer" for t in calls["tables"])
 
 
 def test_start_server_registers_each_schema_and_table_once(monkeypatch):
     """riffq >= 0.4 raises on duplicates; one register_schema per table crashed startup."""
-    from sidemantic.server.server import start_server
+    from sqlctx.server.server import start_server
 
     registered = {"schemas": [], "tables": []}
 
@@ -116,21 +116,21 @@ def test_start_server_registers_each_schema_and_table_once(monkeypatch):
     start_server(layer, port=5447)
 
     assert sorted(registered["schemas"]) == [
-        ("sidemantic", "main"),
-        ("sidemantic", "semantic_layer"),
-        ("sidemantic", "staging"),
+        ("sqlctx", "main"),
+        ("sqlctx", "semantic_layer"),
+        ("sqlctx", "staging"),
     ]
     assert sorted(registered["tables"]) == [
-        ("sidemantic", "main", "customers"),
-        ("sidemantic", "main", "orders"),
-        ("sidemantic", "semantic_layer", "orders"),
-        ("sidemantic", "staging", "events"),
-        ("sidemantic", "staging", "sessions"),
+        ("sqlctx", "main", "customers"),
+        ("sqlctx", "main", "orders"),
+        ("sqlctx", "semantic_layer", "orders"),
+        ("sqlctx", "staging", "events"),
+        ("sqlctx", "staging", "sessions"),
     ]
 
 
 def test_start_server_registers_metrics_table_and_binds_connection(monkeypatch):
-    from sidemantic.server.server import start_server
+    from sqlctx.server.server import start_server
 
     calls = {"tables": [], "start": None, "bound": None}
 
@@ -164,7 +164,7 @@ def test_start_server_registers_metrics_table_and_binds_connection(monkeypatch):
         def start(self, **kwargs):
             calls["start"] = kwargs
 
-    monkeypatch.setattr("sidemantic.server.server.SemanticLayerConnection", FakeSemanticLayerConnection)
+    monkeypatch.setattr("sqlctx.server.server.SemanticLayerConnection", FakeSemanticLayerConnection)
     monkeypatch.setattr("riffq.RiffqServer", FakeServer)
 
     layer = SemanticLayer(connection="duckdb:///:memory:")

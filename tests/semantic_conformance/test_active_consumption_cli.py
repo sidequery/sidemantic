@@ -8,14 +8,14 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-import sidemantic.cli as cli_module
-from sidemantic.cli import app
+import sqlctx.cli as cli_module
+from sqlctx.cli import app
 
 
 @pytest.fixture(params=["python", "rust"])
 def project(request, tmp_path, monkeypatch):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="CLI acceptance requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="CLI acceptance requires the real Rust extension")
     monkeypatch.setattr(cli_module, "_loaded_config", None)
     monkeypatch.setattr(cli_module, "_project_context", None)
     models = tmp_path / "models.yml"

@@ -4,17 +4,17 @@ import json
 
 import pytest
 
-from sidemantic import Dimension, Explore, Metric, Model, SavedQuery, SecurityPolicy, SemanticLayer
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.core.table_calculation import TableCalculation
-from sidemantic.rust_bridge import compile_semantic_input, rewrite_semantic_input
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError, graph_to_semantic_input
+from sqlctx import Dimension, Explore, Metric, Model, SavedQuery, SecurityPolicy, SemanticLayer
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.core.table_calculation import TableCalculation
+from sqlctx.rust_bridge import compile_semantic_input, rewrite_semantic_input
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError, graph_to_semantic_input
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Catalog acceptance requires the real extension")
+        pytest.importorskip("sqlctx_rs", reason="Catalog acceptance requires the real extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False, enforce_visibility=True)
     layer.add_model(
         Model(
@@ -123,7 +123,7 @@ def test_raw_active_catalog_requests_are_never_ignored(layer, field, value):
             compile_semantic_input(
                 layer.graph, {"metrics": ["orders.revenue"], "user_attributes": {"tenant": "a"}, field: value}
             )
-    runtime = pytest.importorskip("sidemantic_rs")
+    runtime = pytest.importorskip("sqlctx_rs")
     with pytest.raises(ValueError, match=f"rewrite.context.{field}") as caught:
         runtime.rewrite_with_semantic_input_context(
             json.dumps(graph_to_semantic_input(layer.graph)),
@@ -137,7 +137,7 @@ def test_raw_active_catalog_requests_are_never_ignored(layer, field, value):
 @pytest.mark.parametrize("layer", ["rust"], indirect=True)
 @pytest.mark.parametrize("definitions", [[42], [{}], [{"name": ""}], [{"name": "same"}, {"name": "same"}]])
 def test_invalid_catalog_identity_is_rejected(layer, definitions):
-    runtime = pytest.importorskip("sidemantic_rs")
+    runtime = pytest.importorskip("sqlctx_rs")
     source = graph_to_semantic_input(layer.graph)
     source["explores"] = definitions
     with pytest.raises(ValueError):

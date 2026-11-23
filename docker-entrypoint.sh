@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-# SIDEMANTIC_MODE: "serve" (default), "mcp", "api", or "both"
-MODE="${SIDEMANTIC_MODE:-serve}"
+# SQLCTX_MODE: "serve" (default), "mcp", "api", or "both"
+MODE="${SQLCTX_MODE:-serve}"
 
 ENTRYPOINT_ARGS_FILE=$(mktemp)
 trap 'rm -f "$ENTRYPOINT_ARGS_FILE"' EXIT
@@ -16,24 +16,24 @@ write_secret_file() {
 }
 
 run_serve() {
-    set -- sidemantic server postgres --host 0.0.0.0
-    if [ -n "$SIDEMANTIC_CONNECTION" ]; then
-        set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
+    set -- sqlctx server postgres --host 0.0.0.0
+    if [ -n "$SQLCTX_CONNECTION" ]; then
+        set -- "$@" --connection "$SQLCTX_CONNECTION"
     fi
-    if [ -n "$SIDEMANTIC_DB" ]; then
-        set -- "$@" --db "$SIDEMANTIC_DB"
+    if [ -n "$SQLCTX_DB" ]; then
+        set -- "$@" --db "$SQLCTX_DB"
     fi
-    if [ -n "$SIDEMANTIC_USERNAME" ]; then
-        set -- "$@" --username "$SIDEMANTIC_USERNAME"
+    if [ -n "$SQLCTX_USERNAME" ]; then
+        set -- "$@" --username "$SQLCTX_USERNAME"
     fi
-    if [ -n "$SIDEMANTIC_PASSWORD" ]; then
-        write_secret_file "$SIDEMANTIC_PASSWORD"
+    if [ -n "$SQLCTX_PASSWORD" ]; then
+        write_secret_file "$SQLCTX_PASSWORD"
         set -- "$@" --password-file "$SECRET_FILE"
     fi
-    if [ -n "$SIDEMANTIC_PORT" ]; then
-        set -- "$@" --port "$SIDEMANTIC_PORT"
+    if [ -n "$SQLCTX_PORT" ]; then
+        set -- "$@" --port "$SQLCTX_PORT"
     fi
-    if [ -n "$SIDEMANTIC_DEMO" ]; then
+    if [ -n "$SQLCTX_DEMO" ]; then
         set -- "$@" --demo
     fi
     while IFS= read -r arg; do
@@ -43,14 +43,14 @@ run_serve() {
 }
 
 run_mcp() {
-    set -- sidemantic server mcp
-    if [ -n "$SIDEMANTIC_CONNECTION" ]; then
-        set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
+    set -- sqlctx server mcp
+    if [ -n "$SQLCTX_CONNECTION" ]; then
+        set -- "$@" --connection "$SQLCTX_CONNECTION"
     fi
-    if [ -n "$SIDEMANTIC_DB" ]; then
-        set -- "$@" --db "$SIDEMANTIC_DB"
+    if [ -n "$SQLCTX_DB" ]; then
+        set -- "$@" --db "$SQLCTX_DB"
     fi
-    if [ -n "$SIDEMANTIC_DEMO" ]; then
+    if [ -n "$SQLCTX_DEMO" ]; then
         set -- "$@" --demo
     fi
     while IFS= read -r arg; do
@@ -60,32 +60,32 @@ run_mcp() {
 }
 
 run_api() {
-    set -- sidemantic server api --host 0.0.0.0
-    if [ -n "$SIDEMANTIC_CONNECTION" ]; then
-        set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
+    set -- sqlctx server api --host 0.0.0.0
+    if [ -n "$SQLCTX_CONNECTION" ]; then
+        set -- "$@" --connection "$SQLCTX_CONNECTION"
     fi
-    if [ -n "$SIDEMANTIC_DB" ]; then
-        set -- "$@" --db "$SIDEMANTIC_DB"
+    if [ -n "$SQLCTX_DB" ]; then
+        set -- "$@" --db "$SQLCTX_DB"
     fi
-    if [ -n "$SIDEMANTIC_API_TOKEN" ]; then
-        write_secret_file "$SIDEMANTIC_API_TOKEN"
+    if [ -n "$SQLCTX_API_TOKEN" ]; then
+        write_secret_file "$SQLCTX_API_TOKEN"
         set -- "$@" --auth-token-file "$SECRET_FILE"
     fi
-    if [ -n "$SIDEMANTIC_API_PORT" ]; then
-        set -- "$@" --port "$SIDEMANTIC_API_PORT"
+    if [ -n "$SQLCTX_API_PORT" ]; then
+        set -- "$@" --port "$SQLCTX_API_PORT"
     fi
-    if [ -n "$SIDEMANTIC_MAX_REQUEST_BODY_BYTES" ]; then
-        set -- "$@" --max-request-body-bytes "$SIDEMANTIC_MAX_REQUEST_BODY_BYTES"
+    if [ -n "$SQLCTX_MAX_REQUEST_BODY_BYTES" ]; then
+        set -- "$@" --max-request-body-bytes "$SQLCTX_MAX_REQUEST_BODY_BYTES"
     fi
-    if [ -n "$SIDEMANTIC_CORS_ORIGINS" ]; then
+    if [ -n "$SQLCTX_CORS_ORIGINS" ]; then
         OLD_IFS=$IFS
         IFS=','
-        for ORIGIN in $SIDEMANTIC_CORS_ORIGINS; do
+        for ORIGIN in $SQLCTX_CORS_ORIGINS; do
             set -- "$@" --cors-origin "$ORIGIN"
         done
         IFS=$OLD_IFS
     fi
-    if [ -n "$SIDEMANTIC_DEMO" ]; then
+    if [ -n "$SQLCTX_DEMO" ]; then
         set -- "$@" --demo
     fi
     while IFS= read -r arg; do
@@ -95,38 +95,38 @@ run_api() {
 }
 
 run_both() {
-    set -- sidemantic server postgres --host 0.0.0.0
-    if [ -n "$SIDEMANTIC_CONNECTION" ]; then
-        set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
+    set -- sqlctx server postgres --host 0.0.0.0
+    if [ -n "$SQLCTX_CONNECTION" ]; then
+        set -- "$@" --connection "$SQLCTX_CONNECTION"
     fi
-    if [ -n "$SIDEMANTIC_DB" ]; then
-        set -- "$@" --db "$SIDEMANTIC_DB"
+    if [ -n "$SQLCTX_DB" ]; then
+        set -- "$@" --db "$SQLCTX_DB"
     fi
-    if [ -n "$SIDEMANTIC_USERNAME" ]; then
-        set -- "$@" --username "$SIDEMANTIC_USERNAME"
+    if [ -n "$SQLCTX_USERNAME" ]; then
+        set -- "$@" --username "$SQLCTX_USERNAME"
     fi
-    if [ -n "$SIDEMANTIC_PASSWORD" ]; then
-        write_secret_file "$SIDEMANTIC_PASSWORD"
+    if [ -n "$SQLCTX_PASSWORD" ]; then
+        write_secret_file "$SQLCTX_PASSWORD"
         set -- "$@" --password-file "$SECRET_FILE"
     fi
-    if [ -n "$SIDEMANTIC_PORT" ]; then
-        set -- "$@" --port "$SIDEMANTIC_PORT"
+    if [ -n "$SQLCTX_PORT" ]; then
+        set -- "$@" --port "$SQLCTX_PORT"
     fi
-    if [ -n "$SIDEMANTIC_DEMO" ]; then
+    if [ -n "$SQLCTX_DEMO" ]; then
         set -- "$@" --demo
     fi
     "$@" &
     SERVE_PID=$!
     trap 'kill "$SERVE_PID" 2>/dev/null; rm -f "$ENTRYPOINT_ARGS_FILE"' EXIT
 
-    set -- sidemantic server mcp
-    if [ -n "$SIDEMANTIC_CONNECTION" ]; then
-        set -- "$@" --connection "$SIDEMANTIC_CONNECTION"
+    set -- sqlctx server mcp
+    if [ -n "$SQLCTX_CONNECTION" ]; then
+        set -- "$@" --connection "$SQLCTX_CONNECTION"
     fi
-    if [ -n "$SIDEMANTIC_DB" ]; then
-        set -- "$@" --db "$SIDEMANTIC_DB"
+    if [ -n "$SQLCTX_DB" ]; then
+        set -- "$@" --db "$SQLCTX_DB"
     fi
-    if [ -n "$SIDEMANTIC_DEMO" ]; then
+    if [ -n "$SQLCTX_DEMO" ]; then
         set -- "$@" --demo
     fi
     while IFS= read -r arg; do
@@ -149,7 +149,7 @@ case "$MODE" in
         run_both
         ;;
     *)
-        echo "Unknown SIDEMANTIC_MODE: $MODE (use serve, mcp, api, or both)" >&2
+        echo "Unknown SQLCTX_MODE: $MODE (use serve, mcp, api, or both)" >&2
         exit 1
         ;;
 esac

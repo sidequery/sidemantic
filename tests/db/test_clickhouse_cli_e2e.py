@@ -3,7 +3,7 @@ import os
 import pytest
 from typer.testing import CliRunner
 
-from sidemantic.cli import app
+from sqlctx.cli import app
 
 runner = CliRunner()
 
@@ -39,7 +39,7 @@ models:
     port = os.getenv("CLICKHOUSE_PORT", "8123")
     password = os.getenv("CLICKHOUSE_PASSWORD", "clickhouse")
 
-    config_file = tmp_path / "sidemantic.yaml"
+    config_file = tmp_path / "sqlctx.yaml"
     config_file.write_text(
         f"""
 models_dir: ./models

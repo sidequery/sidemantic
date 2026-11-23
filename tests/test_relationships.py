@@ -2,9 +2,9 @@
 
 import pytest
 
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 def test_relationship_sql_expr_with_explicit_foreign_key():

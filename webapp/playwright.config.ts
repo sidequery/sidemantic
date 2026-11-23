@@ -14,13 +14,13 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "uv run --project .. sidemantic api-serve ../examples/ecommerce/models --db ../examples/ecommerce/data/ecommerce.db --port 4460",
+      command: "uv run --project .. sqlctx api-serve ../examples/ecommerce/models --db ../examples/ecommerce/data/ecommerce.db --port 4460",
       url: "http://127.0.0.1:4460/readyz",
       reuseExistingServer: false,
       timeout: 30_000,
     },
     {
-      command: "SIDEMANTIC_API=http://127.0.0.1:4460 bun run dev --host 127.0.0.1 --port 4327",
+      command: "SQLCTX_API=http://127.0.0.1:4460 bun run dev --host 127.0.0.1 --port 4327",
       url: "http://127.0.0.1:4327",
       reuseExistingServer: false,
       timeout: 30_000,

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic"]
+# dependencies = ["sqlctx @ git+https://github.com/sidequery/sqlctx"]
 # ///
-"""Cube Demo: Export sidemantic models to Cube and run Playground in Docker.
+"""Cube Demo: Export sqlctx models to Cube and run Playground in Docker.
 
 This demo:
-1. Loads a sidemantic YAML definition (e-commerce model with joins)
+1. Loads a sqlctx YAML definition (e-commerce model with joins)
 2. Exports to Cube YAML format
 3. Generates a complete Cube project with DuckDB
 4. Builds and runs Cube Playground in Docker
@@ -14,7 +14,7 @@ Prerequisites:
 - Docker installed and running
 
 Usage:
-    git clone https://github.com/sidequery/sidemantic && cd sidemantic
+    git clone https://github.com/sidequery/sqlctx && cd sqlctx
     uv run examples/cube_demo/run_demo.py
 """
 
@@ -23,7 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-IMAGE_NAME = "sidemantic-cube-demo"
+IMAGE_NAME = "sqlctx-cube-demo"
 
 # Sample data for the e-commerce demo - generated with DuckDB
 SAMPLE_DATA_SQL = """
@@ -182,7 +182,7 @@ JOIN products p ON o.product_id = p.product_id;
 # Cube.js configuration template
 CUBE_CONFIG = """module.exports = {
   dbType: 'duckdb',
-  apiSecret: 'sidemantic-cube-demo-secret',
+  apiSecret: 'sqlctx-cube-demo-secret',
   devServer: true,
   scheduledRefreshTimer: false,
   driverFactory: () => {
@@ -198,19 +198,19 @@ CUBE_CONFIG = """module.exports = {
 
 def main():
     demo_dir = Path(__file__).parent
-    sidemantic_yaml = demo_dir / "sidemantic.yaml"
+    sqlctx_yaml = demo_dir / "sqlctx.yaml"
     cube_project_dir = demo_dir / "cube_project"
 
     print("=" * 60)
-    print("  Sidemantic to Cube Demo")
+    print("  sqlctx to Cube Demo")
     print("=" * 60)
 
-    # Step 1: Load sidemantic YAML
-    print("\n[1/5] Loading sidemantic.yaml...")
-    from sidemantic.adapters.sidemantic import SidemanticAdapter
+    # Step 1: Load sqlctx YAML
+    print("\n[1/5] Loading sqlctx.yaml...")
+    from sqlctx.adapters.sqlctx import SqlctxAdapter
 
-    adapter = SidemanticAdapter()
-    graph = adapter.parse(sidemantic_yaml)
+    adapter = SqlctxAdapter()
+    graph = adapter.parse(sqlctx_yaml)
     print(f"      Loaded {len(graph.models)} model(s)")
     for model_name, model in graph.models.items():
         dims = len(model.dimensions)
@@ -220,7 +220,7 @@ def main():
 
     # Step 2: Export to Cube
     print("\n[2/5] Exporting to Cube project...")
-    from sidemantic.adapters.cube import CubeAdapter
+    from sqlctx.adapters.cube import CubeAdapter
 
     # Clean previous output
     if cube_project_dir.exists():

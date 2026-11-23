@@ -8,7 +8,7 @@ from pathlib import Path
 
 def _module():
     path = Path(__file__).resolve().parents[1] / "scripts" / "build_webapp.py"
-    spec = importlib.util.spec_from_file_location("sidemantic_build_webapp", path)
+    spec = importlib.util.spec_from_file_location("sqlctx_build_webapp", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -44,5 +44,5 @@ def test_webapp_never_reads_or_persists_bearer_from_url() -> None:
     assert "localStorage" not in app_source
     assert "sessionStorage" not in app_source
     assert 'params.get("token")' not in app_source
-    assert "sidemantic-token" not in app_source
+    assert "sqlctx-token" not in app_source
     assert 'fetch(this.url("/auth/session")' in adapter_source

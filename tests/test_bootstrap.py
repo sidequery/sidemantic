@@ -1,4 +1,4 @@
-"""Tests for model bootstrapping from a live schema (sidemantic/bootstrap.py)."""
+"""Tests for model bootstrapping from a live schema (sqlctx/bootstrap.py)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from sidemantic.bootstrap import (
+from sqlctx.bootstrap import (
     CATEGORICAL_CARDINALITY_LIMIT,
     ColumnInfo,
     TableInfo,
@@ -165,7 +165,7 @@ def test_write_model_files_conflict_without_force_raises(sample_db: Path, tmp_pa
 
 
 def test_bootstrap_keeps_same_named_tables_in_distinct_schemas_and_catalogs(tmp_path):
-    from sidemantic import Model, SemanticLayer
+    from sqlctx import Model, SemanticLayer
 
     source = tmp_path / "source.duckdb"
     other = tmp_path / "other.duckdb"
@@ -216,7 +216,7 @@ def test_qualified_source_uses_backend_identifier_quoting(dialect):
     ],
 )
 def test_connection_config_example_round_trips_through_project_config(tmp_path: Path, url: str):
-    from sidemantic.config import SidemanticConfig, build_connection_string
+    from sqlctx.config import SqlctxConfig, build_connection_string
 
     example = connection_config_example(url)
 
@@ -226,7 +226,7 @@ def test_connection_config_example_round_trips_through_project_config(tmp_path: 
         password_file = tmp_path / example["password_file"]
         password_file.parent.mkdir(parents=True)
         password_file.write_text("s3cret\n")
-    config = SidemanticConfig(connection=example).resolve_paths(tmp_path)
+    config = SqlctxConfig(connection=example).resolve_paths(tmp_path)
     assert build_connection_string(config) == url
 
 

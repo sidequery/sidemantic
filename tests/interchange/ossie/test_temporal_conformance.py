@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from sidemantic.interchange.ossie import (
+from sqlctx.interchange.ossie import (
     OssieParseOptions,
     lower_ossie_document,
     parse_ossie_document,

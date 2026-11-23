@@ -1,4 +1,4 @@
-# sidemantic-dax
+# sqlctx-dax
 
 Python bindings for the `dax-parser` crate.
 
@@ -20,7 +20,7 @@ export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 ## Usage
 
 ```python
-import sidemantic_dax as dax
+import sqlctx_dax as dax
 
 expr = dax.parse_expression("SUM('Sales'[Amount])")
 query = dax.parse_query("evaluate 'Sales'")

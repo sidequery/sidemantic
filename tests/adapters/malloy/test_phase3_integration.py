@@ -1,9 +1,9 @@
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.adapters.malloy import MalloyAdapter, MalloySchemaExposureError
-from sidemantic.adapters.malloy_queries import map_malloy_query
-from sidemantic.fidelity import capture_import_report
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.adapters.malloy import MalloyAdapter, MalloySchemaExposureError
+from sqlctx.adapters.malloy_queries import map_malloy_query
+from sqlctx.fidelity import capture_import_report
 
 
 def _parse(tmp_path, source: str, *, strict: bool = True):

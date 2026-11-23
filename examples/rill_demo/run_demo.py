@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic"]
+# dependencies = ["sqlctx @ git+https://github.com/sidequery/sqlctx"]
 # ///
-"""Rill Demo: Export sidemantic models to Rill and run in Docker.
+"""Rill Demo: Export sqlctx models to Rill and run in Docker.
 
 This demo:
-1. Loads a sidemantic YAML definition
+1. Loads a sqlctx YAML definition
 2. Exports to a complete Rill project (sources, models, metrics_views)
 3. Builds and runs Rill Developer in Docker
 
@@ -13,7 +13,7 @@ Prerequisites:
 - Docker installed and running
 
 Usage:
-    git clone https://github.com/sidequery/sidemantic && cd sidemantic
+    git clone https://github.com/sidequery/sqlctx && cd sqlctx
     uv run examples/rill_demo/run_demo.py
 """
 
@@ -22,38 +22,38 @@ import subprocess
 import sys
 from pathlib import Path
 
-IMAGE_NAME = "sidemantic-rill-demo"
+IMAGE_NAME = "sqlctx-rill-demo"
 
 
 def main():
     demo_dir = Path(__file__).parent
-    sidemantic_yaml = demo_dir / "sidemantic.yaml"
+    sqlctx_yaml = demo_dir / "sqlctx.yaml"
     rill_project_dir = demo_dir / "rill_project"
 
     print("=" * 60)
-    print("  Sidemantic to Rill Demo")
+    print("  sqlctx to Rill Demo")
     print("=" * 60)
 
-    # Step 1: Load sidemantic YAML
-    print("\n[1/5] Loading sidemantic.yaml...")
-    from sidemantic.adapters.sidemantic import SidemanticAdapter
+    # Step 1: Load sqlctx YAML
+    print("\n[1/5] Loading sqlctx.yaml...")
+    from sqlctx.adapters.sqlctx import SqlctxAdapter
 
-    adapter = SidemanticAdapter()
-    graph = adapter.parse(sidemantic_yaml)
+    adapter = SqlctxAdapter()
+    graph = adapter.parse(sqlctx_yaml)
     print(f"      Loaded {len(graph.models)} model(s)")
     for model_name, model in graph.models.items():
         print(f"      - {model_name}: {len(model.dimensions)} dimensions, {len(model.metrics)} metrics")
 
     # Step 2: Export to Rill
     print("\n[2/5] Exporting to Rill project...")
-    from sidemantic.adapters.rill import RillAdapter
+    from sqlctx.adapters.rill import RillAdapter
 
     # Clean previous output
     if rill_project_dir.exists():
         shutil.rmtree(rill_project_dir)
 
     rill_adapter = RillAdapter()
-    rill_adapter.export(graph, rill_project_dir, project_name="Sidemantic Adtech Demo", full_project=True)
+    rill_adapter.export(graph, rill_project_dir, project_name="sqlctx Adtech Demo", full_project=True)
 
     # List generated files
     print(f"      Generated Rill project at: {rill_project_dir}")

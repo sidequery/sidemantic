@@ -29,8 +29,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.malloy import MalloyAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.malloy import MalloyAdapter
 from tests.utils import fetch_dicts
 
 

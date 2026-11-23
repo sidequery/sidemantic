@@ -6,15 +6,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.osi import OSIAdapter
-from sidemantic.adapters.ossie import OssieAdapter, OssieImportError
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.interchange.ossie import OssieConsumerProfile, OssieSynthesisError
+from sqlctx import SemanticLayer
+from sqlctx.adapters.osi import OSIAdapter
+from sqlctx.adapters.ossie import OssieAdapter, OssieImportError
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.interchange.ossie import OssieConsumerProfile, OssieSynthesisError
 
 VALID_DOCUMENT = """version: 0.2.0.dev0
 semantic_model:
@@ -270,7 +270,7 @@ def test_native_metric_portable_export_refusal_preserves_existing_output(tmp_pat
     assert any(d.code == "ossie.synthesis.metric_semantics_unsupported" for d in error.value.diagnostics)
     assert output.read_text() == "existing document\n"
 
-    with pytest.warns(UserWarning, match="requires Sidemantic runtime extension"):
+    with pytest.warns(UserWarning, match="requires sqlctx runtime extension"):
         adapter_class(export_scope_name="commerce", expression_dialect="ANSI_SQL").export(graph, output)
     layer = SemanticLayer()
     layer.graph = adapter_class().parse(output)

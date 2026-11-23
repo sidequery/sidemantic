@@ -1,8 +1,8 @@
 # LookML Compatibility
 
-Sidemantic's LookML adapter parses `.lkml` files via the `lkml` Python library and maps LookML concepts to Sidemantic's semantic model (Model, Dimension, Metric, Segment, Relationship). It also supports exporting back to LookML for roundtrip workflows.
+sqlctx's LookML adapter parses `.lkml` files via the `lkml` Python library and maps LookML concepts to sqlctx's semantic model (Model, Dimension, Metric, Segment, Relationship). It also supports exporting back to LookML for roundtrip workflows.
 
-Features are marked **supported**, **partial support**, or **unsupported**. Partial support entries include notes explaining the limitation. Properties that parse without error but have no Sidemantic equivalent (display hints, UI metadata, caching config) are grouped together per section rather than listed individually.
+Features are marked **supported**, **partial support**, or **unsupported**. Partial support entries include notes explaining the limitation. Properties that parse without error but have no sqlctx equivalent (display hints, UI metadata, caching config) are grouped together per section rather than listed individually.
 
 ---
 
@@ -75,7 +75,7 @@ Naming convention: `{group_name}_{timeframe}`.
 
 Timeframe granularity mapping:
 
-| LookML | Sidemantic |
+| LookML | sqlctx |
 |--------|------------|
 | `time` | `hour` |
 | `date` | `day` |
@@ -242,7 +242,7 @@ Unsupported. `aggregate_table:` blocks in explores parse without error but no se
 
 ## LookML Export (Roundtrip)
 
-Sidemantic can export its semantic model back to LookML.
+sqlctx can export its semantic model back to LookML.
 
 | Feature | Status |
 |---------|--------|

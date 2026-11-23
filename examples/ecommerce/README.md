@@ -35,13 +35,13 @@ This replaces `ecommerce.db` with realistic sample data:
 ### View semantic layer info
 
 ```bash
-sidemantic info examples/ecommerce/models
+sqlctx info examples/ecommerce/models
 ```
 
 ### Interactive workbench
 
 ```bash
-uvx --from "sidemantic[workbench]" sidemantic workbench examples/ecommerce/models --db examples/ecommerce/data/ecommerce.db
+uvx --from "sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx" sqlctx workbench examples/ecommerce/models --db examples/ecommerce/data/ecommerce.db
 ```
 
 ### Query from command line
@@ -52,35 +52,35 @@ them from the virtual `metrics` table (`FROM metrics`).
 
 Total revenue:
 ```bash
-sidemantic query "SELECT total_revenue FROM metrics" \
+sqlctx query "SELECT total_revenue FROM metrics" \
   --models examples/ecommerce/models \
   --db examples/ecommerce/data/ecommerce.db
 ```
 
 Revenue by country:
 ```bash
-sidemantic query "SELECT orders.revenue, customers.country FROM orders ORDER BY orders.revenue DESC" \
+sqlctx query "SELECT orders.revenue, customers.country FROM orders ORDER BY orders.revenue DESC" \
   --models examples/ecommerce/models \
   --db examples/ecommerce/data/ecommerce.db
 ```
 
 Orders by status:
 ```bash
-sidemantic query "SELECT orders.order_count, orders.revenue, orders.status FROM orders" \
+sqlctx query "SELECT orders.order_count, orders.revenue, orders.status FROM orders" \
   --models examples/ecommerce/models \
   --db examples/ecommerce/data/ecommerce.db
 ```
 
 Customer lifetime value by tier:
 ```bash
-sidemantic query "SELECT customer_lifetime_value, customers.tier FROM metrics" \
+sqlctx query "SELECT customer_lifetime_value, customers.tier FROM metrics" \
   --models examples/ecommerce/models \
   --db examples/ecommerce/data/ecommerce.db
 ```
 
 Product performance:
 ```bash
-sidemantic query "SELECT order_items.net_revenue, products.category FROM order_items ORDER BY order_items.net_revenue DESC LIMIT 10" \
+sqlctx query "SELECT order_items.net_revenue, products.category FROM order_items ORDER BY order_items.net_revenue DESC LIMIT 10" \
   --models examples/ecommerce/models \
   --db examples/ecommerce/data/ecommerce.db
 ```
@@ -90,7 +90,7 @@ sidemantic query "SELECT order_items.net_revenue, products.category FROM order_i
 Start a server that BI tools can connect to:
 
 ```bash
-uvx --from "sidemantic[serve]" sidemantic server postgres examples/ecommerce/models \
+uvx --from "sqlctx[serve] @ git+https://github.com/sidequery/sqlctx" sqlctx server postgres examples/ecommerce/models \
   --db examples/ecommerce/data/ecommerce.db \
   --port 5433
 ```

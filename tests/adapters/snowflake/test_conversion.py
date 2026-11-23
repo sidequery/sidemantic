@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic.adapters.snowflake import SnowflakeAdapter
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.snowflake import SnowflakeAdapter
 
 
 @pytest.fixture

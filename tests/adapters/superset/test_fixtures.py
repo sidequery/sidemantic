@@ -7,7 +7,7 @@ metadata, and complex metric expressions.
 
 import pytest
 
-from sidemantic.adapters.superset import SupersetAdapter
+from sqlctx.adapters.superset import SupersetAdapter
 
 # =============================================================================
 # COVID DASHBOARD FIXTURE TESTS (virtual dataset with ratios)

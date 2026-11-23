@@ -4,15 +4,15 @@ from datetime import date
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.rust_bridge import compile_semantic_input
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.rust_bridge import compile_semantic_input
+from sqlctx.sql.generator import SQLGenerator
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires real native extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires real native extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(

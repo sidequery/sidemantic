@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 from scripts.generate_compatibility_docs import generated_documents
-from sidemantic.formats import semantic_formats
+from sqlctx.formats import semantic_formats
 
 ROOT = Path(__file__).parents[2]
 CONTRACT_PATH = ROOT / "docs" / "runtime-conformance.yml"

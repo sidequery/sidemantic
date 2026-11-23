@@ -13,8 +13,8 @@ from typing import Any
 import pytest
 import yaml
 
-from sidemantic.interchange.ossie import validation
-from sidemantic.interchange.ossie.profiles import DBT_1_12_0_1_0_ALIAS, OssieConsumerProfile
+from sqlctx.interchange.ossie import validation
+from sqlctx.interchange.ossie.profiles import DBT_1_12_0_1_0_ALIAS, OssieConsumerProfile
 
 TEST_ROOT = Path(__file__).parents[2]
 FIXTURE_ROOT = TEST_ROOT / "ossie-fixtures"
@@ -192,7 +192,7 @@ def test_optional_validator_is_imported_lazily() -> None:
             "-c",
             (
                 "import sys; "
-                "import sidemantic.interchange.ossie.validation; "
+                "import sqlctx.interchange.ossie.validation; "
                 "assert 'jsonschema' not in sys.modules; "
                 "assert 'referencing' not in sys.modules"
             ),
@@ -218,7 +218,7 @@ def test_missing_optional_validator_fails_explicitly(
     assert not result.valid
     assert result.diagnostics[0].code == "ossie.validator.unavailable"
     assert result.failure_stage == "availability"
-    assert "sidemantic[ossie]" in result.diagnostics[0].message
+    assert "sqlctx[ossie]" in result.diagnostics[0].message
 
 
 def test_auto_detection_requires_an_unambiguous_upstream_profile() -> None:

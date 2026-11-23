@@ -5,8 +5,8 @@ import json
 import duckdb
 import pytest
 
-from sidemantic.adapters.gooddata import GoodDataAdapter, GoodDataParseError
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx.adapters.gooddata import GoodDataAdapter, GoodDataParseError
+from sqlctx.sql.generator import SQLGenerator
 
 
 def model_payload():
@@ -98,8 +98,8 @@ def test_key_uses_attribute_column_not_display_label_column(tmp_path):
 
 
 def test_graph_level_metrics_are_not_silently_dropped(tmp_path):
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_metric(Metric(name="Total", agg="count"))

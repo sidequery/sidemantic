@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.gooddata import GoodDataAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.gooddata import GoodDataAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
 
 # =============================================================================
 # BASIC PARSING TESTS
@@ -280,8 +280,8 @@ def test_gooddata_export_basic_model():
 
 def test_gooddata_loader_auto_detect():
     """Test GoodData LDM auto-detection in load_from_directory."""
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cloud_path = Path(tmpdir) / "cloud_ldm.json"
@@ -406,7 +406,7 @@ def test_sdk_declarative_analytics_model_not_ldm():
 
     Source: gooddata/gooddata-python-sdk (MIT). Contains 24 MAQL metrics.
     """
-    from sidemantic.adapters.gooddata import GoodDataParseError
+    from sqlctx.adapters.gooddata import GoodDataParseError
 
     adapter = GoodDataAdapter()
     with pytest.raises(GoodDataParseError, match="does not look like GoodData LDM"):
@@ -418,7 +418,7 @@ def test_ecommerce_demo_analytics_not_ldm():
 
     Source: gooddata/gooddata-public-demos (BSD-3). Contains 60 MAQL metrics.
     """
-    from sidemantic.adapters.gooddata import GoodDataParseError
+    from sqlctx.adapters.gooddata import GoodDataParseError
 
     adapter = GoodDataAdapter()
     with pytest.raises(GoodDataParseError, match="does not look like GoodData LDM"):

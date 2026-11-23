@@ -1,26 +1,26 @@
 # Apache Ossie compatibility
 
-Sidemantic's Python integration handles [Apache Ossie](https://github.com/apache/ossie)
+sqlctx's Python integration handles [Apache Ossie](https://github.com/apache/ossie)
 logical semantic-model, ontology, and standalone mapping source documents. Executable import and
 graph synthesis apply only to logical documents. The canonical format name is
 `ossie`; `osi`, `apache-ossie`, and `open-semantic-interchange` remain accepted
 aliases.
 
 The historical Python import spelling
-`sidemantic.adapters.osi.OSIAdapter` now routes to this canonical contract.
+`sqlctx.adapters.osi.OSIAdapter` now routes to this canonical contract.
 The pre-profile implementation is isolated as `LegacyOSIAdapter` for explicit
 migration work; format discovery, CLI aliases, and ordinary direct imports do
 not bypass validation or scoped lowering.
 
-Install the optional validator dependencies with `uv add 'sidemantic[ossie]'`,
-or use `uv sync --extra ossie` in a Sidemantic checkout. Validation is offline:
-Sidemantic loads only the vendored, checksum-verified schemas listed below and
+Install the optional validator dependencies with `uv add 'sqlctx[ossie] @ git+https://github.com/sidequery/sqlctx'`,
+or use `uv sync --extra ossie` in a sqlctx checkout. Validation is offline:
+sqlctx loads only the vendored, checksum-verified schemas listed below and
 does not retrieve schema resources from the network.
 
 ## Pinned profiles
 
 Schema version, consumer profile, and YAML-versus-JSON serialization are
-independent choices. Sidemantic supports these explicit contracts:
+independent choices. sqlctx supports these explicit contracts:
 
 | Consumer profile | Declared version | Document family | Validation schema | Pinned upstream commit |
 |---|---|---|---|---|
@@ -46,7 +46,7 @@ The vendored ontology runtime schema has two recorded deterministic rewrites: a
 unique local `$id` and local references to the pinned logical schema. The
 untouched upstream ontology schema is retained alongside it. Exact paths,
 source URLs, transformations, and SHA-256 values are in
-[`sidemantic/interchange/ossie/schemas/manifest.json`](../../sidemantic/interchange/ossie/schemas/manifest.json).
+[`sqlctx/interchange/ossie/schemas/manifest.json`](../../sqlctx/interchange/ossie/schemas/manifest.json).
 
 The September 12 snapshot retains the `semantic_model` array envelope, root
 `dialects` and `vendors`, and its original expression labels. The October 1
@@ -65,7 +65,7 @@ The mutable development version alone does not identify a schema revision.
 New logical markers (`expression.sql`, dataset metrics, or an additional dialect
 name) select the November snapshot. An ambiguous flat document keeps its
 October interpretation. Use `OssieParseOptions(schema_revision=...)` or
-`sidemantic convert --ossie-input-schema-revision 172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1`
+`sqlctx convert --ossie-input-schema-revision 172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1`
 to validate such a source explicitly against the newer contract. The separate
 `--ossie-schema-revision` option selects the synthesized output revision.
 `LATEST_OSSIE_SCHEMA_COMMIT` identifies the November pin; the existing
@@ -75,7 +75,7 @@ to validate such a source explicitly against the newer contract. The separate
 
 The conformance suite also runs the official Apache Ossie validator from a
 pinned local fixture, using only the vendored upstream schemas and validator
-code. It verifies that canonical Sidemantic exports pass for core `0.1.1`
+code. It verifies that canonical sqlctx exports pass for core `0.1.1`
 (JSON), both pinned core `0.2.0.dev0` shapes, and current ontology. Deliberately
 invalid documents are rejected. The gates are implemented by
 [`tests/interchange/ossie/test_upstream_validator_gate.py`](../../tests/interchange/ossie/test_upstream_validator_gate.py)
@@ -101,7 +101,7 @@ when requested, the original bytes. Unknown fields that pass the selected
 schema remain in that source document.
 
 A runtime `SemanticGraph` is a target-specific executable projection of one
-logical model scope, either at the root or inside the older envelope. It contains only constructs Sidemantic can lower
+logical model scope, either at the root or inside the older envelope. It contains only constructs sqlctx can lower
 safely for the selected runtime dialect. It is not an archival copy of the
 source document and cannot reproduce alternate expression dialects, lexical
 YAML details, ontology content, or every Ossie field.
@@ -159,11 +159,11 @@ use the same dataset or metric names without colliding.
 ## Target-aware expression selection
 
 Executable import requires a target dialect. For each field or metric,
-Sidemantic selects the exact matching Ossie expression when Ossie defines a
+sqlctx selects the exact matching Ossie expression when Ossie defines a
 label for that target: `BIGQUERY`, `SNOWFLAKE`, or `DATABRICKS`. Otherwise it
 lowers an `OSSIE_SQL_2026` variant when present, then falls back to an explicit
 `ANSI_SQL` variant. If none exists, the construct is
-diagnosed and excluded; Sidemantic does not select an arbitrary first variant,
+diagnosed and excluded; sqlctx does not select an arbitrary first variant,
 relabel SQL, or claim that unchanged text was transpiled.
 
 For the November profile, `expression.sql` supplies the authoritative portable
@@ -248,7 +248,7 @@ Distinct source rows with identical values remain distinct, including datasets
 without declared primary keys.
 
 ```bash
-sidemantic query --models scott_model.ossie.yaml --db scott.duckdb --engine rust --no-fallback \
+sqlctx query --models scott_model.ossie.yaml --db scott.duckdb --engine rust --no-fallback \
   'SELECT d.dname, AGG(e.sum_sal) AS salary FROM scott_model.emp e
    LEFT JOIN scott_model.dept d ON e.deptno = d.deptno GROUP BY d.dname'
 ```
@@ -292,9 +292,9 @@ The strict Layer 3 binding accepts only `dimensions`, `metrics`, and one `filter
 Use `--ossie-wide` with a JSON argument or `-` for stdin:
 
 ```bash
-sidemantic query --models scott_model.ossie.yaml --db scott.duckdb --engine python --ossie-wide \
+sqlctx query --models scott_model.ossie.yaml --db scott.duckdb --engine python --ossie-wide \
   '{"dimensions":["dept.dname"],"metrics":["emp.sum_sal","emp.emp_count"]}'
-sidemantic rewrite --models scott_model.ossie.yaml --engine rust --no-fallback --ossie-wide \
+sqlctx rewrite --models scott_model.ossie.yaml --engine rust --no-fallback --ossie-wide \
   '{"metrics":["emp.sum_sal","emp.emp_count"]}'
 ```
 
@@ -331,7 +331,7 @@ ancestry, and embedded logical-model structure. Their complete
 validated canonical data can be preserved and serialized as an opaque source
 document.
 
-Sidemantic does not perform ontology reasoning, does not turn ontology concepts
+sqlctx does not perform ontology reasoning, does not turn ontology concepts
 or mappings into runtime models, and does not execute ontology documents.
 Ontology lowering therefore produces no executable catalog scopes.
 
@@ -352,7 +352,7 @@ may change. Cross-serialization between YAML and JSON is always canonical.
 
 Exact-byte reuse is an explicit source-document option. It succeeds only when
 original bytes were retained, output serialization matches the input, and
-reparsing those bytes produces the current canonical data. Otherwise Sidemantic
+reparsing those bytes produces the current canonical data. Otherwise sqlctx
 emits canonical output and reports an `ossie.serialization.exact_source_mismatch`
 warning. This guarantee does not apply to an Ossie -> runtime graph -> Ossie
 conversion.
@@ -372,7 +372,7 @@ snapshot, or
 `schema_revision="831f48e582731cf1ee2e65380ca5abf8157869c7"` or CLI
 `--ossie-schema-revision 831f48e582731cf1ee2e65380ca5abf8157869c7` to synthesize
 the older envelope. Preserved-document export retains its source shape.
-Sidemantic emits one expression variant with the supplied label
+sqlctx emits one expression variant with the supplied label
 and validates the completed document against the pinned schema. It validates
 that expression text in the named dialect but does not infer its origin,
 transpile it, or relabel it as another dialect.
@@ -387,9 +387,9 @@ Simple aggregate filters are emitted as conditional SQL and null filling as
 reference a constant dataset field so they retain their row source.
 
 For native behaviors that Ossie core cannot express, synthesis preserves the
-graph in a versioned `SIDEMANTIC` custom extension. This includes non-additive,
+graph in a versioned `SQLCTX` custom extension. This includes non-additive,
 time and window metrics, inheritance, security restrictions, private fields,
-custom or inactive joins, and relationship role aliases. Python Sidemantic restores
+custom or inactive joins, and relationship role aliases. Python sqlctx restores
 these definitions on import; security templates are evaluated for each query's
 user context. The extension records its SQL dialect and a fingerprint of the
 core projection. Unsupported versions, malformed payloads, incompatible dialects,
@@ -398,8 +398,8 @@ and edits that make the projection stale are rejected.
 Extension-dependent documents contain only an empty placeholder dataset in
 their core projection. Real sources and metrics live in the extension, so
 consumers that ignore it cannot execute unrestricted or simplified definitions.
-Export emits a warning that Sidemantic extension support is required. Use
-`sidemantic convert ... --ossie-portable-only` (or `portable_only=True` in the
+Export emits a warning that sqlctx extension support is required. Use
+`sqlctx convert ... --ossie-portable-only` (or `portable_only=True` in the
 export API) to require portable core output instead. Invalid SQL, unresolved
 inheritance references, and other invalid declarations still fail export.
 
@@ -424,9 +424,9 @@ explicitly named files report an error.
 Import one explicit scope for a BigQuery runtime projection:
 
 ```bash
-sidemantic convert commerce.ossie.yaml \
+sqlctx convert commerce.ossie.yaml \
   --from ossie \
-  --to sidemantic \
+  --to sqlctx \
   --output models.yml \
   --ossie-scope commerce \
   --ossie-target-dialect bigquery
@@ -436,8 +436,8 @@ Synthesize a new Ossie document while labeling only SQL already intended for
 BigQuery:
 
 ```bash
-sidemantic convert models/orders.yml \
-  --from sidemantic \
+sqlctx convert models/orders.yml \
+  --from sqlctx \
   --to ossie \
   --output commerce.ossie.yaml \
   --ossie-scope commerce \

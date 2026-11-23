@@ -6,14 +6,14 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
 
 @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "tsql", "mysql", "bigquery"])
 @pytest.mark.parametrize("metric_name", ["order", "daily amount"])
 @pytest.mark.parametrize("day_name", ["day", "order day"])
 def test_native_window_expression_preserves_quoted_input_across_dialects(dialect, metric_name, day_name):
-    pytest.importorskip("sidemantic_rs")
+    pytest.importorskip("sqlctx_rs")
     # Authored expressions use the layer's input dialect, including its quoting.
     window_input = exp.column(metric_name, table="base", quoted=True).sql(dialect=dialect)
     with SemanticLayer(engine="rust", fallback=False, dialect=dialect, auto_register=False) as layer:
@@ -41,7 +41,7 @@ def test_native_window_expression_preserves_quoted_input_across_dialects(dialect
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Cross-source window acceptance requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Cross-source window acceptance requires the real Rust extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     try:
         yield layer

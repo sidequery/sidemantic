@@ -2,8 +2,8 @@
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.server import common
+from sqlctx import SemanticLayer
+from sqlctx.server import common
 
 
 def test_bounded_rows_and_legitimate_control(monkeypatch):
@@ -41,7 +41,7 @@ def test_concurrency_limit(monkeypatch):
 
 @pytest.mark.parametrize("width,height", [(0, 400), (600, -1), (2001, 400), (600, 10**9)])
 def test_chart_dimensions_rejected_before_execution(width, height):
-    from sidemantic.mcp_server import create_chart
+    from sqlctx.mcp_server import create_chart
 
     with pytest.raises(ValueError, match="pixels"):
         create_chart(width=width, height=height)
@@ -50,7 +50,7 @@ def test_chart_dimensions_rejected_before_execution(width, height):
 def test_http_configured_caps_cover_raw_json_and_arrow():
     from fastapi.testclient import TestClient
 
-    from sidemantic.api_server import create_app
+    from sqlctx.api_server import create_app
 
     client = TestClient(create_app(SemanticLayer(), server_limits=common.ServerLimits(max_rows=3)))
     for suffix in ("?format=json", "?format=arrow"):
@@ -129,7 +129,7 @@ def test_busy_event_loop_does_not_wait_for_query_slot():
 def test_http_queue_timeout_returns_retryable_status(queue_timeout):
     from fastapi.testclient import TestClient
 
-    from sidemantic.api_server import create_app
+    from sqlctx.api_server import create_app
 
     limits = common.ServerLimits(max_concurrency=1, queue_timeout_seconds=queue_timeout)
     with SemanticLayer() as layer, TestClient(create_app(layer, server_limits=limits)) as client:
@@ -152,7 +152,7 @@ def test_http_queue_deadline_includes_worker_pool_wait(monkeypatch, queue_timeou
     import anyio
     import httpx
 
-    from sidemantic import api_server
+    from sqlctx import api_server
 
     entered = threading.Event()
     release = threading.Event()
@@ -224,7 +224,7 @@ def test_http_execution_can_outlast_queue_deadline(monkeypatch):
 
     from fastapi.testclient import TestClient
 
-    from sidemantic import api_server
+    from sqlctx import api_server
 
     execute = api_server._execute_to_table
 
@@ -246,7 +246,7 @@ def test_http_worker_and_slot_wait_share_one_deadline():
     import anyio
     import httpx
 
-    from sidemantic.api_server import create_app
+    from sqlctx.api_server import create_app
 
     entered = threading.Event()
     release = threading.Event()
@@ -292,7 +292,7 @@ def test_query_burst_queues_and_readiness_survives_worker_saturation(monkeypatch
     import anyio
     import httpx
 
-    from sidemantic.api_server import create_app
+    from sqlctx.api_server import create_app
 
     limits = common.ServerLimits(max_concurrency=1, queue_timeout_seconds=2)
     waiting = threading.Event()

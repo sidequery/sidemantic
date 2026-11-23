@@ -3,7 +3,7 @@
 # Tests: saved queries with order_by, limit, where filters, descending(),
 #   cumulative metric in saved query, metric joins, dimensions_only query
 
-# Note: saved_queries are a MetricFlow concept not directly parsed by sidemantic adapter,
+# Note: saved_queries are a MetricFlow concept not directly parsed by sqlctx adapter,
 # but this fixture documents the format for future implementation.
 
 # The semantic model is included so the file parses as valid YAML with at least one model.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # dependencies = [
-#   "sidemantic",
+#   "sqlctx @ git+https://github.com/sidequery/sqlctx",
 #   "duckdb",
 #   "streamlit",
 #   "plotly",
@@ -21,16 +21,16 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.parameter import Parameter
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.parameter import Parameter
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.generator import SQLGenerator
 
 # Set page config
-st.set_page_config(page_title="Sidemantic Dashboard", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="sqlctx Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 
 @st.cache_resource
@@ -246,7 +246,7 @@ def query_data(conn, generator, metrics, dimensions, filters, parameters, order_
 
 def main():
     """Main Streamlit app."""
-    st.title("Sidemantic Interactive Dashboard")
+    st.title("sqlctx Interactive Dashboard")
     st.markdown("**Real-time parameterized queries with DuckDB**")
 
     # Setup
@@ -489,7 +489,7 @@ def main():
         naive aggregation would multiply revenue by
         the number of items.
 
-        Sidemantic automatically uses symmetric
+        sqlctx automatically uses symmetric
         aggregates to prevent double-counting!
         """)
 

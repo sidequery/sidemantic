@@ -2,14 +2,14 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Alias acceptance requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Alias acceptance requires the real Rust extension")
     layer = SemanticLayer(engine=request.param, auto_register=False)
     layer.add_model(
         Model(
@@ -141,7 +141,7 @@ def test_unselected_metric_filter_uses_normalized_child_output(layer):
 
 
 def test_same_owner_duplicate_child_output_remains_explicitly_unsupported():
-    pytest.importorskip("sidemantic_rs", reason="Alias rejection requires the real Rust extension")
+    pytest.importorskip("sqlctx_rs", reason="Alias rejection requires the real Rust extension")
     layer = SemanticLayer(engine="rust", auto_register=False)
     try:
         layer.add_model(

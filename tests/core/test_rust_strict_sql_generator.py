@@ -4,12 +4,12 @@ import json
 
 import pytest
 
-import sidemantic.core.semantic_layer as semantic_layer_module
-import sidemantic.rust_bridge as rust_bridge
-import sidemantic.rust_parity as rust_parity
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_layer import SemanticLayer
+import sqlctx.core.semantic_layer as semantic_layer_module
+import sqlctx.rust_bridge as rust_bridge
+import sqlctx.rust_parity as rust_parity
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_layer import SemanticLayer
 
 
 @pytest.fixture(autouse=True)
@@ -20,10 +20,10 @@ def _reset_strict_targets_cache():
 
 
 def _configure_strict_sql_entrypoint(monkeypatch) -> None:
-    monkeypatch.delenv("SIDEMANTIC_ENGINE", raising=False)
-    monkeypatch.setenv("SIDEMANTIC_RS_STRICT_SUBSYSTEMS", "sql_generator_entrypoint")
-    monkeypatch.delenv("SIDEMANTIC_RS_SQL_GENERATOR", raising=False)
-    monkeypatch.delenv("SIDEMANTIC_RS_SQL_GENERATOR_VERIFY", raising=False)
+    monkeypatch.delenv("SQLCTX_ENGINE", raising=False)
+    monkeypatch.setenv("SQLCTX_RS_STRICT_SUBSYSTEMS", "sql_generator_entrypoint")
+    monkeypatch.delenv("SQLCTX_RS_SQL_GENERATOR", raising=False)
+    monkeypatch.delenv("SQLCTX_RS_SQL_GENERATOR_VERIFY", raising=False)
     rust_parity.strict_targets.cache_clear()
 
 

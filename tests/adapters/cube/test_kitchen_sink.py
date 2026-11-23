@@ -1,6 +1,6 @@
 """Kitchen sink integration tests for Cube adapter.
 
-This test suite stress-tests sidemantic's Cube adapter implementation with a
+This test suite stress-tests sqlctx's Cube adapter implementation with a
 complex multi-entity data model featuring various relationship types, aggregation
 patterns, and edge cases.
 
@@ -12,7 +12,7 @@ BUGS FOUND AND FIXED:
    - Handles both many_to_one and one_to_many relationship directions
 
 2. FIXED: Derived metrics with Cube ${measure} references
-   - Now converts ratio patterns like `${billable_hours} / ${total_hours}` to sidemantic format
+   - Now converts ratio patterns like `${billable_hours} / ${total_hours}` to sqlctx format
 
 3. FIXED: Multiple filtered measures AND'd incorrectly
    - Now uses CASE WHEN for conditional aggregation instead of WHERE clause
@@ -33,8 +33,8 @@ BUGS FOUND AND FIXED:
 import duckdb
 import pytest
 
-from sidemantic import Relationship, SemanticLayer
-from sidemantic.adapters.cube import CubeAdapter
+from sqlctx import Relationship, SemanticLayer
+from sqlctx.adapters.cube import CubeAdapter
 from tests.utils import fetch_dicts
 
 
@@ -619,7 +619,7 @@ class TestNullableForeignKeys:
             dimensions=["projects.name"],
         )
         # The SQL should use LEFT JOIN for nullable FKs
-        # This is a hole if sidemantic uses INNER JOIN here
+        # This is a hole if sqlctx uses INNER JOIN here
         rows = fetch_dicts(result)
         # We should have rows for each project with expenses
         # AND potentially a NULL row for general expenses
@@ -676,7 +676,7 @@ class TestDerivedMetrics:
 
 
 class TestEdgeCasesAndHoles:
-    """Test potential edge cases that might reveal holes in sidemantic."""
+    """Test potential edge cases that might reveal holes in sqlctx."""
 
     def test_self_referential_join(self, kitchen_sink_layer):
         """Group employees by their manager's name, retaining employees without managers."""
@@ -698,7 +698,7 @@ class TestEdgeCasesAndHoles:
         expenses -> employees -> departments -> companies
         expenses -> projects -> companies
 
-        Which path should sidemantic use?
+        Which path should sqlctx use?
         """
         # Query expenses with company dimension - could go through employee or project
         result = kitchen_sink_layer.query(

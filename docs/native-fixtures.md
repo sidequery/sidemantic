@@ -1,6 +1,6 @@
 # Native Fixture Suite
 
-The native fixture suite is the shared compatibility corpus for native Sidemantic YAML and SQL projects. It lives under `tests/native-fixtures/` and is driven by `tests/native-fixtures/manifest.yml`.
+The native fixture suite is the shared compatibility corpus for native sqlctx YAML and SQL projects. It lives under `tests/native-fixtures/` and is driven by `tests/native-fixtures/manifest.yml`.
 
 Runtime support claims are declared in the machine-readable
 [`runtime-conformance.yml`](runtime-conformance.yml). The generated
@@ -60,7 +60,7 @@ Invalid fixtures set `valid: false` and list stable error text fragments:
   valid: false
   expected_validation: expected/validation.json
   error_contains:
-    - Unsupported native Sidemantic format version
+    - Unsupported native sqlctx format version
 ```
 
 `sql_contains` is a shape check, not SQL string parity. It should assert stable semantic clauses or identifiers, not formatting.
@@ -110,7 +110,7 @@ The Python runner loads every manifest fixture and asserts `expected/validation.
 Rust runner:
 
 ```bash
-cd sidemantic-rs
+cd sqlctx-rs
 cargo test --test native_fixtures
 cargo test --features adbc-exec --test native_fixtures native_fixtures_execute_expected_results_with_duckdb_adbc
 ```

@@ -12,7 +12,7 @@ from pathlib import Path
 import click
 from typer.main import get_command
 
-from sidemantic.cli import app
+from sqlctx.cli import app
 
 ROOT = Path(__file__).resolve().parents[1]
 DEMO_DIR = ROOT / "examples" / "multi_format_demo"

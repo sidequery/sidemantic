@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
 
 FIXTURES_DIR = Path("tests/fixtures/lookml")
 
@@ -205,7 +205,7 @@ class TestAdvancedMeasuresQueryable:
     and returns the correct fan-out-safe result."""
 
     def _layer(self, graph):
-        from sidemantic import SemanticLayer
+        from sqlctx import SemanticLayer
 
         layer = SemanticLayer()
         for model in graph.models.values():

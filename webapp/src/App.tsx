@@ -76,7 +76,7 @@ function SessionLogin({ backend, onAuthenticated }: { backend: HttpBackend; onAu
 
   return (
     <div className="w-full max-w-sm border border-line bg-surface p-6 shadow-sm">
-      <h1 className="text-base font-semibold text-ink">Connect to Sidemantic</h1>
+      <h1 className="text-base font-semibold text-ink">Connect to sqlctx</h1>
       <p className="mt-2 text-xs leading-5 text-muted">
         Enter the API bearer once. It is exchanged for a short-lived, HttpOnly browser session
         where supported, and is never placed in the URL or browser storage.

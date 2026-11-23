@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric
+from sqlctx import Dimension, Metric
 
 
 def test_metric_with_sql():

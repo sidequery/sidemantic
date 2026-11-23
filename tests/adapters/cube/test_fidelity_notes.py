@@ -3,8 +3,8 @@
 import os
 import tempfile
 
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.fidelity import capture_import_report
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.fidelity import capture_import_report
 
 
 def _parse(yaml_str: str):

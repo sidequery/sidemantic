@@ -2,13 +2,13 @@
 
 import pytest
 
-from sidemantic import Dimension, Explore, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Explore, Metric, Model, Relationship, SemanticLayer
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Direct relationship parity requires the real extension")
+        pytest.importorskip("sqlctx_rs", reason="Direct relationship parity requires the real extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(

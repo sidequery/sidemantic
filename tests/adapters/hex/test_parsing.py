@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.hex import HexAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.hex import HexAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import SemanticGraph
 
 # =============================================================================
 # BASIC PARSING TESTS

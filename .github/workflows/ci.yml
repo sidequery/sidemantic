@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       UV_PYTHON: ${{ matrix.python-version }}
-      SIDEMANTIC_ENGINE: ${{ matrix.engine }}
+      SQLCTX_ENGINE: ${{ matrix.engine }}
     strategy:
       fail-fast: false
       matrix:
@@ -57,12 +57,12 @@ jobs:
           uv run python - <<'PY'
           import sys
 
-          from sidemantic import Dimension, Metric, Model
+          from sqlctx import Dimension, Metric, Model
 
           assert Model.__name__ == "Model"
           assert Dimension.__name__ == "Dimension"
           assert Metric.__name__ == "Metric"
-          assert "sidemantic_dax" not in sys.modules
+          assert "sqlctx_dax" not in sys.modules
           PY
 
       - name: Install Rust, DAX, and MCP Apps test dependencies
@@ -74,7 +74,7 @@ jobs:
       - name: Check version consistency
         run: |
           PYPROJECT_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-          INIT_VERSION=$(grep '^__version__ = ' sidemantic/__init__.py | sed 's/__version__ = "\(.*\)"/\1/')
+          INIT_VERSION=$(grep '^__version__ = ' sqlctx/__init__.py | sed 's/__version__ = "\(.*\)"/\1/')
           if [ "$PYPROJECT_VERSION" != "$INIT_VERSION" ]; then
             echo "Version mismatch: pyproject.toml=$PYPROJECT_VERSION, __init__.py=$INIT_VERSION"
             exit 1
@@ -82,10 +82,10 @@ jobs:
           echo "Version check passed: $PYPROJECT_VERSION"
 
       - name: Run ruff check
-        run: uv run ruff check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
+        run: uv run ruff check . --exclude docs/_extensions --exclude sqlctx-duckdb/extension-ci-tools --exclude sqlctx-duckdb/scripts --exclude sqlctx-duckdb/duckdb --exclude sqlctx/adapters/malloy_grammar --exclude sqlctx/adapters/holistics_grammar
 
       - name: Run ruff format check
-        run: uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
+        run: uv run ruff format --check . --exclude docs/_extensions --exclude sqlctx-duckdb/extension-ci-tools --exclude sqlctx-duckdb/scripts --exclude sqlctx-duckdb/duckdb --exclude sqlctx/adapters/malloy_grammar --exclude sqlctx/adapters/holistics_grammar
 
       - name: Check public API types
         run: |
@@ -95,7 +95,7 @@ jobs:
       - name: Check typed package marker
         run: |
           uv build --wheel
-          unzip -l dist/*.whl | grep -q 'sidemantic/py.typed'
+          unzip -l dist/*.whl | grep -q 'sqlctx/py.typed'
 
       - name: Run Python reference suite
         if: matrix.engine == 'python'
@@ -114,15 +114,15 @@ jobs:
 
       - name: Run installed-wheel DAX smoke
         run: |
-          uv build sidemantic-rs --out-dir /tmp/sidemantic-dax-dist
-          uv build crates/dax-pyo3 --out-dir /tmp/sidemantic-dax-dist
-          uv build --out-dir /tmp/sidemantic-dist
-          SIDEMANTIC_WHEEL=$(realpath "$(find /tmp/sidemantic-dist -name 'sidemantic-[0-9]*.whl' -print -quit)")
+          uv build sqlctx-rs --out-dir /tmp/sqlctx-dax-dist
+          uv build crates/dax-pyo3 --out-dir /tmp/sqlctx-dax-dist
+          uv build --out-dir /tmp/sqlctx-dist
+          SQLCTX_WHEEL=$(realpath "$(find /tmp/sqlctx-dist -name 'sqlctx-[0-9]*.whl' -print -quit)")
           cd /tmp
-          uv run --no-project --find-links /tmp/sidemantic-dax-dist --with "${SIDEMANTIC_WHEEL}[dax]" -- python - <<'PY'
-          import sidemantic_dax
+          uv run --no-project --find-links /tmp/sqlctx-dax-dist --with "${SQLCTX_WHEEL}[dax]" -- python - <<'PY'
+          import sqlctx_dax
 
-          sidemantic_dax.parse_expression("1")
+          sqlctx_dax.parse_expression("1")
           PY
 
       - name: Save completed build caches
@@ -242,12 +242,12 @@ jobs:
         run: uv python install 3.12
 
       - name: Build Python distribution
-        run: uv build --wheel --out-dir /tmp/sidemantic-dist
+        run: uv build --wheel --out-dir /tmp/sqlctx-dist
 
       - name: Smoke base CLI install
         run: |
           set -euo pipefail
-          SIDEMANTIC_WHEEL=$(realpath "$(find /tmp/sidemantic-dist -name 'sidemantic-[0-9]*.whl' -print -quit)")
+          SQLCTX_WHEEL=$(realpath "$(find /tmp/sqlctx-dist -name 'sqlctx-[0-9]*.whl' -print -quit)")
           tmpdir="$(mktemp -d)"
           mkdir -p "$tmpdir/models"
           cat > "$tmpdir/models/models.yml" <<'YAML'
@@ -264,23 +264,23 @@ jobs:
           YAML
 
           cd "$tmpdir"
-          uv run --no-project --with "$SIDEMANTIC_WHEEL" python -c "import importlib.metadata as m; print('typer', m.version('typer'), 'click', m.version('click'))"
-          uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic --version
-          uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic validate "$tmpdir/models"
-          uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic query "SELECT order_count, status FROM orders" --models "$tmpdir/models" --dry-run
+          uv run --no-project --with "$SQLCTX_WHEEL" python -c "import importlib.metadata as m; print('typer', m.version('typer'), 'click', m.version('click'))"
+          uv run --no-project --with "$SQLCTX_WHEEL" sqlctx --version
+          uv run --no-project --with "$SQLCTX_WHEEL" sqlctx validate "$tmpdir/models"
+          uv run --no-project --with "$SQLCTX_WHEEL" sqlctx query "SELECT order_count, status FROM orders" --models "$tmpdir/models" --dry-run
 
           # Subcommand help must exit 0 without an error or traceback.
-          uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic validate --help >"$tmpdir/help.out" 2>"$tmpdir/help.err"
+          uv run --no-project --with "$SQLCTX_WHEEL" sqlctx validate --help >"$tmpdir/help.out" 2>"$tmpdir/help.err"
           grep -q "Usage:" "$tmpdir/help.out"
           if grep -q -e "Traceback" -e "Error" "$tmpdir/help.err"; then
-            echo "sidemantic validate --help reported an error"
+            echo "sqlctx validate --help reported an error"
             cat "$tmpdir/help.err" >&2
             exit 1
           fi
 
           # Handled errors must exit 1 with a concise message and no traceback.
           set +e
-          uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic query "SELECT orders.missing FROM orders" --models "$tmpdir/models" --dry-run >"$tmpdir/error.out" 2>"$tmpdir/error.err"
+          uv run --no-project --with "$SQLCTX_WHEEL" sqlctx query "SELECT orders.missing FROM orders" --models "$tmpdir/models" --dry-run >"$tmpdir/error.out" 2>"$tmpdir/error.err"
           error_status=$?
           set -e
           if [ "$error_status" -ne 1 ] || ! grep -q "^Error: " "$tmpdir/error.err" || grep -q "Traceback" "$tmpdir/error.err"; then
@@ -289,12 +289,12 @@ jobs:
             exit 1
           fi
 
-          uv run --no-project --with "$SIDEMANTIC_WHEEL" python - <<'PYTHON'
+          uv run --no-project --with "$SQLCTX_WHEEL" python - <<'PYTHON'
           from importlib.util import find_spec
-          from sidemantic import SemanticLayer, Model, Metric
-          from sidemantic.semantic_handoff import RustBackendUnavailableError
+          from sqlctx import SemanticLayer, Model, Metric
+          from sqlctx.semantic_handoff import RustBackendUnavailableError
 
-          assert find_spec("sidemantic_rs") is None
+          assert find_spec("sqlctx_rs") is None
           with SemanticLayer() as layer:
               layer.add_model(Model(name="orders", sql="select 1 as id", metrics=[Metric(name="count", agg="count")]))
               assert layer.sql("select orders.count from orders").fetchall() == [(1,)]
@@ -302,26 +302,26 @@ jobs:
           try:
               SemanticLayer(engine="rust")
           except RustBackendUnavailableError as error:
-              assert "sidemantic[rust]" in str(error)
+              assert "sqlctx[rust]" in str(error)
           else:
               raise AssertionError("Rust must require the extra")
           PYTHON
 
           set +e
-          timeout 10s uv run --no-project --with "$SIDEMANTIC_WHEEL" sidemantic serve "$tmpdir/models" >"$tmpdir/serve.out" 2>"$tmpdir/serve.err"
+          timeout 10s uv run --no-project --with "$SQLCTX_WHEEL" sqlctx serve "$tmpdir/models" >"$tmpdir/serve.out" 2>"$tmpdir/serve.err"
           serve_status=$?
           set -e
           if [ "$serve_status" -eq 0 ]; then
-            echo "base install unexpectedly ran sidemantic serve without the serve extra"
+            echo "base install unexpectedly ran sqlctx serve without the serve extra"
             exit 1
           fi
           if [ "$serve_status" -eq 124 ]; then
-            echo "base install unexpectedly started sidemantic serve without the serve extra"
+            echo "base install unexpectedly started sqlctx serve without the serve extra"
             cat "$tmpdir/serve.out"
             cat "$tmpdir/serve.err" >&2
             exit 1
           fi
-          grep -q "sidemantic\\[api\\]" "$tmpdir/serve.err"
+          grep -q "sqlctx\\[api\\]" "$tmpdir/serve.err"
           if grep -q "Traceback" "$tmpdir/serve.err"; then
             echo "missing serve extra must be reported without a traceback"
             cat "$tmpdir/serve.err" >&2
@@ -329,15 +329,15 @@ jobs:
           fi
 
       - name: Build runtime distribution
-        run: uv build sidemantic-rs --out-dir /tmp/sidemantic-runtime-dist
+        run: uv build sqlctx-rs --out-dir /tmp/sqlctx-runtime-dist
 
       - name: Smoke Rust extra install
         run: |
-          SIDEMANTIC_WHEEL=$(realpath "$(find /tmp/sidemantic-dist -name 'sidemantic-[0-9]*.whl' -print -quit)")
+          SQLCTX_WHEEL=$(realpath "$(find /tmp/sqlctx-dist -name 'sqlctx-[0-9]*.whl' -print -quit)")
           cd /tmp
-          uv run --no-project --find-links /tmp/sidemantic-runtime-dist --with "${SIDEMANTIC_WHEEL}[rust]" python - <<'PYTHON'
-          import sidemantic_rs
-          from sidemantic import SemanticLayer, Model, Metric
+          uv run --no-project --find-links /tmp/sqlctx-runtime-dist --with "${SQLCTX_WHEEL}[rust]" python - <<'PYTHON'
+          import sqlctx_rs
+          from sqlctx import SemanticLayer, Model, Metric
 
           for engine in (None, "rust"):
               with SemanticLayer(engine=engine) as layer:
@@ -414,10 +414,10 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           uv run python scripts/generate_schema.py
-          if ! git diff --exit-code sidemantic-schema.json; then
+          if ! git diff --exit-code sqlctx-schema.json; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add sidemantic-schema.json
+            git add sqlctx-schema.json
             git commit -m "Auto-update JSON schema"
             git push --force-with-lease="refs/heads/$PR_BRANCH:$PR_HEAD_SHA" origin "HEAD:refs/heads/$PR_BRANCH"
           fi
@@ -464,11 +464,11 @@ jobs:
         run: |
           curl -L https://github.com/duckdb/duckdb/releases/download/v1.5.5/libduckdb-linux-amd64.zip -o /tmp/libduckdb.zip
           unzip -q /tmp/libduckdb.zip -d /tmp/libduckdb
-          echo "SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER=/tmp/libduckdb/libduckdb.so" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_DUCKDB_DRIVER=/tmp/libduckdb/libduckdb.so" >> "$GITHUB_ENV"
 
       - name: Run Rust native fixtures
         id: native_fixtures
-        working-directory: sidemantic-rs
+        working-directory: sqlctx-rs
         run: |
           cargo test --test native_fixtures
           cargo test --features adbc-exec --test native_fixtures native_fixtures_execute_expected_results_with_duckdb_adbc
@@ -476,7 +476,7 @@ jobs:
       - name: Capture native fixture stack overflow
         if: ${{ failure() && steps.native_fixtures.outcome == 'failure' }}
         timeout-minutes: 5
-        working-directory: sidemantic-rs
+        working-directory: sqlctx-rs
         run: |
           set -euo pipefail
           if ! command -v gdb >/dev/null; then
@@ -541,7 +541,7 @@ jobs:
         with:
           filters: |
             rust:
-              - 'sidemantic-rs/**'
+              - 'sqlctx-rs/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
@@ -552,42 +552,42 @@ jobs:
               # not just the crate. Keep its contract and fixture inputs gated.
               - 'pyproject.toml'
               - 'uv.lock'
-              - 'sidemantic/__init__.py'
-              - 'sidemantic/rust_bridge.py'
-              - 'sidemantic/rust_parity.py'
-              - 'sidemantic/semantic_handoff.py'
-              - 'sidemantic/core/**'
-              - 'sidemantic/sql/**'
-              - 'sidemantic/db/__init__.py'
-              - 'sidemantic/db/base.py'
-              - 'sidemantic/db/duckdb.py'
-              - 'sidemantic/db/postgres.py'
-              - 'sidemantic/db/unavailable.py'
-              - 'sidemantic/validation.py'
-              - 'sidemantic/validation_runner.py'
-              - 'sidemantic/cli.py'
-              - 'sidemantic/cli_contract.py'
-              - 'sidemantic/cli_polish.py'
-              - 'sidemantic/config.py'
-              - 'sidemantic/loaders.py'
-              - 'sidemantic/project.py'
-              - 'sidemantic/paths.py'
-              - 'sidemantic/formats.py'
-              - 'sidemantic/fidelity.py'
-              - 'sidemantic/yaml_compat.py'
+              - 'sqlctx/__init__.py'
+              - 'sqlctx/rust_bridge.py'
+              - 'sqlctx/rust_parity.py'
+              - 'sqlctx/semantic_handoff.py'
+              - 'sqlctx/core/**'
+              - 'sqlctx/sql/**'
+              - 'sqlctx/db/__init__.py'
+              - 'sqlctx/db/base.py'
+              - 'sqlctx/db/duckdb.py'
+              - 'sqlctx/db/postgres.py'
+              - 'sqlctx/db/unavailable.py'
+              - 'sqlctx/validation.py'
+              - 'sqlctx/validation_runner.py'
+              - 'sqlctx/cli.py'
+              - 'sqlctx/cli_contract.py'
+              - 'sqlctx/cli_polish.py'
+              - 'sqlctx/config.py'
+              - 'sqlctx/loaders.py'
+              - 'sqlctx/project.py'
+              - 'sqlctx/paths.py'
+              - 'sqlctx/formats.py'
+              - 'sqlctx/fidelity.py'
+              - 'sqlctx/yaml_compat.py'
               # Imported native/Cube/Ossie fixtures are acceptance inputs too.
-              - 'sidemantic/adapters/__init__.py'
-              - 'sidemantic/adapters/base.py'
-              - 'sidemantic/adapters/sidemantic.py'
-              - 'sidemantic/adapters/cube.py'
-              - 'sidemantic/adapters/ossie.py'
-              - 'sidemantic/interchange/ossie/**'
+              - 'sqlctx/adapters/__init__.py'
+              - 'sqlctx/adapters/base.py'
+              - 'sqlctx/adapters/sqlctx.py'
+              - 'sqlctx/adapters/cube.py'
+              - 'sqlctx/adapters/ossie.py'
+              - 'sqlctx/interchange/ossie/**'
               - 'tests/conftest.py'
               - 'tests/semantic_conformance/**/*.py'
               - 'tests/semantic_conformance/fixtures/**'
             duckdb:
-              - 'sidemantic-duckdb/**'
-              - 'sidemantic-rs/**'
+              - 'sqlctx-duckdb/**'
+              - 'sqlctx-rs/**'
               # The extension links the workspace crate; host tests and their
               # shared SemanticInput fixture live under the two trees above.
               - 'Cargo.toml'
@@ -609,15 +609,15 @@ jobs:
               - 'webapp/**'
               - 'scripts/build_webapp.py'
               - 'scripts/build_ui_distribution.py'
-              - 'sidemantic/ui/static/**'
-              - 'sidemantic-rs/ui/**'
-              - 'plugins/sidemantic/skills/webapp-builder/assets/ui-dist/**'
-              - 'examples/sidemantic_wasm_demo/src/components/sidemantic/**'
+              - 'sqlctx/ui/static/**'
+              - 'sqlctx-rs/ui/**'
+              - 'plugins/sqlctx/skills/webapp-builder/assets/ui-dist/**'
+              - 'examples/sqlctx_wasm_demo/src/components/sqlctx/**'
             widget:
               - 'js/**'
               - 'scripts/build_widget.py'
-              - 'sidemantic/widget/static/**'
-              - 'plugins/sidemantic/skills/webapp-builder/assets/ui-dist/**'
+              - 'sqlctx/widget/static/**'
+              - 'plugins/sqlctx/skills/webapp-builder/assets/ui-dist/**'
 
   dax-rust:
     name: Rust (DAX crates)
@@ -653,7 +653,7 @@ jobs:
           rust-key: ${{ steps.rust-cache.outputs.key }}
 
   rust:
-    name: Rust (sidemantic-rs)
+    name: Rust (sqlctx-rs)
     needs: check-rust-changes
     if: needs.check-rust-changes.outputs.rust_changed == 'true'
     runs-on: ubuntu-latest
@@ -667,19 +667,19 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: sidemantic
-          POSTGRES_PASSWORD: sidemantic
-          POSTGRES_DB: sidemantic
+          POSTGRES_USER: sqlctx
+          POSTGRES_PASSWORD: sqlctx
+          POSTGRES_DB: sqlctx
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U sidemantic"
+          --health-cmd "pg_isready -U sqlctx"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
     defaults:
       run:
-        working-directory: sidemantic-rs
+        working-directory: sqlctx-rs
 
     steps:
       - uses: actions/checkout@v4
@@ -724,28 +724,28 @@ jobs:
           cargo check --no-default-features --all-targets
           cargo check --features python --lib
           cargo check --features python-adbc --lib
-          cargo check --features mcp-server --bin sidemantic-mcp --test mcp_protocol
-          cargo check --features mcp-adbc --bin sidemantic-mcp
-          cargo check --features runtime-server --bin sidemantic-server --test http_server
-          cargo check --features runtime-server-adbc --bin sidemantic-server
-          cargo check --features runtime-lsp --bin sidemantic-lsp --test lsp_protocol_smoke
-          cargo check --features workbench-tui --bin sidemantic --bin sidemantic-workbench
-          cargo check --features workbench-adbc --bin sidemantic --bin sidemantic-workbench
+          cargo check --features mcp-server --bin sqlctx-mcp --test mcp_protocol
+          cargo check --features mcp-adbc --bin sqlctx-mcp
+          cargo check --features runtime-server --bin sqlctx-server --test http_server
+          cargo check --features runtime-server-adbc --bin sqlctx-server
+          cargo check --features runtime-lsp --bin sqlctx-lsp --test lsp_protocol_smoke
+          cargo check --features workbench-tui --bin sqlctx --bin sqlctx-workbench
+          cargo check --features workbench-adbc --bin sqlctx --bin sqlctx-workbench
 
       - name: Install DuckDB ADBC driver
         run: |
           curl -L https://github.com/duckdb/duckdb/releases/download/v1.5.5/libduckdb-linux-amd64.zip -o /tmp/libduckdb.zip
           unzip -q /tmp/libduckdb.zip -d /tmp/libduckdb
-          echo "SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER=/tmp/libduckdb/libduckdb.so" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_DUCKDB_DRIVER=/tmp/libduckdb/libduckdb.so" >> "$GITHUB_ENV"
 
       - name: Install SQLite ADBC driver
         run: |
           uv run --no-project --with adbc-driver-sqlite python - <<'PY' >> "$GITHUB_ENV"
           import adbc_driver_sqlite
 
-          print(f"SIDEMANTIC_TEST_ADBC_SQLITE_DRIVER={adbc_driver_sqlite._driver_path()}")
-          print("SIDEMANTIC_TEST_ADBC_SQLITE_URI=:memory:")
-          print("SIDEMANTIC_TEST_ADBC_REQUIRE=duckdb,sqlite")
+          print(f"SQLCTX_TEST_ADBC_SQLITE_DRIVER={adbc_driver_sqlite._driver_path()}")
+          print("SQLCTX_TEST_ADBC_SQLITE_URI=:memory:")
+          print("SQLCTX_TEST_ADBC_REQUIRE=duckdb,sqlite")
           PY
 
       - name: Run standalone protocol and UI tests
@@ -757,16 +757,16 @@ jobs:
           cargo test --features workbench-adbc --test cli_smoke workbench
           cargo test --features workbench-tui --test workbench_pty_smoke
           cargo test --features workbench-adbc --test workbench_pty_smoke
-          cargo test --features workbench-adbc --bin sidemantic
+          cargo test --features workbench-adbc --bin sqlctx
           cargo test --features adbc-exec --test adbc_driver_matrix
           cargo test --features mcp-adbc,runtime-server-adbc --test adbc_duckdb_e2e
 
       - name: Smoke C ABI header and static library
         run: |
           cargo build --release --lib
-          SIDEMANTIC_STATICLIB="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/release/libsidemantic.a"
-          cc -std=c11 -Wall -Wextra -I include tests/c_abi_smoke.c "$SIDEMANTIC_STATICLIB" -lpthread -ldl -lm -lrt -o /tmp/sidemantic_c_abi_smoke
-          /tmp/sidemantic_c_abi_smoke
+          SQLCTX_STATICLIB="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/release/libsqlctx.a"
+          cc -std=c11 -Wall -Wextra -I include tests/c_abi_smoke.c "$SQLCTX_STATICLIB" -lpthread -ldl -lm -lrt -o /tmp/sqlctx_c_abi_smoke
+          /tmp/sqlctx_c_abi_smoke
 
       - name: Build WASM host module
         run: cargo build --no-default-features --features wasm --target wasm32-unknown-unknown --lib
@@ -781,8 +781,8 @@ jobs:
 
       - name: Execute SemanticInput through the public WASM module
         run: |
-          wasm-bindgen ../target/wasm32-unknown-unknown/debug/sidemantic.wasm --target nodejs --out-dir ../target/semantic-host
-          SIDEMANTIC_WASM_MODULE="$PWD/../target/semantic-host/sidemantic.js" uv run --no-project tests/test_wasm_semantic_host.py
+          wasm-bindgen ../target/wasm32-unknown-unknown/debug/sqlctx.wasm --target nodejs --out-dir ../target/semantic-host
+          SQLCTX_WASM_MODULE="$PWD/../target/semantic-host/sqlctx.js" uv run --no-project tests/test_wasm_semantic_host.py
 
       - name: Check Python extension build
         run: uvx maturin build --out dist
@@ -801,15 +801,15 @@ jobs:
       - name: Run semantic compiler conformance with the built extension
         working-directory: .
         env:
-          SIDEMANTIC_TEST_POSTGRES_DSN: postgresql://sidemantic:sidemantic@localhost:5432/sidemantic
+          SQLCTX_TEST_POSTGRES_DSN: postgresql://sqlctx:sqlctx@localhost:5432/sqlctx
         run: |
-          uv run --extra dev --with "psycopg[binary]" --with ./sidemantic-rs/dist-python/*.whl python - <<'PY'
+          uv run --extra dev --with "psycopg[binary]" --with ./sqlctx-rs/dist-python/*.whl python - <<'PY'
           import pytest
-          import sidemantic_rs
+          import sqlctx_rs
 
-          assert callable(sidemantic_rs.compile_with_semantic_input)
-          assert callable(sidemantic_rs.validate_with_semantic_input)
-          assert callable(sidemantic_rs.rewrite_with_semantic_input)
+          assert callable(sqlctx_rs.compile_with_semantic_input)
+          assert callable(sqlctx_rs.validate_with_semantic_input)
+          assert callable(sqlctx_rs.rewrite_with_semantic_input)
           raise SystemExit(pytest.main(["--no-cov", "-q", "tests/semantic_conformance"]))
           PY
 
@@ -838,7 +838,7 @@ jobs:
     env:
       GEN: ninja
       DUCKDB_VERSION: ${{ matrix.duckdb }}
-      SIDEMANTIC_NATIVE_PEG: ${{ matrix.duckdb == 'v2.0-cyanoptera' && '1' || '' }}
+      SQLCTX_NATIVE_PEG: ${{ matrix.duckdb == 'v2.0-cyanoptera' && '1' || '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -853,18 +853,18 @@ jobs:
           suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
       - name: Fetch DuckDB dependencies
-        working-directory: sidemantic-duckdb
+        working-directory: sqlctx-duckdb
         run: make deps
 
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
       - name: Build DuckDB extension
-        working-directory: sidemantic-duckdb
+        working-directory: sqlctx-duckdb
         run: make
 
       - name: Run extension tests
-        working-directory: sidemantic-duckdb
+        working-directory: sqlctx-duckdb
         run: make test
 
       - name: Install uv for SQL host acceptance
@@ -876,11 +876,11 @@ jobs:
 
       - name: Execute SemanticInput in the loaded DuckDB extension
         env:
-          SIDEMANTIC_DUCKDB_BINARY: sidemantic-duckdb/build/release/duckdb
-          SIDEMANTIC_DUCKDB_EXTENSION: sidemantic-duckdb/build/release/extension/sidemantic/sidemantic.duckdb_extension
+          SQLCTX_DUCKDB_BINARY: sqlctx-duckdb/build/release/duckdb
+          SQLCTX_DUCKDB_EXTENSION: sqlctx-duckdb/build/release/extension/sqlctx/sqlctx.duckdb_extension
         run: |
-          uv run sidemantic-duckdb/test/test_semantic_input_host.py
-          uv run sidemantic-duckdb/test/test_catalog_host.py
+          uv run sqlctx-duckdb/test/test_semantic_input_host.py
+          uv run sqlctx-duckdb/test/test_catalog_host.py
 
       - name: Save completed build caches
         if: ${{ !cancelled() }}

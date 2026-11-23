@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
 
 # =============================================================================
 # PROPERTY PASS-THROUGH TESTS (labels, formats, drill_fields, meta)
@@ -754,7 +754,7 @@ def test_lookml_segment_resolves_self_qualified_and_bare_field_refs():
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     src = """view: orders {
       sql_table_name: raw_orders ;;
@@ -861,7 +861,7 @@ def test_lookml_links():
 
     orders = graph.get_model("interactive_orders")
 
-    # Links are parsed but not stored in sidemantic model
+    # Links are parsed but not stored in sqlctx model
     # We just verify the dimension exists and is parsed correctly
     id_dim = orders.get_dimension("id")
     assert id_dim is not None
@@ -910,7 +910,7 @@ def test_lookml_sets():
     adapter = LookMLAdapter()
     graph = adapter.parse(Path("tests/fixtures/lookml/edge_cases_actions.lkml"))
 
-    # Sets are parsed by lkml but not currently stored in sidemantic
+    # Sets are parsed by lkml but not currently stored in sqlctx
     # We verify the view parses correctly
     orders = graph.get_model("interactive_orders")
     assert orders is not None
@@ -1327,7 +1327,7 @@ def test_lookml_duration_group_resolves_field_references():
     The duration path only replaced ${TABLE}, so a self-view ref (${started_at}) leaked into
     DATE_DIFF and every query on the duration dimension emitted invalid SQL. Resolve them.
     """
-    from sidemantic.core.semantic_layer import SemanticLayer
+    from sqlctx.core.semantic_layer import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -1523,7 +1523,7 @@ view: percentile_test {
 def test_lookml_cross_view_reference():
     """A cross-view field reference (${other_view.field}) is unqueryable, so it is dropped.
 
-    Sidemantic has no inline cross-model column; keeping the dimension would leak the literal
+    sqlctx has no inline cross-model column; keeping the dimension would leak the literal
     ${customers.name} into the model CTE, so every query touching it fails. Drop the field.
     """
     import tempfile
@@ -2380,7 +2380,7 @@ view: orders {
 def test_lookml_self_view_resolved_cross_view_dropped(caplog):
     """Self-view refs resolve; a cross-view ref is unqueryable, so the field is dropped + warned.
 
-    Sidemantic has no inline cross-model column. Leaving the literal ${customers.name} would leak
+    sqlctx has no inline cross-model column. Leaving the literal ${customers.name} would leak
     it into the model CTE, so any query on the field fails; drop the dimension entirely instead.
     """
     import logging
@@ -2434,7 +2434,7 @@ view: customers {
 
 def test_lookml_cross_view_dimension_group_dropped_and_no_leak_on_compile():
     """A dimension_group with a cross-view base SQL is dropped; surviving fields compile cleanly."""
-    from sidemantic.core.semantic_layer import SemanticLayer
+    from sqlctx.core.semantic_layer import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -2566,7 +2566,7 @@ def test_lookml_measure_referencing_skipped_measure_is_dropped():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     dropped = _parse_lkml(
         """
@@ -2651,7 +2651,7 @@ def test_lookml_number_measure_mixed_aggregate_safe_kept_and_executes():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -2684,7 +2684,7 @@ def test_lookml_number_measure_mixed_filtered_base_measure_keeps_filter():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -2719,7 +2719,7 @@ def test_lookml_number_measure_ref_to_filtered_complete_measure_keeps_filter():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -2757,7 +2757,7 @@ def test_lookml_filtered_list_measure_not_cached_for_expansion():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -2858,7 +2858,7 @@ def test_lookml_number_measure_case_with_else_folds_filter():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -2905,7 +2905,7 @@ def test_lookml_number_measure_filtered_list_aggregate_skipped():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -2946,7 +2946,7 @@ def test_lookml_number_measure_list_aggregate_is_scope_safe():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -2980,7 +2980,7 @@ def test_lookml_number_measure_zero_column_aggregate_compiles():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3020,7 +3020,7 @@ def test_lookml_number_measure_constant_dimension_is_aggregate_safe():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3079,7 +3079,7 @@ view: orders {
     # projection has to keep the quoting (`"select" AS s__select__cmpl`), not emit a bare `select`.
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     layer = SemanticLayer(auto_register=False)
     layer.add_model(model)
@@ -3099,7 +3099,7 @@ def test_lookml_complete_measure_reserved_column_sqlglot_misses_is_quoted():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3172,7 +3172,7 @@ def test_lookml_number_measure_select_in_string_literal_is_not_a_subquery():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3285,7 +3285,7 @@ def test_lookml_number_measure_expands_chained_derived_ref():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3340,7 +3340,7 @@ def test_lookml_number_measure_inline_aggregate_cases_execute():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3377,7 +3377,7 @@ def test_lookml_number_measure_zero_column_aggregate_filter_applied():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3413,7 +3413,7 @@ def test_lookml_number_measure_expands_distinct_base_measure():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3447,7 +3447,7 @@ def test_lookml_number_measure_keyed_distinct_ref_with_own_filter_executes():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3477,7 +3477,7 @@ def test_lookml_number_measure_count_star_sql_with_filter_expands_validly():
     """A referenced `type: count sql: * ;;` with filters must expand as COUNT(CASE..THEN 1), not THEN *."""
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3537,7 +3537,7 @@ def test_lookml_number_measure_own_filter_with_null_predicate_folds():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3573,7 +3573,7 @@ def test_lookml_number_measure_ordered_set_aggregate_kept_and_executes():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3606,7 +3606,7 @@ def test_lookml_number_measure_anonymous_aggregate_filter_folded():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3636,12 +3636,12 @@ def test_lookml_number_measure_anonymous_aggregate_kept_and_executes():
     """A number measure using an anonymous/engine-specific aggregate (PRODUCT) is valid.
 
     sqlglot parses PRODUCT/ENTROPY/WEIGHTED_AVG etc. as exp.Anonymous (not exp.AggFunc), but
-    sidemantic recognizes them as aggregates; the aggregate-safety check must accept their
+    sqlctx recognizes them as aggregates; the aggregate-safety check must accept their
     column args so the measure imports as complete SQL instead of being dropped as raw.
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3673,7 +3673,7 @@ def test_lookml_number_measure_ordered_set_aggregate_with_filter_executes():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3751,7 +3751,7 @@ def test_lookml_number_measure_aggregate_nested_in_window_is_kept():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3790,7 +3790,7 @@ def test_lookml_filtered_windowed_aggregate_folds_into_inner_aggregate():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     # The predicate folds into the inner COUNT, never the outer windowed SUM's argument.
     assert LookMLAdapter._fold_complete_sql_filters(
@@ -3840,7 +3840,7 @@ def test_lookml_filtered_multi_column_distinct_folds_around_the_tuple():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     # Multi-column distinct (tuple and comma forms) folds; single-column stays on the nulling path.
     assert (
@@ -3882,7 +3882,7 @@ def test_lookml_complete_measure_own_filter_resolves_renamed_dimension():
     """A COMPLETE (mixed) measure's OWN filter on a renamed dimension resolves to the real column."""
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3913,7 +3913,7 @@ def test_lookml_measure_filter_strips_self_view_qualifier():
     """A measure filter with a view-qualified field (orders.status) must not double-qualify."""
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3942,7 +3942,7 @@ def test_lookml_number_measure_mixed_filtered_base_measure_resolves_renamed_dime
     """Folding a base measure's filter must resolve the filter field through its dimension SQL."""
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -3971,7 +3971,7 @@ def test_lookml_number_measure_mixed_filtered_count_ref_keeps_filter():
     """A filtered `type: count` (no sql) base measure expanded in a mixed expr keeps its filter."""
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -4093,8 +4093,8 @@ def test_lookml_native_suffix_contradicting_grain_uses_grain():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4117,7 +4117,7 @@ def test_lookml_native_suffix_contradicting_grain_uses_grain():
 
 
 def test_lookml_minute_bucket_timeframes_are_unsupported():
-    """minute15/minute30 are N-minute buckets sidemantic cannot represent portably, so drop them.
+    """minute15/minute30 are N-minute buckets sqlctx cannot represent portably, so drop them.
 
     The coarse `minute` granularity would truncate to the minute and drop the bucket, and baking
     the bucket expression stores dialect-specific SQL (DuckDB/Postgres DATE_TRUNC + INTERVAL) into
@@ -4178,8 +4178,8 @@ def test_lookml_native_minute15_name_does_not_widen_grain():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4226,7 +4226,7 @@ def test_lookml_native_inexact_timeframe_suffix_preserves_grain_not_name():
     """NATIVE inexact-suffix time dims (no meta) preserve the GRAIN, even if the name changes.
 
     minute15 / minute30 / millisecond / microsecond / time_of_day map MANY-to-one onto a
-    coarser-or-finer sidemantic grain, so a native created_minute15 at MINUTE grain must NOT
+    coarser-or-finer sqlctx grain, so a native created_minute15 at MINUTE grain must NOT
     export [minute15] (which buckets into 15-min intervals -- a silent grain change). It
     exports at the true grain instead, so the field re-imports renamed (created_minute) but
     with the CORRECT queryable grain. Exact name round-trip for these needs preserved
@@ -4234,8 +4234,8 @@ def test_lookml_native_inexact_timeframe_suffix_preserves_grain_not_name():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     for name, grain in [
         ("created_minute15", "minute"),
@@ -4296,8 +4296,8 @@ def test_lookml_preserved_unsupported_timeframe_round_trips_as_standalone():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4342,7 +4342,7 @@ def test_lookml_dimension_group_leading_unsupported_timeframe_resolves_ref_base_
     sql -- leaving `sql: ${ts_src}` literally unresolved so the surviving `date` field compiled to
     DATE_TRUNC('day', ${ts_src}). Key off the first SUPPORTED timeframe so the ref resolves.
     """
-    from sidemantic.core.semantic_layer import SemanticLayer
+    from sqlctx.core.semantic_layer import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -4403,8 +4403,8 @@ def test_lookml_native_second_grain_roundtrips():
     """A second-grain dimension not imported from LookML (no meta) exports as `second`, not `time`."""
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4428,8 +4428,8 @@ def test_lookml_same_prefix_time_dims_different_sources_not_merged():
     """Same-prefix time dims backed by different columns must not merge to one group (wrong source)."""
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4458,13 +4458,13 @@ def test_lookml_same_prefix_time_dims_different_sources_not_merged():
 def test_lookml_collision_subsecond_timeframe_preserves_precision():
     """A millisecond/microsecond collision dim exports DATE_TRUNC at that grain (not second).
 
-    sidemantic stores them as `second`, so the exported SQL must use the LookML timeframe
+    sqlctx stores them as `second`, so the exported SQL must use the LookML timeframe
     grain to keep sub-second precision, and re-import recovers second grain + the timeframe.
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4512,8 +4512,8 @@ def test_lookml_collision_disambiguation_reserves_future_group_fields():
     import tempfile
     from collections import Counter
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4550,8 +4550,8 @@ def test_lookml_minute_bucket_collision_field_deduplicated():
     import tempfile
     from collections import Counter
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4600,8 +4600,8 @@ def test_lookml_collision_disambiguated_field_stays_time_recoverable():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4641,8 +4641,8 @@ def test_lookml_suffixless_collision_no_dimension_group_field_duplicate():
     import tempfile
     from collections import Counter
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4679,8 +4679,8 @@ def test_lookml_suffixless_collision_group_field_maps_to_owning_source():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4716,8 +4716,8 @@ def test_lookml_suffixless_collision_synth_name_avoids_duplicate():
     import tempfile
     from collections import Counter
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4750,8 +4750,8 @@ def test_lookml_suffixless_collision_time_dim_stays_time():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4787,8 +4787,8 @@ def test_lookml_native_collision_inexact_name_not_widened_on_import():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4823,14 +4823,14 @@ def test_lookml_native_collision_inexact_name_not_widened_on_import():
 def test_lookml_collision_minute15_bucket_roundtrips():
     """A minute15 collision dim exports a faithful 15-min bucket (not minute) and round-trips.
 
-    sidemantic has no 15-min grain (stores minute15 as `minute` + meta), so the standalone
+    sqlctx has no 15-min grain (stores minute15 as `minute` + meta), so the standalone
     collision form must emit an explicit N-minute bucket that the importer recovers back to
     grain=minute + meta['lookml_timeframe']='minute15', stable across repeated round-trips.
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4878,8 +4878,8 @@ def test_lookml_collision_minute15_query_buckets_by_15_minutes():
 
     import duckdb
 
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4932,8 +4932,8 @@ def test_lookml_collision_time_dim_multiword_timeframe_suffix_recovered():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -4978,8 +4978,8 @@ def test_lookml_time_dims_grouped_by_effective_sql_not_explicit_sql():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     def roundtrip(*dims):
         graph = SemanticGraph()
@@ -5069,8 +5069,8 @@ def test_lookml_collision_time_of_day_recovers_timeframe_meta_and_survives_sibli
     import re
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     adapter = LookMLAdapter()
     graph = SemanticGraph()
@@ -5119,8 +5119,8 @@ def test_lookml_same_prefix_time_dims_roundtrip_names_and_grains_losslessly():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -5214,8 +5214,8 @@ def test_lookml_split_time_group_names_avoid_existing_bases():
     import re
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -5241,8 +5241,8 @@ def test_lookml_native_time_named_second_grain_roundtrips():
     """A native second-grain dim named *_time must export as `time` so the name round-trips."""
     import tempfile
 
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -5294,7 +5294,7 @@ view: v {
 
 def test_lookml_view_without_table_defaults_to_view_name():
     """A view with no sql_table_name/derived_table should default its table to the view name."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         "view: just_fields { "
@@ -5317,7 +5317,7 @@ def test_lookml_parse_tableless_view_inside_layer_context():
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
         f.write(
@@ -5341,8 +5341,8 @@ def test_lookml_fieldless_ordinary_view_gets_default_table():
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     d = tempfile.mkdtemp()
     with open(Path(d) / "v.lkml", "w") as f:
@@ -5362,7 +5362,7 @@ def test_lookml_abstract_base_not_registered_inside_layer_context():
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
         f.write(
@@ -5390,7 +5390,7 @@ def test_lookml_table_backed_abstract_base_not_registered_inside_layer_context()
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
         f.write(
@@ -5420,8 +5420,8 @@ def test_lookml_directory_load_merges_cross_file_refinement_before_defaulting_ta
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     directory = Path(tempfile.mkdtemp())
     (directory / "a.lkml").write_text("view: base {\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n")
@@ -5452,8 +5452,8 @@ def test_lookml_broken_tableless_view_surfaces_error_inside_layer_context():
 
     import pytest
 
-    from sidemantic import SemanticLayer
-    from sidemantic.validation import ModelValidationError
+    from sqlctx import SemanticLayer
+    from sqlctx.validation import ModelValidationError
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
         f.write(
@@ -5528,8 +5528,8 @@ def test_lookml_abstract_base_does_not_break_directory_load():
     """The CLI path (load_from_directory) must skip the abstract base, not abort the project."""
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     d = tempfile.mkdtemp()
     with open(Path(d) / "v.lkml", "w") as f:
@@ -5553,8 +5553,8 @@ def test_lookml_drop_metrics_uses_provenance_marker_not_base_ref():
     base ref is qualified or unqualified, and regardless of object identity (refinements
     reconstruct the object but the marker is re-stamped on the graph-registered instance).
     """
-    from sidemantic import Metric, Model
-    from sidemantic.loaders import _drop_non_registerable_models
+    from sqlctx import Metric, Model
+    from sqlctx.loaders import _drop_non_registerable_models
 
     def pop(bm, template_metric=False):
         meta = {"_lookml_template_metric": True} if template_metric else None
@@ -5603,8 +5603,8 @@ def test_lookml_template_metric_dropped_when_later_file_overwrites_template():
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     directory = Path(tempfile.mkdtemp())
     (directory / "base.view.lkml").write_text(
@@ -5619,7 +5619,7 @@ def test_lookml_template_metric_dropped_when_later_file_overwrites_template():
     )
     # Sorts after the .lkml file, so it overwrites `base` with a real model.
     (directory / "zz_native.py").write_text(
-        "from sidemantic import Dimension, Metric, Model\n"
+        "from sqlctx import Dimension, Metric, Model\n"
         'model = Model(name="base", table="real_base", primary_key="id",\n'
         '              dimensions=[Dimension(name="id", type="numeric", sql="id")],\n'
         '              metrics=[Metric(name="cnt", agg="count", sql="id")])\n'
@@ -5644,8 +5644,8 @@ def test_lookml_normal_view_graph_metric_dropped_when_model_overwritten():
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     view = """view: orders {
   sql_table_name: real_orders ;;
@@ -5660,7 +5660,7 @@ def test_lookml_normal_view_graph_metric_dropped_when_model_overwritten():
     overwritten = Path(tempfile.mkdtemp())
     (overwritten / "orders.view.lkml").write_text(view)
     (overwritten / "zz_native.py").write_text(
-        "from sidemantic import Dimension, Metric, Model\n"
+        "from sqlctx import Dimension, Metric, Model\n"
         'model = Model(name="orders", table="py_orders", primary_key="id",\n'
         '              dimensions=[Dimension(name="id", type="numeric", sql="id")],\n'
         '              metrics=[Metric(name="cnt", agg="count", sql="id")])\n'
@@ -5683,7 +5683,7 @@ def test_lookml_normal_view_graph_metric_dropped_when_model_overwritten():
     same_name = Path(tempfile.mkdtemp())
     (same_name / "orders.view.lkml").write_text(view)
     (same_name / "zz_native.py").write_text(
-        "from sidemantic import Dimension, Metric, Model\n"
+        "from sqlctx import Dimension, Metric, Model\n"
         'model = Model(name="orders", table="py_orders", primary_key="id",\n'
         '              dimensions=[Dimension(name="id", type="numeric", sql="id")],\n'
         '              metrics=[Metric(name="pop", agg="sum", sql="id")])\n'
@@ -5793,7 +5793,7 @@ def test_lookml_implicit_dimension_group_compiles_against_group_column():
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     directory = Path(tempfile.mkdtemp())
     (directory / "orders.view.lkml").write_text(
@@ -5855,7 +5855,7 @@ def test_lookml_conflicting_per_model_refinement_order_warns(caplog):
 
     def order_conflict(*models):
         caplog.clear()
-        with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+        with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
             graph = parse(*models)
         return graph, any("disagree on the include order" in r.getMessage() for r in caplog.records)
 
@@ -5982,7 +5982,7 @@ def test_lookml_refinement_selected_by_only_some_models_warns(caplog):
         return LookMLAdapter().parse(str(directory))
 
     # Only staging includes the refinement, but prod uses the same view -> warn, still apply.
-    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+    with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
         graph = parse(
             [
                 ("prod", 'include: "/views/orders.view.lkml"\n'),
@@ -5995,14 +5995,14 @@ def test_lookml_refinement_selected_by_only_some_models_warns(caplog):
 
     # Every model that uses the view includes the refinement: unambiguous, no warning.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+    with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
         graph = parse([("prod", 'include: "/views/*.view.lkml"\n'), ("staging", 'include: "/views/*.view.lkml"\n')])
     assert graph.get_model("orders").table == "staging_orders"
     assert caplog.text == ""
 
     # An un-included refinement is skipped as before -- not applied, and not an ambiguity.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+    with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
         graph = parse([("prod", 'include: "/views/*.view.lkml"\n')], refinement_dir="archive")
     assert graph.get_model("orders").table == "real_orders"
     assert caplog.text == ""
@@ -6304,8 +6304,8 @@ def test_lookml_own_unsupported_derived_table_not_registered_despite_inherited_t
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     directory = Path(tempfile.mkdtemp())
     (directory / "views.view.lkml").write_text(
@@ -6338,7 +6338,7 @@ def test_lookml_own_unsupported_derived_table_not_registered_despite_inherited_t
 def test_lookml_rejected_extends_link_cleared_so_reresolution_does_not_remerge():
     """A rejected extends link (out-of-scope / unsupported parent) is cleared so a downstream
     unscoped re-resolution cannot merge the parent's fields back in. A MISSING parent is kept."""
-    from sidemantic.core.inheritance import resolve_model_inheritance
+    from sqlctx.core.inheritance import resolve_model_inheritance
 
     # Unsupported derived-table parent: extends cleared, so an unscoped re-resolve does not
     # reintroduce the PDT's fields.
@@ -6479,7 +6479,7 @@ def test_lookml_extends_parent_required_in_all_model_scopes(caplog):
 
     # a includes child + base, b includes only child: not inherited, and the ambiguity is warned.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+    with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
         model = parse(
             ("a", 'include: "/views/child.view.lkml"\ninclude: "/views/base.view.lkml"\n'),
             ("b", 'include: "/views/child.view.lkml"\n'),
@@ -6489,7 +6489,7 @@ def test_lookml_extends_parent_required_in_all_model_scopes(caplog):
 
     # Every model reaching the child includes the parent: inherited, no warning.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+    with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
         model = parse(("a", 'include: "/views/*.view.lkml"\n'), ("b", 'include: "/views/*.view.lkml"\n'))
     assert "secret" in {d.name for d in model.dimensions}
     assert "only some of the models" not in caplog.text
@@ -6505,7 +6505,7 @@ def test_lookml_abstract_template_conflicting_with_active_model_is_not_skipped()
     """
     import tempfile
 
-    from sidemantic import Dimension, Model, SemanticLayer
+    from sqlctx import Dimension, Model, SemanticLayer
 
     template = "view: base {\n  extension: required\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n}\n"
 
@@ -6550,7 +6550,7 @@ def test_lookml_parse_raises_on_duplicate_model_in_active_layer():
     """
     import tempfile
 
-    from sidemantic import Dimension, Model, SemanticLayer
+    from sqlctx import Dimension, Model, SemanticLayer
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
         f.write(
@@ -6850,7 +6850,7 @@ def test_lookml_partial_explore_filter_kept_and_reported(caplog):
 
     # One model includes the filtered explore, another uses the base view without it -> warn, keep.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+    with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
         model = parse(
             [
                 ("orders", 'include: "/views/orders.view.lkml"\n'),
@@ -6863,7 +6863,7 @@ def test_lookml_partial_explore_filter_kept_and_reported(caplog):
 
     # Every model using the base view includes the explore: no divergence.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+    with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
         model = parse(
             [
                 ("a", 'include: "/views/orders.view.lkml"\n' + sidecar),
@@ -6876,7 +6876,7 @@ def test_lookml_partial_explore_filter_kept_and_reported(caplog):
 
     # always_filter diverges the same way.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+    with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
         parse(
             [
                 ("orders", 'include: "/views/orders.view.lkml"\n'),
@@ -6888,7 +6888,7 @@ def test_lookml_partial_explore_filter_kept_and_reported(caplog):
 
     # A partial explore with NO mandatory filter has nothing to leak -> no warning.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+    with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
         parse(
             [
                 ("orders", 'include: "/views/orders.view.lkml"\n'),
@@ -6942,7 +6942,7 @@ def test_lookml_shared_explore_sidecar_checked_against_one_model_scope(caplog):
 
     # Two models that both see everything agree: no divergence to report.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+    with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
         wired = relationships(
             ("a", 'include: "/views/*.view.lkml"\n' + sidecar), ("b", 'include: "/views/*.view.lkml"\n' + sidecar)
         )
@@ -6951,7 +6951,7 @@ def test_lookml_shared_explore_sidecar_checked_against_one_model_scope(caplog):
 
     # One model has the target and another does not: kept for the model that does, and reported.
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="sidemantic.adapters.lookml"):
+    with caplog.at_level(logging.WARNING, logger="sqlctx.adapters.lookml"):
         wired = relationships(
             ("a", 'include: "/views/*.view.lkml"\n' + sidecar),
             ("b", 'include: "/views/orders.view.lkml"\n' + sidecar),
@@ -7315,8 +7315,8 @@ def test_lookml_directory_load_non_strict_falls_back_after_project_parse_error()
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     directory = Path(tempfile.mkdtemp())
     (directory / "good.lkml").write_text(
@@ -7343,8 +7343,8 @@ def test_lookml_directory_load_keeps_standalone_metric_overwritten_by_template()
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     template = (
         "view: tmpl {\n  extension: required\n  dimension: id { primary_key: yes  sql: ${TABLE}.id ;; }\n"
@@ -7389,8 +7389,8 @@ def test_lookml_dropped_template_metric_dropped_despite_samename_local_measure()
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     d = tempfile.mkdtemp()
     with open(Path(d) / "v.lkml", "w") as f:
@@ -7421,8 +7421,8 @@ def test_lookml_dropped_template_graph_metric_not_orphaned():
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     d = tempfile.mkdtemp()
     with open(Path(d) / "v.lkml", "w") as f:
@@ -7449,7 +7449,7 @@ def test_lookml_registerability_keys_off_parser_marker_not_user_meta():
     """
     from types import SimpleNamespace
 
-    from sidemantic.loaders import _is_registerable_model
+    from sqlctx.loaders import _is_registerable_model
 
     user_meta = SimpleNamespace(table=None, sql=None, dax=None, source_uri=None, meta={"extension_required": True})
     assert _is_registerable_model(user_meta) is True  # surfaces error, not dropped
@@ -7468,8 +7468,8 @@ def test_lookml_abstract_marker_survives_later_refinement_meta_overwrite():
     """
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     d = tempfile.mkdtemp()
     with open(Path(d) / "v.lkml", "w") as f:
@@ -7491,8 +7491,8 @@ def test_lookml_fk_inference_skips_abstract_template_no_dangling_rel():
     """FK inference must not target a skipped abstract template, leaving a dangling relationship."""
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     d = tempfile.mkdtemp()
     with open(Path(d) / "v.lkml", "w") as f:
@@ -7517,8 +7517,8 @@ def test_lookml_explore_join_to_template_no_dangling_rel():
     """An explore join to a skipped template must not leave a dangling relationship."""
     import tempfile
 
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     d = tempfile.mkdtemp()
     with open(Path(d) / "v.lkml", "w") as f:
@@ -7541,7 +7541,7 @@ def test_lookml_active_layer_explore_join_to_template_no_dangling_rel():
     """Same as above but via the ACTIVE-layer parse() path (with SemanticLayer())."""
     import tempfile
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".lkml", delete=False) as f:
         f.write(
@@ -7660,8 +7660,8 @@ def test_lookml_export_unmapped_aggregations_not_count():
     """Unmapped aggregations / complex types must not be silently exported as COUNT."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     model = Model(
         name="orders",
@@ -7705,8 +7705,8 @@ def test_lookml_export_complex_type_with_agg_skipped():
     """A complex-type metric carrying an agg (e.g. cumulative rolling avg) must be skipped, not exported as a plain measure."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -7729,8 +7729,8 @@ def test_lookml_export_filtered_distinct_stddev_keeps_distinct_outside_case():
     """A filtered DISTINCT stddev/variance must keep DISTINCT OUTSIDE the folded CASE."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -7760,8 +7760,8 @@ def test_lookml_export_filtered_sql_aggregate_folds_filter():
     """A filtered stddev/variance (type: number path) must fold the filter into SQL, not drop it."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -7843,7 +7843,7 @@ def test_lookml_post_sql_measure_expands_untemplated_complete_base():
     """
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     graph = _parse_lkml(
         """
@@ -7928,8 +7928,8 @@ def test_lookml_export_approximate_distinct_preserved():
     """approx_count_distinct must export as count_distinct + approximate: yes and round-trip."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -7954,8 +7954,8 @@ def test_lookml_export_opaque_complete_sql_measure_skipped():
     """An agg-less sql_is_complete measure has no faithful LookML form and is skipped, not exported as broken derived."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -7976,8 +7976,8 @@ def test_lookml_export_folded_filter_resolves_dimension_sql():
     """A folded filter must reference the dimension's SQL column, not the bare dimension name."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8002,8 +8002,8 @@ def test_lookml_export_folded_filter_resolves_model_qualified_ref():
     """A folded filter qualified by the model's own NAME (orders.status) resolves too."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8029,8 +8029,8 @@ def test_lookml_export_complete_aggregate_sql_measure_not_dropped():
     """An opaque COMPLETE aggregate measure (e.g. from Cube) exports as type: number, not dropped."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8058,8 +8058,8 @@ def test_lookml_export_string_measure_not_forced_to_number():
     """
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8080,8 +8080,8 @@ def test_lookml_export_complete_aggregate_with_filters_folds_into_aggregate():
     """A complete aggregate measure WITH filters folds them into the aggregate (not a dropped filter)."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8119,8 +8119,8 @@ def test_lookml_export_folded_filter_resolves_compact_dimension():
     """A folded filter over a COMPACT (no-sql) dimension resolves to ${TABLE}.col, not <model>.col."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8143,8 +8143,8 @@ def test_lookml_export_folded_filter_resolves_unqualified_dimension():
     """An UNqualified folded filter field (status = 'done') resolves through dimension SQL."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8171,8 +8171,8 @@ def test_lookml_export_folded_filter_resolves_dimension_inside_function():
     """An unqualified dimension INSIDE a function (LOWER(status)) resolves; quoted value is safe."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8199,8 +8199,8 @@ def test_lookml_export_folded_filter_leaves_quoted_identifier_untouched():
     """A double-quoted identifier in a folded filter must not be substituted inside."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8226,8 +8226,8 @@ def test_lookml_export_folded_filter_leaves_foreign_qualified_field_untouched():
     """A foreign-qualified field (customers.status) must not have its `status` part rewritten."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8253,8 +8253,8 @@ def test_lookml_export_folded_filter_does_not_rewrite_function_name():
     """A folded filter's SQL function name equal to a dimension name must not be rewritten."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8280,8 +8280,8 @@ def test_lookml_export_folded_filter_does_not_rewrite_template_variable():
     """A folded filter's Liquid/Jinja template variable equal to a dimension name is untouched."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8313,7 +8313,7 @@ def test_lookml_export_folded_filter_protects_multiline_liquid_block():
     newline was not split out as one protected segment, and a bare dimension name on an inner line
     was rewritten to its column -- corrupting the template. Using `[\\s\\S]*?` spans newlines.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8343,8 +8343,8 @@ def test_lookml_export_folded_filter_no_dimensions_does_not_crash():
     """
     import tempfile
 
-    from sidemantic import Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8367,8 +8367,8 @@ def test_lookml_export_folded_filter_does_not_rewrite_typed_date_literal():
     """A folded filter's typed date literal (`date '...'`) must not be rewritten as a column."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8398,8 +8398,8 @@ def test_lookml_export_folded_filter_does_not_rewrite_cast_type():
     """A folded filter's SQL CAST type token equal to a dimension name must not be rewritten."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -8435,7 +8435,7 @@ def test_lookml_export_folded_filter_does_not_rewrite_unquoted_date_part_argumen
     Protection is gated on the date-part KEYWORD set, so a real column argument of the SAME call
     (created_at) still resolves, and a keyword-named column outside a date function still resolves.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8468,7 +8468,7 @@ def test_lookml_export_folded_filter_date_part_guard_is_position_aware():
     the `date` COLUMN unresolved. Covers both argument conventions -- BigQuery puts the part LAST
     (DATE_TRUNC(value, part), DATE_DIFF(a, b, part)), SQL Server FIRST (DATEDIFF(part, a, b)).
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8546,7 +8546,7 @@ def test_lookml_export_folded_filter_trunc_date_expression_protects_part():
     must be recognised as the date overload -- while a genuinely numeric TRUNC(amount, month) still
     resolves `month` to its column.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8582,7 +8582,7 @@ def test_lookml_export_folded_filter_date_diff_part_position_is_content_based():
     with a `day` dimension rewrites the unit to (${TABLE}.order_day). Whichever END argument is a
     date-part keyword is the part; the other columns still resolve.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8620,7 +8620,7 @@ def test_lookml_export_folded_filter_equal_rank_date_trunc_uses_trunc_unit_as_pa
     unresolved (or rewriting `day`). A DATE_TRUNC part must be a truncation unit, and only `day`
     is one (`date`/`dow`/`doy` are extraction-only), so `day` is the part and `date` resolves.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8650,7 +8650,7 @@ def test_lookml_export_folded_filter_protects_sql_server_datepart_first_function
     (${TABLE}.order_day) -- and the stddev/complete-aggregate export paths suppress the filters
     block, so the exported LookML SQL was invalid. The trailing column arguments still resolve.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8682,7 +8682,7 @@ def test_lookml_export_folded_filter_protects_snowflake_timeadd_and_trunc_parts(
     to a same-named dimension's SQL. Numeric TRUNC(n, 2) is unaffected -- the trailing 2 is not a
     date part.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8722,7 +8722,7 @@ def test_lookml_export_folded_filter_numeric_trunc_scale_column_resolves():
     COLUMN and must resolve to its dimension SQL -- only a date/time value argument makes the last
     arg a date part (TRUNC(created_at, month)).
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     numeric = Model(
         name="orders",
@@ -8760,7 +8760,7 @@ def test_lookml_export_folded_filter_numeric_trunc_scale_column_resolves():
 
 def test_lookml_export_folded_filter_iso_date_trunc_units_resolve_value_column():
     """DATE_TRUNC ISO units (isoweek/isoyear) are recognized so the value column still resolves."""
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8787,7 +8787,7 @@ def test_lookml_export_folded_filter_quoted_date_trunc_unit_resolves_value_colum
     the bare `week` is the value column. Stripping quotes made both look like the unit, and the
     tie-break picked the value column as the part, leaving it unresolved. Quoting decides the part.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8825,7 +8825,7 @@ def test_lookml_export_folded_filter_protects_sql_server_datepart_abbreviations(
     (${TABLE}.order_dd), producing invalid SQL. They are protected only in the part slot, so a
     same-named column used elsewhere still resolves.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8858,7 +8858,7 @@ def test_lookml_export_folded_filter_date_part_scan_is_quote_aware():
     and lost the call, so the `month` date-part token was rewritten to the `month` dimension SQL.
     The scan is now quote-aware, so the part token stays intact and the real column still resolves.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8881,7 +8881,7 @@ def test_lookml_export_folded_filter_date_part_scan_is_quote_aware():
 
 def test_lookml_export_folded_filter_protects_multi_word_cast_type():
     """Every token of a multi-word cast type (double precision) is protected, not just the first."""
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8910,8 +8910,8 @@ def test_lookml_export_dialect_renamed_aggregate_skipped():
     """
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     # The fold bails (returns None) on a renamed aggregate ONLY for a FORCE caller (export/inline,
     # which skips the measure on None), but folds a stable one.
@@ -8964,7 +8964,7 @@ def test_lookml_export_folded_filter_keeps_boolean_null_literals():
     (`status = true` -> `status = (${TABLE}.is_active)`). The literal must survive; a genuine
     same-named column used as an operand (LHS) still resolves.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -8992,7 +8992,7 @@ def test_lookml_export_folded_filter_keeps_sql_operator_keywords():
     An unquoted `or` is always the operator, never a column, so a folded filter must not rewrite it
     to a same-named `or` dimension's SQL (which produced invalid `... 'done' (${TABLE}.or_col) ...`).
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -9032,8 +9032,8 @@ def test_lookml_export_ordered_set_aggregate_with_filter_skipped():
     """
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     assert LookMLAdapter._complete_sql_fold_is_safe("SUM({model}.amount ORDER BY {model}.created_at)") is False
     # A plain aggregate (no ORDER BY) is still foldable.
@@ -9088,8 +9088,8 @@ def test_lookml_export_template_only_folded_filter_skipped():
     import re
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     def export_measure(filters):
         graph = SemanticGraph()
@@ -9128,7 +9128,7 @@ def test_lookml_export_folded_filter_does_not_rewrite_table_qualifier():
     `(${TABLE}.customer_id).status = 'vip'`. A bare name followed by a dot is a qualifier, not a
     column; a same-named dimension WITHOUT a dot is still a column.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -9157,7 +9157,7 @@ def test_lookml_export_folded_filter_does_not_rewrite_date_part_keyword():
     EXTRACT((${TABLE}.order_day) FROM ...); the keyword must be protected while genuine column uses
     (and the extract SOURCE column) are still rewritten.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -9193,8 +9193,8 @@ def test_lookml_export_scalar_wrapped_aggregate_filter_folds_into_inner():
     """
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9229,8 +9229,8 @@ def test_lookml_export_multi_column_distinct_filter_skipped():
     """A multi-column COUNT(DISTINCT a, b) with filters can't fold to one CASE -> skipped, not malformed."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9266,8 +9266,8 @@ def test_lookml_export_multi_input_aggregate_filter_skipped():
     """
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     assert LookMLAdapter._complete_sql_fold_is_safe("CORR({model}.x, {model}.y)") is False
     assert LookMLAdapter._complete_sql_fold_is_safe("COVAR_POP({model}.x, {model}.y)") is False
@@ -9308,8 +9308,8 @@ def test_lookml_export_aggregate_with_scalar_subquery_skipped():
     """
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9340,8 +9340,8 @@ def test_lookml_export_complete_sql_with_raw_column_outside_aggregate_skipped():
     """
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9365,7 +9365,7 @@ def test_lookml_export_complete_sql_with_raw_column_outside_aggregate_skipped():
 
 def test_lookml_export_folded_filter_keeps_constant_dimension_sql_unqualified():
     """A folded filter over a constant-SQL dimension keeps the literal unqualified, not ${TABLE}.1."""
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -9394,8 +9394,8 @@ def test_lookml_export_folded_filter_leaves_backtick_identifier_untouched():
     """A folded filter's backtick/bracket-quoted identifier must not be rewritten inside the quotes."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9421,7 +9421,7 @@ def test_lookml_export_folded_filter_leaves_backtick_identifier_untouched():
 
 def test_lookml_export_folded_filter_model_placeholder_in_string_literal_preserved():
     """A `{model}` inside a string LITERAL is a value, not a placeholder, so it must not become ${TABLE}."""
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="orders",
@@ -9442,8 +9442,8 @@ def test_lookml_export_string_literal_paren_in_aggregate_arg_folds():
     """A valid aggregate whose arg has a paren inside a STRING LITERAL must fold, not be rejected."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9483,8 +9483,8 @@ def test_lookml_export_normalizes_all_modifier_for_roundtrip():
     import re
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     def roundtrip(expr):
         graph = SemanticGraph()
@@ -9534,8 +9534,8 @@ def test_lookml_export_strips_leading_all_modifier_in_stddev_argument():
     import re
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9569,8 +9569,8 @@ def test_lookml_export_sample_aggregate_complete_measures_survive():
     """
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     def exports(sql):
         graph = SemanticGraph()
@@ -9616,8 +9616,8 @@ def test_lookml_export_zero_column_stddev_skipped():
     import re
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     def export_measure(**metric_kwargs):
         graph = SemanticGraph()
@@ -9662,8 +9662,8 @@ def test_lookml_export_folded_zero_column_aggregate_skipped():
     import re
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     def export_measure(expr, filters):
         graph = SemanticGraph()
@@ -9698,7 +9698,7 @@ def test_lookml_export_aggregate_order_by_not_folded_into_case():
     SUM(CASE WHEN ... THEN amount ORDER BY created_at END) (malformed); bail so the caller skips.
     An ORDER BY inside a string literal or nested parens is not a top-level one.
     """
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="o",
@@ -9725,7 +9725,7 @@ def test_lookml_export_all_modifier_stays_outside_folded_case():
     """
     import duckdb
 
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="o",
@@ -9759,8 +9759,8 @@ def test_lookml_export_parenthesized_distinct_filter_folds():
     """COUNT(DISTINCT(x)) (parenthesized, no space) must fold its filter, not emit malformed SQL."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9799,8 +9799,8 @@ def test_lookml_export_delimited_distinct_filter_folds_not_skipped():
     """
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9842,8 +9842,8 @@ def test_lookml_export_filtered_multi_aggregate_measure_folds_and_roundtrips():
 
     import duckdb
 
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9887,8 +9887,8 @@ def test_lookml_export_multi_arg_aggregate_filter_skipped():
     """A multi-argument aggregate WEIGHTED_AVG(price, qty) with filters skips, not malformed CASE."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9928,8 +9928,8 @@ def test_lookml_export_count_constant_uses_native_count_type():
     import re
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     def export_measure(expr):
         graph = SemanticGraph()
@@ -9969,8 +9969,8 @@ def test_lookml_export_spaced_count_star_maps_to_native_count():
     """A spaced `COUNT (*)` complete aggregate must still export as native type: count."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -9996,8 +9996,8 @@ def test_lookml_export_count_star_and_distinct_filters_fold_validly():
 
     import duckdb
 
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -10047,8 +10047,8 @@ def test_lookml_export_bare_count_star_uses_native_count_type():
 
     import duckdb
 
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -10082,8 +10082,8 @@ def test_lookml_export_running_total_cross_view_ref_not_double_wrapped():
     """
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -10118,8 +10118,8 @@ def test_lookml_export_running_total_braced_ref_plus_expression_skipped():
     """
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -10149,8 +10149,8 @@ def test_lookml_export_folded_filter_does_not_rewrite_schema_qualified_ref():
     """A folded filter's schema-qualified own-model ref must not match the model-name suffix."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -10178,8 +10178,8 @@ def test_lookml_export_running_total_expression_skipped():
     """A running_total over an EXPRESSION (not a single base measure ref) is skipped, not malformed."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -10205,8 +10205,8 @@ def test_lookml_export_multiple_folded_filters_parenthesized():
     """Each folded filter is parenthesized so a filter containing OR isn't broken by AND precedence."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -10233,8 +10233,8 @@ def test_lookml_export_folded_filter_parenthesizes_expression_dimension():
     """A folded filter on a dimension whose SQL is an expression must be parenthesized."""
     import tempfile
 
-    from sidemantic import Dimension, Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(

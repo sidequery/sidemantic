@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import Dimension, Model, Relationship, SemanticLayer
-from sidemantic.loaders import _infer_relationships, load_from_directory, load_from_file
+from sqlctx import Dimension, Model, Relationship, SemanticLayer
+from sqlctx.loaders import _infer_relationships, load_from_directory, load_from_file
 
 
 def test_load_from_directory_does_not_require_antlr4_without_antlr_formats(tmp_path, monkeypatch):
@@ -15,7 +15,7 @@ def test_load_from_directory_does_not_require_antlr4_without_antlr_formats(tmp_p
     fixture_file = Path(__file__).parent / "fixtures" / "cube" / "orders.yml"
     (tmp_path / "orders.yml").write_text(fixture_file.read_text())
 
-    monkeypatch.delitem(sys.modules, "sidemantic.adapters.holistics", raising=False)
+    monkeypatch.delitem(sys.modules, "sqlctx.adapters.holistics", raising=False)
     for module_name in list(sys.modules):
         if module_name == "antlr4" or module_name.startswith("antlr4."):
             monkeypatch.delitem(sys.modules, module_name, raising=False)
@@ -198,7 +198,7 @@ def _malloy_layer() -> SemanticLayer:
 
 
 def test_load_from_directory_resolves_malloy_project_once_with_defining_provenance(tmp_path, monkeypatch):
-    from sidemantic.adapters.malloy import MalloyAdapter
+    from sqlctx.adapters.malloy import MalloyAdapter
 
     base = tmp_path / "base.malloy"
     base.write_text(_malloy_source("customers"))
@@ -223,7 +223,7 @@ def test_load_from_directory_resolves_malloy_project_once_with_defining_provenan
 
 
 def test_load_from_directory_uses_deterministic_sorted_malloy_roots(tmp_path, monkeypatch):
-    from sidemantic.adapters.malloy import MalloyAdapter
+    from sqlctx.adapters.malloy import MalloyAdapter
 
     (tmp_path / "z.malloy").write_text(_malloy_source("z_model"))
     (tmp_path / "a.malloy").write_text(_malloy_source("a_model"))
@@ -442,7 +442,7 @@ metrics:
     load_from_directory(layer, tmp_path)
 
     metric = layer.graph.metrics["completion_rate"]
-    assert metric._source_format == "Sidemantic"
+    assert metric._source_format == "sqlctx"
     assert metric.numerator == "orders.revenue"
     assert metric.denominator == "orders.order_count"
     assert layer.graph.metrics["total_revenue"].sql == "orders.revenue"
@@ -580,14 +580,14 @@ models:
 
 
 def test_load_from_directory_lenient_surfaces_adapter_parse_failures(tmp_path, monkeypatch):
-    from sidemantic.adapters.sidemantic import SidemanticAdapter
+    from sqlctx.adapters.sqlctx import SqlctxAdapter
 
     (tmp_path / "broken.yml").write_text("models:\n  - name: broken\n")
 
     def _raise_parse_failure(self, path):
         raise ValueError("simulated native yaml failure")
 
-    monkeypatch.setattr(SidemanticAdapter, "parse", _raise_parse_failure)
+    monkeypatch.setattr(SqlctxAdapter, "parse", _raise_parse_failure)
 
     layer = SemanticLayer()
     load_from_directory(layer, tmp_path, strict=False)
@@ -597,7 +597,7 @@ def test_load_from_directory_lenient_surfaces_adapter_parse_failures(tmp_path, m
         {
             "code": "adapter_parse_error",
             "context": "loader",
-            "source_format": "Sidemantic",
+            "source_format": "sqlctx",
             "source_file": "broken.yml",
             "message": "simulated native yaml failure",
         }
@@ -605,7 +605,7 @@ def test_load_from_directory_lenient_surfaces_adapter_parse_failures(tmp_path, m
 
 
 def test_load_from_directory_strict_raises_tmdl_project_parse_failures(tmp_path, monkeypatch):
-    from sidemantic.adapters.tmdl import TMDLAdapter
+    from sqlctx.adapters.tmdl import TMDLAdapter
 
     tmdl_file = tmp_path / "definition" / "tables" / "Sales.tmdl"
     tmdl_file.parent.mkdir(parents=True)
@@ -622,9 +622,9 @@ def test_load_from_directory_strict_raises_tmdl_project_parse_failures(tmp_path,
 
 
 def test_load_from_directory_lenient_does_not_partially_parse_tmdl_project_after_project_failure(tmp_path, monkeypatch):
-    from sidemantic.adapters.tmdl import TMDLAdapter
-    from sidemantic.core.model import Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.adapters.tmdl import TMDLAdapter
+    from sqlctx.core.model import Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     definition_dir = tmp_path / "definition"
     tmdl_file = definition_dir / "tables" / "Sales.tmdl"
@@ -678,7 +678,7 @@ def test_load_from_directory_strips_template_join_after_native_overwrite(tmp_pat
         "}\n"
     )
     (tmp_path / "native.py").write_text(
-        "from sidemantic import Model, Dimension\n"
+        "from sqlctx import Model, Dimension\n"
         "base = Model(name='base', table='real_base', primary_key='id',\n"
         "             dimensions=[Dimension(name='id', type='numeric', sql='id')])\n"
     )
@@ -704,7 +704,7 @@ def test_load_from_directory_preserves_native_join_to_overwritten_template_name(
         "}\n"
     )
     (tmp_path / "native.py").write_text(
-        "from sidemantic import Model, Dimension, Relationship\n"
+        "from sqlctx import Model, Dimension, Relationship\n"
         "customer = Model(name='customer', table='real_customer', primary_key='id',\n"
         "                 dimensions=[Dimension(name='id', type='numeric', sql='id')])\n"
         "orders = Model(name='orders', table='orders', primary_key='id',\n"
@@ -776,7 +776,7 @@ def test_duplicate_model_name_records_fidelity_note_and_warns(tmp_path):
     """Two files defining the same model name shadow one another: note + warning."""
     import warnings
 
-    from sidemantic.fidelity import capture_import_report
+    from sqlctx.fidelity import capture_import_report
 
     (tmp_path / "a.yml").write_text(
         """
@@ -841,7 +841,7 @@ models:
 
 def test_unsupported_derived_table_records_fidelity_note(tmp_path):
     """A LookML derived_table with no extractable SQL is dropped with a note."""
-    from sidemantic.fidelity import capture_import_report
+    from sqlctx.fidelity import capture_import_report
 
     (tmp_path / "pdt.view.lkml").write_text(
         "view: pdt_summary {\n"

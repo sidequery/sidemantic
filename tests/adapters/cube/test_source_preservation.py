@@ -6,8 +6,8 @@ import duckdb
 import pytest
 import yaml
 
-from sidemantic.adapters.cube import CubeAdapter, CubeImportWarning
-from sidemantic.fidelity import capture_import_report
+from sqlctx.adapters.cube import CubeAdapter, CubeImportWarning
+from sqlctx.fidelity import capture_import_report
 
 
 def _roundtrip(tmp_path, source):
@@ -189,7 +189,7 @@ def test_multistage_and_time_shift_restore_native_keys_with_diagnostics(tmp_path
 
 
 def test_simple_cube_does_not_acquire_source_only_state_that_blocks_portable_export(tmp_path):
-    from sidemantic.adapters.ossie import OssieAdapter
+    from sqlctx.adapters.ossie import OssieAdapter
 
     source = {
         "cubes": [

@@ -1,16 +1,16 @@
 // Sample typed semantic-SQL usage for the headless dashboard models.
 //
 // Regenerate the types after editing queries:
-//   sidemantic gen types -m . --no-yaml -o sidemantic.client.generated.ts
-//   sidemantic gen sql   -m . queries.ts  -o sidemantic.queries.generated.ts
+//   sqlctx gen types -m . --no-yaml -o sqlctx.client.generated.ts
+//   sqlctx gen sql   -m . queries.ts  -o sqlctx.queries.generated.ts
 //
 // Structured client: autocomplete + typed rows over metrics/dimensions.
 // SQL client: write semantic SQL, get typed rows keyed by the exact query string.
 
-import { createClient, createSqlClient } from "sidemantic-wasm/client";
-import { schema } from "./sidemantic.client.generated";
-import { queryParamTypes } from "./sidemantic.queries.generated";
-import type { GeneratedQueries } from "./sidemantic.queries.generated";
+import { createClient, createSqlClient } from "sqlctx-wasm/client";
+import { schema } from "./sqlctx.client.generated";
+import { queryParamTypes } from "./sqlctx.queries.generated";
+import type { GeneratedQueries } from "./sqlctx.queries.generated";
 
 type Run = (query: unknown) => Promise<Record<string, unknown>[]>;
 type SqlRun = (

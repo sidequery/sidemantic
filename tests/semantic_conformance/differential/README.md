@@ -26,14 +26,14 @@ Each `(seed, index)` is independently reproducible.
 Run the actual pytest campaign at higher volume:
 
 ```sh
-SIDEMANTIC_DIFFERENTIAL_REQUIRE_RUST=1 \
-SIDEMANTIC_DIFFERENTIAL_SEED=20261005 \
-SIDEMANTIC_DIFFERENTIAL_CASES=100000 \
-SIDEMANTIC_DIFFERENTIAL_OUTPUT=/tmp/sidemantic-differential \
+SQLCTX_DIFFERENTIAL_REQUIRE_RUST=1 \
+SQLCTX_DIFFERENTIAL_SEED=20261005 \
+SQLCTX_DIFFERENTIAL_CASES=100000 \
+SQLCTX_DIFFERENTIAL_OUTPUT=/tmp/sqlctx-differential \
 uv run --no-sync pytest --no-cov -q tests/semantic_conformance/test_generated_differential.py
 ```
 
-`SIDEMANTIC_DIFFERENTIAL_START` selects the first index for a shard or a resumed
+`SQLCTX_DIFFERENTIAL_START` selects the first index for a shard or a resumed
 range. Use disjoint output directories for concurrent shards. A missing Rust
 extension normally skips this module; `REQUIRE_RUST=1` makes it an error for
 readiness gates. Compiler errors from either or both engines always fail the
@@ -43,10 +43,10 @@ never counted as successful parity cases.
 For many data populations per compiler input, opt into compilation reuse:
 
 ```sh
-SIDEMANTIC_DIFFERENTIAL_REQUIRE_RUST=1 \
-SIDEMANTIC_DIFFERENTIAL_CASES=5000 \
-SIDEMANTIC_DIFFERENTIAL_DATA_VARIANTS=40 \
-SIDEMANTIC_DIFFERENTIAL_OUTPUT=/tmp/sidemantic-differential-populations \
+SQLCTX_DIFFERENTIAL_REQUIRE_RUST=1 \
+SQLCTX_DIFFERENTIAL_CASES=5000 \
+SQLCTX_DIFFERENTIAL_DATA_VARIANTS=40 \
+SQLCTX_DIFFERENTIAL_OUTPUT=/tmp/sqlctx-differential-populations \
 uv run --no-sync pytest --no-cov -q tests/semantic_conformance/test_generated_differential.py
 ```
 
@@ -83,10 +83,10 @@ also a pytest/JUnit property. Fingerprints distinguish failure phase and excepti
 type/message, or result mismatches by family and public columns; they are
 deduplication heuristics, not proof of distinct root causes.
 
-Up to `SIDEMANTIC_DIFFERENTIAL_EXAMPLES` (default 12) distinct fingerprints get an
+Up to `SQLCTX_DIFFERENTIAL_EXAMPLES` (default 12) distinct fingerprints get an
 original JSON case, minimized `.case.json`, and `.evidence.json` containing SQL,
 results/errors and reducer accounting. Further failures remain counted. Set
-`SIDEMANTIC_DIFFERENTIAL_REDUCTIONS` (default 100) to limit attempts per example,
+`SQLCTX_DIFFERENTIAL_REDUCTIONS` (default 100) to limit attempts per example,
 or zero to retain original cases without reducing them. A reducer accepts only
 schema/reference-valid candidates with the original failure class and normalized
 exception diagnostic (retaining referenced owner/column names); it removes
@@ -101,8 +101,8 @@ columns or data. Reduction is deterministic and budgeted, not a claim of a globa
 reproducer. Replay uses the saved definitions/data, not the current generator:
 
 ```sh
-SIDEMANTIC_DIFFERENTIAL_REQUIRE_RUST=1 \
-SIDEMANTIC_DIFFERENTIAL_REPLAY=/tmp/sidemantic-differential \
+SQLCTX_DIFFERENTIAL_REQUIRE_RUST=1 \
+SQLCTX_DIFFERENTIAL_REPLAY=/tmp/sqlctx-differential \
 uv run --no-sync pytest --no-cov -q tests/semantic_conformance/test_generated_differential.py -k replay
 ```
 

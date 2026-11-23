@@ -3,7 +3,7 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, PreAggregation
+from sqlctx import Dimension, Metric, Model, PreAggregation
 from tests.utils import fetch_dicts
 
 
@@ -364,7 +364,7 @@ def test_preaggregation_supports_subday_granularity():
     """A pre-agg can be defined at minute/second grain (model accepts what the matcher
     hierarchy now reasons about). Regression: PreAggregation.granularity used to reject
     these grains, making the matcher's minute/second hierarchy entries unreachable."""
-    from sidemantic.core.preagg_matcher import GRANULARITY_HIERARCHY
+    from sqlctx.core.preagg_matcher import GRANULARITY_HIERARCHY
 
     minute_pa = PreAggregation(name="m", measures=["c"], dimensions=[], time_dimension="ts", granularity="minute")
     second_pa = PreAggregation(name="s", measures=["c"], dimensions=[], time_dimension="ts", granularity="second")

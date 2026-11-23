@@ -5,10 +5,10 @@ import json
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.semantic_handoff import graph_to_semantic_input
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx import Dimension, Metric, Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.semantic_handoff import graph_to_semantic_input
+from sqlctx.sql.generator import SQLGenerator
 
 
 @pytest.mark.parametrize("engine", ["python", "rust"])
@@ -49,7 +49,7 @@ def test_conversion_sql_source_expressions(engine, owner, entity):
     if engine == "python":
         sql = SQLGenerator(graph).generate(**query)
     else:
-        rust = pytest.importorskip("sidemantic_rs")
+        rust = pytest.importorskip("sqlctx_rs")
         payload = graph_to_semantic_input(graph)
         if owner == "graph":
             payload["metric_owners"] = {"funnel": "events"}
@@ -62,7 +62,7 @@ def test_conversion_sql_source_expressions(engine, owner, entity):
 
 @pytest.mark.parametrize("empty", [False, True])
 def test_rust_two_event_conversion_projects_source_aliases(empty):
-    rust = pytest.importorskip("sidemantic_rs")
+    rust = pytest.importorskip("sqlctx_rs")
     model = Model(
         name="events",
         primary_key="uid",
@@ -125,7 +125,7 @@ def test_conversion_fill_is_accepted_without_changing_empty_result(engine):
     if engine == "python":
         sql = SQLGenerator(graph).generate(**query)
     else:
-        rust = pytest.importorskip("sidemantic_rs")
+        rust = pytest.importorskip("sqlctx_rs")
         sql = rust.compile_with_semantic_input(json.dumps(graph_to_semantic_input(graph)), json.dumps(query))
     with duckdb.connect() as connection:
         assert connection.execute(sql).fetchall() == [(None,)]
@@ -157,7 +157,7 @@ def test_two_event_conversion_uses_last_time_dimension_instead_of_default(engine
     if engine == "python":
         sql = SQLGenerator(graph).generate(**query)
     else:
-        rust = pytest.importorskip("sidemantic_rs")
+        rust = pytest.importorskip("sqlctx_rs")
         sql = rust.compile_with_semantic_input(json.dumps(graph_to_semantic_input(graph)), json.dumps(query))
     with duckdb.connect() as connection:
         cursor = connection.execute(sql)

@@ -15,6 +15,6 @@ current model constructs, invalid input, and the unmodified flights mapping and
 ontology examples with this pinned official validator. These are draft tests,
 not certification of future upstream commits or the entire query specification.
 
-Runtime schemas live separately in `sidemantic/interchange/ossie/schemas/` with
+Runtime schemas live separately in `sqlctx/interchange/ossie/schemas/` with
 checksum-verified manifest records and documented deterministic local-URI
 rewrites. Historical snapshots in sibling directories remain unchanged.

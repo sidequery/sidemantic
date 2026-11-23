@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.holistics import HolisticsAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.holistics import HolisticsAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
 
 # =============================================================================
 # BASIC PARSING TESTS
@@ -71,7 +71,7 @@ def test_import_real_holistics_example():
 
 
 def test_holistics_dimension_type_mapping():
-    """Test Holistics dimension types map to Sidemantic types."""
+    """Test Holistics dimension types map to sqlctx types."""
     aml_content = """
 Model test_model {
   type: 'table'
@@ -116,7 +116,7 @@ Model test_model {
 
 
 def test_holistics_measure_aggregation_types():
-    """Test Holistics aggregation types map to Sidemantic metrics."""
+    """Test Holistics aggregation types map to sqlctx metrics."""
     aml_content = """
 Model test_model {
   type: 'table'
@@ -310,7 +310,7 @@ Model test_model {
 
 def test_holistics_aql_table_and_metric_functions():
     """Supported AQL aggregates retain their operands and nested expressions."""
-    from sidemantic.adapters.holistics import _translate_aql_to_sql
+    from sqlctx.adapters.holistics import _translate_aql_to_sql
 
     # Two-argument aggregation form: sum(table, expr) aggregates expr.
     assert _translate_aql_to_sql("sum(order_items, order_items.quantity * products.price)") == (

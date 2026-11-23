@@ -5,9 +5,9 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-from sidemantic import Dimension, Metric, Model, Parameter, Relationship, Segment
-from sidemantic.core.consumption import Explore, SavedQuery
-from sidemantic.core.table_calculation import TableCalculation
+from sqlctx import Dimension, Metric, Model, Parameter, Relationship, Segment
+from sqlctx.core.consumption import Explore, SavedQuery
+from sqlctx.core.table_calculation import TableCalculation
 
 
 def add_native_relationship_aliases(schema: dict) -> dict:
@@ -53,7 +53,7 @@ def patch_relationship_schemas(schema: dict) -> None:
 
 
 def generate_schema() -> dict:
-    """Generate JSON Schema for sidemantic YAML files."""
+    """Generate JSON Schema for sqlctx YAML files."""
     # Get schemas from pydantic models
     model_schema = Model.model_json_schema()
     metric_schema = Metric.model_json_schema()
@@ -62,8 +62,8 @@ def generate_schema() -> dict:
     # Build the full schema
     schema = {
         "$schema": "http://json-schema.org/draft-07/schema#",
-        "title": "Sidemantic Semantic Layer",
-        "description": "Schema for Sidemantic semantic layer YAML configuration",
+        "title": "sqlctx Semantic Layer",
+        "description": "Schema for sqlctx semantic layer YAML configuration",
         "type": "object",
         "properties": {
             "models": {
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     schema = generate_schema()
     root = Path(__file__).parent.parent
 
-    output_path = root / "sidemantic-schema.json"
+    output_path = root / "sqlctx-schema.json"
     with open(output_path, "w") as f:
         json.dump(schema, f, indent=2, sort_keys=True)
     print(f"Generated {output_path}")

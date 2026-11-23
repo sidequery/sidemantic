@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from click.testing import CliRunner
 from typer.main import get_command
 
-import sidemantic.cli as cli_module
-from sidemantic.cli import app
+import sqlctx.cli as cli_module
+from sqlctx.cli import app
 
 
 def _cli():
@@ -44,7 +44,7 @@ def test_root_and_nested_help_suggest_reviewable_command_corrections() -> None:
     assert "validate --help" in root.stderr
     assert nested.exit_code == 2
     assert "Did you mean 'migrate generate'?" in nested.stderr
-    assert "sidemantic help migrate generate" in nested.stderr
+    assert "sqlctx help migrate generate" in nested.stderr
 
 
 def test_machine_invocation_suppresses_command_recovery_hint() -> None:
@@ -62,7 +62,7 @@ def test_legacy_alias_warns_with_target_release_and_quiet_suppresses_it() -> Non
 
     assert human.exit_code == 2
     assert "use 'workbench'" in human.stderr
-    assert "Sidemantic 0.12.0" in human.stderr
+    assert "sqlctx 0.12.0" in human.stderr
     assert "Deprecated" not in quiet.stderr
 
 
@@ -80,7 +80,7 @@ def test_common_error_adds_safe_recovery_but_never_mutates(tmp_path: Path) -> No
 
     result = CliRunner().invoke(
         _cli(),
-        ["convert", str(source), "--output", str(output), "--to", "sidemantic"],
+        ["convert", str(source), "--output", str(output), "--to", "sqlctx"],
     )
 
     assert result.exit_code == 1
@@ -142,7 +142,7 @@ def test_explain_routes_human_output_but_not_json_through_pager_seam(tmp_path: P
     layer = SimpleNamespace(explain_sql=lambda *_args, **_kwargs: explanation, last_engine_selection=None)
     monkeypatch.setattr(cli_module, "_load_query_layer", lambda *_args, **_kwargs: layer)
     monkeypatch.setattr(
-        "sidemantic.cli_contract.emit_long_output",
+        "sqlctx.cli_contract.emit_long_output",
         lambda text, **_kwargs: reports.append(text),
     )
 
@@ -187,7 +187,7 @@ def test_preagg_recommend_routes_long_human_report_through_pager_seam(tmp_path: 
             del top_n
             return [recommendation]
 
-    monkeypatch.setattr("sidemantic.core.preagg_recommender.PreAggregationRecommender", FakeRecommender)
+    monkeypatch.setattr("sqlctx.core.preagg_recommender.PreAggregationRecommender", FakeRecommender)
     monkeypatch.setattr(cli_module, "_emit_long_report", reports.append)
 
     result = CliRunner().invoke(_cli(), ["preagg", "recommend", "--queries", str(query_log)])
@@ -210,7 +210,7 @@ def _complete(words: str, cword: int) -> list[str]:
 
 def test_shell_completion_covers_commands_and_formats() -> None:
     assert "convert" in _complete("root con", 1)
-    assert "sidemantic" in _complete("root convert --to s", 3)
+    assert "sqlctx" in _complete("root convert --to s", 3)
     assert "auto" in _complete("root convert --from a", 3)
 
 

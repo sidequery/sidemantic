@@ -1,5 +1,5 @@
 # Kitchen Sink Cube Test Fixture
-# Complex multi-entity data model designed to stress-test sidemantic's Cube adapter
+# Complex multi-entity data model designed to stress-test sqlctx's Cube adapter
 # and find holes in query generation logic.
 #
 # Entities:

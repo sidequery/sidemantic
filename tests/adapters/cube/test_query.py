@@ -1,7 +1,7 @@
 """Tests for Cube adapter - query compilation."""
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.cube import CubeAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.cube import CubeAdapter
 
 
 def test_query_imported_cube_example():

@@ -3,14 +3,14 @@
 import duckdb
 import pytest
 
-from sidemantic.adapters import tmdl
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx.adapters import tmdl
+from sqlctx.sql.generator import SQLGenerator
 
 
 @pytest.fixture(params=["native", "fallback"])
 def parser_mode(request, monkeypatch):
     if request.param == "native":
-        pytest.importorskip("sidemantic_dax")
+        pytest.importorskip("sqlctx_dax")
     else:
 
         def unavailable(*args):

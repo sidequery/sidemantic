@@ -1,7 +1,7 @@
 import pytest
 
-from sidemantic import SemanticLayer, load_from_directory
-from sidemantic.adapters.graphene import GrapheneAdapter
+from sqlctx import SemanticLayer, load_from_directory
+from sqlctx.adapters.graphene import GrapheneAdapter
 from tests.utils import df_rows
 
 

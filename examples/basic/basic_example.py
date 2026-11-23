@@ -1,6 +1,6 @@
-"""Basic example of using Sidemantic."""
+"""Basic example of using sqlctx."""
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
 # Create semantic layer
 sl = SemanticLayer()

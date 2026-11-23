@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import (
+from sqlctx import (
     Dimension,
     Explore,
     Metric,
@@ -13,8 +13,8 @@ from sidemantic import (
     Segment,
     SemanticLayer,
 )
-from sidemantic.core.consumption import expression_field_references, qualify_expression_fields
-from sidemantic.validation import validate_explore, validate_saved_query
+from sqlctx.core.consumption import expression_field_references, qualify_expression_fields
+from sqlctx.validation import validate_explore, validate_saved_query
 
 
 def _layer() -> SemanticLayer:

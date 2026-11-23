@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-GRAMMAR_DIR = REPO_ROOT / "sidemantic" / "adapters" / "malloy_grammar"
+GRAMMAR_DIR = REPO_ROOT / "sqlctx" / "adapters" / "malloy_grammar"
 PROVENANCE_PATH = GRAMMAR_DIR / "UPSTREAM.json"
 _NON_GENERATED_FILES = {
     "__init__.py",
@@ -60,7 +60,7 @@ def check_upstream_pin(provenance: dict[str, Any]) -> None:
     commit = provenance["commit"]
     for name, metadata in provenance["grammar_files"].items():
         url = f"https://raw.githubusercontent.com/{repository}/{commit}/{metadata['upstream_path']}"
-        request = urllib.request.Request(url, headers={"User-Agent": "sidemantic-grammar-drift-check"})
+        request = urllib.request.Request(url, headers={"User-Agent": "sqlctx-grammar-drift-check"})
         with urllib.request.urlopen(request, timeout=30) as response:
             content = response.read()
         _check_digest(f"upstream {name} at {commit}", content, metadata["upstream_sha256"])

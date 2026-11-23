@@ -7,7 +7,7 @@ from pathlib import Path
 import lkml
 import pytest
 
-from sidemantic.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
 
 # =============================================================================
 # PARSING TESTS
@@ -344,7 +344,7 @@ def test_lookml_adapter_explores_multi_join():
         # Note: products is NOT a direct relationship from orders.
         # In LookML it's defined as: ${order_items.product_id} = ${products.id}
         # This is a multi-hop join (orders -> order_items -> products).
-        # Sidemantic correctly skips this and will compute the join path
+        # sqlctx correctly skips this and will compute the join path
         # through intermediate models via the adjacency graph.
         assert "products" not in relationships_by_name
 
@@ -928,10 +928,10 @@ def test_lookml_period_over_period_import():
 
 def test_lookml_period_over_period_export():
     """Test exporting time_comparison metrics as LookML period_over_period measures."""
-    from sidemantic.core.dimension import Dimension
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.dimension import Dimension
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.model import Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     # Create a model with time_comparison metrics
     sales = Model(

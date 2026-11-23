@@ -15,8 +15,8 @@ complex multi-entity data model backed by DuckDB. It covers:
 import duckdb
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.snowflake import SnowflakeAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.snowflake import SnowflakeAdapter
 from tests.utils import fetch_dicts
 
 

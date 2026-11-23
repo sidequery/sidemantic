@@ -4,14 +4,14 @@ from datetime import date
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.rust_bridge import rewrite_semantic_input
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.rust_bridge import rewrite_semantic_input
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 
 
 @pytest.fixture
 def layer():
-    pytest.importorskip("sidemantic_rs", reason="Computed-key acceptance requires the real Rust extension")
+    pytest.importorskip("sqlctx_rs", reason="Computed-key acceptance requires the real Rust extension")
     layer = SemanticLayer(engine="rust", fallback=False, auto_register=False)
     layer.add_model(
         Model(
@@ -218,7 +218,7 @@ def test_cross_role_computed_key_predicate_keeps_role_aliases(layer):
 
 @pytest.mark.parametrize("composite", [False, True])
 def test_omitted_native_relationship_key_does_not_classify_ordinary_id(composite):
-    rust = pytest.importorskip("sidemantic_rs")
+    rust = pytest.importorskip("sqlctx_rs")
     # YAML host preserves omitted keys, unlike the structured handoff decoder
     # which resolves them before graph construction.
     primary = "[tenant, account_key]" if composite else "account_key"

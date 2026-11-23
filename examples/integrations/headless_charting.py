@@ -7,7 +7,7 @@ data and renderer fixtures programmatically so it can exercise the full runtime
 surface in one place.
 
 Run:
-  uv run examples/integrations/headless_charting.py --output-dir /tmp/sidemantic-charts
+  uv run examples/integrations/headless_charting.py --output-dir /tmp/sqlctx-charts
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from pathlib import Path
 
 import yaml
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.dashboard import DASHBOARD_SCHEMA, generate_dashboard_typescript
-from sidemantic.viz import ChartBuilder, CrossfilterDashboard, CrossfilterTab
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.dashboard import DASHBOARD_SCHEMA, generate_dashboard_typescript
+from sqlctx.viz import ChartBuilder, CrossfilterDashboard, CrossfilterTab
 
 
 def build_layer(
@@ -300,7 +300,7 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("/tmp/sidemantic-headless-charting"),
+        default=Path("/tmp/sqlctx-headless-charting"),
         help="Directory to write renderer specs and preview HTML",
     )
     parser.add_argument("--large-records", type=int, default=200_000, help="Rows to generate for the large tab")
@@ -416,7 +416,7 @@ def main() -> None:
     )
     (args.output_dir / "dashboard.yml").write_text(yaml.safe_dump(dashboard_spec, sort_keys=False))
     (args.output_dir / "dashboard.ts").write_text(_dashboard_ts_example(dashboard_spec))
-    (args.output_dir / "sidemantic.generated.ts").write_text(generate_dashboard_typescript(layer))
+    (args.output_dir / "sqlctx.generated.ts").write_text(generate_dashboard_typescript(layer))
 
     (args.output_dir / "interactive_gallery.html").write_text(_gallery_html(html_outputs))
 
@@ -520,7 +520,7 @@ def _dashboard_ts_example(spec: dict) -> str:
         tab_calls.append(f'    revenueExplorerTab("{tab["id"]}", "{tab["label"]}", "{model_name}", "{chart["title"]}")')
     model_union = " | ".join(f'"{model_name}"' for model_name in model_names)
     tab_calls_source = ",\n".join(tab_calls)
-    return f"""import {{ defineDashboard, type DashboardRenderer }} from "./sidemantic.generated";
+    return f"""import {{ defineDashboard, type DashboardRenderer }} from "./sqlctx.generated";
 
 type OrdersModel = {model_union};
 
@@ -568,7 +568,7 @@ function revenueExplorerTab<const M extends OrdersModel>(
 }}
 
 export default defineDashboard({{
-  schema: "sidemantic.dashboard.v1",
+  schema: "sqlctx.dashboard.v1",
   title: "{spec["title"]}",
   defaults: {{
     renderer,
@@ -597,7 +597,7 @@ def _gallery_html(html_outputs: dict[str, str]) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sidemantic Headless Charting Gallery</title>
+  <title>sqlctx Headless Charting Gallery</title>
   <style>
     body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
     main {{ width: min(1180px, calc(100vw - 32px)); margin: 24px auto; }}
@@ -610,7 +610,7 @@ def _gallery_html(html_outputs: dict[str, str]) -> str:
 </head>
 <body>
   <main>
-    <h1>Sidemantic Headless Charting Gallery</h1>
+    <h1>sqlctx Headless Charting Gallery</h1>
     <div class="grid">{frames}</div>
   </main>
 </body>

@@ -1,0 +1,320 @@
+"""ClickHouse database adapter."""
+
+from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
+
+from sqlctx.db.base import BaseDatabaseAdapter, validate_query_history_params
+
+
+class ClickHouseResult:
+    """Wrapper for ClickHouse query result to match DuckDB result API."""
+
+    def __init__(self, result, arrow_table=None):
+        """Initialize ClickHouse result wrapper.
+
+        Args:
+            result: ClickHouse query result from clickhouse-connect (can be None if arrow_table provided)
+            arrow_table: Pre-fetched Arrow table (optional)
+        """
+        self._result = result
+        self._arrow_table = arrow_table
+        self._row_index = 0
+
+        # Extract column names from either source
+        if arrow_table is not None:
+            self._column_names = list(arrow_table.column_names)
+        else:
+            self._column_names = result.column_names
+
+    def fetchone(self) -> tuple | None:
+        """Fetch one row from the result."""
+        if self._arrow_table is not None:
+            # Convert from Arrow on demand
+            if self._row_index >= self._arrow_table.num_rows:
+                return None
+            row = tuple(self._arrow_table.column(col)[self._row_index].as_py() for col in self._column_names)
+            self._row_index += 1
+            return row
+
+        if self._row_index >= self._result.row_count:
+            return None
+        row = self._result.result_rows[self._row_index]
+        self._row_index += 1
+        return row
+
+    def fetchall(self) -> list[tuple]:
+        """Fetch all remaining rows."""
+        if self._arrow_table is not None:
+            remaining = self._arrow_table.slice(self._row_index)
+            self._row_index = self._arrow_table.num_rows
+            # Convert Arrow to list of tuples
+            data = remaining.to_pydict()
+            return [tuple(data[col][i] for col in self._column_names) for i in range(remaining.num_rows)]
+
+        remaining = self._result.result_rows[self._row_index :]
+        self._row_index = self._result.row_count
+        return remaining
+
+    def fetch_record_batch(self) -> Any:
+        """Convert result to PyArrow RecordBatchReader.
+
+        Uses native Arrow data when available for better performance.
+        """
+        import pyarrow as pa
+
+        if self._arrow_table is not None:
+            # Already have an Arrow table decoded from Parquet
+            if self._arrow_table.num_rows == 0:
+                return pa.RecordBatchReader.from_batches(self._arrow_table.schema, [])
+            return pa.RecordBatchReader.from_batches(self._arrow_table.schema, self._arrow_table.to_batches())
+
+        # Fallback: convert from row-based result
+        rows = self._result.result_rows
+        if not rows:
+            schema = pa.schema([(name, pa.string()) for name in self._column_names])
+            return pa.RecordBatchReader.from_batches(schema, [])
+
+        columns = {name: [row[i] for row in rows] for i, name in enumerate(self._column_names)}
+        table = pa.table(columns)
+        return pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
+
+    @property
+    def description(self):
+        """Get column descriptions."""
+        return [(name, None) for name in self._column_names]
+
+
+class _ClickHouseCursor:
+    """Request handle borrowing the adapter's sessionless HTTP client."""
+
+    def __init__(self, adapter: "ClickHouseAdapter"):
+        self._adapter = adapter
+
+    def execute(self, sql: str) -> ClickHouseResult:
+        return self._adapter.execute(sql)
+
+    def fetchone(self, result: ClickHouseResult) -> tuple | None:
+        return result.fetchone()
+
+    def fetch_record_batch(self, result: ClickHouseResult) -> Any:
+        return result.fetch_record_batch()
+
+    def close(self) -> None:
+        """The shared client belongs to the adapter, not this request."""
+
+
+class ClickHouseAdapter(BaseDatabaseAdapter):
+    """ClickHouse database adapter.
+
+    Example:
+        >>> adapter = ClickHouseAdapter(
+        ...     host="localhost",
+        ...     port=8123,
+        ...     database="default",
+        ...     user="default",
+        ...     password=""
+        ... )
+        >>> result = adapter.execute("SELECT * FROM table")
+    """
+
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 8123,
+        database: str = "default",
+        user: str | None = None,
+        password: str | None = None,
+        secure: bool = False,
+        **kwargs,
+    ):
+        """Initialize ClickHouse adapter.
+
+        Args:
+            host: ClickHouse host
+            port: ClickHouse HTTP port (default: 8123)
+            database: Database name
+            user: Username
+            password: Password
+            secure: Use HTTPS instead of HTTP
+            **kwargs: Additional arguments passed to clickhouse_connect.get_client
+        """
+        try:
+            import clickhouse_connect
+        except ImportError as e:
+            raise ImportError(
+                "ClickHouse support requires clickhouse-connect. "
+                "Install with: pip install 'sqlctx[clickhouse] @ git+https://github.com/sidequery/sqlctx' or pip install clickhouse-connect"
+            ) from e
+
+        # A shared HTTP client supports concurrent queries only without a session.
+        # Preserve explicit session configuration for callers who need session state.
+        kwargs.setdefault("autogenerate_session_id", False)
+
+        # Build connection params
+        self.client = clickhouse_connect.get_client(
+            host=host,
+            port=port,
+            database=database,
+            username=user,
+            password=password,
+            secure=secure,
+            **kwargs,
+        )
+        self.database = database
+
+    def cursor(self) -> Any:
+        """Borrow a concurrent handle, or serialize an explicitly configured session."""
+        if self.client.params.get("session_id"):
+            return super().cursor()
+        return _ClickHouseCursor(self)
+
+    def execute(self, sql: str) -> ClickHouseResult:
+        """Execute once, using Parquet when the client and PyArrow support it."""
+        return self._execute(sql)
+
+    def executemany(self, sql: str, params: list) -> ClickHouseResult:
+        """Execute parameter sets sequentially and return the last result."""
+        if not params:
+            return self.execute("SELECT 1")
+        for param_set in params:
+            result = self._execute(sql, parameters=param_set)
+        return result
+
+    def _execute(self, sql: str, parameters=None) -> ClickHouseResult:
+        from io import BytesIO
+
+        # Only fall back before submitting SQL: a request or decode failure can
+        # occur after a mutation has already committed on the server.
+        raw_query = getattr(self.client, "raw_query", None)
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+        except ImportError:
+            raw_query = None
+
+        if raw_query is None:
+            if parameters is None:
+                return ClickHouseResult(self.client.query(sql))
+            return ClickHouseResult(self.client.query(sql, parameters=parameters))
+
+        data = raw_query(sql, parameters=parameters, fmt="Parquet")
+        # Successful commands such as CREATE TABLE AS and INSERT SELECT have
+        # no result body. They must not be decoded or submitted a second time.
+        table = pq.read_table(BytesIO(data)) if data else pa.table({})
+        return ClickHouseResult(result=None, arrow_table=table)
+
+    def fetchone(self, result: ClickHouseResult) -> tuple | None:
+        """Fetch one row from result."""
+        return result.fetchone()
+
+    def fetch_record_batch(self, result: ClickHouseResult) -> Any:
+        """Fetch result as PyArrow RecordBatchReader."""
+        return result.fetch_record_batch()
+
+    def get_tables(self) -> list[dict]:
+        """List all tables in the database."""
+        sql = """
+            SELECT name as table_name, database as schema
+            FROM system.tables
+            WHERE database = %(database)s
+                AND engine NOT LIKE '%View%'
+        """
+        result = self.client.query(sql, parameters={"database": self.database})
+        return [{"table_name": row[0], "schema": row[1]} for row in result.result_rows]
+
+    def get_columns(self, table_name: str, schema: str | None = None) -> list[dict]:
+        """Get column information for a table."""
+        schema = schema or self.database
+
+        sql = """
+            SELECT name as column_name, type as data_type
+            FROM system.columns
+            WHERE database = %(schema)s
+                AND table = %(table)s
+        """
+        result = self.client.query(sql, parameters={"schema": schema, "table": table_name})
+        return [{"column_name": row[0], "data_type": row[1]} for row in result.result_rows]
+
+    def get_query_history(self, days_back: int = 7, limit: int = 1000, *, instrumented_only: bool = True) -> list[str]:
+        """Fetch query history from ClickHouse.
+
+        Queries system.query_log to find queries with sqlctx instrumentation.
+
+        Args:
+            days_back: Number of days of history to fetch (default: 7)
+            limit: Maximum number of queries to return (default: 1000)
+            instrumented_only: Only return queries containing sqlctx instrumentation comments
+
+        Returns:
+            List of SQL query strings. By default only sqlctx-instrumented queries are returned.
+        """
+        days_back, limit = validate_query_history_params(days_back, limit)
+        instrumentation_filter = "AND query LIKE '%-- sqlctx:%'" if instrumented_only else ""
+        sql = f"""
+        SELECT query
+        FROM system.query_log
+        WHERE event_time >= now() - INTERVAL {days_back} DAY
+          AND type = 'QueryFinish'
+          AND is_initial_query = 1
+          AND exception = ''
+          AND lower(query) NOT LIKE '%system.query_log%'
+          {instrumentation_filter}
+        ORDER BY event_time DESC
+        LIMIT {limit}
+        """
+
+        result = self.client.query(sql)
+        return [row[0] for row in result.result_rows if row[0]]
+
+    def close(self) -> None:
+        """Close the ClickHouse client."""
+        self.client.close()
+
+    @property
+    def dialect(self) -> str:
+        """Return SQL dialect."""
+        return "clickhouse"
+
+    @property
+    def raw_connection(self) -> Any:
+        """Return raw ClickHouse client."""
+        return self.client
+
+    @classmethod
+    def from_url(cls, url: str) -> "ClickHouseAdapter":
+        """Create adapter from connection URL.
+
+        URL format: clickhouse://user:password@host:port/database
+        or: clickhouse://host/database  (default user/password)
+
+        Args:
+            url: Connection URL
+
+        Returns:
+            ClickHouseAdapter instance
+        """
+        if not url.startswith("clickhouse://"):
+            raise ValueError(f"Invalid ClickHouse URL: {url}")
+
+        parsed = urlparse(url)
+
+        # Parse path: /database
+        database = parsed.path.lstrip("/") if parsed.path else "default"
+
+        # Parse query parameters
+        params = {}
+        if parsed.query:
+            params = {k: v[0] if len(v) == 1 else v for k, v in parse_qs(parsed.query).items()}
+
+        # Check for secure parameter
+        secure = params.pop("secure", "false").lower() in ("true", "1", "yes")
+
+        return cls(
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 8123,
+            database=database,
+            user=unquote(parsed.username) if parsed.username else "default",
+            password=unquote(parsed.password) if parsed.password else "",
+            secure=secure,
+            **params,
+        )

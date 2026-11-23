@@ -4,8 +4,8 @@ import warnings
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.sql.query_rewriter import QueryRewriter, YardstickBindingError, YardstickWarning
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.sql.query_rewriter import QueryRewriter, YardstickBindingError, YardstickWarning
 
 
 @pytest.fixture
@@ -133,7 +133,7 @@ def test_yardstick_table_function_requires_single_literal_read(warning_layer, ar
 
 @pytest.mark.parametrize("attributes", [None, {"role": "admin"}])
 def test_yardstick_wrapper_cannot_bypass_semantic_security(warning_layer, attributes):
-    from sidemantic.core.security import SecurityPolicy
+    from sqlctx.core.security import SecurityPolicy
 
     warning_layer.graph.models["sales_v"].security = SecurityPolicy(access=False, row_filters=["year = 2023"])
     with pytest.raises(ValueError, match="security controls"):

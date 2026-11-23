@@ -4,8 +4,8 @@ import { expect, test } from "@playwright/test";
 
 test("AnyWidget renders its canonical loading state and a clearable brush pill", async ({ page }) => {
   await page.goto("/components");
-  await page.addStyleTag({ path: path.resolve("../sidemantic/widget/static/widget.css") });
-  const widgetModuleUrl = `data:text/javascript;base64,${readFileSync(path.resolve("../sidemantic/widget/static/widget.js")).toString("base64")}`;
+  await page.addStyleTag({ path: path.resolve("../sqlctx/widget/static/widget.css") });
+  const widgetModuleUrl = `data:text/javascript;base64,${readFileSync(path.resolve("../sqlctx/widget/static/widget.js")).toString("base64")}`;
 
   await page.evaluate(async (moduleUrl) => {
     const { default: widget } = await import(moduleUrl);
@@ -59,7 +59,7 @@ test("AnyWidget redraws binary results and removes its binary observers on clean
   const { tableFromArrays, tableToIPC } = await import("apache-arrow");
   const dimension = (value: number) => Array.from(tableToIPC(tableFromArrays({ country: ["US"], revenue: [value] })));
   const series = Array.from(tableToIPC(tableFromArrays({ __time: ["2024-01-01"], revenue: [10] })));
-  const widgetModuleUrl = `data:text/javascript;base64,${readFileSync(path.resolve("../sidemantic/widget/static/widget.js")).toString("base64")}`;
+  const widgetModuleUrl = `data:text/javascript;base64,${readFileSync(path.resolve("../sqlctx/widget/static/widget.js")).toString("base64")}`;
   await page.goto("/components");
   const observed = await page.evaluate(async ({ moduleUrl, before, after, series }) => {
     const { default: widget } = await import(moduleUrl);

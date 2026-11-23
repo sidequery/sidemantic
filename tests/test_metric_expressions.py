@@ -1,10 +1,10 @@
 """Test simplified metric expression syntax."""
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.core.sql_definitions import parse_sql_definitions
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_layer import SemanticLayer
+from sqlctx.core.sql_definitions import parse_sql_definitions
 
 
 def test_metric_with_full_expression():

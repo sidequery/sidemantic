@@ -5,18 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.dialect import (
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.dialect import (
     MetricDef,
     TableBlockFieldDef,
     TableBlockJoinDef,
     TableBlockModelDef,
 )
-from sidemantic.core.dialect import (
-    parse as parse_sidemantic_sql,
+from sqlctx.core.dialect import (
+    parse as parse_sqlctx_sql,
 )
-from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.core.sql_definitions import (
+from sqlctx.core.semantic_layer import SemanticLayer
+from sqlctx.core.sql_definitions import (
     parse_sql_definitions,
     parse_sql_file_with_frontmatter,
     parse_sql_graph_definitions,
@@ -358,7 +358,7 @@ SEGMENT (
 
 
 def test_adapter_parse_sql_file():
-    """Test SidemanticAdapter parsing .sql file."""
+    """Test SqlctxAdapter parsing .sql file."""
     sql_content = """---
 name: orders
 table: orders
@@ -377,7 +377,7 @@ METRIC (
         temp_path = Path(f.name)
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         graph = adapter.parse(temp_path)
 
         assert len(graph.models) == 1
@@ -410,7 +410,7 @@ METRIC (
         temp_path = Path(f.name)
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         graph = adapter.parse(temp_path)
 
         assert not graph.models
@@ -445,7 +445,7 @@ models:
         temp_path = Path(f.name)
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         graph = adapter.parse(temp_path)
 
         assert "orders" in graph.models
@@ -477,7 +477,7 @@ models:
         temp_path = Path(f.name)
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         graph = adapter.parse(temp_path)
 
         orders = graph.models["orders"]
@@ -511,7 +511,7 @@ models:
         temp_path = Path(f.name)
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         graph = adapter.parse(temp_path)
 
         orders = graph.models["orders"]
@@ -540,7 +540,7 @@ sql_metrics: |
         temp_path = Path(f.name)
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         graph = adapter.parse(temp_path)
 
         assert len(graph.metrics) == 1
@@ -565,7 +565,7 @@ parameters:
         temp_path = Path(f.name)
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         graph = adapter.parse(temp_path)
 
         assert "region" in graph.parameters
@@ -646,7 +646,7 @@ SEGMENT (
 );
 """
 
-    from sidemantic.core.sql_definitions import parse_sql_model
+    from sqlctx.core.sql_definitions import parse_sql_model
 
     model = parse_sql_model(sql_content)
 
@@ -738,8 +738,8 @@ model orders from orders (
 
 
 def test_dialect_parses_table_block_sql_model():
-    """Test compact model blocks are parsed by the Sidemantic SQL dialect."""
-    statements = parse_sidemantic_sql(
+    """Test compact model blocks are parsed by the sqlctx SQL dialect."""
+    statements = parse_sqlctx_sql(
         """
 model orders from orders (
   primary key (order_id)
@@ -761,7 +761,7 @@ model orders from orders (
 
 def test_dialect_parses_table_block_with_graph_definition():
     """Test compact model blocks can be followed by graph-level definitions."""
-    statements = parse_sidemantic_sql(
+    statements = parse_sqlctx_sql(
         """
 model orders from orders (
   primary key (order_id)
@@ -835,7 +835,7 @@ model orders from orders (
 
 
 def test_adapter_parse_table_block_sql_file():
-    """Test SidemanticAdapter parsing compact SQL-ish model blocks."""
+    """Test SqlctxAdapter parsing compact SQL-ish model blocks."""
     sql_content = """
 model orders from orders (
   primary key (order_id)
@@ -855,7 +855,7 @@ model customers from public.customers (
         temp_path = Path(f.name)
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         graph = adapter.parse(temp_path)
 
         assert len(graph.models) == 2
@@ -1133,7 +1133,7 @@ model orders from orders (
 
 
 def test_adapter_parse_pure_sql_file():
-    """Test SidemanticAdapter parsing pure SQL file without frontmatter."""
+    """Test SqlctxAdapter parsing pure SQL file without frontmatter."""
     sql_content = """
 MODEL (
     name orders,
@@ -1159,7 +1159,7 @@ METRIC (
         temp_path = Path(f.name)
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         graph = adapter.parse(temp_path)
 
         assert len(graph.models) == 1

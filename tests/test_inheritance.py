@@ -1,7 +1,7 @@
 """Test inheritance for models and metrics."""
 
-from sidemantic import Dimension, Metric, Model, Segment
-from sidemantic.core.inheritance import merge_metric, merge_model, resolve_model_inheritance
+from sqlctx import Dimension, Metric, Model, Segment
+from sqlctx.core.inheritance import merge_metric, merge_model, resolve_model_inheritance
 
 
 def test_model_inheritance_basic():

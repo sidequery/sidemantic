@@ -6,10 +6,10 @@ import duckdb
 import pytest
 import sqlglot
 
-from sidemantic import SemanticLayer
-from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
-from sidemantic.interchange.ossie.expression_validation import scalar_sql_expression_error
-from sidemantic.interchange.ossie.portable import lower_ossie_sql, parse_portable_expression
+from sqlctx import SemanticLayer
+from sqlctx.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+from sqlctx.interchange.ossie.expression_validation import scalar_sql_expression_error
+from sqlctx.interchange.ossie.portable import lower_ossie_sql, parse_portable_expression
 
 
 def _field(name, sql):

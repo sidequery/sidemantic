@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
 
 # =============================================================================
 # QUERY TESTS
@@ -11,7 +11,7 @@ from sidemantic.adapters.lookml import LookMLAdapter
 
 def test_query_imported_lookml_example():
     """Test that we can compile queries from imported LookML schema."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     adapter = LookMLAdapter()
     graph = adapter.parse("tests/fixtures/lookml/orders.lkml")
@@ -36,7 +36,7 @@ def test_query_imported_lookml_example():
 
 def test_query_with_time_dimension_lookml():
     """Test querying time dimensions from LookML import."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     adapter = LookMLAdapter()
     graph = adapter.parse("tests/fixtures/lookml/orders.lkml")

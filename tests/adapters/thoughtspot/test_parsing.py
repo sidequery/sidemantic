@@ -6,9 +6,9 @@ from pathlib import Path
 
 import yaml
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter, _extract_all_join_refs
-from sidemantic.loaders import load_from_directory
+from sqlctx import SemanticLayer
+from sqlctx.adapters.thoughtspot import ThoughtSpotAdapter, _extract_all_join_refs
+from sqlctx.loaders import load_from_directory
 
 # =============================================================================
 # BASIC PARSING TESTS
@@ -743,7 +743,7 @@ def test_import_thoughtspot_model():
     assert relationships["customers"].type == "many_to_one"
     assert relationships["customers"].foreign_key == "customer_id"
     assert relationships["customers"].primary_key == "id"
-    # cardinality: ONE_TO_ONE with a composite ON predicate. Sidemantic treats
+    # cardinality: ONE_TO_ONE with a composite ON predicate. sqlctx treats
     # one_to_one (like one_to_many) as an edge where the related model owns the
     # foreign key and the local model owns the primary key, so the parsed
     # source-side FK/PK are stored swapped. Both key pairs from the composite
@@ -1104,8 +1104,8 @@ def test_thoughtspot_relationship_fk_is_projected_for_cross_model_query():
     """
     import duckdb
 
-    from sidemantic.core.dimension import Dimension
-    from sidemantic.core.model import Model
+    from sqlctx.core.dimension import Dimension
+    from sqlctx.core.model import Model
 
     adapter = ThoughtSpotAdapter()
     graph = adapter.parse("tests/fixtures/thoughtspot/model_relationship_fk.model.tml")
@@ -1183,7 +1183,7 @@ def test_thoughtspot_one_to_many_join_keys_match_direction():
 
     Regression: keys were assigned with the `many_to_one` convention (foreign key
     on the local/source side). For a `one_to_many` join `[customers::id] =
-    [orders::customer_id]`, Sidemantic expects `foreign_key` on the related model
+    [orders::customer_id]`, sqlctx expects `foreign_key` on the related model
     (`orders.customer_id`) and `primary_key` on the local model (`customers.id`),
     so cross-model queries joined the wrong columns before this fix.
     """
@@ -1221,7 +1221,7 @@ def test_thoughtspot_one_to_one_join_keys_match_direction():
     """A `one_to_one` join with a source-side FK joins correctly cross-model.
 
     Regression: `one_to_one` keys were stored in the `many_to_one` positions
-    (FK on the source/local side). Sidemantic reads `one_to_one` like a has-one
+    (FK on the source/local side). sqlctx reads `one_to_one` like a has-one
     edge where the related model owns the foreign key, so a cross-model query with
     a separately loaded `regions` model joined `regions.region_id` to
     `sales_model.id` and failed instead of joining `regions.id` to
@@ -1229,8 +1229,8 @@ def test_thoughtspot_one_to_one_join_keys_match_direction():
     """
     import duckdb
 
-    from sidemantic.core.dimension import Dimension
-    from sidemantic.core.model import Model
+    from sqlctx.core.dimension import Dimension
+    from sqlctx.core.model import Model
 
     adapter = ThoughtSpotAdapter()
     graph = adapter.parse("tests/fixtures/thoughtspot/model_one_to_one.model.tml")
@@ -1632,7 +1632,7 @@ def test_thoughtspot_range_only_join_emits_no_relationship():
 
     Regression: a join with no equality key (e.g. `[sales::date] BETWEEN
     [calendar::start_date] AND [calendar::end_date]`) still appended a relationship
-    with unset keys, which Sidemantic defaults to `calendar_id`/`id` (non-existent
+    with unset keys, which sqlctx defaults to `calendar_id`/`id` (non-existent
     columns). No relationship should be emitted; the predicate stays in the join.
     """
     import duckdb

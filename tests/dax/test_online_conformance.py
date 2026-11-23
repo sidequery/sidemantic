@@ -6,12 +6,12 @@ import urllib.request
 
 import pytest
 
-dax_ast = pytest.importorskip("sidemantic_dax.ast")
+dax_ast = pytest.importorskip("sqlctx_dax.ast")
 
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("SIDEMANTIC_DAX_ONLINE_CONFORMANCE") != "1",
-    reason="set SIDEMANTIC_DAX_ONLINE_CONFORMANCE=1 to probe DAX Formatter",
+    os.environ.get("SQLCTX_DAX_ONLINE_CONFORMANCE") != "1",
+    reason="set SQLCTX_DAX_ONLINE_CONFORMANCE=1 to probe DAX Formatter",
 )
 
 _FORMATTER_URL = "https://api.daxformatter.com/api/daxtextformat"
@@ -23,7 +23,7 @@ def _formatter_result(dax: str) -> dict[str, object]:
             "Dax": dax,
             "ListSeparator": ",",
             "DecimalSeparator": ".",
-            "CallerApp": "sidemantic-dax-conformance",
+            "CallerApp": "sqlctx-dax-conformance",
             "CallerVersion": "0",
         }
     ).encode()

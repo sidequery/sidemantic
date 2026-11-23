@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.tableau import TableauAdapter
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx.adapters.tableau import TableauAdapter
+from sqlctx.sql.generator import SQLGenerator
 
 REAL_WORLD = Path(__file__).parent.parent.parent / "fixtures" / "tableau" / "real_world"
 

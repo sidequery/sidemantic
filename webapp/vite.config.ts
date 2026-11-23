@@ -5,9 +5,9 @@ import react from "@vitejs/plugin-react";
 // In dev we proxy them to a running backend so the SPA is same-origin (no CORS) with HMR.
 const API_PATHS = ["/query", "/compile", "/describe", "/dashboard", "/models", "/graph", "/health", "/readyz", "/sql", "/raw"];
 
-// Target a locally running `sidemantic api-serve` (Python, default :4400) or the Rust
-// `sidemantic-server`. Override with SIDEMANTIC_API=http://host:port.
-const apiTarget = process.env.SIDEMANTIC_API ?? "http://127.0.0.1:4400";
+// Target a locally running `sqlctx api-serve` (Python, default :4400) or the Rust
+// `sqlctx-server`. Override with SQLCTX_API=http://host:port.
+const apiTarget = process.env.SQLCTX_API ?? "http://127.0.0.1:4400";
 
 export default defineConfig({
   // Keep generated asset URLs rooted at /assets so refreshed deep links served by the SPA

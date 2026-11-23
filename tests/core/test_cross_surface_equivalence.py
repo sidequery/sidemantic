@@ -14,11 +14,11 @@ SQL-first family (semantic SQL string -> rewritten SQL):
 
 Structured family (dimensions/metrics -> compiled SQL):
   4. ``SemanticLayer.compile(...)`` -- the library/CLI compile entry point.
-  5. HTTP API ``POST /compile`` -- ``sidemantic/api_server.py`` delegates
+  5. HTTP API ``POST /compile`` -- ``sqlctx/api_server.py`` delegates
      straight to ``current_layer.compile(...)``.
 
 Optional surface:
-  - PG wire server (``sidemantic/server/connection.py``) uses the shared
+  - PG wire server (``sqlctx/server/connection.py``) uses the shared
     policy-aware SQL transport rewrite. When ``riffq`` and ``pyarrow`` are
     installed, the real handler's executed SQL and returned rows are checked
     against the CLI preview.
@@ -36,9 +36,9 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.api_server import create_app
-from sidemantic.core.transport_security import rewrite_transport_sql
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.api_server import create_app
+from sqlctx.core.transport_security import rewrite_transport_sql
 
 # Representative semantic-SQL queries exercised across the SQL-first surfaces.
 # Chosen to hit: simple metric aggregation; metric + categorical dimension +
@@ -335,7 +335,7 @@ def test_pg_server_executes_previewed_sql(name: str, layer: SemanticLayer, monke
     """The real PG handler executes the same SQL and returns the previewed rows."""
     pytest.importorskip("riffq", reason="PG wire server requires the optional 'riffq' dependency")
     pytest.importorskip("pyarrow")
-    from sidemantic.server.connection import SemanticLayerConnection
+    from sqlctx.server.connection import SemanticLayerConnection
 
     sql = SQL_FIRST_QUERIES[name]
     previewed_sql = _rewrite_cli(layer, sql)

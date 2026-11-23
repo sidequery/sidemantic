@@ -7,7 +7,7 @@ fan-out issues (double-counting) in joins.
 import duckdb
 import pytest
 
-from sidemantic.core.symmetric_aggregate import (
+from sqlctx.core.symmetric_aggregate import (
     build_symmetric_aggregate_sql,
     needs_symmetric_aggregate,
 )

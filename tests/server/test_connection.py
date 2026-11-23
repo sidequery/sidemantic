@@ -2,13 +2,13 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sqlctx import Dimension, Metric, Model, SemanticLayer
 
 
 def test_handle_auth():
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")
-    from sidemantic.server.connection import SemanticLayerConnection
+    from sqlctx.server.connection import SemanticLayerConnection
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
 
@@ -28,7 +28,7 @@ def test_handle_auth():
 def test_handle_auth_partial_config_fails_closed():
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")
-    from sidemantic.server.connection import SemanticLayerConnection
+    from sqlctx.server.connection import SemanticLayerConnection
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
     conn = SemanticLayerConnection(connection_id=1, executor=None, layer=layer, username="user", password=None)
@@ -46,7 +46,7 @@ def test_handle_auth_partial_config_fails_closed():
 def test_handle_system_queries():
     pytest.importorskip("riffq")
     pa = pytest.importorskip("pyarrow")
-    from sidemantic.server.connection import SemanticLayerConnection
+    from sqlctx.server.connection import SemanticLayerConnection
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
     layer.add_model(
@@ -102,7 +102,7 @@ def test_handle_system_queries():
 def test_dml_passthrough():
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")
-    from sidemantic.server.connection import SemanticLayerConnection
+    from sqlctx.server.connection import SemanticLayerConnection
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
 
@@ -126,8 +126,8 @@ def test_query_error_raises_exception():
     pytest.importorskip("pyarrow")
     from unittest.mock import MagicMock
 
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.server.connection import SemanticLayerConnection
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.server.connection import SemanticLayerConnection
 
     mock_layer = MagicMock()
     # Query work now runs on a per-request cursor obtained from the adapter.
@@ -152,7 +152,7 @@ def test_user_attributes_lookup_by_session_user():
     """The connecting username is mapped to its security user attributes."""
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")
-    from sidemantic.server.connection import SemanticLayerConnection
+    from sqlctx.server.connection import SemanticLayerConnection
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
     attrs_map = {"alice": {"tenant_id": 1}, "bob": {"tenant_id": 2}}
@@ -177,9 +177,9 @@ def test_enforce_pg_access_denies_secured_model_without_attrs():
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")
 
-    from sidemantic import SecurityPolicy
-    from sidemantic.core.semantic_layer import SecurityError
-    from sidemantic.server.connection import SemanticLayerConnection
+    from sqlctx import SecurityPolicy
+    from sqlctx.core.semantic_layer import SecurityError
+    from sqlctx.server.connection import SemanticLayerConnection
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
     layer.add_model(
@@ -215,8 +215,8 @@ def test_enforce_pg_access_denies_secured_model_without_attrs():
 def secured_pg_connection():
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")
-    from sidemantic import SecurityPolicy
-    from sidemantic.server.connection import SemanticLayerConnection
+    from sqlctx import SecurityPolicy
+    from sqlctx.server.connection import SemanticLayerConnection
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
     layer.adapter.execute("create table private_orders (id integer, tenant integer)")
@@ -264,7 +264,7 @@ def secured_pg_connection():
     ],
 )
 def test_pg_rejects_physical_source_bypasses(secured_pg_connection, query):
-    from sidemantic.core.semantic_layer import SecurityError
+    from sqlctx.core.semantic_layer import SecurityError
 
     conn, captured = secured_pg_connection
     with pytest.raises(SecurityError):
@@ -314,7 +314,7 @@ def test_pg_description_probe_is_compatible(secured_pg_connection):
 def test_empty_pg_catalog_is_valid():
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")
-    from sidemantic.server.connection import SemanticLayerConnection
+    from sqlctx.server.connection import SemanticLayerConnection
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
     conn = SemanticLayerConnection(1, None, layer)
@@ -326,7 +326,7 @@ def test_empty_pg_catalog_is_valid():
 
 @pytest.mark.parametrize("source", ['"main"."orders"', "main.orders", "semantic_layer.orders"])
 def test_pg_qualified_model_names_still_enforce_policy(secured_pg_connection, source):
-    from sidemantic.core.semantic_layer import SecurityError
+    from sqlctx.core.semantic_layer import SecurityError
 
     conn, captured = secured_pg_connection
     conn.layer.adapter.execute("create table orders as select * from private_orders")
@@ -350,7 +350,7 @@ def _plain_pg_connection():
     """An unsecured connection over an in-memory database, capturing sent rows."""
     pytest.importorskip("riffq")
     pytest.importorskip("pyarrow")
-    from sidemantic.server.connection import SemanticLayerConnection
+    from sqlctx.server.connection import SemanticLayerConnection
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
     layer.adapter.execute("create table orders (id integer, status varchar, amount decimal(10,2))")
@@ -395,7 +395,7 @@ def _plain_pg_connection():
     ],
 )
 def test_pg_rejects_statements_that_change_the_database(statement):
-    from sidemantic.server.connection import ReadOnlyError
+    from sqlctx.server.connection import ReadOnlyError
 
     conn, captured = _plain_pg_connection()
     with pytest.raises(ReadOnlyError):
@@ -451,7 +451,7 @@ def test_pg_transaction_statements_are_acknowledged():
 )
 def test_pg_batch_in_one_message_is_rejected_not_partially_acknowledged(batch):
     """A handler call returns one result, so no statement of a batch is answered or run."""
-    from sidemantic.server.connection import UnsupportedStatementError
+    from sqlctx.server.connection import UnsupportedStatementError
 
     conn, captured = _plain_pg_connection()
     responses = []
@@ -471,7 +471,7 @@ def test_pg_batch_in_one_message_is_rejected_not_partially_acknowledged(batch):
     ],
 )
 def test_pg_batch_hiding_a_write_is_rejected_as_a_write(batch):
-    from sidemantic.server.connection import ReadOnlyError
+    from sqlctx.server.connection import ReadOnlyError
 
     conn, captured = _plain_pg_connection()
     responses = []
@@ -485,7 +485,7 @@ def test_pg_batch_hiding_a_write_is_rejected_as_a_write(batch):
 
 def test_pg_single_statement_with_separator_text_is_not_a_batch():
     pytest.importorskip("riffq")
-    from sidemantic.server.connection import split_statements
+    from sqlctx.server.connection import split_statements
 
     assert split_statements("BEGIN; SELECT 1; COMMIT", "duckdb") == ["BEGIN", " SELECT 1", " COMMIT"]
     assert split_statements("BEGIN;", "duckdb") == ["BEGIN"]
@@ -521,7 +521,7 @@ def test_pg_inlines_parameters_as_escaped_literals():
     import datetime
 
     pytest.importorskip("riffq")
-    from sidemantic.server.connection import ParameterError, inline_parameters
+    from sqlctx.server.connection import ParameterError, inline_parameters
 
     sql = "select $1, '$2', $3 -- $4\n, x-$5, $2 from t where d = $6"
     values = ["it's", None, True, "unused", -5, datetime.date(2026, 1, 2)]
@@ -541,8 +541,8 @@ def test_pg_errors_map_to_sqlstates():
     pytest.importorskip("riffq")
     import duckdb
 
-    from sidemantic.core.semantic_layer import SecurityError
-    from sidemantic.server.connection import ReadOnlyError, error_response
+    from sqlctx.core.semantic_layer import SecurityError
+    from sqlctx.server.connection import ReadOnlyError, error_response
 
     assert error_response(SecurityError("denied")) == ("ERROR", "42501", "denied")
     assert error_response(ReadOnlyError("read-only"))[1] == "25006"
@@ -595,7 +595,7 @@ def test_pg_catalog_query_honors_requested_columns_and_parameters():
     assert captured == [{"nspname": "semantic_layer", "relname": "orders"}]
     captured.clear()
     conn._handle_query("select pg_catalog.version(), current_database()", lambda *_: None)
-    assert captured[0]["current_database"] == "sidemantic"
+    assert captured[0]["current_database"] == "sqlctx"
     assert captured[0]["version"].startswith("PostgreSQL ")
 
     # Column types resolve through pg_type by PostgreSQL OID, as JDBC metadata queries expect.
@@ -616,7 +616,7 @@ def test_pg_catalog_query_honors_requested_columns_and_parameters():
 
 
 def test_pg_catalog_sql_is_pointed_at_compatibility_objects():
-    from sidemantic.server.pg_catalog import use_compatibility_objects
+    from sqlctx.server.pg_catalog import use_compatibility_objects
 
     assert (
         use_compatibility_objects("select pg_catalog.version(), 'pg_catalog.x()' from pg_catalog.pg_class")

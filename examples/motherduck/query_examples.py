@@ -4,13 +4,13 @@
 Prerequisites:
 - Set MOTHERDUCK_TOKEN environment variable
 - Run setup_data.py first
-- Run: sidemantic preagg refresh sidemantic.yaml
+- Run: sqlctx preagg refresh sqlctx.yaml
 
 Usage:
     uv run python query_examples.py
 """
 
-from sidemantic import SemanticLayer
+from sqlctx import SemanticLayer
 
 print("=" * 80)
 print("MotherDuck Query Examples")
@@ -18,10 +18,10 @@ print("=" * 80)
 
 # Load semantic layer from YAML config
 # This loads connection, models, and pre-agg settings all from one file
-print("\nLoading semantic layer from sidemantic.yaml...")
-layer = SemanticLayer.from_yaml("sidemantic.yaml", connection="duckdb://md:sidemantic_demo")
+print("\nLoading semantic layer from sqlctx.yaml...")
+layer = SemanticLayer.from_yaml("sqlctx.yaml", connection="duckdb://md:sqlctx_demo")
 print("✓ Loaded semantic layer")
-print("  Database: sidemantic_demo (MotherDuck)")
+print("  Database: sqlctx_demo (MotherDuck)")
 print(f"  Models: {len(layer.list_models())}")
 print(f"  Pre-agg schema: {layer.preagg_schema}")
 

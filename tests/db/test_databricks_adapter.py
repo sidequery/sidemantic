@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from sidemantic.db.databricks import DatabricksAdapter, DatabricksResult
+from sqlctx.db.databricks import DatabricksAdapter, DatabricksResult
 
 
 def _block_import(monkeypatch, module_prefix: str) -> None:
@@ -159,7 +159,7 @@ def test_databricks_query_history_sql():
 
     class FakeResult:
         def fetchall(self):
-            return [["select 1 -- sidemantic: z"], [None]]
+            return [["select 1 -- sqlctx: z"], [None]]
 
     def fake_execute(sql):
         captured["sql"] = sql
@@ -173,10 +173,10 @@ def test_databricks_query_history_sql():
     assert "INTERVAL 2 DAYS" in captured["sql"]
     assert "LIMIT 25" in captured["sql"]
     assert "LOWER(statement_text) NOT LIKE '%system.query.history%'" in captured["sql"]
-    assert results == ["select 1 -- sidemantic: z"]
+    assert results == ["select 1 -- sqlctx: z"]
 
     adapter.get_query_history(days_back=2, limit=25, instrumented_only=False)
-    assert "statement_text LIKE '%-- sidemantic:%'" not in captured["sql"]
+    assert "statement_text LIKE '%-- sqlctx:%'" not in captured["sql"]
 
 
 def test_databricks_result_ordering_and_exhaustion():

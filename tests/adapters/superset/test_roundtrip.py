@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.superset import SupersetAdapter
+from sqlctx.adapters.superset import SupersetAdapter
 
 from ..helpers import (
     assert_dimension_equivalent,
@@ -19,8 +19,8 @@ from ..helpers import (
 # =============================================================================
 
 
-def test_superset_to_sidemantic_to_superset_roundtrip():
-    """Test roundtrip: Superset -> Sidemantic -> Superset."""
+def test_superset_to_sqlctx_to_superset_roundtrip():
+    """Test roundtrip: Superset -> sqlctx -> Superset."""
     adapter = SupersetAdapter()
 
     # Import original

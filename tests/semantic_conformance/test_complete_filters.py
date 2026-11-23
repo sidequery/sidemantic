@@ -4,14 +4,14 @@ from copy import deepcopy
 
 import pytest
 
-from sidemantic import Dimension, Explore, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError, graph_to_semantic_input
+from sqlctx import Dimension, Explore, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError, graph_to_semantic_input
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Complete filter acceptance requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Complete filter acceptance requires the real Rust extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(
@@ -143,7 +143,7 @@ def test_filter_conjunction_preserves_disjunction_grouping(layer):
     ],
 )
 def test_unproven_complete_filter_shapes_fail_explicitly(expression):
-    pytest.importorskip("sidemantic_rs", reason="Complete filter rejection requires the real Rust extension")
+    pytest.importorskip("sqlctx_rs", reason="Complete filter rejection requires the real Rust extension")
     layer = SemanticLayer(engine="rust", fallback=False, auto_register=False)
     try:
         layer.add_model(
@@ -180,7 +180,7 @@ def test_unproven_complete_filter_shapes_fail_explicitly(expression):
 )
 def test_complete_filter_formulas_execute_with_physical_inputs(engine, expression, expected):
     if engine == "rust":
-        pytest.importorskip("sidemantic_rs")
+        pytest.importorskip("sqlctx_rs")
     layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
     try:
         layer.add_model(
@@ -212,7 +212,7 @@ def test_invalid_complete_sql_keeps_database_validation(engine, expression, erro
     import duckdb
 
     if engine == "rust":
-        pytest.importorskip("sidemantic_rs")
+        pytest.importorskip("sqlctx_rs")
     layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
     try:
         layer.add_model(
@@ -232,7 +232,7 @@ def test_invalid_complete_sql_keeps_database_validation(engine, expression, erro
 
 
 def test_foreign_filter_population_fails_explicitly():
-    pytest.importorskip("sidemantic_rs", reason="Complete filter rejection requires the real Rust extension")
+    pytest.importorskip("sqlctx_rs", reason="Complete filter rejection requires the real Rust extension")
     layer = SemanticLayer(engine="rust", fallback=False, auto_register=False)
     try:
         layer.add_model(
@@ -509,7 +509,7 @@ def test_complete_row_count_mandatory_policies_and_query_filters(row_count_layer
         ["paid_rows", "ordinary_rows"],
         [(1, 1)],
     )
-    from sidemantic.core.semantic_layer import SecurityError
+    from sqlctx.core.semantic_layer import SecurityError
 
     with pytest.raises(SecurityError):
         row_count_layer.compile(metrics=["orders.paid_rows"])
@@ -587,7 +587,7 @@ def test_complete_row_count_cross_source_absent_group_restores_zero(row_count_la
 
 @pytest.mark.parametrize("layer", ["python"], indirect=True)
 def test_complete_row_count_generator_reuse_observes_graph_changes(row_count_layer):
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.sql.generator import SQLGenerator
 
     layer = row_count_layer
     generator = SQLGenerator(layer.graph)
@@ -640,7 +640,7 @@ def test_selected_complete_row_count_invalid_filter_is_rejected(row_count_layer)
 
 @pytest.mark.parametrize("layer", ["python"], indirect=True)
 def test_complete_row_count_role_queries_preserve_caller_caches(row_count_layer):
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.sql.generator import SQLGenerator
 
     layer = row_count_layer
     layer.graph.models["orders"].relationships.append(
@@ -675,8 +675,8 @@ def test_complete_row_count_role_queries_preserve_caller_caches(row_count_layer)
 
 @pytest.mark.parametrize("expression", ["COUNT(*)", "COUNT(1)", "COUNT(NULL)"])
 def test_unowned_graph_complete_count_remains_explicitly_unsupported(expression):
-    pytest.importorskip("sidemantic_rs")
-    from sidemantic.rust_bridge import UnsupportedSemanticFeaturesError, compile_semantic_input
+    pytest.importorskip("sqlctx_rs")
+    from sqlctx.rust_bridge import UnsupportedSemanticFeaturesError, compile_semantic_input
 
     layer = SemanticLayer(auto_register=False)
     try:
@@ -692,7 +692,7 @@ def test_unowned_graph_complete_count_remains_explicitly_unsupported(expression)
 @pytest.mark.parametrize("layer", ["python"], indirect=True)
 @pytest.mark.parametrize("expression", ["COUNT(*)", "COUNT_BIG(*)"])
 def test_tsql_complete_row_count_retains_existing_path(row_count_layer, expression):
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.sql.generator import SQLGenerator
 
     metric = row_count_layer.graph.models["orders"].get_metric("paid_rows")
     metric.sql = expression

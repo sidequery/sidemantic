@@ -7,13 +7,13 @@ import pytest
 from jsonschema import Draft7Validator
 
 from scripts.generate_schema import generate_schema
-from sidemantic.schema import export_schema, generate_yaml_schema
+from sqlctx.schema import export_schema, generate_yaml_schema
 
 
 def test_generate_yaml_schema_structure():
     schema = generate_yaml_schema()
 
-    assert schema["title"] == "Sidemantic Semantic Layer"
+    assert schema["title"] == "sqlctx Semantic Layer"
     assert schema["type"] == "object"
     assert "models" in schema["properties"]
     assert "metrics" in schema["properties"]
@@ -71,14 +71,14 @@ def test_export_schema_writes_file(tmp_path):
     export_schema(output_path)
 
     data = json.loads(output_path.read_text())
-    assert data["title"] == "Sidemantic Semantic Layer"
+    assert data["title"] == "sqlctx Semantic Layer"
     assert "models" in data["properties"]
 
 
 @pytest.fixture(params=[generate_yaml_schema, generate_schema, "artifact"])
 def schema_validator(request):
     if request.param == "artifact":
-        schema = json.loads((Path(__file__).resolve().parents[1] / "sidemantic-schema.json").read_text())
+        schema = json.loads((Path(__file__).resolve().parents[1] / "sqlctx-schema.json").read_text())
     else:
         schema = request.param()
     Draft7Validator.check_schema(schema)

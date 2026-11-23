@@ -1,0 +1,30 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "sqlctx-rs"
+version = "0.13.2"
+description = "Standalone Rust runtime bindings for sqlctx"
+license = "AGPL-3.0-only"
+requires-python = ">=3.11"
+
+[tool.maturin]
+module-name = "sqlctx_rs"
+features = ["python"]
+
+# uv otherwise only checks Python packaging metadata for local wheel rebuilds.
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "../Cargo.toml" },
+    { file = "../Cargo.lock" },
+    { file = "build.rs" },
+    { file = "src/**/*" },
+    { file = "schemas/**/*" },
+    { file = "../.cargo/config.toml" },
+    { file = "../rust-toolchain*" },
+    { env = "RUSTFLAGS" },
+    { env = "CARGO_ENCODED_RUSTFLAGS" },
+]

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from sidemantic.adapters.cube import CubeAdapter
+from sqlctx.adapters.cube import CubeAdapter
 
 
 def test_cube_adapter():
@@ -466,7 +466,7 @@ def test_cube_financial_analytics():
 
     is_recurring_dim = transactions.get_dimension("is_recurring")
     assert is_recurring_dim is not None
-    # Cube boolean now maps to sidemantic boolean (round-trips back to Cube boolean)
+    # Cube boolean now maps to sqlctx boolean (round-trips back to Cube boolean)
     assert is_recurring_dim.type == "boolean"
 
     # Check transaction measures with filters

@@ -8,7 +8,7 @@ from tests.optional_dep_stubs import ensure_fake_mcp
 
 ensure_fake_mcp()
 
-from sidemantic import mcp_server
+from sqlctx import mcp_server
 
 
 def test_get_layer_requires_init():

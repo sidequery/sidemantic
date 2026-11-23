@@ -3,15 +3,15 @@
 import pytest
 import sqlglot
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.rust_bridge import rewrite_semantic_input
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.rust_bridge import rewrite_semantic_input
+from sqlctx.sql.query_rewriter import QueryRewriter
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires matching native extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires matching native extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(

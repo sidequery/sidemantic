@@ -5,17 +5,17 @@ import textwrap
 import pytest
 import yaml
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
-from sidemantic.adapters.bsl import BSLAdapter
-from sidemantic.adapters.hex import HexAdapter
-from sidemantic.adapters.lookml import LookMLAdapter
-from sidemantic.adapters.malloy import MalloyAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.adapters.superset import SupersetAdapter
-from sidemantic.core.relationship import Relationship
-from sidemantic.loaders import load_from_directory
+from sqlctx import Dimension, Metric, Model
+from sqlctx.adapters.atscale_sml import AtScaleSMLAdapter
+from sqlctx.adapters.bsl import BSLAdapter
+from sqlctx.adapters.hex import HexAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.malloy import MalloyAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.adapters.superset import SupersetAdapter
+from sqlctx.core.relationship import Relationship
+from sqlctx.loaders import load_from_directory
 
 
 def write_yaml(path, data):
@@ -52,7 +52,7 @@ def test_native_graph_window_roundtrip(tmp_path, layer, custom_window):
     before = layer.query(**query).fetchall()
     assert [row[-1] for row in before] == expected
     path = tmp_path / "native.yml"
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
     adapter.export(layer.graph, path)
     layer.graph = adapter.parse(path)
     for option in ("grain_to_date", "window_expression", "window_frame", "window_order"):
@@ -126,7 +126,7 @@ def test_superset_count_distinct_operand(tmp_path, layer, expression):
 def test_python_graph_metrics_loaded_with_provenance(tmp_path, layer, container):
     model_code = "Model(name='sales', table='sales', metrics=[Metric(name='revenue', agg='sum', sql='amount')])"
     metric_code = "Metric(name='double_revenue', type='derived', sql='sales.revenue * 2')"
-    imports = "from sidemantic import Model, Metric, SemanticLayer\nfrom sidemantic.core.semantic_graph import SemanticGraph\n"
+    imports = "from sqlctx import Model, Metric, SemanticLayer\nfrom sqlctx.core.semantic_graph import SemanticGraph\n"
     if container == "captured":
         code = f"{model_code}\n{metric_code}\n"
     elif container == "metric_only":
@@ -396,7 +396,7 @@ def test_python_metric_only_file_resolves_models_from_other_files(tmp_path, laye
         "cumulative": "Metric(name='result', type='cumulative', sql='sales.revenue', grain_to_date='month')",
         "reference": "Metric(name='result', sql='sales.revenue')",
     }
-    (tmp_path / "a_metrics.py").write_text("from sidemantic import Metric\n" + definitions[kind] + "\n")
+    (tmp_path / "a_metrics.py").write_text("from sqlctx import Metric\n" + definitions[kind] + "\n")
     load_from_directory(layer, tmp_path, strict=True)
     assert layer.graph.metrics["result"]._source_file == "a_metrics.py"
     if kind != "cumulative":

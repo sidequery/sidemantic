@@ -1,4 +1,4 @@
-"""End-to-end tests for `sidemantic server postgres` with a real PostgreSQL client.
+"""End-to-end tests for `sqlctx server postgres` with a real PostgreSQL client.
 
 riffq's event loop blocks until the process is signalled, so each server runs in
 a subprocess started through the CLI and psycopg talks to it on an ephemeral
@@ -80,7 +80,7 @@ class PgServer:
             "port": self.port,
             "user": self.user,
             "password": self.password,
-            "dbname": "sidemantic",
+            "dbname": "sqlctx",
             "autocommit": True,
             "connect_timeout": 10,
         }
@@ -92,7 +92,7 @@ def _start_server(tmp_path: Path, arguments: list[str], **credentials):
     """Start the CLI server and wait until a client can connect."""
     port = _free_port()
     log_path = tmp_path / f"pg-server-{port}.log"
-    command = [sys.executable, "-c", "from sidemantic.cli import app; app()", "server", "postgres"]
+    command = [sys.executable, "-c", "from sqlctx.cli import app; app()", "server", "postgres"]
     with log_path.open("w") as log:
         process = subprocess.Popen(
             [*command, *arguments, "--port", str(port)], cwd=REPO_ROOT, stdout=log, stderr=subprocess.STDOUT
@@ -332,7 +332,7 @@ def test_catalog_lists_semantic_models_with_columns(connection):
         ("discount_total", "float8", "double precision"),
     ]
 
-    assert connection.execute("SELECT current_database()").fetchall() == [("sidemantic",)]
+    assert connection.execute("SELECT current_database()").fetchall() == [("sqlctx",)]
     assert connection.execute("SELECT pg_catalog.version()").fetchone()[0].startswith("PostgreSQL ")
 
 

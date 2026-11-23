@@ -21,7 +21,7 @@ jobs:
         env:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test
-          POSTGRES_DB: sidemantic_test
+          POSTGRES_DB: sqlctx_test
         ports:
           - 5432:5432
         options: >-
@@ -58,10 +58,10 @@ jobs:
       - name: Run PostgreSQL integration tests
         env:
           POSTGRES_TEST: "1"
-          POSTGRES_URL: "postgres://test:test@localhost:5432/sidemantic_test"
+          POSTGRES_URL: "postgres://test:test@localhost:5432/sqlctx_test"
           POSTGRES_HOST: "localhost"
           POSTGRES_PORT: "5432"
-          POSTGRES_DB: "sidemantic_test"
+          POSTGRES_DB: "sqlctx_test"
           POSTGRES_USER: "test"
           POSTGRES_PASSWORD: "test"
         run: |
@@ -73,7 +73,7 @@ jobs:
           POSTGRES_TEST: "1"
           POSTGRES_HOST: "localhost"
           POSTGRES_PORT: "5432"
-          POSTGRES_DB: "sidemantic_test"
+          POSTGRES_DB: "sqlctx_test"
           POSTGRES_USER: "test"
           POSTGRES_PASSWORD: "test"
         run: |
@@ -83,7 +83,7 @@ jobs:
       # The suite parametrizes Python, public Rust (no fallback), and native Rust import/compile.
       - name: Run Ossie on real PostgreSQL and DuckDB
         env:
-          POSTGRES_URL: "postgres://test:test@localhost:5432/sidemantic_test"
+          POSTGRES_URL: "postgres://test:test@localhost:5432/sqlctx_test"
         run: |
           OSSIE_INTEGRATION_BACKEND=duckdb uv run pytest -m integration tests/db/test_ossie_integration.py -v
           OSSIE_INTEGRATION_BACKEND=postgres uv run pytest -m integration tests/db/test_ossie_integration.py -v
@@ -315,7 +315,7 @@ jobs:
         env:
           POSTGRES_USER: test
           POSTGRES_PASSWORD: test
-          POSTGRES_DB: sidemantic_test
+          POSTGRES_DB: sqlctx_test
         ports:
           - 5432:5432
         options: >-
@@ -394,7 +394,7 @@ jobs:
         env:
           ADBC_TEST: "1"
           ADBC_DB: ${{ matrix.db }}
-          POSTGRES_URL: "postgres://test:test@localhost:5432/sidemantic_test"
+          POSTGRES_URL: "postgres://test:test@localhost:5432/sqlctx_test"
           BIGQUERY_EMULATOR_HOST: "localhost:9050"
           BIGQUERY_PROJECT: "test-project"
           BIGQUERY_DATASET: "test_dataset"
@@ -408,22 +408,22 @@ jobs:
       - name: Export SQLite ADBC driver for Rust
         if: matrix.db == 'sqlite'
         run: |
-          echo "SIDEMANTIC_TEST_ADBC_SQLITE_DRIVER=sqlite" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_SQLITE_URI=:memory:" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=sqlite" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_SQLITE_DRIVER=sqlite" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_SQLITE_URI=:memory:" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_REQUIRE=sqlite" >> "$GITHUB_ENV"
 
       - name: Export DuckDB ADBC driver for Rust
         if: matrix.db == 'duckdb'
         run: |
-          echo "SIDEMANTIC_TEST_ADBC_DUCKDB_DRIVER=duckdb" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=duckdb" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_DUCKDB_DRIVER=duckdb" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_REQUIRE=duckdb" >> "$GITHUB_ENV"
 
       - name: Export Postgres ADBC driver for Rust
         if: matrix.db == 'postgres'
         run: |
-          echo "SIDEMANTIC_TEST_ADBC_POSTGRES_DRIVER=postgresql" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_POSTGRES_URI=postgresql://test:test@localhost:5432/sidemantic_test" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=postgres" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_POSTGRES_DRIVER=postgresql" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_POSTGRES_URI=postgresql://test:test@localhost:5432/sqlctx_test" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_REQUIRE=postgres" >> "$GITHUB_ENV"
 
       - name: Export BigQuery ADBC driver for Rust
         if: matrix.db == 'bigquery'
@@ -439,9 +439,9 @@ jobs:
           CREDENTIALS_FILE="$(mktemp)"
           printf '%s' "$BIGQUERY_ADBC_CREDENTIALS_JSON" > "$CREDENTIALS_FILE"
           echo "::add-mask::$BIGQUERY_ADBC_CREDENTIALS_JSON"
-          echo "SIDEMANTIC_TEST_ADBC_BIGQUERY_DRIVER=bigquery" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_BIGQUERY_DBOPTS=adbc.bigquery.sql.project_id=$BIGQUERY_ADBC_PROJECT,adbc.bigquery.sql.dataset_id=$BIGQUERY_ADBC_DATASET,adbc.bigquery.sql.auth_type=adbc.bigquery.sql.auth_type.json_credential_file,adbc.bigquery.sql.auth_credentials=$CREDENTIALS_FILE" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=bigquery" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_BIGQUERY_DRIVER=bigquery" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_BIGQUERY_DBOPTS=adbc.bigquery.sql.project_id=$BIGQUERY_ADBC_PROJECT,adbc.bigquery.sql.dataset_id=$BIGQUERY_ADBC_DATASET,adbc.bigquery.sql.auth_type=adbc.bigquery.sql.auth_type.json_credential_file,adbc.bigquery.sql.auth_credentials=$CREDENTIALS_FILE" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_REQUIRE=bigquery" >> "$GITHUB_ENV"
 
       - name: Export Snowflake ADBC driver for Rust
         if: matrix.db == 'snowflake'
@@ -453,33 +453,33 @@ jobs:
             exit 0
           fi
           echo "::add-mask::$SNOWFLAKE_ADBC_URI"
-          echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_DRIVER=snowflake" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_SNOWFLAKE_URI=$SNOWFLAKE_ADBC_URI" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=snowflake" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_SNOWFLAKE_DRIVER=snowflake" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_SNOWFLAKE_URI=$SNOWFLAKE_ADBC_URI" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_REQUIRE=snowflake" >> "$GITHUB_ENV"
 
       - name: Export ClickHouse ADBC driver for Rust
         if: matrix.db == 'clickhouse'
         run: |
-          echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_DRIVER=clickhouse" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_CLICKHOUSE_URI=http://localhost:8123/" >> "$GITHUB_ENV"
-          echo "SIDEMANTIC_TEST_ADBC_REQUIRE=clickhouse" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_CLICKHOUSE_DRIVER=clickhouse" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_CLICKHOUSE_URI=http://localhost:8123/" >> "$GITHUB_ENV"
+          echo "SQLCTX_TEST_ADBC_REQUIRE=clickhouse" >> "$GITHUB_ENV"
 
       - name: Run Rust ADBC semantic smoke
         env:
-          SIDEMANTIC_ADBC_TESTS: "1"
-          SIDEMANTIC_ADBC_DB: ${{ matrix.db }}
-          SIDEMANTIC_ADBC_REQUIRED: ${{ contains(fromJSON('["sqlite","duckdb","postgres","clickhouse"]'), matrix.db) }}
-          POSTGRES_URL: "postgres://test:test@localhost:5432/sidemantic_test"
+          SQLCTX_ADBC_TESTS: "1"
+          SQLCTX_ADBC_DB: ${{ matrix.db }}
+          SQLCTX_ADBC_REQUIRED: ${{ contains(fromJSON('["sqlite","duckdb","postgres","clickhouse"]'), matrix.db) }}
+          POSTGRES_URL: "postgres://test:test@localhost:5432/sqlctx_test"
           BIGQUERY_EMULATOR_HOST: "localhost:9050"
           BIGQUERY_PROJECT: "test-project"
           BIGQUERY_DATASET: "test_dataset"
           CLICKHOUSE_URL: "adbc://clickhouse?uri=http://localhost:8123/"
           SNOWFLAKE_TEST: "1"
           RUST_MIN_STACK: 16777216
-        run: cargo test --manifest-path sidemantic-rs/Cargo.toml --features adbc-exec --test adbc_engines -- --nocapture
+        run: cargo test --manifest-path sqlctx-rs/Cargo.toml --features adbc-exec --test adbc_engines -- --nocapture
 
       - name: Run Rust ADBC probe
-        run: cargo test --manifest-path sidemantic-rs/Cargo.toml --features adbc-exec --test adbc_driver_matrix
+        run: cargo test --manifest-path sqlctx-rs/Cargo.toml --features adbc-exec --test adbc_driver_matrix
 
       - name: Save completed build caches
         if: ${{ !cancelled() }}

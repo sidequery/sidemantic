@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.interchange.ossie import (
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.interchange.ossie import (
     CURRENT_OSSIE_SCHEMA_COMMIT,
     LEGACY_OSSIE_SCHEMA_COMMIT,
     OssieParseOptions,
@@ -90,7 +90,7 @@ def _run_pinned_validator(output_path: Path, *, schema_version: str) -> subproce
     ("schema_version", "serialization"),
     [("0.1.1", OssieSerialization.JSON), ("0.2.0.dev0", OssieSerialization.YAML)],
 )
-def test_canonical_sidemantic_export_passes_exact_pinned_apache_validator(
+def test_canonical_sqlctx_export_passes_exact_pinned_apache_validator(
     tmp_path: Path,
     schema_version: str,
     serialization: OssieSerialization,

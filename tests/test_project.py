@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.project import ProjectContext, ProjectResolutionError, ensure_mutually_exclusive
+from sqlctx.project import ProjectContext, ProjectResolutionError, ensure_mutually_exclusive
 
 
 def test_discovers_config_upward_and_resolves_config_paths_from_project_root(tmp_path):
@@ -10,7 +10,7 @@ def test_discovers_config_upward_and_resolves_config_paths_from_project_root(tmp
     (tmp_path / "data").mkdir()
     database = tmp_path / "data" / "warehouse.duckdb"
     database.touch()
-    (tmp_path / "sidemantic.yaml").write_text(
+    (tmp_path / "sqlctx.yaml").write_text(
         "models_dir: models\nconnection:\n  type: duckdb\n  path: data/warehouse.duckdb\n"
     )
     nested = tmp_path / "work" / "nested"
@@ -30,7 +30,7 @@ def test_explicit_paths_override_config_and_are_relative_to_invocation_dir(tmp_p
     project_root = tmp_path / "project"
     project_root.mkdir()
     (project_root / "configured-models").mkdir()
-    (project_root / "sidemantic.yaml").write_text("models_dir: configured-models\n")
+    (project_root / "sqlctx.yaml").write_text("models_dir: configured-models\n")
     nested = project_root / "work"
     nested.mkdir()
     explicit_models = nested / "local-models"
@@ -71,7 +71,7 @@ def test_conventional_project_is_discovered_upward_without_config(tmp_path):
 def test_config_without_models_dir_uses_conventional_models_directory(tmp_path):
     models = tmp_path / "models"
     models.mkdir()
-    (tmp_path / "sidemantic.yaml").write_text("runtime:\n  engine: python\n")
+    (tmp_path / "sqlctx.yaml").write_text("runtime:\n  engine: python\n")
 
     assert ProjectContext.discover(tmp_path).resolve_models() == models
 
@@ -97,7 +97,7 @@ def test_dashboard_config_path_is_relative_to_config_root(tmp_path):
     specs.mkdir()
     dashboard = specs / "sales.yml"
     dashboard.touch()
-    (tmp_path / "sidemantic.yaml").write_text("dashboard: specs/sales.yml\n")
+    (tmp_path / "sqlctx.yaml").write_text("dashboard: specs/sales.yml\n")
     nested = tmp_path / "nested"
     nested.mkdir()
 

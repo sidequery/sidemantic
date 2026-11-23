@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "sidemantic-webapp",
+      "name": "sqlctx-webapp",
       "dependencies": {
         "apache-arrow": "^17.0.0",
         "react": "^18.3.1",

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
 
 from ..helpers import (
     assert_dimension_equivalent,
@@ -18,8 +18,8 @@ from ..helpers import (
 # =============================================================================
 
 
-def test_metricflow_to_sidemantic_to_metricflow_roundtrip():
-    """Test that MetricFlow -> Sidemantic -> MetricFlow preserves structure."""
+def test_metricflow_to_sqlctx_to_metricflow_roundtrip():
+    """Test that MetricFlow -> sqlctx -> MetricFlow preserves structure."""
     # Import from MetricFlow
     mf_adapter = MetricFlowAdapter()
     graph = mf_adapter.parse("tests/fixtures/metricflow/semantic_models.yml")
@@ -145,10 +145,10 @@ if __name__ == "__main__":
 
 def test_non_additive_window_groupings_roundtrip(tmp_path):
     """window_groupings must survive MetricFlow export/import (PR review)."""
-    from sidemantic.adapters.metricflow import MetricFlowAdapter
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.adapters.metricflow import MetricFlowAdapter
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.model import Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(

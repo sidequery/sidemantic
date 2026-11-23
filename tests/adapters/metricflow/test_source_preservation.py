@@ -3,8 +3,8 @@
 import pytest
 import yaml
 
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic.fidelity import capture_import_report
+from sqlctx.adapters.metricflow import MetricFlowAdapter
+from sqlctx.fidelity import capture_import_report
 
 
 def _roundtrip(tmp_path, source):
@@ -197,10 +197,10 @@ def test_compiled_manifest_does_not_silently_lose_node_relation(tmp_path):
 
 
 def test_export_diagnoses_unrepresentable_native_metrics_and_relations(tmp_path):
-    from sidemantic import Metric, Model
-    from sidemantic.core.relationship import Relationship
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.fidelity import capture_export_report
+    from sqlctx import Metric, Model
+    from sqlctx.core.relationship import Relationship
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.fidelity import capture_export_report
 
     graph = SemanticGraph()
     graph.add_model(

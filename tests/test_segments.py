@@ -1,6 +1,6 @@
 """Test segment functionality."""
 
-from sidemantic import Dimension, Metric, Model, Segment
+from sqlctx import Dimension, Metric, Model, Segment
 
 
 def test_segment_basic(layer):

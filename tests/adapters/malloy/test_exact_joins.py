@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.malloy import MalloyAdapter, MalloySchemaExposureError
-from sidemantic.core.consumption import Explore
-from sidemantic.core.relationship import Relationship
+from sqlctx import SemanticLayer
+from sqlctx.adapters.malloy import MalloyAdapter, MalloySchemaExposureError
+from sqlctx.core.consumption import Explore
+from sqlctx.core.relationship import Relationship
 
 
 def _parse(tmp_path: Path, text: str, *, strict: bool = False):

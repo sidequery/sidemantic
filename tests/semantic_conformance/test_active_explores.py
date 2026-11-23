@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import (
+from sqlctx import (
     Dimension,
     Explore,
     Metric,
@@ -13,14 +13,14 @@ from sidemantic import (
     SecurityPolicy,
     SemanticLayer,
 )
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.semantic_handoff import graph_to_semantic_input
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.semantic_handoff import graph_to_semantic_input
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Explore acceptance requires the real extension")
+        pytest.importorskip("sqlctx_rs", reason="Explore acceptance requires the real extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False, enforce_visibility=True)
     layer.add_model(
         Model(
@@ -162,7 +162,7 @@ def test_saved_query_cannot_override_resolved_contract(layer):
 def test_unjoinable_explore_base_is_rejected(layer):
     layer.graph.models["accounts"].relationships.clear()
     # Rebuild the graph's cached relationship index after changing the fixture.
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     for model in layer.graph.models.values():

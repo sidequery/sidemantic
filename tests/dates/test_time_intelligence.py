@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic.core.time_intelligence import TimeComparison, TrailingPeriod, generate_time_comparison_sql
+from sqlctx.core.time_intelligence import TimeComparison, TrailingPeriod, generate_time_comparison_sql
 
 
 def test_time_comparison_default_offsets():

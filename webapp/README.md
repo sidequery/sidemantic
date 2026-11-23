@@ -1,8 +1,8 @@
-# Sidemantic Web UI
+# sqlctx Web UI
 
-An embeddable analytics web app for the Sidemantic semantic layer. It talks to the **shared HTTP
-contract that both backends expose identically** — Python (`sidemantic api-serve`) and Rust
-(`sidemantic-server`): `GET /describe` · `GET /graph` · `GET /models` · `POST /compile` ·
+An embeddable analytics web app for the sqlctx semantic layer. It talks to the **shared HTTP
+contract that both backends expose identically** — Python (`sqlctx api-serve`) and Rust
+(`sqlctx-server`): `GET /describe` · `GET /graph` · `GET /models` · `POST /compile` ·
 `POST /query` (JSON or Arrow).
 
 It's a fast metrics dashboard — big-number KPIs, a time series with period-over-period comparison,
@@ -38,18 +38,18 @@ hot reload.
 
 ```bash
 # 1. Start a backend (Python example, against the bundled ecommerce model):
-uv run --extra dev sidemantic api-serve examples/ecommerce/models \
+uv run --extra dev sqlctx api-serve examples/ecommerce/models \
   --db examples/ecommerce/data/ecommerce.db --port 4400
 
 # 2. Run the UI (proxies /query, /graph, /describe, ... to :4400):
 cd webapp
 bun install
 bun run dev            # http://localhost:4321
-# Point at a different backend:  SIDEMANTIC_API=http://host:port bun run dev
+# Point at a different backend:  SQLCTX_API=http://host:port bun run dev
 ```
 
-The Rust backend (`sidemantic-server`, built with the `runtime-server` feature) exposes the same
-contract — set `SIDEMANTIC_API` to its address to develop against it instead.
+The Rust backend (`sqlctx-server`, built with the `runtime-server` feature) exposes the same
+contract — set `SQLCTX_API` to its address to develop against it instead.
 
 ## Build / embed
 
@@ -57,12 +57,12 @@ contract — set `SIDEMANTIC_API` to its address to develop against it instead.
 bun run build                      # type-checks, then emits dist/ (base="./")
 
 # Or build + sync the bundle into both backends for embedding (run from the repo root):
-uv run scripts/build_webapp.py     # -> sidemantic/ui/static and sidemantic-rs/ui (committed)
+uv run scripts/build_webapp.py     # -> sqlctx/ui/static and sqlctx-rs/ui (committed)
 ```
 
 ## Architecture
 
-- `src/data/` — backend adapter. `SidemanticBackend` interface with an `HttpBackend` implementation
+- `src/data/` — backend adapter. `SqlctxBackend` interface with an `HttpBackend` implementation
   (Arrow-or-JSON). A future in-browser `wasmAdapter` (Rust-WASM compile + DuckDB-WASM execute) can
   drop in behind the same interface with no UI change.
 - `src/lib/` — catalog builder (`/describe` rich, `/graph` names-only fallback), query builders,
@@ -75,12 +75,12 @@ uv run scripts/build_webapp.py     # -> sidemantic/ui/static and sidemantic-rs/u
 
 The built bundle is served by either backend from a single process:
 
-- **Python** — `sidemantic api-serve` serves the UI at `/` by default (`--no-ui` to disable). The
-  bundle lives at `sidemantic/ui/static/` (force-included in the wheel); UI routes are public while
+- **Python** — `sqlctx api-serve` serves the UI at `/` by default (`--no-ui` to disable). The
+  bundle lives at `sqlctx/ui/static/` (force-included in the wheel); UI routes are public while
   the data endpoints stay authenticated. The UI exchanges a bearer entered in its login prompt for
   a short-lived HttpOnly session cookie; bearer tokens are never accepted from URLs or persisted in
   browser storage.
-- **Rust** — `sidemantic-server` (built with the `runtime-server` feature) bakes the bundle into the
+- **Rust** — `sqlctx-server` (built with the `runtime-server` feature) bakes the bundle into the
   binary via `rust-embed` and serves it from a router fallback registered after the auth layer.
   Until that backend exposes the session exchange, the UI keeps a prompted bearer only in memory
   for the lifetime of the page.

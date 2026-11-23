@@ -4,8 +4,8 @@ import ast
 
 import pytest
 
-from sidemantic.adapters.bsl import BSLAdapter
-from sidemantic.adapters.bsl_expr import (
+from sqlctx.adapters.bsl import BSLAdapter
+from sqlctx.adapters.bsl_expr import (
     ParsedExpr,
     _sql_to_bsl_expr,
     bsl_calc_to_sql,
@@ -389,7 +389,7 @@ class TestBSLAdapterImport:
 
     def test_bsl_all_count_distinct_uses_global_distinct_denominator(self, tmp_path):
         """_.all() over count_distinct should not sum grouped distinct counts."""
-        from sidemantic import SemanticLayer
+        from sqlctx import SemanticLayer
 
         bsl_file = tmp_path / "events.yml"
         bsl_file.write_text(
@@ -422,7 +422,7 @@ events:
 
     def test_bsl_all_count_distinct_preserves_joined_filters(self, tmp_path):
         """_.all() over count_distinct should use the joined filtered row set."""
-        from sidemantic import SemanticLayer
+        from sqlctx import SemanticLayer
 
         bsl_file = tmp_path / "orders.yml"
         bsl_file.write_text(
@@ -480,10 +480,10 @@ class TestBSLAdapterExport:
         import tempfile
         from pathlib import Path
 
-        from sidemantic.core.dimension import Dimension
-        from sidemantic.core.metric import Metric
-        from sidemantic.core.model import Model
-        from sidemantic.core.semantic_graph import SemanticGraph
+        from sqlctx.core.dimension import Dimension
+        from sqlctx.core.metric import Metric
+        from sqlctx.core.model import Model
+        from sqlctx.core.semantic_graph import SemanticGraph
 
         # Create a simple model
         model = Model(
@@ -553,9 +553,9 @@ class TestBSLAdapterExportDetailed:
 
         import yaml
 
-        from sidemantic.core.metric import Metric
-        from sidemantic.core.model import Model
-        from sidemantic.core.semantic_graph import SemanticGraph
+        from sqlctx.core.metric import Metric
+        from sqlctx.core.model import Model
+        from sqlctx.core.semantic_graph import SemanticGraph
 
         model = Model(
             name="sales",
@@ -601,9 +601,9 @@ class TestBSLAdapterExportDetailed:
 
         import yaml
 
-        from sidemantic.core.model import Model
-        from sidemantic.core.relationship import Relationship
-        from sidemantic.core.semantic_graph import SemanticGraph
+        from sqlctx.core.model import Model
+        from sqlctx.core.relationship import Relationship
+        from sqlctx.core.semantic_graph import SemanticGraph
 
         model = Model(
             name="orders",
@@ -652,9 +652,9 @@ class TestBSLAdapterExportDetailed:
 
         import yaml
 
-        from sidemantic.core.dimension import Dimension
-        from sidemantic.core.model import Model
-        from sidemantic.core.semantic_graph import SemanticGraph
+        from sqlctx.core.dimension import Dimension
+        from sqlctx.core.model import Model
+        from sqlctx.core.semantic_graph import SemanticGraph
 
         model = Model(
             name="test",
@@ -706,8 +706,8 @@ class TestBSLAdapterExportDetailed:
         import tempfile
         from pathlib import Path
 
-        from sidemantic.core.model import Model
-        from sidemantic.core.semantic_graph import SemanticGraph
+        from sqlctx.core.model import Model
+        from sqlctx.core.semantic_graph import SemanticGraph
 
         graph = SemanticGraph()
         graph.add_model(Model(name="orders", table="orders", primary_key="id"))
@@ -906,8 +906,8 @@ class TestBSLLoaderAutoDetection:
         import tempfile
         from pathlib import Path
 
-        from sidemantic import SemanticLayer
-        from sidemantic.loaders import load_from_directory
+        from sqlctx import SemanticLayer
+        from sqlctx.loaders import load_from_directory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create a BSL file
@@ -934,8 +934,8 @@ test_model:
         import tempfile
         from pathlib import Path
 
-        from sidemantic import SemanticLayer
-        from sidemantic.loaders import load_from_directory
+        from sqlctx import SemanticLayer
+        from sqlctx.loaders import load_from_directory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             bsl_file = Path(tmpdir) / "flights.yml"
@@ -958,8 +958,8 @@ aircraft_models:
         import tempfile
         from pathlib import Path
 
-        from sidemantic import SemanticLayer
-        from sidemantic.loaders import load_from_directory
+        from sqlctx import SemanticLayer
+        from sqlctx.loaders import load_from_directory
 
         with tempfile.TemporaryDirectory() as tmpdir:
             bsl_file = Path(tmpdir) / "ga_sessions.yaml"
@@ -994,8 +994,8 @@ cubes:
     sql_table: test
 """
 
-        # Sidemantic uses models: key
-        sidemantic_content = """
+        # sqlctx uses models: key
+        sqlctx_content = """
 models:
   - name: test
     table: test
@@ -1007,8 +1007,8 @@ models:
         # Check that BSL pattern doesn't match Cube
         assert not ("_." in cube_content and "dimensions:" in cube_content)
 
-        # Check that BSL pattern doesn't match Sidemantic
-        assert not ("_." in sidemantic_content and "dimensions:" in sidemantic_content)
+        # Check that BSL pattern doesn't match sqlctx
+        assert not ("_." in sqlctx_content and "dimensions:" in sqlctx_content)
 
 
 class TestBSLCurrentSyntaxSupport:
@@ -1018,7 +1018,7 @@ class TestBSLCurrentSyntaxSupport:
         import tempfile
         from pathlib import Path
 
-        from sidemantic.sql.generator import SQLGenerator
+        from sqlctx.sql.generator import SQLGenerator
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write("""
@@ -1055,7 +1055,7 @@ test:
         import tempfile
         from pathlib import Path
 
-        from sidemantic.sql.generator import SQLGenerator
+        from sqlctx.sql.generator import SQLGenerator
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write("""
@@ -1091,7 +1091,7 @@ flights:
 
         import duckdb
 
-        from sidemantic.sql.generator import SQLGenerator
+        from sqlctx.sql.generator import SQLGenerator
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write("""
@@ -1225,7 +1225,7 @@ events:
 
         import yaml
 
-        from sidemantic.sql.generator import SQLGenerator
+        from sqlctx.sql.generator import SQLGenerator
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write("""
@@ -1303,7 +1303,7 @@ flights:
         import duckdb
         import yaml
 
-        from sidemantic.sql.generator import SQLGenerator
+        from sqlctx.sql.generator import SQLGenerator
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write("""
@@ -1437,7 +1437,7 @@ accounts:
 
         import duckdb
 
-        from sidemantic.sql.generator import SQLGenerator
+        from sqlctx.sql.generator import SQLGenerator
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
             f.write("""
@@ -1740,7 +1740,7 @@ class TestBSLAdapterFilter:
 
     def test_filter_preserved_in_cross_format_export(self):
         """Filtered BSL model preserves filter when exported to Cube."""
-        from sidemantic.adapters.cube import CubeAdapter
+        from sqlctx.adapters.cube import CubeAdapter
 
         adapter = BSLAdapter()
         graph = adapter.parse("tests/fixtures/bsl/yaml_example_filter.yaml")
@@ -1838,7 +1838,7 @@ class TestBSLFilterAutoApply:
     """Tests that model-level filters are auto-applied in queries via model.sql."""
 
     def test_filter_applied_in_query(self):
-        from sidemantic import SemanticLayer
+        from sqlctx import SemanticLayer
 
         adapter = BSLAdapter()
         graph = adapter.parse("tests/fixtures/bsl/yaml_example_filter.yaml")
@@ -1930,9 +1930,9 @@ class TestBSLRoundtripFidelity:
 
         import yaml
 
-        from sidemantic.core.metric import Metric
-        from sidemantic.core.model import Model
-        from sidemantic.core.semantic_graph import SemanticGraph
+        from sqlctx.core.metric import Metric
+        from sqlctx.core.model import Model
+        from sqlctx.core.semantic_graph import SemanticGraph
 
         model = Model(
             name="test",

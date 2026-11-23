@@ -18,11 +18,11 @@ from contextlib import suppress
 
 import modal
 
-APP_NAME = "sidemantic-headless-charting-demo"
+APP_NAME = "sqlctx-headless-charting-demo"
 DEFAULT_RENDERER = "vega-lite"
 CACHE_DIR = "/cache"
 DUCKDB_PATH = f"{CACHE_DIR}/crossfilter.duckdb"
-CACHE_VOLUME_NAME = "sidemantic-headless-charting-cache"
+CACHE_VOLUME_NAME = "sqlctx-headless-charting-cache"
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -36,7 +36,7 @@ image = (
         "sqlglot==27.12.0",
         "typer>=0.9.0",
     )
-    .add_local_python_source("sidemantic")
+    .add_local_python_source("sqlctx")
     .add_local_dir(
         "examples/integrations",
         remote_path="/root/examples/integrations",

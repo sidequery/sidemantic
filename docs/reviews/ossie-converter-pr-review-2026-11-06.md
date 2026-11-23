@@ -34,7 +34,7 @@ the core lazy-import smoke passed. The full runtime/version matrix remains for C
 
 ### 1. Default LookML and Malloy conversions fail validation
 
-Location: `sidemantic/formats.py:383–384`.
+Location: `sqlctx/formats.py:383–384`.
 
 `validate_conversion_output` infers serialization from the destination suffix.
 The CLI defaults to `converted.{target}.yml`, including LookML and Malloy. With
@@ -44,7 +44,7 @@ Validate using the target format, or select a matching default extension.
 
 ### 2. Directed one-to-many joins double a derived metric
 
-Location: `sidemantic/sql/generator.py:3249`.
+Location: `sqlctx/sql/generator.py:3249`.
 
 The preaggregation decision recognizes only `many_to_one` paths. For forward-only
 `customers → orders` declared `one_to_many`, customer credit 100, two orders worth
@@ -55,7 +55,7 @@ one-to-many direction as well.
 
 ### 3. Forward-only nested roles omit their join keys
 
-Location: `sidemantic/core/semantic_graph.py:600`; interacts with
+Location: `sqlctx/core/semantic_graph.py:600`; interacts with
 `SQLGenerator._model_needs_keyed_join_columns`.
 
 For `orders → buyer(customers) → buyer$regions`, forward-only many-to-one edges
@@ -67,7 +67,7 @@ consider incoming role-instance edges or the actual query join plan.
 
 ### 4. Both official bridges misbind calculated-column dependencies
 
-Location: `sidemantic/adapters/official.py:376–386`.
+Location: `sqlctx/adapters/official.py:376–386`.
 
 Lightdash accepts `amount.sql = ${TABLE}.raw_amount`, `doubled.sql = ${amount} * 2`
 and a sum metric on `doubled`. The official converter emits the logical reference
@@ -82,7 +82,7 @@ lowering. Both reproductions used the actual pinned official CLIs.
 
 ### 5. Sigma changes physical source identity
 
-Location: `sidemantic/adapters/official.py:184–187` (export checks also at 575–580).
+Location: `sqlctx/adapters/official.py:184–187` (export checks also at 575–580).
 
 Native `source.path: ["a.b"]` imports as SQL `a.b`, rather than the single table
 identifier `"a.b"`. With both tables present, the bridge reads schema `a`/table
@@ -93,7 +93,7 @@ values, or reject unsupported paths in both directions.
 
 ### 6. Snowflake restores an implicit join type over an explicit edit
 
-Location: `sidemantic/adapters/snowflake.py:1267–1268`.
+Location: `sqlctx/adapters/snowflake.py:1267–1268`.
 
 Import a relationship with no `join_type`, then set both its `join_type` and
 `bsl_how` metadata to `inner`. Export unconditionally removes `join_type` because
@@ -102,7 +102,7 @@ property while its effective semantics remain the original default.
 
 ### 7. Omni topics recreate deleted relationships
 
-Location: `sidemantic/adapters/omni.py:859–862`.
+Location: `sqlctx/adapters/omni.py:859–862`.
 
 Import a topic joining orders to customers plus an explicit keyed relationship,
 clear the orders relationships, and export to a fresh directory. The retained
@@ -112,7 +112,7 @@ conflicting edits.
 
 ### 8. Omni ignores edited time granularities
 
-Location: `sidemantic/adapters/omni.py:957`.
+Location: `sqlctx/adapters/omni.py:957`.
 
 Import `timeframes: [date, month]`, then set `granularity="year"` and
 `supported_granularities=["year"]`. Export still emits the original timeframes;
@@ -121,7 +121,7 @@ unchanged-projection check.
 
 ### 9. Hex ignores date/timestamp granularity edits
 
-Location: `sidemantic/adapters/hex.py:619`.
+Location: `sqlctx/adapters/hex.py:619`.
 
 Native type replay compares only `dim.type`, although dates and timestamps both
 map to `time`. Changing an imported date's granularity to hour still exports a
@@ -131,7 +131,7 @@ granularity in the replay guard or diagnose an incompatible edit.
 
 ### 10. Cube source properties overwrite an edited dimension type
 
-Location: `sidemantic/adapters/cube.py:1753`.
+Location: `sqlctx/adapters/cube.py:1753`.
 
 Import a switch dimension, change it to numeric with `sql="amount"`, then export.
 Unconditional source-property replay restores `type: switch` and the original
@@ -141,7 +141,7 @@ projection, as the CASE branch already does. A related probe found retained
 
 ### 11. MetricFlow legacy conversion export ignores edited summary fields
 
-Location: `sidemantic/adapters/metricflow.py:1114–1115`.
+Location: `sqlctx/adapters/metricflow.py:1114–1115`.
 
 Import a legacy conversion metric with a seven-day window, then change its
 `graph.metadata["metricflow_conversion_metrics"][name]["window"]` to `"30 days"`.
@@ -152,7 +152,7 @@ reject conflicting changes.
 
 ### 12. ThoughtSpot Table routing drops edited expressions
 
-Location: `sidemantic/adapters/thoughtspot.py:1657–1663`.
+Location: `sqlctx/adapters/thoughtspot.py:1657–1663`.
 
 Import `tests/fixtures/thoughtspot/table_joins.table.tml`, change the orders
 metric SQL to `amount * 2`, export and reimport. SQL becomes `amount` because the
@@ -162,7 +162,7 @@ expressions before retaining Table shape or export them faithfully.
 
 ### 13. GoodData retains an obsolete physical attribute binding
 
-Location: `sidemantic/adapters/gooddata.py:788`.
+Location: `sqlctx/adapters/gooddata.py:788`.
 
 Import an unlabelled attribute `{id: status, sourceColumn: old_status}`, change its
 dimension SQL to `new_status`, and export. The attribute still points to

@@ -10,11 +10,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.adapters.official import LightdashAdapter, OfficialConverterError, SigmaAdapter
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.fidelity import capture_export_report
-from sidemantic.interchange.ossie import OssieSynthesisError
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.adapters.official import LightdashAdapter, OfficialConverterError, SigmaAdapter
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.fidelity import capture_export_report
+from sqlctx.interchange.ossie import OssieSynthesisError
 
 LIGHTDASH = {
     "type": "model",
@@ -104,7 +104,7 @@ def graph():
 
 def mock_cli(monkeypatch, *, document=OSSIE, stderr="", returncode=0):
     calls = []
-    monkeypatch.setattr("sidemantic.adapters.official.shutil.which", lambda _: "/mock/official-cli")
+    monkeypatch.setattr("sqlctx.adapters.official.shutil.which", lambda _: "/mock/official-cli")
 
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
@@ -112,13 +112,13 @@ def mock_cli(monkeypatch, *, document=OSSIE, stderr="", returncode=0):
         output.write_text(yaml.safe_dump(document))
         return subprocess.CompletedProcess(argv, returncode, "", stderr)
 
-    monkeypatch.setattr("sidemantic.adapters.official.subprocess.run", run)
+    monkeypatch.setattr("sqlctx.adapters.official.subprocess.run", run)
     return calls
 
 
 def test_external_prerequisite_is_explicit_and_never_installed(tmp_path, monkeypatch):
     path = write_native(tmp_path, "sigma")
-    monkeypatch.setattr("sidemantic.adapters.official.shutil.which", lambda _: None)
+    monkeypatch.setattr("sqlctx.adapters.official.shutil.which", lambda _: None)
     with pytest.raises(OfficialConverterError, match="does not install it automatically"):
         SigmaAdapter().parse(path)
 
@@ -215,7 +215,7 @@ def test_silent_member_loss_is_rejected(tmp_path, monkeypatch):
 
 def test_runtime_extension_output_is_rejected(tmp_path, monkeypatch):
     document = copy.deepcopy(OSSIE)
-    document["custom_extensions"] = [{"vendor_name": "SIDEMANTIC", "data": "{}"}]
+    document["custom_extensions"] = [{"vendor_name": "SQLCTX", "data": "{}"}]
     mock_cli(monkeypatch, document=document)
     with pytest.raises(OfficialConverterError, match="runtime extensions"):
         SigmaAdapter().parse(write_native(tmp_path, "sigma"))
@@ -230,7 +230,7 @@ def test_timeout_and_process_failure_are_actionable(tmp_path, monkeypatch):
     def timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
 
-    monkeypatch.setattr("sidemantic.adapters.official.subprocess.run", timeout)
+    monkeypatch.setattr("sqlctx.adapters.official.subprocess.run", timeout)
     with pytest.raises(OfficialConverterError, match="60s timeout"):
         SigmaAdapter().parse(source)
 
@@ -257,9 +257,9 @@ def test_runtime_only_graph_refused_without_touching_destination(tmp_path, monke
 
 @pytest.mark.parametrize("vendor,adapter_type", [("lightdash", LightdashAdapter), ("sigma", SigmaAdapter)])
 def test_real_offline_cli_import_export_and_query(tmp_path, vendor, adapter_type):
-    executable = os.environ.get(f"SIDEMANTIC_TEST_{vendor.upper()}_CLI") or shutil.which(f"ossie-{vendor}")
+    executable = os.environ.get(f"SQLCTX_TEST_{vendor.upper()}_CLI") or shutil.which(f"ossie-{vendor}")
     if not executable:
-        pytest.skip(f"Install official ossie-{vendor} or set SIDEMANTIC_TEST_{vendor.upper()}_CLI")
+        pytest.skip(f"Install official ossie-{vendor} or set SQLCTX_TEST_{vendor.upper()}_CLI")
     adapter = adapter_type(executable=executable, expression_dialect="ANSI_SQL")
     imported = adapter.parse(write_native(tmp_path, vendor))
     assert len(imported.models) == 1
@@ -277,7 +277,7 @@ def test_real_offline_cli_import_export_and_query(tmp_path, vendor, adapter_type
         metric_name = "orders." + imported.models["orders"].metrics[0].name
     rows = layer.query(metrics=[metric_name], dimensions=["orders.region"]).fetchall()
     assert sorted((row[0], float(row[1])) for row in rows) == [("east", 7), ("west", 35)]
-    for label, source_graph in (("native", imported), ("sidemantic", graph())):
+    for label, source_graph in (("native", imported), ("sqlctx", graph())):
         destination = tmp_path / (f"{label}.json" if vendor == "sigma" else label)
         with capture_export_report() as report:
             adapter.export(source_graph, destination)
@@ -301,9 +301,9 @@ def test_real_offline_cli_import_export_and_query(tmp_path, vendor, adapter_type
 
 
 def test_missing_output_file_is_rejected(tmp_path, monkeypatch):
-    monkeypatch.setattr("sidemantic.adapters.official.shutil.which", lambda _: "/mock/official-cli")
+    monkeypatch.setattr("sqlctx.adapters.official.shutil.which", lambda _: "/mock/official-cli")
     monkeypatch.setattr(
-        "sidemantic.adapters.official.subprocess.run",
+        "sqlctx.adapters.official.subprocess.run",
         lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "", ""),
     )
     with pytest.raises(OfficialConverterError, match="no nonempty output"):
@@ -420,7 +420,7 @@ def test_lightdash_extra_join_predicate_is_rejected_before_cli(tmp_path, monkeyp
 
 
 def test_export_invalid_target_key_ids_never_publish(tmp_path, monkeypatch):
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.relationship import Relationship
 
     source_graph = graph()
     target = source_graph.models["orders"].model_copy(deep=True)
@@ -442,13 +442,13 @@ def test_export_invalid_target_key_ids_never_publish(tmp_path, monkeypatch):
     for column in native["pages"][0]["elements"][1]["columns"]:
         column["id"] = "target_" + column["id"]
     # Model the pinned upstream bug: target keys reuse the source field IDs.
-    monkeypatch.setattr("sidemantic.adapters.official.shutil.which", lambda _: "/mock/official-cli")
+    monkeypatch.setattr("sqlctx.adapters.official.shutil.which", lambda _: "/mock/official-cli")
 
     def run(argv, **kwargs):
         Path(argv[argv.index("-o") + 1]).write_text(json.dumps(native))
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr("sidemantic.adapters.official.subprocess.run", run)
+    monkeypatch.setattr("sqlctx.adapters.official.subprocess.run", run)
     destination = tmp_path / "native.json"
     destination.write_text("original")
     with pytest.raises(OfficialConverterError, match="targetColumnId"):
@@ -457,9 +457,9 @@ def test_export_invalid_target_key_ids_never_publish(tmp_path, monkeypatch):
 
 
 def real_adapter(vendor):
-    executable = os.environ.get(f"SIDEMANTIC_TEST_{vendor.upper()}_CLI") or shutil.which(f"ossie-{vendor}")
+    executable = os.environ.get(f"SQLCTX_TEST_{vendor.upper()}_CLI") or shutil.which(f"ossie-{vendor}")
     if not executable:
-        pytest.skip(f"Install official ossie-{vendor} or set SIDEMANTIC_TEST_{vendor.upper()}_CLI")
+        pytest.skip(f"Install official ossie-{vendor} or set SQLCTX_TEST_{vendor.upper()}_CLI")
     adapter_type = SigmaAdapter if vendor == "sigma" else LightdashAdapter
     return adapter_type(executable=executable, expression_dialect="ANSI_SQL")
 

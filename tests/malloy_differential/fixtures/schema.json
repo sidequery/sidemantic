@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Sidemantic Malloy differential fixture manifest",
+  "title": "sqlctx Malloy differential fixture manifest",
   "type": "object",
   "required": ["version", "fixtures"],
   "properties": {
@@ -44,7 +44,7 @@
         "malloy_query": {
           "type": "string"
         },
-        "sidemantic": {
+        "sqlctx": {
           "$ref": "#/$defs/query"
         },
         "expected_rows": {
@@ -76,7 +76,7 @@
               "seed",
               "model",
               "malloy_query",
-              "sidemantic",
+              "sqlctx",
               "expected_schema",
               "expected_rows"
             ]

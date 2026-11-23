@@ -3,7 +3,7 @@ import type { FieldRef } from "./types";
 // Declarative dashboard contract returned by GET /dashboard. Both snake_case (YAML/Python) and
 // camelCase (generated TypeScript authoring) spellings are accepted at the HTTP boundary.
 export type DashboardDocument = {
-  schema?: "sidemantic.dashboard.v1";
+  schema?: "sqlctx.dashboard.v1";
   title: string;
   defaults?: {
     query?: {

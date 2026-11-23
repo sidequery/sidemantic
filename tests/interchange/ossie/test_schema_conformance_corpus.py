@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 import yaml
 
-from sidemantic.interchange.ossie import (
+from sqlctx.interchange.ossie import (
     OssieImportPolicy,
     OssieParseOptions,
     OssieSerialization,

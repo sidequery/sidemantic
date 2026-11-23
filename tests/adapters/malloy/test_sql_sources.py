@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from sidemantic.adapters.malloy import MalloyAdapter
+from sqlctx.adapters.malloy import MalloyAdapter
 
 
 def test_sql_source_parsing():

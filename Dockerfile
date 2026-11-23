@@ -24,12 +24,16 @@ WORKDIR /app
 # [tool.uv.sources], whose local Rust packages are not in the build context.
 # Dependencies install before the source is copied so code changes reuse the
 # slow riffq build layer.
+# List database extras directly so uv does not fetch sqlctx from PyPI to
+# resolve the all-databases extra.
 COPY pyproject.toml ./
 RUN uv pip install --system --no-cache --no-sources -r pyproject.toml \
-    --extra serve --extra mcp --extra api --extra all-databases
+    --extra serve --extra mcp --extra api \
+    --extra postgres --extra bigquery --extra snowflake --extra clickhouse \
+    --extra databricks --extra spark --extra adbc
 
 COPY README.md LICENSE ./
-COPY sidemantic/ sidemantic/
+COPY sqlctx/ sqlctx/
 COPY examples/multi_format_demo/ examples/multi_format_demo/
 COPY scripts/build_demo_duckdb.py scripts/
 
@@ -45,7 +49,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin/sidemantic /usr/local/bin/sidemantic
+COPY --from=builder /usr/local/bin/sqlctx /usr/local/bin/sqlctx
 
 WORKDIR /app
 
@@ -60,4 +64,4 @@ EXPOSE 5433
 EXPOSE 4400
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
-# Mode is controlled by SIDEMANTIC_MODE env var (serve, mcp, api, both)
+# Mode is controlled by SQLCTX_MODE env var (serve, mcp, api, both)

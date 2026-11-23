@@ -1,14 +1,14 @@
 """Test relative date integration with queries.
 
 Relative dates expand to ``CURRENT_DATE`` expressions, which DuckDB compilation
-then freezes to literals of one pinned instant (see ``sidemantic.sql.frozen_time``).
+then freezes to literals of one pinned instant (see ``sqlctx.sql.frozen_time``).
 """
 
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sqlctx import Dimension, Metric, Model, SemanticLayer
 
 FROZEN_AT = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
 # CURRENT_DATE follows the local timezone, like DuckDB's default session TimeZone.

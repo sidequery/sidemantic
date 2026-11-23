@@ -44,8 +44,8 @@ def test_wide_seed_source_retains_where_across_target_normalization(route, targe
 
     import sqlglot
 
-    from sidemantic import SemanticLayer
-    from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+    from sqlctx import SemanticLayer
+    from sqlctx.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
     from tests.interchange.ossie.test_layer2_conformance import LATEST
     from tests.interchange.ossie.test_review_import_boundaries import _document
     from tests.rust_layer_adapter import _rust_request

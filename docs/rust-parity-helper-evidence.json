@@ -25,7 +25,7 @@
       ],
       "behavior": "Both harnesses load tests/native-fixtures/manifest.yml rewrite_queries and assert each sql_contains token after semantic rewrite.",
       "counterparts": [
-        "sidemantic-rs/tests/native_fixtures.rs::native_fixtures_load_and_compile"
+        "sqlctx-rs/tests/native_fixtures.rs::native_fixtures_load_and_compile"
       ],
       "limitation": "Compilation/token assertions only; this source test does not execute rewritten SQL."
     },
@@ -50,7 +50,7 @@
       ],
       "behavior": "Named dod/wow/mom/qoq/yoy map to calendar intervals without a declared grain; month result regression independently verifies sparse periods and category partitions.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator/temporal.rs::named_comparisons_have_calendar_intervals_without_declared_granularity",
+        "sqlctx-rs/src/sql/generator/temporal.rs::named_comparisons_have_calendar_intervals_without_declared_granularity",
         "tests/semantic_conformance/test_feature_parity.py::test_named_calendar_comparison_without_declared_granularity"
       ],
       "limitation": "All five intervals have native unit assertions; the dual-engine result counterpart executes month specifically."
@@ -64,7 +64,7 @@
       ],
       "behavior": "Year-to-date window partitions on calendar year rather than retaining prior-year rows.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator/temporal.rs::cumulative_frames_preserve_groups_and_calendar_reset"
+        "sqlctx-rs/src/sql/generator/temporal.rs::cumulative_frames_preserve_groups_and_calendar_reset"
       ],
       "limitation": "Native counterpart asserts emitted calendar-year partition/frame; it is not a result-level duplicate of the original fixture."
     },
@@ -145,7 +145,7 @@
       ],
       "behavior": "Zero retention periods are rejected instead of silently defaulting to 28.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator/retention.rs::retention_requires_valid_period_and_granularity"
+        "sqlctx-rs/src/sql/generator/retention.rs::retention_requires_valid_period_and_granularity"
       ]
     },
     {
@@ -206,7 +206,7 @@
       "behavior": "Python infers the unique source model from the graph-level cohort entity without metric_owners. Rust strict graph scope requires an explicit cohort owner and rejects this valid Python shape.",
       "counterparts": [
         "tests/semantic_conformance/test_cohort_parity.py::test_owned_graph_cohort_unsupported_shapes_remain_gated",
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Counterpart is negative evidence: mutation=unowned is intentionally rejected. SemanticLayer.add_metric does not supply an owner, and graph_to_semantic_input preserves that absence. Source-confirmed; live repro remains lead-owned."
     },
@@ -219,7 +219,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -232,7 +232,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -245,7 +245,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -258,7 +258,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -271,7 +271,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -284,7 +284,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -297,7 +297,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -310,7 +310,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -323,7 +323,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -336,7 +336,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -349,7 +349,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -362,7 +362,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -375,7 +375,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -388,7 +388,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -401,7 +401,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -414,7 +414,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -427,7 +427,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -440,7 +440,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -453,7 +453,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -466,7 +466,7 @@
       ],
       "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -479,7 +479,7 @@
       ],
       "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -492,7 +492,7 @@
       ],
       "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -505,7 +505,7 @@
       ],
       "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -518,7 +518,7 @@
       ],
       "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -531,7 +531,7 @@
       ],
       "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -544,7 +544,7 @@
       ],
       "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -557,7 +557,7 @@
       ],
       "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -570,7 +570,7 @@
       ],
       "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -583,7 +583,7 @@
       ],
       "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -596,7 +596,7 @@
       ],
       "behavior": "This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -609,7 +609,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -622,7 +622,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -635,7 +635,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -648,7 +648,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -661,7 +661,7 @@
       ],
       "behavior": "This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract.",
       "counterparts": [
-        "sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners"
+        "sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners"
       ],
       "limitation": "Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported."
     },
@@ -688,7 +688,7 @@
         "tests/adapters/metricflow/test_parsing.py::test_metricflow_inline_exprless_non_count_uses_metric_column",
         "tests/adapters/metricflow/test_parsing.py::test_metricflow_keyless_inline_count_planner_contract",
         "tests/adapters/metricflow/test_parsing.py::test_metricflow_latest_spec_inline_metric_queryable_alone",
-        "tests/adapters/sidemantic_adapter/test_parsing.py::test_dimension_window_in_sql_generation",
+        "tests/adapters/sqlctx_adapter/test_parsing.py::test_dimension_window_in_sql_generation",
         "tests/adapters/tableau/test_real_world.py::test_sf_trial_joined_metric_uses_collection_sql",
         "tests/adapters/tableau/test_real_world.py::test_shapes_joined_dimension_uses_collection_sql",
         "tests/adapters/test_added_fixture_coverage.py::test_added_fixtures_execute_sql_for_execution_candidates",

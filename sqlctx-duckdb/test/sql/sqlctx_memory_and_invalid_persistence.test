@@ -1,0 +1,86 @@
+# name: test/sql/sqlctx_memory_and_invalid_persistence.test
+# description: In-memory lifecycle and errors reading malformed unmigrated legacy definitions
+# group: [sqlctx]
+
+require sqlctx
+
+statement ok
+SEMANTIC CREATE MODEL temp_orders (name temp_orders, table temp_orders, primary_key order_id);
+
+query I
+SELECT count(*) FROM sqlctx_models() WHERE model_name = 'temp_orders';
+----
+1
+
+restart
+
+require sqlctx
+
+query I
+SELECT count(*) FROM sqlctx_models() WHERE model_name = 'temp_orders';
+----
+0
+
+load __TEST_DIR__/sqlctx_invalid_persistence.duckdb
+
+statement ok
+CREATE TABLE ordinary_data (value INTEGER);
+
+statement ok
+INSERT INTO ordinary_data VALUES (7);
+
+statement ok
+COPY (SELECT 'MODEL (' AS line) TO '__TEST_DIR__/sqlctx_invalid_persistence.sqlctx.sql' (HEADER false);
+
+restart
+
+# Availability was checked above. An explicit LOAD makes a regression fail
+# instead of allowing the test runner to skip the remaining assertions.
+statement ok
+LOAD sqlctx;
+
+query I
+SELECT 42;
+----
+42
+
+query I
+SELECT value FROM ordinary_data;
+----
+7
+
+statement ok
+DESCRIBE ordinary_data;
+
+# LOAD only registers the extension. Legacy validation errors are reported when
+# definitions are accessed, without creating or replacing native catalog entries.
+statement error
+SELECT * FROM sqlctx_models();
+----
+sqlctx
+
+statement error
+SHOW MODELS;
+----
+sqlctx
+
+statement error
+SELECT broken_model.revenue FROM broken_model;
+----
+sqlctx
+
+statement ok
+BEGIN;
+
+statement error
+SEMANTIC SELECT broken_model.revenue FROM broken_model;
+----
+sqlctx
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT value FROM ordinary_data;
+----
+7

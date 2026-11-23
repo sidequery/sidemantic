@@ -1,7 +1,7 @@
 """Tests for SemanticLayer.explain() and PreAggregationMatcher.explain_matching()."""
 
-from sidemantic import Dimension, Metric, Model, PreAggregation, SemanticLayer
-from sidemantic.core.preagg_matcher import PreAggregationMatcher
+from sqlctx import Dimension, Metric, Model, PreAggregation, SemanticLayer
+from sqlctx.core.preagg_matcher import PreAggregationMatcher
 
 
 def make_layer_with_preaggs():
@@ -231,7 +231,7 @@ class TestSemanticLayerExplain:
         layer = make_layer_with_preaggs()
 
         # Add a second model so the cross-model filter is valid
-        from sidemantic import Relationship
+        from sqlctx import Relationship
 
         customers = Model(
             name="customers",
@@ -263,7 +263,7 @@ class TestSemanticLayerExplain:
         """IN filters referencing another model should trigger multi-model detection."""
         layer = make_layer_with_preaggs()
 
-        from sidemantic import Relationship
+        from sqlctx import Relationship
 
         customers = Model(
             name="customers",
@@ -292,7 +292,7 @@ class TestSemanticLayerExplain:
 
     def test_explain_includes_segment_filters_for_preagg_matching(self):
         """Segment predicates should be considered when evaluating pre-agg eligibility."""
-        from sidemantic import Segment
+        from sqlctx import Segment
 
         layer = SemanticLayer(use_preaggregations=True)
         layer.add_model(

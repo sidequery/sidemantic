@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.rill import RillAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.rill import RillAdapter
 
 
 @pytest.fixture

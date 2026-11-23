@@ -15,7 +15,7 @@ def _():
 def _(mo):
     mo.md(
         """
-    # Sidemantic Widget Demo
+    # sqlctx Widget Demo
 
     - Auctions example with **auto pre-aggregations**
     - Optional Foursquare Places example using a **remote pre-aggregated DuckDB file** via DuckDB `httpfs` + `attach`
@@ -31,9 +31,9 @@ def _():
     from pathlib import Path
     from urllib.error import HTTPError, URLError
 
-    from sidemantic import Dimension, Metric, Model, PreAggregation, SemanticLayer
-    from sidemantic.db.duckdb import DuckDBAdapter
-    from sidemantic.widget import MetricsExplorer
+    from sqlctx import Dimension, Metric, Model, PreAggregation, SemanticLayer
+    from sqlctx.db.duckdb import DuckDBAdapter
+    from sqlctx.widget import MetricsExplorer
 
     examples_dir = Path(__file__).resolve().parent
     datetime_cls = datetime

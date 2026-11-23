@@ -1,0 +1,144 @@
+"""Generate JSON Schema from Pydantic models for YAML editor completion."""
+
+import json
+from copy import deepcopy
+from pathlib import Path
+
+from sqlctx.core.consumption import Explore, SavedQuery
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.freshness import Freshness
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.parameter import Parameter
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.segment import Segment
+from sqlctx.core.table_calculation import TableCalculation
+
+
+def add_native_relationship_aliases(schema: dict) -> dict:
+    """Expose native YAML relationship aliases that map to Python API fields."""
+    properties = schema.setdefault("properties", {})
+
+    if "foreign_key" in properties and "foreign_key_columns" not in properties:
+        foreign_key_columns = deepcopy(properties["foreign_key"])
+        foreign_key_columns["title"] = "Foreign Key Columns"
+        foreign_key_columns["description"] = "Explicit source-column list (alias for foreign_key)"
+        properties["foreign_key_columns"] = foreign_key_columns
+
+    if "primary_key" in properties and "primary_key_columns" not in properties:
+        primary_key_columns = deepcopy(properties["primary_key"])
+        primary_key_columns["title"] = "Primary Key Columns"
+        primary_key_columns["description"] = "Explicit target-column list (alias for primary_key)"
+        properties["primary_key_columns"] = primary_key_columns
+
+    if "sql" not in properties:
+        properties["sql"] = {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "default": None,
+            "description": "Custom join SQL using {from} and {to} runtime placeholders",
+            "title": "Sql",
+        }
+
+    return schema
+
+
+def patch_relationship_schemas(schema: dict) -> None:
+    """Patch every embedded Relationship schema emitted by Pydantic."""
+    if not isinstance(schema, dict):
+        return
+    if schema.get("title") == "Relationship":
+        add_native_relationship_aliases(schema)
+    for value in schema.values():
+        if isinstance(value, dict):
+            patch_relationship_schemas(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    patch_relationship_schemas(item)
+
+
+def generate_yaml_schema() -> dict:
+    """Generate JSON Schema for sqlctx YAML format.
+
+    Returns:
+        JSON Schema dict compatible with YAML Language Server
+    """
+    # Get schemas from Pydantic models
+    model_schema = Model.model_json_schema()
+    dimension_schema = Dimension.model_json_schema()
+    metric_schema = Metric.model_json_schema()
+    relationship_schema = Relationship.model_json_schema()
+    parameter_schema = Parameter.model_json_schema()
+
+    # Build complete schema
+    schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "sqlctx Semantic Layer",
+        "description": "Schema for sqlctx semantic layer YAML configuration",
+        "type": "object",
+        "properties": {
+            "models": {"type": "array", "description": "Model definitions", "items": model_schema},
+            "metrics": {
+                "type": "array",
+                "description": "Top-level metric definitions (optional - can also define in models)",
+                "items": metric_schema,
+            },
+            "parameters": {
+                "type": "array",
+                "description": "Parameter definitions for dynamic queries",
+                "items": parameter_schema,
+            },
+        },
+        "anyOf": [{"required": [name]} for name in ("models", "explores", "saved_queries", "table_calculations")],
+        "$defs": {
+            **model_schema.get("$defs", {}),
+            **metric_schema.get("$defs", {}),
+            **parameter_schema.get("$defs", {}),
+            "Dimension": dimension_schema,
+            "Freshness": Freshness.model_json_schema(),
+            "Metric": metric_schema,
+            "Relationship": relationship_schema,
+            "Segment": Segment.model_json_schema(),
+            "Parameter": parameter_schema,
+        },
+    }
+
+    for catalog, definition_type in (
+        ("explores", Explore),
+        ("saved_queries", SavedQuery),
+        ("table_calculations", TableCalculation),
+    ):
+        item_schema = definition_type.model_json_schema()
+        # Native authoring rejects unknown fields even for permissive API models.
+        item_schema["additionalProperties"] = False
+        schema["$defs"].update(item_schema.pop("$defs", {}))
+        schema["properties"][catalog] = {"type": "array", "items": item_schema}
+
+    patch_relationship_schemas(schema)
+
+    return schema
+
+
+def export_schema(output_path: str | Path = "sqlctx-schema.json"):
+    """Export JSON Schema to file for editor completion.
+
+    Args:
+        output_path: Where to write the schema file
+
+    Usage:
+        In your YAML file, add at the top:
+        # yaml-language-server: $schema=./sqlctx-schema.json
+    """
+    schema = generate_yaml_schema()
+
+    output_path = Path(output_path)
+    with output_path.open("w") as f:
+        json.dump(schema, f, indent=2)
+
+    print(f"✓ JSON Schema exported to: {output_path}")
+    print("\nAdd this to the top of your YAML files:")
+    print(f"# yaml-language-server: $schema=./{output_path.name}")
+
+
+if __name__ == "__main__":
+    export_schema()

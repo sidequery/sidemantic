@@ -1,6 +1,6 @@
 # UI architecture
 
-Sidemantic supports several HTML hosts through one React component implementation. Runtime adapters may translate data and mount components, but must not contain component markup or styling.
+sqlctx supports several HTML hosts through one React component implementation. Runtime adapters may translate data and mount components, but must not contain component markup or styling.
 
 ## Canonical owners
 
@@ -8,15 +8,15 @@ Sidemantic supports several HTML hosts through one React component implementatio
 | --- | --- | --- |
 | Product application shell, catalog, query orchestration, date controls, and interactive time series | `webapp/src/` | Built into the Python and Rust servers |
 | Reusable charts, leaderboards, previews, query debugging, and state primitives | `webapp/src/components/` via `webapp/src/ui.ts` | Built as React ESM and self-contained browser distributions |
-| Portable standalone charts and live crossfilter dashboards | `sidemantic/viz.py` | Used by `sidemantic chart` and `sidemantic dashboard serve` |
-| Notebook trait synchronization and mounting | `js/widget.js` and `sidemantic/widget/` | Mounts the canonical React distribution |
-| MCP Apps chart embedding | `sidemantic/apps/chart_widget.html` | Returned by the MCP `create_chart` tool |
+| Portable standalone charts and live crossfilter dashboards | `sqlctx/viz.py` | Used by `sqlctx chart` and `sqlctx dashboard serve` |
+| Notebook trait synchronization and mounting | `js/widget.js` and `sqlctx/widget/` | Mounts the canonical React distribution |
+| MCP Apps chart embedding | `sqlctx/apps/chart_widget.html` | Returned by the MCP `create_chart` tool |
 
 The React webapp, static/WASM apps, and AnyWidget have separate lifecycle adapters but share the same compiled component code. `webapp/src/static-api.tsx` is the sole imperative mount adapter.
 
 The framework-free/WASM leaderboard is the visual champion for ranked cards: contiguous hairline panels, compact rows, lavender magnitude fills, full formatted values, and an understated expand affordance. The React `LeaderboardPanel` keeps ownership of querying, null handling, stale-result protection, and crossfilter behavior while rendering that presentation.
 
-The consolidated component gallery is available at `/components`. `scripts/build_ui_distribution.py` produces `sidemantic-ui.js`, `sidemantic-ui-static.js`, and `sidemantic-ui.css` directly from `webapp/src`; there are no parallel JSX, DOM-renderer, or CSS component sources.
+The consolidated component gallery is available at `/components`. `scripts/build_ui_distribution.py` produces `sqlctx-ui.js`, `sqlctx-ui-static.js`, and `sqlctx-ui.css` directly from `webapp/src`; there are no parallel JSX, DOM-renderer, or CSS component sources.
 
 ## Generated and synchronized copies
 
@@ -24,27 +24,27 @@ These files are deployment artifacts or synchronized examples, not independent c
 
 | Copy | Canonical source | Update command |
 | --- | --- | --- |
-| `sidemantic/ui/static/` | `webapp/` | `uv run scripts/build_webapp.py` |
-| `sidemantic-rs/ui/` | `webapp/` | `uv run scripts/build_webapp.py` |
-| `sidemantic/widget/static/widget.js` | `js/widget.js` | `cd js && bun run build` |
-| `plugins/sidemantic/skills/webapp-builder/assets/ui-dist/` | `webapp/src/ui.ts` and `webapp/src/static-api.tsx` | `uv run scripts/build_ui_distribution.py` |
-| `examples/sidemantic_wasm_demo/src/components/sidemantic/` | Built UI distribution | See below |
+| `sqlctx/ui/static/` | `webapp/` | `uv run scripts/build_webapp.py` |
+| `sqlctx-rs/ui/` | `webapp/` | `uv run scripts/build_webapp.py` |
+| `sqlctx/widget/static/widget.js` | `js/widget.js` | `cd js && bun run build` |
+| `plugins/sqlctx/skills/webapp-builder/assets/ui-dist/` | `webapp/src/ui.ts` and `webapp/src/static-api.tsx` | `uv run scripts/build_ui_distribution.py` |
+| `examples/sqlctx_wasm_demo/src/components/sqlctx/` | Built UI distribution | See below |
 
 Synchronize the WASM demo with the canonical static component kit:
 
 ```bash
-uv run plugins/sidemantic/skills/webapp-builder/scripts/copy_components.py \
+uv run plugins/sqlctx/skills/webapp-builder/scripts/copy_components.py \
   --kind static \
-  --target examples/sidemantic_wasm_demo/src/components/sidemantic \
+  --target examples/sqlctx_wasm_demo/src/components/sqlctx \
   --force
 ```
 
 Check for drift without writing files:
 
 ```bash
-uv run plugins/sidemantic/skills/webapp-builder/scripts/copy_components.py \
+uv run plugins/sqlctx/skills/webapp-builder/scripts/copy_components.py \
   --kind static \
-  --target examples/sidemantic_wasm_demo/src/components/sidemantic \
+  --target examples/sqlctx_wasm_demo/src/components/sqlctx \
   --check
 ```
 

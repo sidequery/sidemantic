@@ -3,12 +3,12 @@
 import pytest
 import sqlglot
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_layer import SemanticLayer
+from sqlctx.sql.query_rewriter import QueryRewriter
 from tests.utils import fetch_columns, fetch_dicts
 
 
@@ -580,7 +580,7 @@ def test_select_star_expansion(semantic_layer):
 
 def test_select_star_without_from(layer):
     """Test error when SELECT * has no FROM clause."""
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.sql.query_rewriter import QueryRewriter
 
     orders = Model(
         name="orders",
@@ -756,7 +756,7 @@ def test_complex_nested_filters(semantic_layer):
 
 def test_query_without_metrics_or_dimensions(layer):
     """Test error when query has neither metrics nor dimensions."""
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.sql.query_rewriter import QueryRewriter
 
     orders = Model(
         name="orders",
@@ -1131,7 +1131,7 @@ def test_from_metrics_in_cte(semantic_layer):
 def test_from_metrics_allows_graph_level_metrics(semantic_layer):
     """Test that FROM metrics allows unqualified names for graph-level metrics."""
     # Add a graph-level derived metric
-    from sidemantic.core.metric import Metric
+    from sqlctx.core.metric import Metric
 
     total_revenue = Metric(
         name="total_revenue",
@@ -1173,9 +1173,9 @@ def test_filter_on_joined_table_without_dimension(semantic_layer):
 def test_filter_on_multiple_joined_tables(semantic_layer):
     """Test filtering on multiple joined tables without selecting their dimensions."""
     # Add products model
-    from sidemantic.core.dimension import Dimension
-    from sidemantic.core.model import Model
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.dimension import Dimension
+    from sqlctx.core.model import Model
+    from sqlctx.core.relationship import Relationship
 
     semantic_layer.conn.execute("""
         INSERT INTO orders VALUES

@@ -65,7 +65,7 @@ def sqlite_adapter():
     if not SQLITE_TESTS_AVAILABLE:
         pytest.skip(SQLITE_TESTS_SKIP_REASON)
 
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     adapter = ADBCAdapter(driver=SQLITE_DRIVER_NAME, uri=":memory:")
     yield adapter
@@ -80,7 +80,7 @@ def test_adbc_adapter_init():
     if not SQLITE_TESTS_AVAILABLE:
         pytest.skip(SQLITE_TESTS_SKIP_REASON)
 
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     adapter = ADBCAdapter(driver=SQLITE_DRIVER_NAME, uri=":memory:")
     assert adapter.dialect == "sqlite"
@@ -138,7 +138,7 @@ def test_adbc_adapter_get_columns(sqlite_adapter):
 
 def test_adbc_adapter_dialect_mapping():
     """Test dialect mapping for different drivers."""
-    from sidemantic.db.adbc import DRIVER_DIALECT_MAP
+    from sqlctx.db.adbc import DRIVER_DIALECT_MAP
 
     # Verify key mappings
     assert DRIVER_DIALECT_MAP["postgresql"] == "postgres"
@@ -212,7 +212,7 @@ def test_adbc_adapter_from_url():
     if not SQLITE_TESTS_AVAILABLE:
         pytest.skip(SQLITE_TESTS_SKIP_REASON)
 
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     # SQLite supports URL-based connection
     # Note: from_url uses the URL scheme to determine the driver
@@ -228,7 +228,7 @@ def test_adbc_url_resolves_packaged_driver_without_system_install(monkeypatch, u
     adbc = pytest.importorskip("adbc_driver_manager.dbapi")
 
     sqlite_package = pytest.importorskip("adbc_driver_sqlite")
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     connect = adbc.connect
 
@@ -249,7 +249,7 @@ def test_adbc_url_resolves_packaged_driver_without_system_install(monkeypatch, u
 
 def test_adbc_adapter_from_url_invalid_scheme():
     """Test that invalid URL scheme raises ValueError."""
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     with pytest.raises(ValueError, match="Unknown URL scheme"):
         ADBCAdapter.from_url("unknown://localhost/mydb")
@@ -264,14 +264,14 @@ def test_adbc_import_error():
 
 def test_adbc_adapter_lazy_import():
     """Test that ADBCAdapter can be imported lazily from db module."""
-    from sidemantic.db import ADBCAdapter
+    from sqlctx.db import ADBCAdapter
 
     assert ADBCAdapter is not None
 
 
 # ============================================================================
 # DBC System Driver Tests
-# These tests verify that sidemantic can use drivers installed via the `dbc` CLI
+# These tests verify that sqlctx can use drivers installed via the `dbc` CLI
 # or as Python packages (adbc_driver_*)
 # ============================================================================
 
@@ -287,7 +287,7 @@ def test_adbc_with_sqlite_driver():
     if not SQLITE_TESTS_AVAILABLE:
         pytest.skip(SQLITE_TESTS_SKIP_REASON)
 
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     # Create adapter using the detected driver name with :memory: for isolation
     adapter = ADBCAdapter(driver=SQLITE_DRIVER_NAME, uri=":memory:")
@@ -313,7 +313,7 @@ def test_adbc_url_scheme_with_driver():
     if not SQLITE_TESTS_AVAILABLE:
         pytest.skip(SQLITE_TESTS_SKIP_REASON)
 
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     # Test adbc:// URL format - use the short name if DBC driver, else package name
     driver_for_url = "sqlite" if SQLITE_DRIVER_NAME == "sqlite" else SQLITE_DRIVER_NAME
@@ -331,7 +331,7 @@ def test_semantic_layer_with_adbc_connection():
     if not SQLITE_TESTS_AVAILABLE:
         pytest.skip(SQLITE_TESTS_SKIP_REASON)
 
-    from sidemantic import Dimension, Metric, Model, SemanticLayer
+    from sqlctx import Dimension, Metric, Model, SemanticLayer
 
     # Create layer with adbc:// connection URL
     driver_for_url = "sqlite" if SQLITE_DRIVER_NAME == "sqlite" else SQLITE_DRIVER_NAME
@@ -375,7 +375,7 @@ def test_semantic_layer_with_adbc_connection():
 
 def test_yaml_connection_dict_to_adbc_url():
     """Test that YAML dict-style connection config converts to adbc:// URL."""
-    from sidemantic.core.semantic_layer import SemanticLayer
+    from sqlctx.core.semantic_layer import SemanticLayer
 
     # Test adbc connection dict conversion
     config = {"type": "adbc", "driver": "sqlite"}
@@ -425,7 +425,7 @@ def test_adbc_url_path_based_uri():
     if not SQLITE_TESTS_AVAILABLE:
         pytest.skip(SQLITE_TESTS_SKIP_REASON)
 
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     # Test path-based URI with SQLite
     adapter = ADBCAdapter.from_url("adbc://sqlite/:memory:")
@@ -467,7 +467,7 @@ class _FakeCursor:
 def test_adbc_result_fetch_helpers_close_cursor():
     import pyarrow as pa
 
-    from sidemantic.db.adbc import ADBCResult
+    from sqlctx.db.adbc import ADBCResult
 
     cursor = _FakeCursor(rows=[(1,)], description=[("x",)], arrow_table=pa.table({"x": [1]}))
     result = ADBCResult(cursor)
@@ -488,7 +488,7 @@ def test_adbc_result_fetch_helpers_close_cursor():
 
 
 def test_adbc_adapter_execute_appends_newline_after_trailing_comment():
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     captured = {}
 
@@ -501,14 +501,14 @@ def test_adbc_adapter_execute_appends_newline_after_trailing_comment():
     adapter = ADBCAdapter.__new__(ADBCAdapter)
     adapter.conn = SimpleNamespace(cursor=FakeCursor)
 
-    adapter.execute("SELECT 1\n-- sidemantic: models=orders")
+    adapter.execute("SELECT 1\n-- sqlctx: models=orders")
 
     assert captured["sql"].endswith("\n")
-    assert captured["sql"].splitlines()[-1] == "-- sidemantic: models=orders"
+    assert captured["sql"].splitlines()[-1] == "-- sqlctx: models=orders"
 
 
 def test_adbc_adapter_get_tables_uses_native_metadata():
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     adapter = ADBCAdapter.__new__(ADBCAdapter)
     adapter.conn = SimpleNamespace(
@@ -537,7 +537,7 @@ def test_adbc_adapter_get_tables_uses_native_metadata():
 
 
 def test_adbc_adapter_get_tables_falls_back_to_information_schema(monkeypatch):
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     adapter = ADBCAdapter.__new__(ADBCAdapter)
     adapter.conn = SimpleNamespace(adbc_get_objects=lambda: (_ for _ in ()).throw(RuntimeError("no metadata")))
@@ -565,7 +565,7 @@ def test_adbc_adapter_get_tables_falls_back_to_information_schema(monkeypatch):
 def test_adbc_adapter_get_columns_uses_table_schema():
     import pyarrow as pa
 
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     adapter = ADBCAdapter.__new__(ADBCAdapter)
     adapter._driver_name = "sqlite"
@@ -582,7 +582,7 @@ def test_adbc_adapter_get_columns_uses_table_schema():
 
 
 def test_adbc_adapter_get_columns_uses_objects_metadata_fallback():
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     adapter = ADBCAdapter.__new__(ADBCAdapter)
     adapter._driver_name = "sqlite"
@@ -621,7 +621,7 @@ def test_adbc_adapter_get_columns_uses_objects_metadata_fallback():
 
 
 def test_adbc_adapter_get_columns_falls_back_to_sql_for_snowflake(monkeypatch):
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     adapter = ADBCAdapter.__new__(ADBCAdapter)
     adapter._driver_name = "snowflake"
@@ -652,7 +652,7 @@ def test_adbc_adapter_get_columns_falls_back_to_sql_for_snowflake(monkeypatch):
 
 
 def test_adbc_adapter_dialect_strips_package_prefix():
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     adapter = ADBCAdapter.__new__(ADBCAdapter)
     adapter._driver_name = "adbc_driver_postgresql"
@@ -661,7 +661,7 @@ def test_adbc_adapter_dialect_strips_package_prefix():
 
 
 def test_adbc_adapter_close_calls_connection():
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     closed = {"value": False}
     adapter = ADBCAdapter.__new__(ADBCAdapter)
@@ -673,7 +673,7 @@ def test_adbc_adapter_close_calls_connection():
 
 
 def test_adbc_adapter_from_url_sqlite_defaults_to_memory(monkeypatch):
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     captured = {}
     original_init = ADBCAdapter.__init__
@@ -695,7 +695,7 @@ def test_adbc_adapter_from_url_sqlite_defaults_to_memory(monkeypatch):
 
 
 def test_adbc_adapter_from_url_adbc_query_params_become_db_kwargs(monkeypatch):
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     captured = {}
     original_init = ADBCAdapter.__init__

@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SecurityPolicy
+from sqlctx import Dimension, Metric, Model, Relationship, SecurityPolicy
 
 
 @pytest.fixture
@@ -107,7 +107,7 @@ def test_foreign_input_own_filters_and_caller_aliases(cross_model_layer):
     layer = cross_model_layer
     layer.graph.models["other"].get_metric("revenue").filters = ["amount > 5"]
     reference = add_window(layer, "revenue", "category = 'a'")
-    result = rows(layer, reference, aliases={reference: "__sidemantic_cumulative_0"})
+    result = rows(layer, reference, aliases={reference: "__sqlctx_cumulative_0"})
     assert [row[-2:] for row in result] == [(100, None), (None, None), (200, None), (10, 10), (20, 30)]
 
 

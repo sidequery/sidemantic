@@ -25,9 +25,9 @@ def test_rust_native_runtime_release_workflows_are_documented() -> None:
         ],
     )
     assert_file_contains(
-        ".github/workflows/sidemantic-rs-wheels.yml",
+        ".github/workflows/sqlctx-rs-wheels.yml",
         [
-            "name: sidemantic-rs Python Wheels",
+            "name: sqlctx-rs Python Wheels",
             "uvx maturin sdist --out dist",
             "MATURIN_PYPI_TOKEN",
         ],
@@ -38,7 +38,7 @@ def test_rust_native_runtime_release_workflows_are_documented() -> None:
             "name: DuckDB Extension Release",
             "duckdb_version",
             "make test",
-            "sidemantic.duckdb_extension",
+            "sqlctx.duckdb_extension",
         ],
     )
 
@@ -58,7 +58,7 @@ def test_rust_native_runtime_release_docs_cover_install_and_compatibility() -> N
     assert "--locked" in cargo_install
     binding_install = next(command for command in commands if command[:2] == ["uv", "add"])
     assert (ROOT / binding_install[2] / "pyproject.toml").is_file()
-    makefile = (ROOT / "sidemantic-duckdb/Makefile").read_text()
+    makefile = (ROOT / "sqlctx-duckdb/Makefile").read_text()
     version = re.search(r"^SUPPORTED_DUCKDB_VERSION := (\S+)$", makefile, re.M).group(1)
     assert f"`{version}`" in packaging
     for workflow in re.findall(r"`([\w-]+\.yml)`", packaging):
@@ -68,7 +68,7 @@ def test_rust_native_runtime_release_docs_cover_install_and_compatibility() -> N
         [
             "# DuckDB Extension",
             "Build From Source",
-            "sidemantic_load_file",
+            "sqlctx_load_file",
             "DuckDB extension artifacts are ABI-sensitive",
         ],
     )
@@ -78,14 +78,14 @@ def test_rust_runtime_conversion_example_validates_a_directory() -> None:
     assert_file_contains(
         "docs/rust-runtime.md",
         [
-            "--output ./native-models/sidemantic.yml",
-            "sidemantic validate ./native-models --engine rust",
+            "--output ./native-models/sqlctx.yml",
+            "sqlctx validate ./native-models --engine rust",
         ],
     )
 
 
 def test_release_wheel_smoke_installs_the_artifact_that_is_uploaded() -> None:
-    workflow = yaml.safe_load((ROOT / ".github/workflows/sidemantic-rs-wheels.yml").read_text())
+    workflow = yaml.safe_load((ROOT / ".github/workflows/sqlctx-rs-wheels.yml").read_text())
     job = workflow["jobs"]["build-wheels"]
     steps = job["steps"]
     upload_index, upload = next(

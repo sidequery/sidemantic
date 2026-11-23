@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.malloy import MalloyAdapter
-from sidemantic.adapters.malloy_modules import MalloyModuleResolver, MalloyResolutionError
-from sidemantic.fidelity import capture_import_report
+from sqlctx.adapters.malloy import MalloyAdapter
+from sqlctx.adapters.malloy_modules import MalloyModuleResolver, MalloyResolutionError
+from sqlctx.fidelity import capture_import_report
 
 
 def _source(name: str, table: str | None = None) -> str:

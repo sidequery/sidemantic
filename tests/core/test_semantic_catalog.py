@@ -2,9 +2,9 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_catalog import (
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_catalog import (
     AmbiguousSemanticScopeError,
     CompiledSemanticScope,
     CompiledSemanticScopeMutationError,
@@ -13,7 +13,7 @@ from sidemantic.core.semantic_catalog import (
     SemanticScopeCacheKey,
     SemanticScopeNotFoundError,
 )
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 def _graph(*, table: str) -> SemanticGraph:

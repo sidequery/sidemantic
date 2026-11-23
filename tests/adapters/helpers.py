@@ -10,11 +10,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sidemantic.core.dimension import Dimension
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
-    from sidemantic.core.relationship import Relationship
-    from sidemantic.core.segment import Segment
+    from sqlctx.core.dimension import Dimension
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.model import Model
+    from sqlctx.core.relationship import Relationship
+    from sqlctx.core.segment import Segment
 
 
 def assert_dimension_equivalent(

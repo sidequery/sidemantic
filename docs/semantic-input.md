@@ -461,7 +461,7 @@ The Rust CI job executes both output paths against a PostgreSQL 16 service using
 its newly built Python extension wheel. The synthetic acceptance population
 checks tenant and invariant exclusions, quoted/injection-shaped values, numeric,
 boolean and null attributes, access denial, and visibility. Local runs without
-`SIDEMANTIC_TEST_POSTGRES_DSN` skip this host test; a configured job fails if the
+`SQLCTX_TEST_POSTGRES_DSN` skip this host test; a configured job fails if the
 service, driver, extension or expected rows are unavailable. PostgreSQL parity
 is not qualified until that execution job passes. Other policy output dialects
 use polyglot target generation. The conformance corpus checks DuckDB, PostgreSQL,

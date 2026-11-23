@@ -1,6 +1,6 @@
 """Test metadata fields on Metrics and Dimensions."""
 
-from sidemantic import Dimension, Metric, Model
+from sqlctx import Dimension, Metric, Model
 
 
 def test_metric_format_fields():

@@ -9,7 +9,7 @@ from decimal import Decimal
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
 # Mark all tests in this module as integration tests
 pytestmark = [
@@ -21,13 +21,13 @@ pytestmark = [
 ]
 
 # Use environment variable for URL (different in docker vs local)
-POSTGRES_URL = os.getenv("POSTGRES_URL", "postgres://test:test@localhost:5433/sidemantic_test")
+POSTGRES_URL = os.getenv("POSTGRES_URL", "postgres://test:test@localhost:5433/sqlctx_test")
 
 
 @pytest.fixture
 def postgres_adapter():
     """Create PostgreSQL adapter connected to test database."""
-    from sidemantic.db.postgres import PostgreSQLAdapter
+    from sqlctx.db.postgres import PostgreSQLAdapter
 
     adapter = PostgreSQLAdapter.from_url(POSTGRES_URL)
     yield adapter

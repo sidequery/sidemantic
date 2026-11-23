@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
+from sqlctx.adapters.atscale_sml import AtScaleSMLAdapter
 
 
 @pytest.fixture

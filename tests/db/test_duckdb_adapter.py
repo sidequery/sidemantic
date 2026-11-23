@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.db.duckdb import DuckDBAdapter
+from sqlctx.db.duckdb import DuckDBAdapter
 
 
 def test_duckdb_adapter_memory():
@@ -115,7 +115,7 @@ def test_duckdb_absolute_file_paths():
     Bug: duckdb:///tmp/app.db was converted to tmp/app.db (relative path).
     Fix: Preserve leading slash to get /tmp/app.db (absolute path).
     """
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     # Test absolute path
     layer = SemanticLayer(connection="duckdb:///tmp/test.db")
@@ -155,7 +155,7 @@ def test_duckdb_url_paths_open_the_named_database(tmp_path, monkeypatch, cwd, ur
 def test_semantic_layer_accepts_relative_duckdb_url(tmp_path, monkeypatch):
     import duckdb
 
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     with duckdb.connect(str(tmp_path / "warehouse.duckdb")) as con:
         con.execute("CREATE TABLE orders AS SELECT 1 AS id")
@@ -179,7 +179,7 @@ def test_duckdb_url_memory_forms_open_in_memory_database(url):
 
 def test_duckdb_memory_variations():
     """Test various :memory: URI formats."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     # Standard memory
     layer1 = SemanticLayer(connection="duckdb:///:memory:")
@@ -311,7 +311,7 @@ def test_duckdb_adapter_from_url_param_overrides_query():
 
 def test_duckdb_semantic_layer_init_sql():
     """Test init_sql flows through SemanticLayer constructor."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     layer = SemanticLayer(
         connection="duckdb:///:memory:",

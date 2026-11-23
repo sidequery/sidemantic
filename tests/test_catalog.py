@@ -1,6 +1,6 @@
 """Tests for Postgres catalog metadata export."""
 
-from sidemantic import Dimension, Metric, Model, Relationship
+from sqlctx import Dimension, Metric, Model, Relationship
 
 
 def test_basic_catalog_metadata(layer):

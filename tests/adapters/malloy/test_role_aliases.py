@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.adapters.malloy import MalloyAdapter
-from sidemantic.core.consumption import Explore
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.adapters.malloy import MalloyAdapter
+from sqlctx.core.consumption import Explore
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 def _parse(tmp_path: Path, text: str):

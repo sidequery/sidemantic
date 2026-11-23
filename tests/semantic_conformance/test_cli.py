@@ -7,7 +7,7 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-from sidemantic.cli import app
+from sqlctx.cli import app
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -60,7 +60,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 @pytest.mark.parametrize("engine", ["python", "rust"])
 def test_cli_rewrite_executes_imported_query(source, sql, columns, rows, engine, tmp_path):
     if engine == "rust":
-        pytest.importorskip("sidemantic_rs", reason="The real Rust extension must be installed for acceptance")
+        pytest.importorskip("sqlctx_rs", reason="The real Rust extension must be installed for acceptance")
     models = tmp_path / "models"
     models.mkdir()
     (models / "models.yml").write_text((FIXTURES / f"{source}.yml").read_text())

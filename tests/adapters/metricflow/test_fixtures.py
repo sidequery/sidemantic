@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
 
 FIXTURES = Path("tests/fixtures/metricflow")
 
@@ -51,7 +51,7 @@ class TestBookingsSource:
         """Representable measures are imported; percentile measures are skipped.
 
         The fixture declares 14 measures, but the 4 ``agg: percentile`` measures
-        have no Sidemantic equivalent and are skipped rather than coerced to sum,
+        have no sqlctx equivalent and are skipped rather than coerced to sum,
         leaving 10.
         """
         model = graph.models["bookings_source"]
@@ -95,7 +95,7 @@ class TestBookingsSource:
     def test_percentile_aggregation_skipped(self, graph):
         """percentile aggregation is skipped, not silently coerced to sum.
 
-        Sidemantic has no percentile aggregation. Coercing it to ``sum`` would
+        sqlctx has no percentile aggregation. Coercing it to ``sum`` would
         register ``SUM(booking_value)`` under the percentile measure's name and
         return a wrong value, so the measure is dropped instead.
         """
@@ -115,7 +115,7 @@ class TestBookingsSource:
         assert model.get_metric("min_booking_value").agg == "min"
 
     def test_average_maps_to_avg(self, graph):
-        """MetricFlow 'average' maps to sidemantic 'avg'."""
+        """MetricFlow 'average' maps to sqlctx 'avg'."""
         model = graph.models["bookings_source"]
         assert model.get_metric("average_booking_value").agg == "avg"
 
@@ -621,7 +621,7 @@ class TestSubDailyGranularities:
 
 
 class TestUnsupportedFeatures:
-    """Tests for MetricFlow features not yet supported by sidemantic."""
+    """Tests for MetricFlow features not yet supported by sqlctx."""
 
     def test_millisecond_granularity(self):
         """Parsing a dimension with millisecond granularity fails validation."""
@@ -671,7 +671,7 @@ class TestSimpleManifestMetrics:
         """Representable measures are imported; percentile measures are skipped.
 
         Of the 14 declared measures, the 4 ``agg: percentile`` flavors have no
-        Sidemantic equivalent and are skipped rather than coerced to sum.
+        sqlctx equivalent and are skipped rather than coerced to sum.
         """
         model = graph.models["bookings_source"]
         assert len(model.metrics) == 10
@@ -873,7 +873,7 @@ class TestSimpleManifestMetrics:
         """Conversion metrics are retained as non-queryable metadata.
 
         MetricFlow conversion metrics reference base/conversion *measures*, which
-        cannot be faithfully mapped to Sidemantic's event-filter conversion
+        cannot be faithfully mapped to sqlctx's event-filter conversion
         funnel, so they are captured in metadata rather than registered as
         broken queryable metrics.
         """

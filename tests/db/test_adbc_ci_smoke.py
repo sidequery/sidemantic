@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from sidemantic import Metric, Model, SemanticLayer
+from sqlctx import Metric, Model, SemanticLayer
 
 pytestmark = [
     pytest.mark.integration,
@@ -93,7 +93,7 @@ def adbc_layer() -> SemanticLayer:
     uri = _target_uri(db)
     candidates = _candidate_adbc_drivers(db)
 
-    from sidemantic.db.adbc import ADBCAdapter
+    from sqlctx.db.adbc import ADBCAdapter
 
     last_exc: Exception | None = None
     for driver in candidates:

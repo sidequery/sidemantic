@@ -5,16 +5,16 @@ from pathlib import Path
 
 import yaml
 
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.hex import HexAdapter
-from sidemantic.adapters.lookml import LookMLAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic.adapters.omni import OmniAdapter
-from sidemantic.adapters.rill import RillAdapter
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.adapters.superset import SupersetAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.model import Model
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.hex import HexAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.omni import OmniAdapter
+from sqlctx.adapters.rill import RillAdapter
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.adapters.superset import SupersetAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.model import Model
 
 
 def test_cube_to_metricflow_conversion():
@@ -166,11 +166,11 @@ def test_cube_to_omni_conversion():
         assert "orders" in omni_graph.models
 
 
-def test_sidemantic_to_cube_export():
-    """Test export from Sidemantic to Cube format."""
+def test_sqlctx_to_cube_export():
+    """Test export from sqlctx to Cube format."""
     # Load native format
-    native_adapter = SidemanticAdapter()
-    graph = native_adapter.parse("tests/fixtures/sidemantic/orders.yml")
+    native_adapter = SqlctxAdapter()
+    graph = native_adapter.parse("tests/fixtures/sqlctx/orders.yml")
 
     # Export to Cube
     cube_adapter = CubeAdapter()
@@ -202,11 +202,11 @@ def test_sidemantic_to_cube_export():
         temp_path.unlink(missing_ok=True)
 
 
-def test_sidemantic_to_cube_roundtrip():
-    """Test Sidemantic -> Cube -> Sidemantic round-trip."""
+def test_sqlctx_to_cube_roundtrip():
+    """Test sqlctx -> Cube -> sqlctx round-trip."""
     # Load native
-    native_adapter = SidemanticAdapter()
-    graph = native_adapter.parse("tests/fixtures/sidemantic/orders.yml")
+    native_adapter = SqlctxAdapter()
+    graph = native_adapter.parse("tests/fixtures/sqlctx/orders.yml")
 
     # Export to Cube
     cube_adapter = CubeAdapter()

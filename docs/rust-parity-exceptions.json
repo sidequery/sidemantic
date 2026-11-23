@@ -45,13 +45,13 @@
   "selection_rules": [
     {
       "path": "pyproject.toml",
-      "source": "-m 'not integration' --cov=sidemantic --cov-report=term-missing",
+      "source": "-m 'not integration' --cov=sqlctx --cov-report=term-missing",
       "category": "external-service"
     },
     {
       "path": ".github/workflows/ci.yml",
       "line": 19,
-      "source": "SIDEMANTIC_ENGINE: ${{ matrix.engine }}"
+      "source": "SQLCTX_ENGINE: ${{ matrix.engine }}"
     },
     {
       "path": ".github/workflows/ci.yml",
@@ -166,12 +166,12 @@
     {
       "path": ".github/workflows/wasm-package-release.yml",
       "line": 86,
-      "source": "bun pm pack --ignore-scripts --filename sidemantic-wasm.tgz"
+      "source": "bun pm pack --ignore-scripts --filename sqlctx-wasm.tgz"
     },
     {
       "path": ".github/workflows/wasm-package-release.yml",
       "line": 113,
-      "source": "npm publish sidemantic-wasm.tgz --access public --ignore-scripts"
+      "source": "npm publish sqlctx-wasm.tgz --access public --ignore-scripts"
     },
     {
       "path": ".github/workflows/yardstick-upstream.yml",
@@ -187,7 +187,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-1"
     },
@@ -198,7 +198,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-2"
     },
@@ -209,7 +209,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-3"
     },
@@ -220,7 +220,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-4"
     },
@@ -231,7 +231,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-5"
     },
@@ -242,7 +242,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-6"
     },
@@ -253,7 +253,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-7"
     },
@@ -264,7 +264,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-8"
     },
@@ -275,7 +275,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-9"
     },
@@ -286,7 +286,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-10"
     },
@@ -297,7 +297,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-11"
     },
@@ -308,7 +308,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-12"
     },
@@ -319,7 +319,7 @@
       "kind": "engine-control",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "os.environ.get(\"SIDEMANTIC_OSI_BACKEND\", \"python\")",
+      "source": "os.environ.get(\"SQLCTX_OSI_BACKEND\", \"python\")",
       "rationale": "reason-3",
       "affected_scope": "scope-13"
     },
@@ -330,7 +330,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-13"
     },
@@ -341,7 +341,7 @@
       "kind": "legacy-adapter-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.adapters.osi import LegacyOSIAdapter as OSIAdapter",
+      "source": "from sqlctx.adapters.osi import LegacyOSIAdapter as OSIAdapter",
       "rationale": "reason-5",
       "affected_scope": "scope-14"
     },
@@ -352,7 +352,7 @@
       "kind": "legacy-adapter-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.adapters.osi import LegacyOSIAdapter as OSIAdapter",
+      "source": "from sqlctx.adapters.osi import LegacyOSIAdapter as OSIAdapter",
       "rationale": "reason-5",
       "affected_scope": "scope-15"
     },
@@ -363,18 +363,18 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-16"
     },
     {
-      "path": "tests/adapters/sidemantic_adapter/test_parsing.py",
+      "path": "tests/adapters/sqlctx_adapter/test_parsing.py",
       "line": 1325,
       "scope": "test_dimension_window_in_sql_generation",
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-17"
     },
@@ -385,7 +385,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-18"
     },
@@ -424,7 +424,7 @@
       "kind": "legacy-adapter-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.adapters.osi import LegacyOSIAdapter as OSIAdapter",
+      "source": "from sqlctx.adapters.osi import LegacyOSIAdapter as OSIAdapter",
       "rationale": "reason-5",
       "affected_scope": "scope-21"
     },
@@ -435,7 +435,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-22"
     },
@@ -446,7 +446,7 @@
       "kind": "legacy-adapter-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.adapters.osi import LegacyOSIAdapter as OSIAdapter",
+      "source": "from sqlctx.adapters.osi import LegacyOSIAdapter as OSIAdapter",
       "rationale": "reason-5",
       "affected_scope": "scope-23"
     },
@@ -457,7 +457,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-24"
     },
@@ -468,7 +468,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-25"
     },
@@ -479,7 +479,7 @@
       "kind": "skip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.skip(\"sidemantic_dax not installed\")",
+      "source": "pytest.skip(\"sqlctx_dax not installed\")",
       "rationale": "reason-6",
       "affected_scope": "scope-26"
     },
@@ -493,7 +493,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-26"
     },
@@ -504,7 +504,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-27"
     },
@@ -515,7 +515,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-28"
     },
@@ -526,7 +526,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-29"
     },
@@ -537,7 +537,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-30"
     },
@@ -548,7 +548,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-31"
     },
@@ -559,7 +559,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-32"
     },
@@ -570,7 +570,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-33"
     },
@@ -581,7 +581,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-34"
     },
@@ -592,7 +592,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-35"
     },
@@ -603,7 +603,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-36"
     },
@@ -614,7 +614,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-37"
     },
@@ -625,7 +625,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-38"
     },
@@ -636,7 +636,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-39"
     },
@@ -702,7 +702,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-43"
     },
@@ -779,7 +779,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
+      "source": "from sqlctx.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
       "affected_scope": "scope-50"
     },
@@ -790,7 +790,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-51"
     },
@@ -801,7 +801,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-52"
     },
@@ -812,7 +812,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax.ast\")",
+      "source": "pytest.importorskip(\"sqlctx_dax.ast\")",
       "rationale": "reason-4",
       "affected_scope": "scope-53"
     },
@@ -826,7 +826,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-54"
     },
@@ -840,7 +840,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-55"
     },
@@ -854,7 +854,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-56"
     },
@@ -868,7 +868,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-57"
     },
@@ -882,7 +882,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-58"
     },
@@ -896,7 +896,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-59"
     },
@@ -910,7 +910,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-60"
     },
@@ -924,7 +924,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-61"
     },
@@ -938,7 +938,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-62"
     },
@@ -952,7 +952,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-63"
     },
@@ -963,7 +963,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax.ast\")",
+      "source": "pytest.importorskip(\"sqlctx_dax.ast\")",
       "rationale": "reason-4",
       "affected_scope": "scope-64"
     },
@@ -997,9 +997,9 @@
       "category": "external-service",
       "exclusion_direction": "both-engines",
       "conditions": [
-        "os.environ.get('SIDEMANTIC_DAX_ENGINE_CONFORMANCE') != '1'"
+        "os.environ.get('SQLCTX_DAX_ENGINE_CONFORMANCE') != '1'"
       ],
-      "source": "pytest.skip(\"set SIDEMANTIC_DAX_ENGINE_CONFORMANCE=1 to probe Power BI\")",
+      "source": "pytest.skip(\"set SQLCTX_DAX_ENGINE_CONFORMANCE=1 to probe Power BI\")",
       "rationale": "reason-15",
       "affected_scope": "scope-65"
     },
@@ -1021,7 +1021,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-66"
     },
@@ -1035,7 +1035,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-66"
     },
@@ -1046,7 +1046,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax.ast\")",
+      "source": "pytest.importorskip(\"sqlctx_dax.ast\")",
       "rationale": "reason-4",
       "affected_scope": "scope-67"
     },
@@ -1057,7 +1057,7 @@
       "kind": "skipif",
       "category": "external-service",
       "exclusion_direction": "both-engines",
-      "source": "pytest.mark.skipif(\n    os.environ.get(\"SIDEMANTIC_DAX_ONLINE_CONFORMANCE\") != \"1\",\n    reason=\"set SIDEMANTIC_DAX_ONLINE_CONFORMANCE=1 to probe DAX Formatter\",\n)",
+      "source": "pytest.mark.skipif(\n    os.environ.get(\"SQLCTX_DAX_ONLINE_CONFORMANCE\") != \"1\",\n    reason=\"set SQLCTX_DAX_ONLINE_CONFORMANCE=1 to probe DAX Formatter\",\n)",
       "rationale": "reason-15",
       "affected_scope": "scope-67"
     },
@@ -1068,7 +1068,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_dax\")",
+      "source": "pytest.importorskip(\"sqlctx_dax\")",
       "rationale": "reason-4",
       "affected_scope": "scope-68"
     },
@@ -1082,7 +1082,7 @@
       "conditions": [
         "'native module is not available' in str(exc)"
       ],
-      "source": "pytest.skip(\"sidemantic_dax native module not available\")",
+      "source": "pytest.skip(\"sqlctx_dax native module not available\")",
       "rationale": "reason-6",
       "affected_scope": "scope-68"
     },
@@ -1906,7 +1906,7 @@
       "conditions": [
         "route == 'public_rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires a source-built Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires a source-built Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-117"
     },
@@ -1920,7 +1920,7 @@
       "conditions": [
         "engine == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires a source-built Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires a source-built Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-118"
     },
@@ -1931,7 +1931,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-119"
     },
@@ -1942,7 +1942,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-120"
     },
@@ -1956,7 +1956,7 @@
       "conditions": [
         "engine == 'python'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-121"
     },
@@ -1967,7 +1967,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-122"
     },
@@ -1981,7 +1981,7 @@
       "conditions": [
         "engine == 'python'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-123"
     },
@@ -1995,7 +1995,7 @@
       "conditions": [
         "engine == 'python'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-124"
     },
@@ -2006,7 +2006,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-125"
     },
@@ -2017,7 +2017,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-126"
     },
@@ -2028,7 +2028,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-127"
     },
@@ -2039,7 +2039,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-128"
     },
@@ -2050,7 +2050,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-129"
     },
@@ -2061,7 +2061,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-130"
     },
@@ -2075,7 +2075,7 @@
       "conditions": [
         "engine == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-131"
     },
@@ -2089,7 +2089,7 @@
       "conditions": [
         "engine == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-132"
     },
@@ -2100,7 +2100,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-133"
     },
@@ -2111,7 +2111,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-134"
     },
@@ -2122,7 +2122,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-135"
     },
@@ -2136,7 +2136,7 @@
       "conditions": [
         "engine == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-136"
     },
@@ -2147,7 +2147,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
+      "source": "from sqlctx.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
       "affected_scope": "scope-137"
     },
@@ -2158,7 +2158,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the built Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires the built Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-138"
     },
@@ -2169,7 +2169,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the built Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires the built Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-139"
     },
@@ -2180,7 +2180,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
+      "source": "from sqlctx.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
       "affected_scope": "scope-140"
     },
@@ -2191,7 +2191,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
+      "source": "from sqlctx.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
       "affected_scope": "scope-141"
     },
@@ -2202,7 +2202,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
+      "source": "from sqlctx.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
       "affected_scope": "scope-142"
     },
@@ -2214,9 +2214,9 @@
       "category": "external-service",
       "exclusion_direction": "both-engines",
       "conditions": [
-        "not _env_flag('SIDEMANTIC_YARDSTICK_UPSTREAM_TESTS')"
+        "not _env_flag('SQLCTX_YARDSTICK_UPSTREAM_TESTS')"
       ],
-      "source": "pytest.skip(\"Set SIDEMANTIC_YARDSTICK_UPSTREAM_TESTS=1 to fetch and replay live upstream Yardstick tests\")",
+      "source": "pytest.skip(\"Set SQLCTX_YARDSTICK_UPSTREAM_TESTS=1 to fetch and replay live upstream Yardstick tests\")",
       "rationale": "reason-15",
       "affected_scope": "scope-143"
     },
@@ -2244,7 +2244,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Absent count acceptance requires the installed Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Absent count acceptance requires the installed Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-145"
     },
@@ -2258,7 +2258,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"CLI acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"CLI acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-146"
     },
@@ -2272,7 +2272,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Explore acceptance requires the real extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Explore acceptance requires the real extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-147"
     },
@@ -2286,7 +2286,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Alias acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Alias acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-148"
     },
@@ -2297,7 +2297,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Alias rejection requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Alias rejection requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-149"
     },
@@ -2311,7 +2311,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-150"
     },
@@ -2325,7 +2325,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-151"
     },
@@ -2367,7 +2367,7 @@
       "conditions": [
         "engine == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"The real Rust extension must be installed for acceptance\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"The real Rust extension must be installed for acceptance\")",
       "rationale": "reason-4",
       "affected_scope": "scope-154"
     },
@@ -2381,7 +2381,7 @@
       "conditions": [
         "engine == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Cohort acceptance requires the real extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Cohort acceptance requires the real extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-155"
     },
@@ -2395,7 +2395,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Complete filter acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Complete filter acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-156"
     },
@@ -2406,7 +2406,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Complete filter rejection requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Complete filter rejection requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-157"
     },
@@ -2420,7 +2420,7 @@
       "conditions": [
         "engine == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-158"
     },
@@ -2434,7 +2434,7 @@
       "conditions": [
         "engine == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-159"
     },
@@ -2445,7 +2445,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Complete filter rejection requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Complete filter rejection requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-160"
     },
@@ -2467,7 +2467,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-161"
     },
@@ -2489,7 +2489,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-162"
     },
@@ -2500,7 +2500,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-163"
     },
@@ -2522,7 +2522,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-164"
     },
@@ -2536,7 +2536,7 @@
       "conditions": [
         "not dsn"
       ],
-      "source": "pytest.skip(\"PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
+      "source": "pytest.skip(\"PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
       "affected_scope": "scope-165"
     },
@@ -2550,7 +2550,7 @@
       "conditions": [
         "not dsn"
       ],
-      "source": "pytest.skip(\"PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
+      "source": "pytest.skip(\"PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
       "affected_scope": "scope-166"
     },
@@ -2564,7 +2564,7 @@
       "conditions": [
         "not dsn"
       ],
-      "source": "pytest.skip(\"PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
+      "source": "pytest.skip(\"PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
       "affected_scope": "scope-167"
     },
@@ -2578,7 +2578,7 @@
       "conditions": [
         "not dsn"
       ],
-      "source": "pytest.skip(\"PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
+      "source": "pytest.skip(\"PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
       "affected_scope": "scope-168"
     },
@@ -2589,7 +2589,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Computed-key acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Computed-key acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-169"
     },
@@ -2600,7 +2600,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-170"
     },
@@ -2614,7 +2614,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Conversion acceptance requires the real extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Conversion acceptance requires the real extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-171"
     },
@@ -2628,7 +2628,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Cross relationship parity requires the real extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Cross relationship parity requires the real extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-172"
     },
@@ -2639,7 +2639,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-173"
     },
@@ -2653,7 +2653,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Cross-source window acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Cross-source window acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-174"
     },
@@ -2664,7 +2664,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-175"
     },
@@ -2678,7 +2678,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires real native extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires real native extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-176"
     },
@@ -2692,7 +2692,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires matching native extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires matching native extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-177"
     },
@@ -2762,7 +2762,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Direct relationship parity requires the real extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Direct relationship parity requires the real extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-182"
     },
@@ -2776,7 +2776,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Migration acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Migration acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-183"
     },
@@ -2790,7 +2790,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Count family acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Count family acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-184"
     },
@@ -2812,7 +2812,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-185"
     },
@@ -2823,7 +2823,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-186"
     },
@@ -2837,7 +2837,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Row-expression acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Row-expression acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-187"
     },
@@ -2851,7 +2851,7 @@
       "conditions": [
         "not dsn"
       ],
-      "source": "pytest.skip(\"PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
+      "source": "pytest.skip(\"PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
       "affected_scope": "scope-188"
     },
@@ -2863,9 +2863,9 @@
       "category": "optional-host",
       "exclusion_direction": "both-engines",
       "conditions": [
-        "os.environ.get('SIDEMANTIC_DIFFERENTIAL_REQUIRE_RUST', '0') == '1'"
+        "os.environ.get('SQLCTX_DIFFERENTIAL_REQUIRE_RUST', '0') == '1'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Differential execution requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Differential execution requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-189"
     },
@@ -2879,7 +2879,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-190"
     },
@@ -2890,7 +2890,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-191"
     },
@@ -2901,7 +2901,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-192"
     },
@@ -2915,7 +2915,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Funnel acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Funnel acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-193"
     },
@@ -2926,7 +2926,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Nested policy SQL requires the installed Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Nested policy SQL requires the installed Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-194"
     },
@@ -2940,7 +2940,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Null-fill acceptance requires the matching Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Null-fill acceptance requires the matching Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-195"
     },
@@ -2951,7 +2951,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the source-built Rust runtime\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires the source-built Rust runtime\")",
       "rationale": "reason-4",
       "affected_scope": "scope-196"
     },
@@ -2962,7 +2962,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-197"
     },
@@ -2976,7 +2976,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires matching native extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires matching native extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-198"
     },
@@ -2990,7 +2990,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Population acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Population acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-199"
     },
@@ -3001,7 +3001,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Policy CLI acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Policy CLI acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-200"
     },
@@ -3015,7 +3015,7 @@
       "conditions": [
         "not dsn"
       ],
-      "source": "pytest.skip(\"PostgreSQL policy execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
+      "source": "pytest.skip(\"PostgreSQL policy execution requires SQLCTX_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
       "affected_scope": "scope-201"
     },
@@ -3029,7 +3029,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Catalog acceptance requires the real extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Catalog acceptance requires the real extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-202"
     },
@@ -3040,7 +3040,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-203"
     },
@@ -3051,7 +3051,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-204"
     },
@@ -3065,7 +3065,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the actual Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires the actual Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-205"
     },
@@ -3079,7 +3079,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-206"
     },
@@ -3093,7 +3093,7 @@
       "conditions": [
         "engine == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"The real Rust extension must be installed for acceptance\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"The real Rust extension must be installed for acceptance\")",
       "rationale": "reason-4",
       "affected_scope": "scope-207"
     },
@@ -3107,7 +3107,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Scoped role acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Scoped role acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-208"
     },
@@ -3121,7 +3121,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the built Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires the built Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-209"
     },
@@ -3135,7 +3135,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Retention parity requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Retention parity requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-210"
     },
@@ -3149,7 +3149,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-211"
     },
@@ -3177,7 +3177,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-213"
     },
@@ -3191,7 +3191,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Rollup execution requires the matching Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Rollup execution requires the matching Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-214"
     },
@@ -3205,7 +3205,7 @@
       "conditions": [
         "rust"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-215"
     },
@@ -3219,7 +3219,7 @@
       "conditions": [
         "not dsn"
       ],
-      "source": "pytest.skip(\"PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
+      "source": "pytest.skip(\"PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
       "affected_scope": "scope-216"
     },
@@ -3258,7 +3258,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Rollup acceptance requires the matching Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Rollup acceptance requires the matching Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-219"
     },
@@ -3272,7 +3272,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires real native extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires real native extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-220"
     },
@@ -3283,7 +3283,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires real native extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires real native extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-221"
     },
@@ -3297,7 +3297,7 @@
       "conditions": [
         "not dsn"
       ],
-      "source": "pytest.skip(\"PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN\")",
+      "source": "pytest.skip(\"PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN\")",
       "rationale": "reason-15",
       "affected_scope": "scope-222"
     },
@@ -3311,7 +3311,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires the built Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires the built Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-223"
     },
@@ -3325,7 +3325,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Sibling fanout acceptance requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Sibling fanout acceptance requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-224"
     },
@@ -3339,7 +3339,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Snapshot parity requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Snapshot parity requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-225"
     },
@@ -3350,7 +3350,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires matching native extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires matching native extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-226"
     },
@@ -3364,7 +3364,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires real native extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires real native extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-227"
     },
@@ -3375,7 +3375,7 @@
       "kind": "importorskip",
       "category": "optional-host",
       "exclusion_direction": "both-engines",
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires real native extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires real native extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-228"
     },
@@ -3389,7 +3389,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Population parity requires the real Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Population parity requires the real Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-229"
     },
@@ -3403,7 +3403,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Temporal dialect parity requires the Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Temporal dialect parity requires the Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-230"
     },
@@ -3417,7 +3417,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Temporal fill requires matching installed Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Temporal fill requires matching installed Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-231"
     },
@@ -3431,7 +3431,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\")",
       "rationale": "reason-4",
       "affected_scope": "scope-232"
     },
@@ -3459,7 +3459,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Window acceptance requires the Rust extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Window acceptance requires the Rust extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-234"
     },
@@ -3487,7 +3487,7 @@
       "conditions": [
         "request.param == 'rust'"
       ],
-      "source": "pytest.importorskip(\"sidemantic_rs\", reason=\"Requires matching native extension\")",
+      "source": "pytest.importorskip(\"sqlctx_rs\", reason=\"Requires matching native extension\")",
       "rationale": "reason-4",
       "affected_scope": "scope-236"
     },
@@ -3856,7 +3856,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-252"
     },
@@ -4164,7 +4164,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-268"
     },
@@ -4354,7 +4354,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
+      "source": "from sqlctx.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
       "affected_scope": "scope-283"
     },
@@ -4365,7 +4365,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
+      "source": "from sqlctx.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
       "affected_scope": "scope-284"
     },
@@ -4376,7 +4376,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-285"
     },
@@ -4387,7 +4387,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-286"
     },
@@ -4398,7 +4398,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-287"
     },
@@ -4409,7 +4409,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
+      "source": "from sqlctx.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
       "affected_scope": "scope-288"
     },
@@ -4420,7 +4420,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-289"
     },
@@ -4431,7 +4431,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
+      "source": "from sqlctx.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
       "affected_scope": "scope-290"
     },
@@ -4442,7 +4442,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
+      "source": "from sqlctx.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
       "affected_scope": "scope-291"
     },
@@ -4453,7 +4453,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-292"
     },
@@ -4464,7 +4464,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-293"
     },
@@ -4475,7 +4475,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-294"
     },
@@ -4486,7 +4486,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-295"
     },
@@ -4497,7 +4497,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-296"
     },
@@ -4508,7 +4508,7 @@
       "kind": "implementation-import",
       "category": "intentional-Python-only",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.generator import SQLGenerator",
+      "source": "from sqlctx.sql.generator import SQLGenerator",
       "rationale": "reason-2",
       "affected_scope": "scope-297"
     },
@@ -4519,7 +4519,7 @@
       "kind": "implementation-import",
       "category": "real-gap",
       "exclusion_direction": "rust-coverage-exclusion",
-      "source": "from sidemantic.sql.query_rewriter import QueryRewriter",
+      "source": "from sqlctx.sql.query_rewriter import QueryRewriter",
       "rationale": "reason-2",
       "affected_scope": "scope-298"
     },
@@ -4551,20 +4551,20 @@
       "Native source-dialect literal contract": 12,
       "Native subquery scope regression": 1,
       "PostgreSQL adapter available, tested in integration tests": 1,
-      "PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN": 44,
-      "PostgreSQL policy execution requires SIDEMANTIC_TEST_POSTGRES_DSN": 36,
+      "PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN": 44,
+      "PostgreSQL policy execution requires SQLCTX_TEST_POSTGRES_DSN": 36,
       "Python joins physical keys; native computed-key identity has its own independent oracle": 1,
       "Python reparses completed Redshift aggregates with its generic SQL parser": 3,
       "Rust target emission; Python reparses Redshift using its generic parser": 3,
-      "Set SIDEMANTIC_YARDSTICK_UPSTREAM_TESTS=1 to fetch and replay live upstream Yardstick tests": 2,
+      "Set SQLCTX_YARDSTICK_UPSTREAM_TESTS=1 to fetch and replay live upstream Yardstick tests": 2,
       "Strict Rust compiler validation contract": 9,
       "could not import 'anywidget': No module named 'anywidget'": 8,
       "could not import 'textual': No module named 'textual'": 2,
-      "set SIDEMANTIC_DAX_ONLINE_CONFORMANCE=1 to probe DAX Formatter": 11
+      "set SQLCTX_DAX_ONLINE_CONFORMANCE=1 to probe DAX Formatter": 11
     },
     "limitations": "JUnit does not enumerate deselected tests. Historical results do not validate current edits.",
     "omissions_by_reason": {
-      "set SIDEMANTIC_DAX_ONLINE_CONFORMANCE=1 to probe DAX Formatter": {
+      "set SQLCTX_DAX_ONLINE_CONFORMANCE=1 to probe DAX Formatter": {
         "category": "external-service",
         "type": "pytest.skip",
         "tests": [
@@ -4588,7 +4588,7 @@
           "tests.db.test_semantic_layer_adapters::test_postgres_url_recognized"
         ]
       },
-      "Set SIDEMANTIC_YARDSTICK_UPSTREAM_TESTS=1 to fetch and replay live upstream Yardstick tests": {
+      "Set SQLCTX_YARDSTICK_UPSTREAM_TESTS=1 to fetch and replay live upstream Yardstick tests": {
         "category": "external-service",
         "type": "pytest.skip",
         "tests": [
@@ -4614,7 +4614,7 @@
           "tests.semantic_conformance.test_approximate_distinct::test_redshift_nested_approximate_expressions_use_independent_parser[python-NULLIF(APPROX_COUNT_DISTINCT(user_id), 0)]"
         ]
       },
-      "PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN": {
+      "PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN": {
         "category": "external-service",
         "type": "pytest.skip",
         "tests": [
@@ -4709,7 +4709,7 @@
           "tests.semantic_conformance.test_dialect_boundary::test_source_dialect_preserves_typed_policy_and_parameter_values[python-O'Brien-spark]"
         ]
       },
-      "PostgreSQL policy execution requires SIDEMANTIC_TEST_POSTGRES_DSN": {
+      "PostgreSQL policy execution requires SQLCTX_TEST_POSTGRES_DSN": {
         "category": "external-service",
         "type": "pytest.skip",
         "tests": [
@@ -5765,12 +5765,12 @@
       ]
     },
     "scope-17": {
-      "path": "tests/adapters/sidemantic_adapter/test_parsing.py",
+      "path": "tests/adapters/sqlctx_adapter/test_parsing.py",
       "declared_tests": [
         "test_dimension_window_in_sql_generation"
       ],
       "collected_tests": [
-        "tests/adapters/sidemantic_adapter/test_parsing.py::test_dimension_window_in_sql_generation"
+        "tests/adapters/sqlctx_adapter/test_parsing.py::test_dimension_window_in_sql_generation"
       ]
     },
     "scope-18": {
@@ -14280,12 +14280,12 @@
         "test_native_source_changes_invalidate_uv_wheels"
       ],
       "collected_tests": [
-        "tests/test_native_build_cache.py::test_native_source_changes_invalidate_uv_wheels[sidemantic-rs-src/lib.rs]",
-        "tests/test_native_build_cache.py::test_native_source_changes_invalidate_uv_wheels[sidemantic-rs-build.rs]",
-        "tests/test_native_build_cache.py::test_native_source_changes_invalidate_uv_wheels[sidemantic-rs-../Cargo.lock]",
+        "tests/test_native_build_cache.py::test_native_source_changes_invalidate_uv_wheels[sqlctx-rs-src/lib.rs]",
+        "tests/test_native_build_cache.py::test_native_source_changes_invalidate_uv_wheels[sqlctx-rs-build.rs]",
+        "tests/test_native_build_cache.py::test_native_source_changes_invalidate_uv_wheels[sqlctx-rs-../Cargo.lock]",
         "tests/test_native_build_cache.py::test_native_source_changes_invalidate_uv_wheels[crates/dax-pyo3-src/lib.rs]",
         "tests/test_native_build_cache.py::test_native_source_changes_invalidate_uv_wheels[crates/dax-pyo3-../dax-parser/src/functions.rs]",
-        "tests/test_native_build_cache.py::test_native_source_changes_invalidate_uv_wheels[crates/dax-pyo3-python/sidemantic_dax/__init__.py]"
+        "tests/test_native_build_cache.py::test_native_source_changes_invalidate_uv_wheels[crates/dax-pyo3-python/sqlctx_dax/__init__.py]"
       ]
     },
     "scope-283": {
@@ -14521,7 +14521,7 @@
         "evidence": "reason-1"
       }
     },
-    "tests/adapters/sidemantic_adapter/test_parsing.py": {
+    "tests/adapters/sqlctx_adapter/test_parsing.py": {
       "test_dimension_window_in_sql_generation": {
         "category": "real-gap",
         "evidence": "reason-1"
@@ -15910,56 +15910,56 @@
     "reason-11": "docs/rust-parity-helper-evidence.json#timezone-routing: Timezone queries bypass UTC rollups; quote/space/backslash/newline injection attempts are rejected before SQL. Counterparts: tests/semantic_conformance/test_query_timezone_parity.py::test_timezone_bypasses_utc_rollup; tests/semantic_conformance/test_query_timezone_parity.py::test_timezone_rejects_invalid_characters",
     "reason-12": "Direct private implementation-unit calls: SQLGenerator(g, dialect='bigquery', timezone='America/New_York')._date_trunc, SQLGenerator(g, dialect='mysql', timezone='UTC')._date_trunc, SQLGenerator(g, dialect='snowflake', timezone='America/New_York')._date_trunc, SQLGenerator(g, dialect='spark', timezone='America/New_York')._date_trunc",
     "reason-13": "docs/rust-parity-helper-evidence.json#model-conversion-window: Model-local conversion metric selects distinct signup entities and counts purchases within an inclusive seven-day window; late purchases do not convert. Counterparts: tests/semantic_conformance/test_conversion_parity.py::test_unique_entities_and_inclusive_window Limitation: Python graph auto-registration bookkeeping remains Python-owned; the public native fixture tests model-local resolution and results.",
-    "reason-14": "docs/rust-parity-helper-evidence.json#timezone-period-lookup: Named dod/wow/mom/qoq/yoy map to calendar intervals without a declared grain; month result regression independently verifies sparse periods and category partitions. Counterparts: sidemantic-rs/src/sql/generator/temporal.rs::named_comparisons_have_calendar_intervals_without_declared_granularity; tests/semantic_conformance/test_feature_parity.py::test_named_calendar_comparison_without_declared_granularity Limitation: All five intervals have native unit assertions; the dual-engine result counterpart executes month specifically.",
+    "reason-14": "docs/rust-parity-helper-evidence.json#timezone-period-lookup: Named dod/wow/mom/qoq/yoy map to calendar intervals without a declared grain; month result regression independently verifies sparse periods and category partitions. Counterparts: sqlctx-rs/src/sql/generator/temporal.rs::named_comparisons_have_calendar_intervals_without_declared_granularity; tests/semantic_conformance/test_feature_parity.py::test_named_calendar_comparison_without_declared_granularity Limitation: All five intervals have native unit assertions; the dual-engine result counterpart executes month specifically.",
     "reason-15": "Explicit external database, network oracle, or integration environment gate.",
     "reason-16": "Deselected by default addopts; may additionally have dependency or behavioral skips.",
     "reason-17": "Behavioral or emulator limitation; do not count the omitted contract as parity.",
     "reason-18": "Connection contract delegated to the integration suite.",
-    "reason-19": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_conversion_metric: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-20": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_conversion_metric_backwards_compatible: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-21": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_conversion_metric_steps_and_base_event: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-19": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_conversion_metric: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-20": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_conversion_metric_backwards_compatible: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-21": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_conversion_metric_steps_and_base_event: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
     "reason-22": "docs/rust-parity-helper-evidence.json#temporal-null-fill: Fill applies to final cumulative/comparison/offset-ratio result; empty/prior-missing periods use the declared default instead of feeding a filled base value into the temporal operation. Counterparts: tests/semantic_conformance/test_temporal_null_fill.py::test_cumulative_final_default_keeps_null_base_and_partitions; tests/semantic_conformance/test_temporal_null_fill.py::test_missing_prior_and_zero_denominator_fill_after_calculation; tests/semantic_conformance/test_temporal_null_fill.py::test_offset_ratio_default_applies_after_sparse_prior_division",
     "reason-23": "docs/rust-parity-helper-evidence.json#null-default-dependencies: Model leaf defaults are used by direct, derived and ratio dependencies; null groups/empty aggregates retain explicit defaults. Counterparts: tests/semantic_conformance/test_null_fill.py::test_metric_result_and_dependency_defaults; tests/semantic_conformance/test_null_fill.py::test_filled_leaf_participates_in_cross_source_calculation",
-    "reason-24": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_filter_dimension_with_model_qualified_sql_expr: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-24": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_filter_dimension_with_model_qualified_sql_expr: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
     "reason-25": "docs/rust-parity-helper-evidence.json#sparse-month-comparison: Month comparison subtracts the matching prior calendar month within each category and yields null across a missing month. Counterparts: tests/semantic_conformance/test_feature_parity.py::test_sparse_comparison_uses_calendar_month_and_category",
-    "reason-26": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_conversion_2_steps_via_steps_list: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-27": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_conversion_funnel: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-28": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_chronological_order_enforced: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-29": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_expression_timestamp: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-30": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_name_prefix_step_predicates: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-31": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_placeholder_filter: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-32": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_placeholder_step_predicates: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-33": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_placeholder_timestamp: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-34": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_monotonic_counts: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-35": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_only_prior_step2_not_counted: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-36": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_or_step_with_filter: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-37": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_order_by_metric_name: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-38": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_qualified_filters: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-39": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_repeated_actions_valid_path: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-40": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_total_excludes_non_entrants: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-41": "docs/rust-parity-helper-evidence.json#cumulative-year-reset: Year-to-date window partitions on calendar year rather than retaining prior-year rows. Counterparts: sidemantic-rs/src/sql/generator/temporal.rs::cumulative_frames_preserve_groups_and_calendar_reset Limitation: Native counterpart asserts emitted calendar-year partition/frame; it is not a result-level duplicate of the original fixture.",
+    "reason-26": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_conversion_2_steps_via_steps_list: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-27": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_conversion_funnel: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-28": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_chronological_order_enforced: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-29": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_expression_timestamp: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-30": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_name_prefix_step_predicates: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-31": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_placeholder_filter: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-32": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_placeholder_step_predicates: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-33": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_model_placeholder_timestamp: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-34": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_monotonic_counts: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-35": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_only_prior_step2_not_counted: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-36": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_or_step_with_filter: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-37": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_order_by_metric_name: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-38": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_qualified_filters: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-39": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_repeated_actions_valid_path: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-40": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_advanced.py-test_multistep_funnel_total_excludes_non_entrants: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-41": "docs/rust-parity-helper-evidence.json#cumulative-year-reset: Year-to-date window partitions on calendar year rather than retaining prior-year rows. Counterparts: sqlctx-rs/src/sql/generator/temporal.rs::cumulative_frames_preserve_groups_and_calendar_reset Limitation: Native counterpart asserts emitted calendar-year partition/frame; it is not a result-level duplicate of the original fixture.",
     "reason-42": "docs/rust-parity-helper-evidence.json#cohort-group-results: Model-local inner count-distinct/HAVING cohort qualification preserves outer dimension/time-grain names; outer average reads qualified inner aggregate values, and reserved output dimensions are quoted. Counterparts: tests/semantic_conformance/test_cohort_parity.py::test_count_counts_qualified_inner_groups_including_null_entity; tests/semantic_conformance/test_cohort_parity.py::test_query_grouping_changes_inner_and_outer_grain; tests/semantic_conformance/test_cohort_parity.py::test_time_bucket_is_carried_through_to_outer_output; tests/semantic_conformance/test_cohort_parity.py::test_outer_aggregations_read_qualified_inner_values; tests/semantic_conformance/test_cohort_parity.py::test_reserved_output_dimension_is_quoted Limitation: Counterparts cover the same operations with independent synthetic populations; graph-owner inference is explicitly excluded from this mapping.",
-    "reason-43": "docs/rust-parity-helper-evidence.json#unowned-graph-cohort: Python infers the unique source model from the graph-level cohort entity without metric_owners. Rust strict graph scope requires an explicit cohort owner and rejects this valid Python shape. Counterparts: tests/semantic_conformance/test_cohort_parity.py::test_owned_graph_cohort_unsupported_shapes_remain_gated; sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Counterpart is negative evidence: mutation=unowned is intentionally rejected. SemanticLayer.add_metric does not supply an owner, and graph_to_semantic_input preserves that absence. Source-confirmed; live repro remains lead-owned.",
+    "reason-43": "docs/rust-parity-helper-evidence.json#unowned-graph-cohort: Python infers the unique source model from the graph-level cohort entity without metric_owners. Rust strict graph scope requires an explicit cohort owner and rejects this valid Python shape. Counterparts: tests/semantic_conformance/test_cohort_parity.py::test_owned_graph_cohort_unsupported_shapes_remain_gated; sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Counterpart is negative evidence: mutation=unowned is intentionally rejected. SemanticLayer.add_metric does not supply an owner, and graph_to_semantic_input preserves that absence. Source-confirmed; live repro remains lead-owned.",
     "reason-44": "Co-located engine-parametrized native/reference oracle; inspect test and Rust import.",
     "reason-45": "tests/core/test_pure_rust_python_test_parity.py::test_existing_python_layer_contract_matches_pure_rust[tests.metrics.test_cumulative::test_cumulative_with_time_comparison]",
     "reason-46": "Direct private implementation-unit calls: generator._add_where_filters_to_query, generator._split_where_having_filters, snowflake_generator._split_where_having_filters",
     "reason-47": "Direct private implementation-unit calls: generator._split_where_having_filters",
     "reason-48": "Direct private implementation-unit calls: generator._add_where_filters_to_query",
-    "reason-49": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_aliased_entity_dimension: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-50": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_day_granularity_results: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-51": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_default_activity_event: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-52": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_filter_with_model_qualified_sql_expr: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-53": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_metric_level_filters: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-49": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_aliased_entity_dimension: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-50": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_day_granularity_results: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-51": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_default_activity_event: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-52": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_filter_with_model_qualified_sql_expr: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-53": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_metric_level_filters: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
     "reason-54": "docs/rust-parity-helper-evidence.json#model-retention: Model-local retention executes with a fixed cohort/period/active_users/cohort_size/percentage schema. Counterparts: tests/semantic_conformance/test_retention_parity.py::test_first_cohort_sparse_periods_nulls_and_inactive_denominator",
-    "reason-55": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_model_placeholder_expansion_sql_model: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-56": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_model_placeholder_expansion_table_model: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-57": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_model_placeholder_in_time_dimension: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-58": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_offset_in_sql: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-59": "docs/rust-parity-helper-evidence.json#retention-period-validation: Zero retention periods are rejected instead of silently defaulting to 28. Counterparts: sidemantic-rs/src/sql/generator/retention.rs::retention_requires_valid_period_and_granularity",
-    "reason-60": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_sql_generation: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-61": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_week_granularity: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-55": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_model_placeholder_expansion_sql_model: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-56": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_model_placeholder_expansion_table_model: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-57": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_model_placeholder_in_time_dimension: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-58": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_offset_in_sql: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-59": "docs/rust-parity-helper-evidence.json#retention-period-validation: Zero retention periods are rejected instead of silently defaulting to 28. Counterparts: sqlctx-rs/src/sql/generator/retention.rs::retention_requires_valid_period_and_granularity",
+    "reason-60": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_sql_generation: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-61": "docs/rust-parity-helper-evidence.json#unowned-tests-metrics-test_retention.py-test_retention_week_granularity: This positive test adds a retention metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
     "reason-62": "Direct private implementation-unit calls: generator._has_fanout_joins",
-    "reason-63": "docs/rust-parity-helper-evidence.json#shared-native-manifest-rewrite: Both harnesses load tests/native-fixtures/manifest.yml rewrite_queries and assert each sql_contains token after semantic rewrite. Counterparts: sidemantic-rs/tests/native_fixtures.rs::native_fixtures_load_and_compile Limitation: Compilation/token assertions only; this source test does not execute rewritten SQL.",
+    "reason-63": "docs/rust-parity-helper-evidence.json#shared-native-manifest-rewrite: Both harnesses load tests/native-fixtures/manifest.yml rewrite_queries and assert each sql_contains token after semantic rewrite. Counterparts: sqlctx-rs/tests/native_fixtures.rs::native_fixtures_load_and_compile Limitation: Compilation/token assertions only; this source test does not execute rewritten SQL.",
     "reason-64": "docs/rust-parity-helper-evidence.json#legacy-rewriter-route: Explicit Python route override and monkeypatched Python _rewrite_python RuntimeError propagation test the legacy implementation contract, not a missing native semantic query feature.",
     "reason-65": "Python optimizer plan/rule contract (module docstring); engine-selected SemanticLayer execution assertions remain active.",
     "reason-66": "tests/queries/test_rust_sql_rewriter_parity.py::test_semantic_sql_contract[test_dry_run_with_postprocess_subquery]",
@@ -15993,11 +15993,11 @@
     "reason-94": "Direct helper behavioral coverage has no established replay counterpart; requires native coverage adjudication, not a confirmed Rust defect.",
     "reason-95": "Engine-asymmetric contract: skips the Python parameter; Rust still runs. Not a Rust-default blocker by itself.",
     "reason-96": "Engine-parametrized layer fixture and result/rows helper branch between Rust bridge and Python helper in this module.",
-    "reason-97": "docs/rust-parity-helper-evidence.json#unowned-tests-test_bugfix_batch.py-test_conversion_dimension_join_prevents_cross_group_leaking: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-98": "docs/rust-parity-helper-evidence.json#unowned-tests-test_bugfix_batch.py-test_conversion_with_derived_dimension_sql: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-99": "docs/rust-parity-helper-evidence.json#unowned-tests-test_bugfix_batch.py-test_conversion_with_dimension: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-100": "docs/rust-parity-helper-evidence.json#unowned-tests-test_bugfix_batch.py-test_conversion_with_time_granularity: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
-    "reason-101": "docs/rust-parity-helper-evidence.json#unowned-tests-test_bugfix_batch.py-test_conversion_without_dimensions_still_works: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sidemantic-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-97": "docs/rust-parity-helper-evidence.json#unowned-tests-test_bugfix_batch.py-test_conversion_dimension_join_prevents_cross_group_leaking: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-98": "docs/rust-parity-helper-evidence.json#unowned-tests-test_bugfix_batch.py-test_conversion_with_derived_dimension_sql: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-99": "docs/rust-parity-helper-evidence.json#unowned-tests-test_bugfix_batch.py-test_conversion_with_dimension: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-100": "docs/rust-parity-helper-evidence.json#unowned-tests-test_bugfix_batch.py-test_conversion_with_time_granularity: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
+    "reason-101": "docs/rust-parity-helper-evidence.json#unowned-tests-test_bugfix_batch.py-test_conversion_without_dimensions_still_works: This positive test adds a conversion metric with graph.add_metric and no owner. The positive public counterparts reviewed use model-local metrics; they do not prove the graph-scoped contract. Counterparts: sqlctx-rs/src/sql/generator.rs::strict_graph_metric_owners Limitation: Strict owner discovery does not inspect entity/event fields; live native rejection and any source inference from qualified filters must be checked before calling every variant unsupported.",
     "reason-102": "Direct private implementation-unit calls: gen._has_fanout_joins",
     "reason-103": "Direct private implementation-unit calls: gen._classify_filters_for_pushdown, self._build_graph",
     "reason-104": "tests/core/test_pure_rust_python_test_parity.py::test_existing_python_layer_contract_matches_pure_rust[tests.test_foreign_key_dimensions::test_foreign_key_as_dimension_no_join]",

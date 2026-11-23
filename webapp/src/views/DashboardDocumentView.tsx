@@ -8,7 +8,7 @@ import { ScatterChart } from "../components/ScatterChart";
 import { EmptyState, ErrorState, LoadingState } from "../components/States";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { TimeSeriesChart } from "../components/TimeSeriesChart";
-import type { SidemanticBackend } from "../data/backend";
+import type { SqlctxBackend } from "../data/backend";
 import type { DashboardChart, DashboardDocument } from "../data/dashboardTypes";
 import type { Catalog, ResultRow } from "../data/types";
 import { displayDimValue, formatValue, labelize } from "../lib/format";
@@ -146,7 +146,7 @@ function DashboardChartPanel({
   document: DashboardDocument;
   chart: DashboardChart;
   catalog: Catalog;
-  backend: SidemanticBackend;
+  backend: SqlctxBackend;
   state: DashboardViewState;
   setFilters: (filters: Record<string, string>) => void;
   setRange: (dimension: string, range: { from: string; to: string } | null) => void;
@@ -412,7 +412,7 @@ export function DashboardDocumentView({
 }: {
   document: DashboardDocument;
   catalog: Catalog;
-  backend: SidemanticBackend;
+  backend: SqlctxBackend;
 }) {
   const [state, setState] = useState<DashboardViewState>(() => decodeDashboardState(window.location.search, document));
   const activeTab = document.tabs.find((tab) => tab.id === state.tab) ?? document.tabs[0];

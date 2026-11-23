@@ -4,8 +4,8 @@ from copy import deepcopy
 
 import pytest
 
-from sidemantic.interchange.ossie import validate_ossie_semantics
-from sidemantic.interchange.ossie.validation import validate_ossie_schema
+from sqlctx.interchange.ossie import validate_ossie_semantics
+from sqlctx.interchange.ossie.validation import validate_ossie_schema
 
 
 def _ontology():

@@ -3,11 +3,11 @@
 import duckdb
 import pytest
 
-from sidemantic.core.model import Dimension, Metric, Model, Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import UnsupportedMetricError
-from sidemantic.core.symmetric_aggregate import build_symmetric_aggregate_sql
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx.core.model import Dimension, Metric, Model, Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import UnsupportedMetricError
+from sqlctx.core.symmetric_aggregate import build_symmetric_aggregate_sql
+from sqlctx.sql.generator import SQLGenerator
 from tests.utils import fetch_rows
 
 

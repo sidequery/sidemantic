@@ -1,0 +1,1188 @@
+use std::collections::HashMap;
+use std::io::{self, Read};
+
+use polyglot_sql::DialectType;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sqlctx::{
+    build_symmetric_aggregate_sql, config::SqlctxConfig, Aggregation, DimensionType, Metric, Model,
+    OssieConsumerProfile, OssieForwardAdapter, OssieSerialization, OssieTarget, QueryRewriter,
+    RelationshipType, SemanticGraph, SemanticQuery, SqlDialect, SqlGenerator, SymmetricAggType,
+    TableCalculation,
+};
+
+// Keep the largest action payload indirect without boxing individual collections.
+#[derive(Debug, Deserialize)]
+struct CompileRequest {
+    models_yaml: String,
+    #[serde(default)]
+    metrics: Vec<String>,
+    #[serde(default)]
+    dimensions: Vec<String>,
+    #[serde(default)]
+    filters: Vec<String>,
+    #[serde(default)]
+    segments: Vec<String>,
+    #[serde(default)]
+    order_by: Vec<String>,
+    #[serde(default)]
+    aliases: HashMap<String, String>,
+    timezone: Option<String>,
+    #[serde(default)]
+    with_totals: bool,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    #[serde(default)]
+    ungrouped: bool,
+    #[serde(default)]
+    skip_default_time_dimensions: bool,
+    dialect: Option<String>,
+    #[serde(default)]
+    use_preaggregations: bool,
+    preagg_database: Option<String>,
+    preagg_schema: Option<String>,
+    #[serde(default)]
+    parameter_values: std::collections::HashMap<String, serde_yaml::Value>,
+}
+
+// Native Ossie import already produces typed IR. Compile that graph directly;
+// native YAML configuration has a different metric ownership/input contract.
+#[derive(Debug, Deserialize)]
+struct OssieCompileRequest {
+    content: String,
+    schema_revision: Option<String>,
+    sql: Option<String>,
+    serialization: String,
+    #[serde(default = "default_ossie_consumer_profile")]
+    consumer_profile: String,
+    #[serde(default = "default_ossie_target")]
+    target: String,
+    scope_id: Option<String>,
+    #[serde(default)]
+    metrics: Vec<String>,
+    #[serde(default)]
+    dimensions: Vec<String>,
+    #[serde(default)]
+    filters: Vec<String>,
+    #[serde(default)]
+    order_by: Vec<String>,
+    #[serde(default)]
+    aliases: HashMap<String, String>,
+    dialect: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OssieWideCompileRequest {
+    content: String,
+    schema_revision: Option<String>,
+    serialization: String,
+    #[serde(default = "default_ossie_consumer_profile")]
+    consumer_profile: String,
+    #[serde(default = "default_ossie_target")]
+    target: String,
+    scope_id: Option<String>,
+    query: Value,
+    dialect: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum Request {
+    Validate {
+        models_yaml: String,
+    },
+    Compile(Box<CompileRequest>),
+    OssieCompile(Box<OssieCompileRequest>),
+    OssieWideCompile(Box<OssieWideCompileRequest>),
+    JoinPath {
+        models_yaml: String,
+        from_model: String,
+        to_model: String,
+    },
+    RewriteSql {
+        models_yaml: String,
+        sql: String,
+    },
+    CatalogMetadata {
+        models_yaml: String,
+        schema: Option<String>,
+    },
+    GraphAddModel {
+        models_yaml: String,
+        model_yaml: String,
+    },
+    GraphAddMetric {
+        models_yaml: String,
+        metric_yaml: String,
+    },
+    GraphAddTableCalculation {
+        models_yaml: String,
+        #[serde(default)]
+        table_calculations_json: Vec<Value>,
+        table_calculation_json: Value,
+    },
+    GraphGetModel {
+        models_yaml: String,
+        name: String,
+    },
+    GraphGetMetric {
+        models_yaml: String,
+        name: String,
+    },
+    GraphGetTableCalculation {
+        models_yaml: String,
+        #[serde(default)]
+        table_calculations_json: Vec<Value>,
+        name: String,
+    },
+    GraphBuildAdjacency {
+        models_yaml: String,
+    },
+    SymmetricAggregateSql {
+        measure_expr: String,
+        primary_key: String,
+        agg_type: String,
+        model_alias: Option<String>,
+        dialect: Option<String>,
+    },
+    NeedsSymmetricAggregate {
+        relationship: String,
+        is_base_model: bool,
+    },
+    OssieValidate {
+        schema_revision: Option<String>,
+        content: String,
+        serialization: String,
+        #[serde(default = "default_ossie_consumer_profile")]
+        consumer_profile: String,
+    },
+    OssieSelectScope {
+        schema_revision: Option<String>,
+        content: String,
+        serialization: String,
+        #[serde(default = "default_ossie_consumer_profile")]
+        consumer_profile: String,
+        #[serde(default = "default_ossie_target")]
+        target: String,
+        scope_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum Response {
+    Ok {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sql: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<Vec<PathStep>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        catalog: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<Value>,
+    },
+    Error {
+        error: String,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct PathStep {
+    from_model: String,
+    to_model: String,
+    from_columns: Vec<String>,
+    to_columns: Vec<String>,
+    relationship: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edge_id: Option<String>,
+}
+
+fn handle(request: Request) -> sqlctx::Result<Response> {
+    match request {
+        Request::Validate { models_yaml } => {
+            load_from_string(&models_yaml)?;
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::Compile(request) => {
+            let CompileRequest {
+                models_yaml,
+                metrics,
+                dimensions,
+                filters,
+                segments,
+                order_by,
+                aliases,
+                timezone,
+                with_totals,
+                limit,
+                offset,
+                ungrouped,
+                skip_default_time_dimensions,
+                dialect,
+                use_preaggregations,
+                preagg_database,
+                preagg_schema,
+                parameter_values,
+            } = *request;
+            let graph = load_from_string(&models_yaml)?;
+            let filters =
+                sqlctx::runtime::interpolate_query_filters(&graph, filters, &parameter_values)
+                    .map_err(sqlctx::SqlctxError::Validation)?;
+            let mut query = SemanticQuery::new()
+                .with_metrics(metrics)
+                .with_dimensions(dimensions)
+                .with_filters(filters)
+                .with_segments(segments)
+                .with_order_by(order_by)
+                .with_ungrouped(ungrouped)
+                .with_skip_default_time_dimensions(skip_default_time_dimensions);
+            query.use_preaggregations = use_preaggregations;
+            query.preagg_database = preagg_database;
+            query.preagg_schema = preagg_schema;
+            query.aliases = aliases;
+            query.timezone = timezone;
+            query.with_totals = with_totals;
+            if let Some(limit) = limit {
+                query = query.with_limit(limit);
+            }
+            if let Some(offset) = offset {
+                query = query.with_offset(offset);
+            }
+            let mut generator = SqlGenerator::new(&graph);
+            if let Some(dialect) = dialect {
+                generator = generator.with_dialect(parse_dialect(&dialect)?);
+            }
+            let sql = generator.generate(&query)?;
+            Ok(Response::Ok {
+                sql: Some(sql),
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::OssieCompile(request) => {
+            let graph = OssieForwardAdapter
+                .select_scope_with_revision(
+                    &request.content,
+                    parse_ossie_serialization(&request.serialization)?,
+                    parse_ossie_consumer(&request.consumer_profile)?,
+                    parse_ossie_target(&request.target)?,
+                    request.scope_id.as_deref(),
+                    request.schema_revision.as_deref(),
+                )?
+                .into_graph()?;
+            if let Some(sql) = request.sql {
+                let sql = QueryRewriter::new(&graph)
+                    .rewrite_with_dialect(&sql, parse_dialect(&request.dialect)?)?;
+                return Ok(Response::Ok {
+                    sql: Some(sql),
+                    path: None,
+                    catalog: None,
+                    value: None,
+                });
+            }
+            let mut query = SemanticQuery::new()
+                .with_metrics(request.metrics)
+                .with_dimensions(request.dimensions)
+                .with_filters(request.filters)
+                .with_order_by(request.order_by);
+            query.aliases = request.aliases;
+            let sql = SqlGenerator::new(&graph)
+                .with_dialect(parse_dialect(&request.dialect)?)
+                .generate(&query)?;
+            Ok(Response::Ok {
+                sql: Some(sql),
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::OssieWideCompile(request) => {
+            let graph = OssieForwardAdapter
+                .select_scope_with_revision(
+                    &request.content,
+                    parse_ossie_serialization(&request.serialization)?,
+                    parse_ossie_consumer(&request.consumer_profile)?,
+                    parse_ossie_target(&request.target)?,
+                    request.scope_id.as_deref(),
+                    request.schema_revision.as_deref(),
+                )?
+                .into_graph()?;
+            let sql = SqlGenerator::new(&graph)
+                .with_dialect(parse_dialect(&request.dialect)?)
+                .generate_ossie_wide(&request.query)?;
+            Ok(Response::Ok {
+                sql: Some(sql),
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::JoinPath {
+            models_yaml,
+            from_model,
+            to_model,
+        } => {
+            let graph = load_from_string(&models_yaml)?;
+            let path = graph.find_join_path(&from_model, &to_model)?;
+            let steps = path
+                .steps
+                .into_iter()
+                .map(|step| PathStep {
+                    from_model: step.from_model,
+                    to_model: step.to_model,
+                    from_columns: step.from_keys,
+                    to_columns: step.to_keys,
+                    relationship: relationship_type_name(&step.relationship_type),
+                    edge_id: step.edge_id,
+                })
+                .collect();
+            Ok(Response::Ok {
+                sql: None,
+                path: Some(steps),
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::RewriteSql { models_yaml, sql } => {
+            let graph = load_from_string(&models_yaml)?;
+            let rewritten = QueryRewriter::new(&graph).rewrite(&sql)?;
+            Ok(Response::Ok {
+                sql: Some(rewritten),
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::CatalogMetadata {
+            models_yaml,
+            schema,
+        } => {
+            let graph = load_from_string(&models_yaml)?;
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: Some(catalog_metadata(
+                    &graph,
+                    schema.as_deref().unwrap_or("public"),
+                )),
+                value: None,
+            })
+        }
+        Request::GraphAddModel {
+            models_yaml,
+            model_yaml,
+        } => {
+            let mut graph = load_from_string(&models_yaml)?;
+            graph.add_model(parse_single_model(&model_yaml)?)?;
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::GraphAddMetric {
+            models_yaml,
+            metric_yaml,
+        } => {
+            let mut graph = load_from_string(&models_yaml)?;
+            graph.add_metric(parse_single_metric(&metric_yaml)?)?;
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::GraphAddTableCalculation {
+            models_yaml,
+            table_calculations_json,
+            table_calculation_json,
+        } => {
+            let mut graph =
+                load_graph_with_table_calculations(&models_yaml, table_calculations_json)?;
+            graph.add_table_calculation(parse_table_calculation_value(table_calculation_json)?)?;
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::GraphGetModel { models_yaml, name } => {
+            let graph = load_from_string(&models_yaml)?;
+            if graph.get_model(&name).is_none() {
+                return Err(sqlctx::SqlctxError::Validation(format!(
+                    "Model {name} not found"
+                )));
+            }
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::GraphGetMetric { models_yaml, name } => {
+            let graph = load_from_string(&models_yaml)?;
+            if graph.get_metric(&name).is_none() {
+                return Err(sqlctx::SqlctxError::Validation(format!(
+                    "Measure {name} not found"
+                )));
+            }
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::GraphGetTableCalculation {
+            models_yaml,
+            table_calculations_json,
+            name,
+        } => {
+            let graph = load_graph_with_table_calculations(&models_yaml, table_calculations_json)?;
+            if graph.get_table_calculation(&name).is_none() {
+                return Err(sqlctx::SqlctxError::Validation(format!(
+                    "Table calculation {name} not found"
+                )));
+            }
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::GraphBuildAdjacency { models_yaml } => {
+            load_from_string(&models_yaml)?;
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::SymmetricAggregateSql {
+            measure_expr,
+            primary_key,
+            agg_type,
+            model_alias,
+            dialect,
+        } => {
+            let agg_type = parse_symmetric_agg_type(&agg_type)?;
+            let dialect = dialect
+                .as_deref()
+                .and_then(SqlDialect::parse)
+                .unwrap_or(SqlDialect::DuckDB);
+            let sql = build_symmetric_aggregate_sql(
+                &measure_expr,
+                &primary_key,
+                agg_type,
+                model_alias.as_deref(),
+                dialect,
+            );
+            Ok(Response::Ok {
+                sql: Some(sql),
+                path: None,
+                catalog: None,
+                value: None,
+            })
+        }
+        Request::NeedsSymmetricAggregate {
+            relationship,
+            is_base_model,
+        } => Ok(Response::Ok {
+            sql: None,
+            path: None,
+            catalog: None,
+            value: Some(json!(
+                sqlctx::core::symmetric_agg::needs_symmetric_aggregate(
+                    &relationship,
+                    is_base_model
+                )
+            )),
+        }),
+        Request::OssieValidate {
+            schema_revision,
+            content,
+            serialization,
+            consumer_profile,
+        } => {
+            let serialization = parse_ossie_serialization(&serialization)?;
+            let consumer = parse_ossie_consumer(&consumer_profile)?;
+            let status = OssieForwardAdapter.inspect_with_revision(
+                &content,
+                serialization,
+                consumer,
+                schema_revision.as_deref(),
+            );
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: Some(
+                    serde_json::to_value(status)
+                        .map_err(|error| sqlctx::SqlctxError::Validation(error.to_string()))?,
+                ),
+            })
+        }
+        Request::OssieSelectScope {
+            schema_revision,
+            content,
+            serialization,
+            consumer_profile,
+            target,
+            scope_id,
+        } => {
+            let scope = OssieForwardAdapter.select_scope_with_revision(
+                &content,
+                parse_ossie_serialization(&serialization)?,
+                parse_ossie_consumer(&consumer_profile)?,
+                parse_ossie_target(&target)?,
+                scope_id.as_deref(),
+                schema_revision.as_deref(),
+            )?;
+            Ok(Response::Ok {
+                sql: None,
+                path: None,
+                catalog: None,
+                value: Some(
+                    serde_json::to_value(scope)
+                        .map_err(|error| sqlctx::SqlctxError::Validation(error.to_string()))?,
+                ),
+            })
+        }
+    }
+}
+
+fn default_ossie_consumer_profile() -> String {
+    "ossie-core".to_string()
+}
+
+fn default_ossie_target() -> String {
+    "ANSI_SQL".to_string()
+}
+
+fn parse_ossie_serialization(value: &str) -> sqlctx::Result<OssieSerialization> {
+    OssieSerialization::parse(value).map_err(sqlctx::SqlctxError::Validation)
+}
+
+fn parse_ossie_consumer(value: &str) -> sqlctx::Result<OssieConsumerProfile> {
+    OssieConsumerProfile::parse(value).map_err(sqlctx::SqlctxError::Validation)
+}
+
+fn parse_ossie_target(value: &str) -> sqlctx::Result<OssieTarget> {
+    OssieTarget::parse(value).map_err(sqlctx::SqlctxError::Validation)
+}
+
+fn parse_symmetric_agg_type(agg_type: &str) -> sqlctx::Result<SymmetricAggType> {
+    match agg_type {
+        "sum" => Ok(SymmetricAggType::Sum),
+        "avg" => Ok(SymmetricAggType::Avg),
+        "count" => Ok(SymmetricAggType::Count),
+        "count_distinct" => Ok(SymmetricAggType::CountDistinct),
+        "min" => Ok(SymmetricAggType::Min),
+        "max" => Ok(SymmetricAggType::Max),
+        "median" | "stddev" | "stddev_pop" | "variance" | "variance_pop" => {
+            Err(sqlctx::SqlctxError::Validation(format!(
+                "{} cannot be computed as a symmetric aggregate under a fan-out (one-to-many) join; \
+                 pre-aggregate the measure to its entity grain, or query without the fan-out join.",
+                agg_type.to_uppercase()
+            )))
+        }
+        value => Err(sqlctx::SqlctxError::Validation(format!(
+            "Unsupported aggregation type for symmetric aggregates: {value}"
+        ))),
+    }
+}
+
+fn parse_dialect(dialect: &str) -> sqlctx::Result<DialectType> {
+    match dialect.to_ascii_lowercase().as_str() {
+        "duckdb" => Ok(DialectType::DuckDB),
+        "bigquery" => Ok(DialectType::BigQuery),
+        "clickhouse" => Ok(DialectType::ClickHouse),
+        "spark" => Ok(DialectType::Spark),
+        "databricks" => Ok(DialectType::Databricks),
+        "snowflake" => Ok(DialectType::Snowflake),
+        "postgres" | "postgresql" => Ok(DialectType::PostgreSQL),
+        value => Err(sqlctx::SqlctxError::Validation(format!(
+            "Unsupported SQL dialect for pure Rust Python test parity adapter: {value}"
+        ))),
+    }
+}
+
+fn parse_single_model(model_yaml: &str) -> sqlctx::Result<Model> {
+    let config: SqlctxConfig = serde_yaml::from_str(model_yaml)?;
+    let (models, _, _) = config.into_parts()?;
+    let mut models = models.into_iter();
+    let Some(model) = models.next() else {
+        return Err(sqlctx::SqlctxError::Validation(
+            "Expected exactly one model".to_string(),
+        ));
+    };
+    if models.next().is_some() {
+        return Err(sqlctx::SqlctxError::Validation(
+            "Expected exactly one model".to_string(),
+        ));
+    }
+    Ok(model)
+}
+
+fn parse_single_metric(metric_yaml: &str) -> sqlctx::Result<Metric> {
+    let config: SqlctxConfig = serde_yaml::from_str(metric_yaml)?;
+    let (_, metrics, _) = config.into_parts()?;
+    let mut metrics = metrics.into_iter();
+    let Some(metric) = metrics.next() else {
+        return Err(sqlctx::SqlctxError::Validation(
+            "Expected exactly one metric".to_string(),
+        ));
+    };
+    if metrics.next().is_some() {
+        return Err(sqlctx::SqlctxError::Validation(
+            "Expected exactly one metric".to_string(),
+        ));
+    }
+    Ok(metric)
+}
+
+// Python graph metrics are registered directly. Native-format top-level metrics
+// instead require model ownership inference, which is a different contract.
+fn load_from_string(models_yaml: &str) -> sqlctx::Result<SemanticGraph> {
+    let mut document: serde_yaml::Value = serde_yaml::from_str(models_yaml)?;
+    let graph_metrics = document
+        .as_mapping_mut()
+        .and_then(|mapping| mapping.remove(serde_yaml::Value::String("graph_metrics".into())));
+    // Apply the native metric schema's type/aggregation inference, without the
+    // native loader's separate top-level metric ownership assignment.
+    let mut metric_document = serde_yaml::Mapping::new();
+    metric_document.insert(
+        serde_yaml::Value::String("metrics".into()),
+        graph_metrics.unwrap_or(serde_yaml::Value::Sequence(Vec::new())),
+    );
+    let config: SqlctxConfig = serde_yaml::from_value(serde_yaml::Value::Mapping(metric_document))?;
+    let (_, metrics, _) = config.into_parts()?;
+    let mut graph = sqlctx::load_from_string(&serde_yaml::to_string(&document)?)?;
+    for metric in &metrics {
+        // Model conversion/time-comparison metrics are also indexed at graph
+        // scope by both implementations. Their serialized graph copy is not a
+        // second definition; conflicting definitions must still fail.
+        if let Some(existing) = graph.get_metric(&metric.name) {
+            if serde_yaml::to_value(existing)? == serde_yaml::to_value(metric)? {
+                continue;
+            }
+        }
+        graph.add_metric_unvalidated(metric.clone())?;
+    }
+    for metric in &metrics {
+        graph.validate_metric_dependencies(metric)?;
+    }
+    Ok(graph)
+}
+
+fn load_graph_with_table_calculations(
+    models_yaml: &str,
+    table_calculations_json: Vec<Value>,
+) -> sqlctx::Result<SemanticGraph> {
+    let mut graph = load_from_string(models_yaml)?;
+    for value in table_calculations_json {
+        graph.add_table_calculation(parse_table_calculation_value(value)?)?;
+    }
+    Ok(graph)
+}
+
+fn parse_table_calculation_value(value: Value) -> sqlctx::Result<TableCalculation> {
+    serde_json::from_value(value)
+        .map_err(|err| sqlctx::SqlctxError::Validation(format!("Invalid table calculation: {err}")))
+}
+
+fn catalog_metadata(graph: &SemanticGraph, schema: &str) -> Value {
+    let mut tables = Vec::new();
+    let mut columns = Vec::new();
+    let mut constraints = Vec::new();
+    let mut key_column_usage = Vec::new();
+
+    for model in graph.models() {
+        tables.push(json!({
+            "table_catalog": "sqlctx",
+            "table_schema": schema,
+            "table_name": model.name,
+            "table_type": "BASE TABLE",
+            "is_insertable_into": "NO",
+            "is_typed": "NO",
+        }));
+
+        let mut ordinal = 1;
+        for primary_key in model.primary_keys() {
+            columns.push(json!({
+                "table_catalog": "sqlctx",
+                "table_schema": schema,
+                "table_name": model.name,
+                "column_name": primary_key,
+                "ordinal_position": ordinal,
+                "column_default": null,
+                "is_nullable": "NO",
+                "data_type": "BIGINT",
+                "character_maximum_length": null,
+                "numeric_precision": 64,
+                "numeric_scale": 0,
+                "is_primary_key": true,
+                "is_foreign_key": false,
+                "is_metric": false,
+            }));
+            ordinal += 1;
+        }
+
+        if !model.primary_keys().is_empty() {
+            constraints.push(json!({
+                "constraint_catalog": "sqlctx",
+                "constraint_schema": schema,
+                "constraint_name": format!("{}_pkey", model.name),
+                "table_catalog": "sqlctx",
+                "table_schema": schema,
+                "table_name": model.name,
+                "constraint_type": "PRIMARY KEY",
+                "is_deferrable": "NO",
+                "initially_deferred": "NO",
+            }));
+
+            for (key_index, primary_key) in model.primary_keys().into_iter().enumerate() {
+                key_column_usage.push(json!({
+                    "constraint_catalog": "sqlctx",
+                    "constraint_schema": schema,
+                    "constraint_name": format!("{}_pkey", model.name),
+                    "table_catalog": "sqlctx",
+                    "table_schema": schema,
+                    "table_name": model.name,
+                    "column_name": primary_key,
+                    "ordinal_position": key_index + 1,
+                }));
+            }
+        }
+
+        for dimension in &model.dimensions {
+            if model.primary_keys().contains(&dimension.name) {
+                continue;
+            }
+
+            let data_type =
+                postgres_type_for_dimension(&dimension.r#type, dimension.granularity.as_deref());
+            let mut column = json!({
+                "table_catalog": "sqlctx",
+                "table_schema": schema,
+                "table_name": model.name,
+                "column_name": dimension.name,
+                "ordinal_position": ordinal,
+                "column_default": null,
+                "is_nullable": "YES",
+                "data_type": data_type,
+                "character_maximum_length": if data_type == "VARCHAR" { Some(255) } else { None },
+                "numeric_precision": if data_type == "NUMERIC" { Some(38) } else { None },
+                "numeric_scale": if data_type == "NUMERIC" { Some(10) } else { None },
+                "is_primary_key": false,
+                "is_foreign_key": false,
+                "is_metric": false,
+            });
+            if let Some(description) = &dimension.description {
+                column["description"] = json!(description);
+            }
+            if let Some(label) = &dimension.label {
+                column["label"] = json!(label);
+            }
+            columns.push(column);
+            ordinal += 1;
+        }
+
+        for metric in &model.metrics {
+            let data_type = postgres_type_for_metric(metric.agg.as_ref());
+            let mut column = json!({
+                "table_catalog": "sqlctx",
+                "table_schema": schema,
+                "table_name": model.name,
+                "column_name": metric.name,
+                "ordinal_position": ordinal,
+                "column_default": null,
+                "is_nullable": "YES",
+                "data_type": data_type,
+                "character_maximum_length": null,
+                "numeric_precision": if data_type == "NUMERIC" { 38 } else { 64 },
+                "numeric_scale": if data_type == "NUMERIC" { 10 } else { 0 },
+                "is_primary_key": false,
+                "is_foreign_key": false,
+                "is_metric": true,
+                "aggregation": metric_aggregation_name(metric.agg.as_ref()),
+            });
+            if let Some(description) = &metric.description {
+                column["description"] = json!(description);
+            }
+            if let Some(label) = &metric.label {
+                column["label"] = json!(label);
+            }
+            columns.push(column);
+            ordinal += 1;
+        }
+
+        for relationship in &model.relationships {
+            if matches!(
+                relationship.r#type,
+                RelationshipType::ManyToOne | RelationshipType::OneToOne
+            ) {
+                let fk_column = relationship.fk();
+                let referenced_table = &relationship.name;
+                let referenced_column = graph
+                    .get_model(referenced_table)
+                    .map(|target| {
+                        target
+                            .primary_keys()
+                            .into_iter()
+                            .next()
+                            .unwrap_or_else(|| "id".to_string())
+                    })
+                    .unwrap_or_else(|| relationship.pk());
+                let constraint_name = format!("{}_{}_fkey", model.name, fk_column);
+
+                constraints.push(json!({
+                    "constraint_catalog": "sqlctx",
+                    "constraint_schema": schema,
+                    "constraint_name": constraint_name,
+                    "table_catalog": "sqlctx",
+                    "table_schema": schema,
+                    "table_name": model.name,
+                    "constraint_type": "FOREIGN KEY",
+                    "is_deferrable": "NO",
+                    "initially_deferred": "NO",
+                }));
+
+                key_column_usage.push(json!({
+                    "constraint_catalog": "sqlctx",
+                    "constraint_schema": schema,
+                    "constraint_name": constraint_name,
+                    "table_catalog": "sqlctx",
+                    "table_schema": schema,
+                    "table_name": model.name,
+                    "column_name": fk_column,
+                    "ordinal_position": 1,
+                    "position_in_unique_constraint": 1,
+                    "referenced_table_schema": schema,
+                    "referenced_table_name": referenced_table,
+                    "referenced_column_name": referenced_column,
+                }));
+
+                for column in &mut columns {
+                    if column["table_name"] == model.name && column["column_name"] == fk_column {
+                        column["is_foreign_key"] = json!(true);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    json!({
+        "tables": tables,
+        "columns": columns,
+        "constraints": constraints,
+        "key_column_usage": key_column_usage,
+    })
+}
+
+fn postgres_type_for_dimension(
+    dimension_type: &DimensionType,
+    granularity: Option<&str>,
+) -> &'static str {
+    match dimension_type {
+        DimensionType::Categorical => "VARCHAR",
+        DimensionType::Numeric => "NUMERIC",
+        DimensionType::Boolean => "BOOLEAN",
+        DimensionType::Time => match granularity {
+            Some("day" | "week" | "month" | "quarter" | "year") => "DATE",
+            _ => "TIMESTAMP",
+        },
+    }
+}
+
+fn postgres_type_for_metric(aggregation: Option<&Aggregation>) -> &'static str {
+    match aggregation {
+        Some(
+            Aggregation::Count | Aggregation::CountDistinct | Aggregation::ApproxCountDistinct,
+        ) => "BIGINT",
+        _ => "NUMERIC",
+    }
+}
+
+fn metric_aggregation_name(aggregation: Option<&Aggregation>) -> &'static str {
+    match aggregation {
+        Some(Aggregation::Sum) => "sum",
+        Some(Aggregation::Count) => "count",
+        Some(Aggregation::CountDistinct) => "count_distinct",
+        Some(Aggregation::ApproxCountDistinct) => "approx_count_distinct",
+        Some(Aggregation::Avg) => "avg",
+        Some(Aggregation::Min) => "min",
+        Some(Aggregation::Max) => "max",
+        Some(Aggregation::Median) => "median",
+        Some(Aggregation::Stddev) => "stddev",
+        Some(Aggregation::StddevPop) => "stddev_pop",
+        Some(Aggregation::Variance) => "variance",
+        Some(Aggregation::VariancePop) => "variance_pop",
+        Some(Aggregation::Expression) | None => "sum",
+    }
+}
+
+fn relationship_type_name(relationship_type: &RelationshipType) -> &'static str {
+    match relationship_type {
+        RelationshipType::ManyToOne => "many_to_one",
+        RelationshipType::OneToOne => "one_to_one",
+        RelationshipType::OneToMany => "one_to_many",
+        RelationshipType::ManyToMany => "many_to_many",
+        RelationshipType::Cross => "cross",
+    }
+}
+
+fn main() {
+    let mut input = String::new();
+    if let Err(err) = io::stdin().read_to_string(&mut input) {
+        println!(
+            "{}",
+            serde_json::to_string(&Response::Error {
+                error: format!("failed to read stdin: {err}")
+            })
+            .unwrap()
+        );
+        std::process::exit(1);
+    }
+
+    let response = serde_json::from_str::<Request>(&input)
+        .map_err(|err| err.to_string())
+        .and_then(|request| handle(request).map_err(|err| err.to_string()))
+        .unwrap_or_else(|error| Response::Error { error });
+
+    println!("{}", serde_json::to_string(&response).unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_request_keeps_flat_json_and_defaults() {
+        let minimal: Request = serde_json::from_value(json!({
+            "action": "compile", "models_yaml": "models: []"
+        }))
+        .unwrap();
+        let Request::Compile(minimal) = minimal else {
+            panic!("expected compile request")
+        };
+        assert!(minimal.metrics.is_empty());
+        assert!(minimal.aliases.is_empty());
+        assert!(minimal.parameter_values.is_empty());
+        assert!(!minimal.use_preaggregations);
+        assert!(minimal.preagg_schema.is_none());
+
+        let populated: Request = serde_json::from_value(json!({
+            "action": "compile", "models_yaml": "models: []",
+            "metrics": ["orders.revenue"],
+            "aliases": {"orders.revenue": "Revenue Total"},
+            "parameter_values": {"region": "west"},
+            "use_preaggregations": true, "preagg_schema": "rollups"
+        }))
+        .unwrap();
+        let Request::Compile(populated) = populated else {
+            panic!("expected compile request")
+        };
+        assert_eq!(populated.metrics, ["orders.revenue"]);
+        assert_eq!(populated.aliases["orders.revenue"], "Revenue Total");
+        assert_eq!(populated.parameter_values["region"].as_str(), Some("west"));
+        assert!(populated.use_preaggregations);
+        assert_eq!(populated.preagg_schema.as_deref(), Some("rollups"));
+    }
+
+    #[test]
+    fn compile_transport_routes_rollups_and_preserves_raw_average_fallback() {
+        let models_yaml = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    metrics:
+      - name: average
+        agg: avg
+        sql: amount
+      - name: completed
+        agg: count
+        filters: ["status = 'completed'"]
+    pre_aggregations:
+      - name: totals
+        measures: [average, completed]
+"#;
+        for (metric, enabled, routed) in [
+            ("completed", true, true),
+            ("completed", false, false),
+            ("average", true, false),
+        ] {
+            let request: Request = serde_json::from_value(serde_json::json!({
+                "action":"compile", "models_yaml":models_yaml,
+                "metrics":[format!("orders.{metric}")], "use_preaggregations":enabled,
+                "preagg_schema":"rollups"
+            }))
+            .unwrap();
+            let response = handle(request).unwrap();
+            let Response::Ok { sql: Some(sql), .. } = response else {
+                panic!("expected compiled SQL")
+            };
+            assert_eq!(sql.contains("orders_preagg_totals"), routed, "{sql}");
+            if routed {
+                assert!(sql.contains("rollups"), "{sql}");
+            }
+        }
+    }
+
+    #[test]
+    fn graph_metric_transport_validates_inferred_derived_dependencies() {
+        let error = load_from_string(
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+graph_metrics:
+  - name: bad_metric
+    sql: orders.nonexistent
+"#,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("measure 'nonexistent' not found"));
+    }
+
+    #[test]
+    fn graph_metric_transport_compiles_reference_with_cumulative_metric() {
+        let graph = load_from_string(
+            r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+    dimensions:
+      - name: order_date
+        type: time
+        granularity: day
+    metrics:
+      - name: daily_revenue
+        agg: sum
+        sql: amount
+graph_metrics:
+  - name: company.sales.revenue
+    sql: orders.daily_revenue
+  - name: running_total
+    type: cumulative
+    sql: orders.daily_revenue
+"#,
+        )
+        .unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["company.sales.revenue".into(), "running_total".into()])
+            .with_dimensions(vec!["orders.order_date".into()]);
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(sql.contains("amount AS daily_revenue_raw"), "{sql}");
+        assert!(sql.contains("\"company.sales.revenue\""), "{sql}");
+        assert!(
+            !sql.contains("SUM(orders_cte.orders.daily_revenue)"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn graph_metric_transport_accepts_indexed_copy_but_rejects_conflict() {
+        let document = r#"
+models:
+  - name: events
+    table: events
+    primary_key: id
+    metrics:
+      - name: conversion_rate
+        type: conversion
+        entity: user_id
+        base_event: signup
+        conversion_event: purchase
+graph_metrics:
+  - name: conversion_rate
+    type: conversion
+    entity: user_id
+    base_event: signup
+    conversion_event: purchase
+"#;
+        let graph = load_from_string(document).unwrap();
+        assert_eq!(graph.metrics().count(), 1);
+        let conflicting =
+            document.replacen("conversion_event: purchase", "conversion_event: paid", 1);
+        assert!(load_from_string(&conflicting)
+            .unwrap_err()
+            .to_string()
+            .contains("already exists"));
+    }
+
+    #[test]
+    fn graph_metric_transport_does_not_invent_model_ownership() {
+        let document = r#"
+models:
+  - name: orders
+    table: orders
+    primary_key: id
+  - name: customers
+    table: customers
+    primary_key: id
+graph_metrics:
+  - name: total_orders
+    type: derived
+    sql: COUNT(*)
+"#;
+        let graph = load_from_string(document).unwrap();
+        assert!(graph.get_metric("total_orders").is_some());
+        for model in graph.models() {
+            assert!(model.get_metric("total_orders").is_none());
+        }
+        let native_document = document.replace("graph_metrics:", "metrics:");
+        assert!(sqlctx::load_from_string(&native_document)
+            .unwrap_err()
+            .to_string()
+            .contains("Cannot determine single owning model"));
+    }
+
+    #[test]
+    fn catalog_preserves_approximate_count_metadata() {
+        let metric: Metric = serde_json::from_value(json!({
+            "name": "users",
+            "agg": "approx_count_distinct",
+            "sql": "user_id"
+        }))
+        .unwrap();
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("events", "id")
+                    .with_table("events")
+                    .with_metric(metric),
+            )
+            .unwrap();
+
+        let catalog = catalog_metadata(&graph, "analytics");
+        let column = catalog["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|column| column["column_name"] == "users")
+            .unwrap();
+        assert_eq!(column["aggregation"], "approx_count_distinct");
+        assert_eq!(column["data_type"], "BIGINT");
+        assert_eq!(column["numeric_precision"], 64);
+        assert_eq!(column["numeric_scale"], 0);
+    }
+}

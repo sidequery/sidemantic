@@ -7,7 +7,7 @@ threaded into the layer compile/query path plus the result-cache key:
 - malformed JSON header -> 400;
 - SecurityError from a secured model (no attrs) -> 403;
 - non-public field with enforce_visibility -> error;
-- result-cache key differs across two different X-Sidemantic-User values.
+- result-cache key differs across two different X-sqlctx-User values.
 """
 
 # ruff: noqa: E402
@@ -24,8 +24,8 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient
 
-from sidemantic import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
-from sidemantic.api_server import create_app
+from sqlctx import Dimension, Metric, Model, SecurityPolicy, SemanticLayer
+from sqlctx.api_server import create_app
 
 
 def _make_layer() -> SemanticLayer:
@@ -71,7 +71,7 @@ def _make_layer() -> SemanticLayer:
     return layer
 
 
-def _headers(token: str = "secret", user_attrs: dict | None = None, header: str = "X-Sidemantic-User") -> dict:
+def _headers(token: str = "secret", user_attrs: dict | None = None, header: str = "X-sqlctx-User") -> dict:
     out = {"Authorization": f"Bearer {token}"}
     if user_attrs is not None:
         out[header] = json.dumps(user_attrs)
@@ -120,7 +120,7 @@ def test_malformed_json_header_returns_400():
     resp = client.post(
         "/query",
         json={"metrics": ["orders.total_amount"]},
-        headers={"Authorization": "Bearer secret", "X-Sidemantic-User": "{not valid json"},
+        headers={"Authorization": "Bearer secret", "X-sqlctx-User": "{not valid json"},
     )
     assert resp.status_code == 400
     assert "malformed json" in resp.json()["detail"].lower()
@@ -134,7 +134,7 @@ def test_non_object_json_header_returns_400():
     resp = client.post(
         "/query",
         json={"metrics": ["orders.total_amount"]},
-        headers={"Authorization": "Bearer secret", "X-Sidemantic-User": "[1, 2, 3]"},
+        headers={"Authorization": "Bearer secret", "X-sqlctx-User": "[1, 2, 3]"},
     )
     assert resp.status_code == 400
     assert "json object" in resp.json()["detail"].lower()
@@ -185,7 +185,7 @@ def test_custom_user_header_name():
 
 
 def test_result_cache_key_differs_across_users():
-    """The result-cache key must differ for different X-Sidemantic-User values.
+    """The result-cache key must differ for different X-sqlctx-User values.
 
     Two users with the same compiled query (differing only by user attributes)
     must not share a cached result. We assert directly on build_result_key so the
@@ -351,8 +351,8 @@ def test_proxy_mode_requires_authentication():
 @pytest.mark.parametrize("endpoint", ["/mcp", "/mcp/"])
 @pytest.mark.parametrize("serve_ui", [False, True])
 def test_mounted_mcp_auth_and_request_identity(monkeypatch, tmp_path, endpoint, serve_ui):
-    import sidemantic.api_server as api_module
-    import sidemantic.mcp_server as mcp_module
+    import sqlctx.api_server as api_module
+    import sqlctx.mcp_server as mcp_module
 
     (tmp_path / "index.html").write_text("<html>UI shell</html>")
     monkeypatch.setattr(api_module, "ui_static_dir", lambda: tmp_path)
@@ -385,7 +385,7 @@ def test_mounted_mcp_auth_and_request_identity(monkeypatch, tmp_path, endpoint, 
 
 
 def test_mounted_mcp_identity_does_not_persist_between_requests(monkeypatch):
-    import sidemantic.mcp_server as mcp_module
+    import sqlctx.mcp_server as mcp_module
 
     monkeypatch.setattr(mcp_module, "_user_attributes", {"tenant_id": 99})
     app = create_app(_make_layer(), auth_token="secret", trust_user_header=True, serve_mcp=True)

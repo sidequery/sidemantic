@@ -6,11 +6,11 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from sidemantic import Metric, SemanticLayer, load_from_directory
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.validation import _check_circular_dependencies
-from sidemantic.validation_runner import _find_orphaned_models
-from sidemantic.yaml_compat import safe_load, safe_load_all
+from sqlctx import Metric, SemanticLayer, load_from_directory
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.validation import _check_circular_dependencies
+from sqlctx.validation_runner import _find_orphaned_models
+from sqlctx.yaml_compat import safe_load, safe_load_all
 
 
 def test_directory_load_reuses_one_pruned_walk(tmp_path, monkeypatch):
@@ -49,7 +49,7 @@ models:
 
 
 def test_yaml_compat_uses_safe_c_loader_when_available():
-    from sidemantic import yaml_compat
+    from sqlctx import yaml_compat
 
     assert safe_load("answer: 42") == {"answer": 42}
     assert list(safe_load_all("a: 1\n---\nb: 2\n")) == [{"a": 1}, {"b": 2}]

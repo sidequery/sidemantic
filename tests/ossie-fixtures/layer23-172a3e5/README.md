@@ -13,7 +13,7 @@ data also includes unmatched and NULL foreign keys, NULL aggregate arguments, an
 multiple fact tables with overlapping and disjoint dimension domains.
 
 Expected rows are calculated directly from these populations. Cases with
-`reference_sql` use ordinary SQL over physical tables without Sidemantic, measure
+`reference_sql` use ordinary SQL over physical tables without sqlctx, measure
 columns, or `AGG`. No backend supplies expected results for another backend. Row
 comparison preserves multiplicity and treats unordered results as multisets;
 explicit ordering cases also check sequence.

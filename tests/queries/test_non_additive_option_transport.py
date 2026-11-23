@@ -4,13 +4,13 @@ import json
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.rust_bridge import rewrite_semantic_input, validate_semantic_input
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.rust_bridge import rewrite_semantic_input, validate_semantic_input
 
 
 @pytest.fixture
 def layer(monkeypatch):
-    monkeypatch.setattr("sidemantic.core.semantic_layer.get_rust_module", lambda: object())
+    monkeypatch.setattr("sqlctx.core.semantic_layer.get_rust_module", lambda: object())
     result = SemanticLayer(engine="rust", fallback=False, allow_non_additive_unsafe=True, auto_register=False)
     result.add_model(
         Model(
@@ -36,9 +36,9 @@ def test_layer_passes_live_snapshot_preference(monkeypatch, layer, method):
         calls.append(kwargs.get("allow_non_additive_unsafe", False))
         return "SELECT 42 AS balance"
 
-    monkeypatch.setattr("sidemantic.rust_bridge.compile_semantic_input", compile)
-    monkeypatch.setattr("sidemantic.rust_bridge.validate_semantic_input", lambda *args, **kwargs: [])
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", rewrite)
+    monkeypatch.setattr("sqlctx.rust_bridge.compile_semantic_input", compile)
+    monkeypatch.setattr("sqlctx.rust_bridge.validate_semantic_input", lambda *args, **kwargs: [])
+    monkeypatch.setattr("sqlctx.sql.query_rewriter.rewrite_semantic_input", rewrite)
     for enabled in [True, False]:
         layer.allow_non_additive_unsafe = enabled
         if method in {"compile", "query"}:

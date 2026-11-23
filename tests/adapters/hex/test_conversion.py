@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.hex import HexAdapter
-from sidemantic.adapters.lookml import LookMLAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic.core.model import Model
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.hex import HexAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
+from sqlctx.core.model import Model
 
 
 def test_hex_to_cube_conversion():

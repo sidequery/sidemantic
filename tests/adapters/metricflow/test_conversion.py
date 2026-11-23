@@ -6,9 +6,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic.adapters.sidemantic import SidemanticAdapter
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.sqlctx import SqlctxAdapter
 
 # =============================================================================
 # CROSS-FORMAT CONVERSION TESTS
@@ -34,15 +34,15 @@ def test_metricflow_to_cube_conversion_rejects_entity_role_alias(tmp_path):
 
 
 # =============================================================================
-# SIDEMANTIC CONVERSION TESTS
+# SQLCTX CONVERSION TESTS
 # =============================================================================
 
 
-def test_sidemantic_to_metricflow_export():
-    """Test export from Sidemantic to MetricFlow format."""
+def test_sqlctx_to_metricflow_export():
+    """Test export from sqlctx to MetricFlow format."""
     # Load native format
-    native_adapter = SidemanticAdapter()
-    graph = native_adapter.parse("tests/fixtures/sidemantic/orders.yml")
+    native_adapter = SqlctxAdapter()
+    graph = native_adapter.parse("tests/fixtures/sqlctx/orders.yml")
 
     # Export to MetricFlow
     mf_adapter = MetricFlowAdapter()
@@ -92,11 +92,11 @@ def test_sidemantic_to_metricflow_export():
         temp_path.unlink(missing_ok=True)
 
 
-def test_sidemantic_to_metricflow_roundtrip():
-    """Test Sidemantic -> MetricFlow -> Sidemantic round-trip."""
+def test_sqlctx_to_metricflow_roundtrip():
+    """Test sqlctx -> MetricFlow -> sqlctx round-trip."""
     # Load native
-    native_adapter = SidemanticAdapter()
-    graph = native_adapter.parse("tests/fixtures/sidemantic/orders.yml")
+    native_adapter = SqlctxAdapter()
+    graph = native_adapter.parse("tests/fixtures/sqlctx/orders.yml")
 
     # Export to MetricFlow
     mf_adapter = MetricFlowAdapter()

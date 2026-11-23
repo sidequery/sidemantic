@@ -14,8 +14,8 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-import sidemantic.cli as cli_module
-from sidemantic.cli import app
+import sqlctx.cli as cli_module
+from sqlctx.cli import app
 
 runner = CliRunner()
 
@@ -36,7 +36,7 @@ def test_init_creates_starter_project(monkeypatch: pytest.MonkeyPatch, tmp_path:
     result = runner.invoke(app, ["init"])
 
     assert result.exit_code == 0, result.output
-    assert (tmp_path / "sidemantic.yaml").is_file()
+    assert (tmp_path / "sqlctx.yaml").is_file()
     assert (tmp_path / "models" / "orders.yml").is_file()
     assert (tmp_path / "tests" / "orders.yml").is_file()
 
@@ -101,7 +101,7 @@ def test_init_from_csvs_generates_models_and_files_connection(
     assert (tmp_path / "models" / "orders.yml").is_file()
     assert (tmp_path / "models" / "customers.yml").is_file()
     assert (tmp_path / "tests" / "smoke.yml").is_file()
-    config = yaml.safe_load((tmp_path / "sidemantic.yaml").read_text())
+    config = yaml.safe_load((tmp_path / "sqlctx.yaml").read_text())
     assert config["connection"]["type"] == "files"
 
 
@@ -199,7 +199,7 @@ def test_init_from_writes_paths_relative_to_project_that_survive_a_move(
     monkeypatch.chdir(workspace)
     assert runner.invoke(app, ["init", "analytics", "--from", source]).exit_code == 0
 
-    config_text = (workspace / "analytics" / "sidemantic.yaml").read_text()
+    config_text = (workspace / "analytics" / "sqlctx.yaml").read_text()
     assert str(tmp_path) not in config_text
     assert f"../{source}" in config_text
 
@@ -224,7 +224,7 @@ def test_init_from_connection_explains_how_to_supply_the_connection(monkeypatch:
     assert result.exit_code == 0, result.output
     project = tmp_path / "conn"
     # The printed next steps carry the connection, so running them works.
-    assert f"sidemantic test --connection {connection}" in result.output
+    assert f"sqlctx test --connection {connection}" in result.output
     assert _query_values(
         project, monkeypatch, "SELECT customers.record_count FROM customers", "--connection", connection
     ) == [{"record_count": 2}]
@@ -232,7 +232,7 @@ def test_init_from_connection_explains_how_to_supply_the_connection(monkeypatch:
     assert runner.invoke(app, ["test", "--connection", connection]).exit_code == 0
 
     # Uncommenting the block the generated config suggests saves the connection.
-    config_path = project / "sidemantic.yaml"
+    config_path = project / "sqlctx.yaml"
     lines = config_path.read_text().splitlines()
     start = lines.index("# connection:")
     suggested = [line.removeprefix("# ") for line in lines[start:] if line.startswith("# ")]
@@ -241,10 +241,10 @@ def test_init_from_connection_explains_how_to_supply_the_connection(monkeypatch:
 
 
 def test_init_from_connection_hides_password_in_next_steps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    from sidemantic.bootstrap import BootstrapResult
+    from sqlctx.bootstrap import BootstrapResult
 
     monkeypatch.setattr(
-        "sidemantic.bootstrap.bootstrap_models",
+        "sqlctx.bootstrap.bootstrap_models",
         lambda connection, init_sql=None: BootstrapResult(
             tables=[], model_dicts={"orders": {"name": "orders", "table": "orders", "metrics": []}}
         ),
@@ -258,7 +258,7 @@ def test_init_from_connection_hides_password_in_next_steps(monkeypatch: pytest.M
     assert result.exit_code == 0, result.output
     assert "s3cret" not in result.output
     assert "--connection 'postgres://analyst:****@db.internal:5432/analytics'" in result.output
-    config_text = (tmp_path / "pg" / "sidemantic.yaml").read_text()
+    config_text = (tmp_path / "pg" / "sqlctx.yaml").read_text()
     assert "s3cret" not in config_text
     assert "#   password_file: .secrets/db-password" in config_text
 
@@ -266,10 +266,10 @@ def test_init_from_connection_hides_password_in_next_steps(monkeypatch: pytest.M
 def test_init_from_connection_with_url_options_suggests_no_weaker_config_block(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    from sidemantic.bootstrap import BootstrapResult
+    from sqlctx.bootstrap import BootstrapResult
 
     monkeypatch.setattr(
-        "sidemantic.bootstrap.bootstrap_models",
+        "sqlctx.bootstrap.bootstrap_models",
         lambda connection, init_sql=None: BootstrapResult(
             tables=[], model_dicts={"events": {"name": "events", "table": "events", "metrics": []}}
         ),
@@ -284,7 +284,7 @@ def test_init_from_connection_with_url_options_suggests_no_weaker_config_block(
     # The next steps keep the TLS option; no config block that would drop it is offered.
     assert "--connection 'clickhouse://reader:****@cloud.internal:8443/events?secure=true'" in result.output
     assert "uncomment" not in result.output
-    config_text = (tmp_path / "ch" / "sidemantic.yaml").read_text()
+    config_text = (tmp_path / "ch" / "sqlctx.yaml").read_text()
     assert "# connection:" not in config_text
     assert "keep using --connection" in config_text
     assert "connection" not in yaml.safe_load(config_text)
@@ -322,7 +322,7 @@ def test_demo_project_passes_test(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
 def failing_test_project(tmp_path: Path) -> Path:
     (tmp_path / "models").mkdir()
     (tmp_path / "tests").mkdir()
-    (tmp_path / "sidemantic.yaml").write_text("models_dir: models\n")
+    (tmp_path / "sqlctx.yaml").write_text("models_dir: models\n")
     (tmp_path / "models" / "orders.yml").write_text(
         "models:\n"
         "  - name: orders\n"

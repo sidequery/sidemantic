@@ -18,37 +18,39 @@ on stdout.
 
 ## CLI
 
-Install the optional Rust backend first:
+Build the optional Rust backend in the repository environment:
 
 ```bash
-uv tool install "sidemantic[rust]"
+git clone https://github.com/sidequery/sqlctx.git
+cd sqlctx
+uv sync --extra rust
 ```
 
-For a project environment, use `uv add "sidemantic[rust]"` instead. Python remains
-the default engine after installation; select Rust explicitly below.
+Run the examples below with `uv run` from that checkout. The default engine is
+Python. Select Rust explicitly for each command.
 
 Validation:
 
 ```bash
-sidemantic validate ./models --engine rust
+sqlctx validate ./models --engine rust
 ```
 
 Semantic SQL dry run:
 
 ```bash
-sidemantic query "select orders.total_revenue from metrics" --models ./models --engine rust --dry-run
+sqlctx query "select orders.total_revenue from metrics" --models ./models --engine rust --dry-run
 ```
 
 Semantic SQL rewrite without execution:
 
 ```bash
-sidemantic rewrite "select orders.total_revenue from metrics" --models ./models --engine rust
+sqlctx rewrite "select orders.total_revenue from metrics" --models ./models --engine rust
 ```
 
 Fallback:
 
 ```bash
-sidemantic query "select orders.total_revenue from metrics" --models ./models --engine rust --fallback
+sqlctx query "select orders.total_revenue from metrics" --models ./models --engine rust --fallback
 ```
 
 ## Config
@@ -85,10 +87,10 @@ propagate. `layer.last_engine_selection` reports the selected engine and reason.
 
 The older environment variables still work for CI and migration tests:
 
-- `SIDEMANTIC_RS_SQL_GENERATOR`
-- `SIDEMANTIC_RS_QUERY_VALIDATION`
-- `SIDEMANTIC_RS_REWRITER`
-- `SIDEMANTIC_RS_SQL_GENERATOR_VERIFY`
-- `SIDEMANTIC_RS_NO_FALLBACK`
+- `SQLCTX_RS_SQL_GENERATOR`
+- `SQLCTX_RS_QUERY_VALIDATION`
+- `SQLCTX_RS_REWRITER`
+- `SQLCTX_RS_SQL_GENERATOR_VERIFY`
+- `SQLCTX_RS_NO_FALLBACK`
 
 They should not be the primary documented user interface.

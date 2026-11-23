@@ -1,0 +1,253 @@
+"""Inheritance utilities for models and metrics."""
+
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.pre_aggregation import Index, PreAggregation, RefreshKey
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.segment import Segment
+
+
+def merge_model(child: Model, parent: Model) -> Model:
+    """Merge child model with parent model using inheritance.
+
+    Child model inherits all fields from parent, with child values taking precedence.
+
+    Args:
+        child: Child model with extends reference
+        parent: Parent model to inherit from
+
+    Returns:
+        New model with merged properties
+
+    Examples:
+        >>> parent = Model(name="base", table="base_table", dimensions=[...])
+        >>> child = Model(name="child", extends="base", dimensions=[...])
+        >>> merged = merge_model(child, parent)
+    """
+    # Start with parent's data
+    merged_data = parent.model_dump(exclude={"name"})
+
+    # Override with child's explicitly set data (excluding extends).
+    # Using include=model_fields_set instead of exclude_none so that
+    # a child can explicitly set a field to None to clear a parent value.
+    child_fields = child.model_fields_set - {"extends"}
+    child_data = child.model_dump(include=child_fields, exclude_unset=True)
+
+    # Invariant filters are refinements, not an overrideable named collection.
+    # A child may narrow its parent further, but cannot silently remove the
+    # parent's row scope.
+    merged_data["invariant_filters"] = [
+        *merged_data.get("invariant_filters", []),
+        *child_data.get("invariant_filters", []),
+    ]
+    for policy in ("required_filters", "required_filters_or_groups"):
+        merged_data[policy] = list(dict.fromkeys([*merged_data.get(policy, []), *child_data.get(policy, [])]))
+
+    # Merge lists (dimensions, metrics, relationships, segments)
+    # Child's items are added to parent's items
+    for field in ["dimensions", "metrics", "relationships", "segments", "pre_aggregations"]:
+        parent_items = merged_data.get(field, [])
+        child_items = child_data.get(field, [])
+
+        # Combine, with child items overriding parent items with same name
+        parent_by_name = {item["name"]: item for item in parent_items}
+        child_by_name = {item["name"]: item for item in child_items}
+
+        # Merge
+        parent_by_name.update(child_by_name)
+        merged_data[field] = list(parent_by_name.values())
+
+    # Override scalar fields with child values
+    for field in [
+        "table",
+        "sql",
+        "source_uri",
+        "description",
+        "primary_key",
+        "unique_keys",
+        "default_time_dimension",
+        "default_grain",
+        "freshness",
+        "metadata",
+        "auto_dimensions",
+        "schema_exposure",
+        "meta",
+    ]:
+        if field in child_data:
+            merged_data[field] = child_data[field]
+
+    # Keep child's name
+    merged_data["name"] = child.name
+
+    # Reconstruct model objects from dicts
+    if merged_data.get("dimensions"):
+        merged_data["dimensions"] = [Dimension(**d) for d in merged_data["dimensions"]]
+    if merged_data.get("metrics"):
+        merged_data["metrics"] = [Metric(**m) for m in merged_data["metrics"]]
+    if merged_data.get("relationships"):
+        merged_data["relationships"] = [Relationship(**r) for r in merged_data["relationships"]]
+    if merged_data.get("segments"):
+        merged_data["segments"] = [Segment(**s) for s in merged_data["segments"]]
+    if merged_data.get("pre_aggregations"):
+        preaggs = []
+        for pa in merged_data["pre_aggregations"]:
+            if pa.get("refresh_key") and isinstance(pa["refresh_key"], dict):
+                pa["refresh_key"] = RefreshKey(**pa["refresh_key"])
+            if pa.get("indexes") and isinstance(pa["indexes"], list):
+                pa["indexes"] = [Index(**idx) if isinstance(idx, dict) else idx for idx in pa["indexes"]]
+            preaggs.append(PreAggregation(**pa))
+        merged_data["pre_aggregations"] = preaggs
+
+    return Model(**merged_data)
+
+
+def merge_metric(child: Metric, parent: Metric) -> Metric:
+    """Merge child metric with parent metric using inheritance.
+
+    Child metric inherits all fields from parent, with child values taking precedence.
+
+    Args:
+        child: Child metric with extends reference
+        parent: Parent metric to inherit from
+
+    Returns:
+        New metric with merged properties
+
+    Examples:
+        >>> parent = Metric(name="base_revenue", agg="sum", sql="amount")
+        >>> child = Metric(name="filtered_revenue", extends="base_revenue", filters=["status = 'completed'"])
+        >>> merged = merge_metric(child, parent)
+    """
+    # Start with parent's data
+    merged_data = parent.model_dump(exclude={"name"})
+
+    # Override with child's explicitly set data (excluding extends).
+    child_fields = child.model_fields_set - {"extends"}
+    child_data = child.model_dump(include=child_fields, exclude_unset=True)
+
+    # Handle list fields - merge arrays
+    for field in ["filters", "drill_fields"]:
+        parent_items = merged_data.get(field) or []
+        child_items = child_data.get(field)
+
+        if child_items:
+            # Child can add to parent's list
+            merged_data[field] = parent_items + child_items
+        else:
+            merged_data[field] = parent_items if parent_items else None
+
+    # Override all other fields with child values
+    for field, value in child_data.items():
+        if field not in ["filters", "drill_fields", "extends", "name"]:
+            merged_data[field] = value
+
+    # Keep child's name
+    merged_data["name"] = child.name
+
+    return Metric(**merged_data)
+
+
+def resolve_model_inheritance(models: dict[str, Model]) -> dict[str, Model]:
+    """Resolve inheritance for all models in a graph.
+
+    Args:
+        models: Dictionary of model name to model
+
+    Returns:
+        Dictionary of model name to resolved model (with inheritance applied)
+
+    Raises:
+        ValueError: If circular inheritance detected or parent not found
+    """
+    resolved = {}
+    in_progress = set()
+
+    def resolve(name: str) -> Model:
+        if name in resolved:
+            return resolved[name]
+
+        if name in in_progress:
+            raise ValueError(f"Circular inheritance detected for model '{name}'")
+
+        model = models.get(name)
+        if not model:
+            raise ValueError(f"Model '{name}' not found")
+
+        # If no inheritance, just return as-is
+        if not model.extends:
+            resolved[name] = model
+            return model
+
+        # Resolve parent first
+        in_progress.add(name)
+        parent = resolve(model.extends)
+        in_progress.remove(name)
+
+        # Merge child with parent
+        merged = merge_model(model, parent)
+        resolved[name] = merged
+        return merged
+
+    # Resolve all models
+    for name in models:
+        resolve(name)
+
+    return resolved
+
+
+def resolve_metric_inheritance(metrics: dict[str, Metric]) -> dict[str, Metric]:
+    """Resolve inheritance for all metrics in a graph.
+
+    Args:
+        metrics: Dictionary of metric name to metric
+
+    Returns:
+        Dictionary of metric name to resolved metric (with inheritance applied)
+
+    Raises:
+        ValueError: If circular inheritance detected or parent not found
+    """
+    resolved = {}
+    in_progress = set()
+
+    def resolve(name: str) -> Metric:
+        if name in resolved:
+            return resolved[name]
+
+        if name in in_progress:
+            raise ValueError(f"Circular inheritance detected for metric '{name}'")
+
+        metric = metrics.get(name)
+        if not metric:
+            raise ValueError(f"Metric '{name}' not found")
+
+        # If no inheritance, just return as-is
+        if not metric.extends:
+            resolved[name] = metric
+            return metric
+
+        # Resolve parent first
+        in_progress.add(name)
+        parent = resolve(metric.extends)
+        in_progress.remove(name)
+
+        # Merge child with parent
+        merged = merge_metric(metric, parent)
+        resolved[name] = merged
+        return merged
+
+    # Resolve all metrics
+    for name in metrics:
+        resolve(name)
+
+    return resolved
+
+
+def resolve_model_metric_inheritance(model: Model) -> None:
+    """Resolve inheritance between metrics declared on a single model."""
+    if not any(metric.extends for metric in model.metrics):
+        return
+
+    resolved_metrics = resolve_metric_inheritance({metric.name: metric for metric in model.metrics})
+    model.metrics = list(resolved_metrics.values())

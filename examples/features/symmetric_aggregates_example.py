@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # dependencies = [
-#   "sidemantic",
+#   "sqlctx @ git+https://github.com/sidequery/sqlctx",
 #   "duckdb",
 #   "pandas",
 # ]
@@ -9,20 +9,20 @@
 """Example demonstrating fan-out-safe (symmetric) aggregation.
 
 A naive join from a base model to several "many" side tables multiplies the
-base rows (fan-out) and double-counts their measures. Sidemantic avoids this by
+base rows (fan-out) and double-counts their measures. sqlctx avoids this by
 aggregating each model on its own before joining the results.
 
-Run with: uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/features/symmetric_aggregates_example.py
+Run with: uv run https://raw.githubusercontent.com/sidequery/sqlctx/main/examples/features/symmetric_aggregates_example.py
 """
 
 import duckdb
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.generator import SQLGenerator
 
 # Set up sample data
 conn = duckdb.connect(":memory:")
@@ -205,23 +205,23 @@ print("Notice: Order 1 revenue is inflated by the fan-out!")
 print()
 
 # With fan-out-safe aggregation (the Example 2 results above)
-print("With fan-out-safe aggregation (sidemantic, Example 2):")
+print("With fan-out-safe aggregation (sqlctx, Example 2):")
 for row in result:
     print(f"  {row[0]!s}: revenue = {row[1]}")
 print()
 
 print("=" * 80)
-print("How Sidemantic Avoids Fan-Out:")
+print("How sqlctx Avoids Fan-Out:")
 print("=" * 80)
 print("""
-When a query uses metrics from several models, Sidemantic:
+When a query uses metrics from several models, sqlctx:
 1. Aggregates each model separately at the requested grain (one CTE per model),
    joining only the models it needs for the dimensions
 2. Joins the aggregated rows on the shared dimensions (FULL OUTER JOIN)
 3. Result: each order, item and shipment is counted exactly once!
 
 When a measure is grouped by a dimension on the "many" side of a join (for
-example, order revenue by an item attribute), Sidemantic instead deduplicates
+example, order revenue by an item attribute), sqlctx instead deduplicates
 the joined rows by the measure model's primary key before aggregating.
 
 This ensures correct aggregation even when joins create duplicate rows.

@@ -1,5 +1,5 @@
 [project]
-name = "sidemantic"
+name = "sqlctx"
 version = "0.13.2"
 description = "Universal semantic layer - import from Cube, dbt, LookML, Hex, and more"
 readme = "README.md"
@@ -17,12 +17,12 @@ dependencies = [
 ]
 
 [project.scripts]
-sidemantic = "sidemantic.cli:app"
+sqlctx = "sqlctx.cli:app"
 
 [project.optional-dependencies]
 rust = [
     # PYODIDE: Native wheels are excluded from Emscripten installs.
-    "sidemantic-rs==0.13.2; sys_platform != 'emscripten'",
+    "sqlctx-rs==0.13.2; sys_platform != 'emscripten'",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -120,7 +120,7 @@ lsp = [
     "pygls>=2.0.0",
 ]
 dax = [
-    "sidemantic-dax>=0.13.2",
+    "sqlctx-dax>=0.13.2",
 ]
 lookml = [
     "lkml>=1.3.7",
@@ -137,10 +137,10 @@ widget = [
 ]
 # Convenience bundles
 all-databases = [
-    "sidemantic[postgres,bigquery,snowflake,clickhouse,databricks,spark,adbc]",
+    "sqlctx[postgres,bigquery,snowflake,clickhouse,databricks,spark,adbc]",
 ]
 full = [
-    "sidemantic[workbench,mcp,apps,charts,lsp,dax,lookml,malloy,metricflow,widget,api,ossie,rust]",
+    "sqlctx[workbench,mcp,apps,charts,lsp,dax,lookml,malloy,metricflow,widget,api,ossie,rust]",
 ]
 
 [build-system]
@@ -169,14 +169,14 @@ exclude = [
   "/examples/metricflow",
   "/examples/omni",
   "/examples/rill",
-  "/examples/sidemantic",
+  "/examples/sqlctx",
   "/examples/sql",
   "/examples/superset",
-  "/sidemantic-duckdb",
-  "/sidemantic-rs",
+  "/sqlctx-duckdb",
+  "/sqlctx-rs",
   "/plugins",
   "/target",
-  "/vscode-sidemantic",
+  "/vscode-sqlctx",
   "**/__pycache__",
   "*.pyc",
   "*.pkg",
@@ -187,26 +187,26 @@ exclude = [
 # examples/multi_format_demo is kept for demo mode
 
 [tool.hatch.build.targets.wheel]
-packages = ["sidemantic"]
+packages = ["sqlctx"]
 
 [tool.hatch.build.targets.wheel.shared-data]
-"sidemantic/man/sidemantic.1" = "share/man/man1/sidemantic.1"
+"sqlctx/man/sqlctx.1" = "share/man/man1/sqlctx.1"
 
 [tool.hatch.build.targets.wheel.force-include]
-"examples/multi_format_demo/cube" = "sidemantic/examples/multi_format_demo/cube"
-"examples/multi_format_demo/hex" = "sidemantic/examples/multi_format_demo/hex"
-"examples/multi_format_demo/lookml" = "sidemantic/examples/multi_format_demo/lookml"
-"examples/multi_format_demo/demo_data.py" = "sidemantic/examples/multi_format_demo/demo_data.py"
-"sidemantic/widget/static/widget.js" = "sidemantic/widget/static/widget.js"
-"sidemantic/widget/static/widget.css" = "sidemantic/widget/static/widget.css"
+"examples/multi_format_demo/cube" = "sqlctx/examples/multi_format_demo/cube"
+"examples/multi_format_demo/hex" = "sqlctx/examples/multi_format_demo/hex"
+"examples/multi_format_demo/lookml" = "sqlctx/examples/multi_format_demo/lookml"
+"examples/multi_format_demo/demo_data.py" = "sqlctx/examples/multi_format_demo/demo_data.py"
+"sqlctx/widget/static/widget.js" = "sqlctx/widget/static/widget.js"
+"sqlctx/widget/static/widget.css" = "sqlctx/widget/static/widget.css"
 
 [tool.ruff]
 line-length = 120
 target-version = "py311"
 force-exclude = true
 extend-exclude = [
-    "sidemantic/adapters/malloy_grammar",  # ANTLR-generated files
-    "sidemantic/adapters/holistics_grammar",  # ANTLR-generated files
+    "sqlctx/adapters/malloy_grammar",  # ANTLR-generated files
+    "sqlctx/adapters/holistics_grammar",  # ANTLR-generated files
     "tests/ossie-fixtures/upstream/**/validation/validate.py",  # Exact pinned Apache validator fixtures
 ]
 
@@ -221,29 +221,29 @@ markers = [
     "integration: marks tests as integration tests requiring external services (deselect with '-m \"not integration\"')",
     "yardstick_upstream: opt-in tests that fetch and replay live upstream Yardstick SQL tests",
 ]
-addopts = "-m 'not integration' --cov=sidemantic --cov-report=term-missing"  # Skip integration tests by default and show coverage
+addopts = "-m 'not integration' --cov=sqlctx --cov-report=term-missing"  # Skip integration tests by default and show coverage
 
 [tool.coverage.run]
-source = ["sidemantic"]
+source = ["sqlctx"]
 
 [tool.mypy]
 python_version = "3.11"
 files = [
-    "sidemantic/__init__.py",
-    "sidemantic/core/dimension.py",
-    "sidemantic/core/freshness.py",
-    "sidemantic/core/metric.py",
-    "sidemantic/core/model.py",
-    "sidemantic/core/parameter.py",
-    "sidemantic/core/pre_aggregation.py",
-    "sidemantic/core/preagg_recommender.py",
-    "sidemantic/core/query_plan.py",
-    "sidemantic/core/registry.py",
-    "sidemantic/core/relationship.py",
-    "sidemantic/core/security.py",
-    "sidemantic/core/segment.py",
-    "sidemantic/core/semantic_graph.py",
-    "sidemantic/core/semantic_layer.py",
+    "sqlctx/__init__.py",
+    "sqlctx/core/dimension.py",
+    "sqlctx/core/freshness.py",
+    "sqlctx/core/metric.py",
+    "sqlctx/core/model.py",
+    "sqlctx/core/parameter.py",
+    "sqlctx/core/pre_aggregation.py",
+    "sqlctx/core/preagg_recommender.py",
+    "sqlctx/core/query_plan.py",
+    "sqlctx/core/registry.py",
+    "sqlctx/core/relationship.py",
+    "sqlctx/core/security.py",
+    "sqlctx/core/segment.py",
+    "sqlctx/core/semantic_graph.py",
+    "sqlctx/core/semantic_layer.py",
 ]
 check_untyped_defs = true
 follow_imports = "skip"
@@ -261,8 +261,8 @@ required-environments = [
 ]
 
 [tool.uv.sources]
-sidemantic-rs = { path = "sidemantic-rs" }
-sidemantic-dax = { path = "crates/dax-pyo3" }
+sqlctx-rs = { path = "sqlctx-rs" }
+sqlctx-dax = { path = "crates/dax-pyo3" }
 
 [dependency-groups]
 dev = [

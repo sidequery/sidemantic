@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # /// script
-# dependencies = ["sidemantic", "duckdb", "pandas"]
+# dependencies = ["sqlctx @ git+https://github.com/sidequery/sqlctx", "duckdb", "pandas"]
 # ///
 """Complete example using YAML syntax for semantic models.
 
@@ -15,7 +15,7 @@ Run with: uv run examples/yaml/yaml_syntax_example.py
 
 from pathlib import Path
 
-from sidemantic import SemanticLayer
+from sqlctx import SemanticLayer
 
 
 def setup_data(conn):

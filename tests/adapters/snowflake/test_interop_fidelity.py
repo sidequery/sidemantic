@@ -4,10 +4,10 @@ import duckdb
 import pytest
 import yaml
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.adapters.snowflake import SnowflakeAdapter
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.adapters.snowflake import SnowflakeAdapter
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 def roundtrip(tmp_path, document):

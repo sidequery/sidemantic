@@ -1,30 +1,30 @@
 # CLI contract
 
-Sidemantic is CLI-first. The command line follows one contract across command
+sqlctx is CLI-first. The command line follows one contract across command
 families so it can be used interactively and safely composed in scripts.
-Online documentation: <https://sidemantic.com/sidemantic/cli>. Support and bug
-reports: <https://github.com/sidequery/sidemantic/issues>.
+Online documentation: <https://github.com/sidequery/sqlctx/blob/main/docs/cli.md>. Support and bug
+reports: <https://github.com/sidequery/sqlctx/issues>.
 
 ## Help
 
 Full help is available through every conventional entry point:
 
 ```bash
-sidemantic -h
-sidemantic --help
-sidemantic help
-sidemantic help migrate generate
-sidemantic migrate generate -h
+sqlctx -h
+sqlctx --help
+sqlctx help
+sqlctx help migrate generate
+sqlctx migrate generate -h
 ```
 
-`sidemantic help` accepts a nested command path and is equivalent to the
+`sqlctx help` accepts a nested command path and is equivalent to the
 corresponding `--help` invocation.
 
 ## Output and exit codes
 
 Primary results and machine data go to stdout. Errors, warnings, deprecations,
 and status messages go to stderr. This keeps pipelines such as
-`sidemantic info --json | jq .models` valid.
+`sqlctx info --json | jq .models` valid.
 
 The stable process exit codes are:
 
@@ -38,15 +38,15 @@ Expected errors are concise. Put the global `--debug` option before the command
 to let unexpected exceptions propagate with a traceback:
 
 ```bash
-sidemantic --debug info ./models
+sqlctx --debug info ./models
 ```
 
 Long project, config, output, and diagnostic options can be placed before or
 after a subcommand. For example, these are equivalent:
 
 ```bash
-sidemantic --project ./analytics info --format json
-sidemantic info --project ./analytics --format json
+sqlctx --project ./analytics info --format json
+sqlctx info --project ./analytics --format json
 ```
 
 Use the long `--quiet` spelling after `preagg recommend` and `preagg apply`,
@@ -57,19 +57,19 @@ because those commands retain the existing `-q` shorthand for `--queries`.
 Structured inspection and reporting commands accept `--json`, including:
 
 ```bash
-sidemantic info --json
-sidemantic init --json
-sidemantic demo --json
-sidemantic test --json
-sidemantic validate --json
-sidemantic validate --live --json
-sidemantic dashboard validate dashboard.yml --json
-sidemantic migrate check queries/ --json
-sidemantic migrate generate queries/ --output generated/ --json
-sidemantic preagg recommend --queries query-log.sql --json
-sidemantic preagg apply --queries query-log.sql --dry-run --json
-sidemantic preagg refresh --json
-sidemantic explain "SELECT orders.revenue FROM orders"
+sqlctx info --json
+sqlctx init --json
+sqlctx demo --json
+sqlctx test --json
+sqlctx validate --json
+sqlctx validate --live --json
+sqlctx dashboard validate dashboard.yml --json
+sqlctx migrate check queries/ --json
+sqlctx migrate generate queries/ --output generated/ --json
+sqlctx preagg recommend --queries query-log.sql --json
+sqlctx preagg apply --queries query-log.sql --dry-run --json
+sqlctx preagg refresh --json
+sqlctx explain "SELECT orders.revenue FROM orders"
 ```
 
 JSON is the only content written to stdout in these modes. Diagnostics remain
@@ -80,9 +80,9 @@ on stderr.
 Named consumption queries and result calculations use structured selectors:
 
 ```bash
-sidemantic query --explore revenue_overview --models ./models --db data.duckdb
-sidemantic query --saved-query paid_revenue --models ./models --db data.duckdb
-sidemantic query --metric orders.revenue --dimension orders.region \
+sqlctx query --explore revenue_overview --models ./models --db data.duckdb
+sqlctx query --saved-query paid_revenue --models ./models --db data.duckdb
+sqlctx query --metric orders.revenue --dimension orders.region \
   --filter "orders.status = 'paid'" --order-by "orders.revenue DESC" \
   --limit 10 --table-calculation revenue_share --models ./models --db data.duckdb
 ```
@@ -106,10 +106,10 @@ queries retain their existing syntax and execution path.
 Structured inspection, reporting, and query commands share one format option:
 
 ```bash
-sidemantic query "SELECT status, order_count FROM orders" --format table
-sidemantic query "SELECT status, order_count FROM orders" --format csv
-sidemantic info --format json
-sidemantic preagg recommend --queries queries.sql --format jsonl
+sqlctx query "SELECT status, order_count FROM orders" --format table
+sqlctx query "SELECT status, order_count FROM orders" --format csv
+sqlctx info --format json
+sqlctx preagg recommend --queries queries.sql --format jsonl
 ```
 
 `--format` accepts `table`, `csv`, `json`, or `jsonl`. CSV emits a header,
@@ -125,28 +125,32 @@ the requested result or errors. `--verbose`/`-v` enables detailed diagnostics;
 `--version` remains the unambiguous version option.
 
 Color is enabled only for an interactive stream. `--no-color`, a non-empty
-`NO_COLOR`, `SIDEMANTIC_NO_COLOR`, or `TERM=dumb` disables it. A non-empty
+`NO_COLOR`, `SQLCTX_NO_COLOR`, or `TERM=dumb` disables it. A non-empty
 `FORCE_COLOR` overrides automatic terminal detection, but not explicit disable
 controls. Progress is animated only on an interactive stderr stream and is
 disabled for redirects, machine formats, plain/quiet mode, and CI.
 
 ## Environment and precedence
 
-Public Sidemantic environment variables use the `SIDEMANTIC_` prefix:
+Update scripts to call `sqlctx` and use the `SQLCTX_` environment variables.
+New projects use `sqlctx.yaml`. Discovery also reads project configuration
+files saved under the previous name.
+
+Public sqlctx environment variables use the `SQLCTX_` prefix:
 
 | Variable | Meaning |
 | --- | --- |
-| `SIDEMANTIC_PROJECT` | Project root used for discovery |
-| `SIDEMANTIC_CONFIG` | Explicit YAML or JSON config path |
-| `SIDEMANTIC_FORMAT` | Default `table`, `csv`, `json`, or `jsonl` output |
-| `SIDEMANTIC_PLAIN` | Enable plain output when truthy |
-| `SIDEMANTIC_QUIET` | Suppress non-essential diagnostics when truthy |
-| `SIDEMANTIC_VERBOSE` | Enable verbose diagnostics when truthy |
-| `SIDEMANTIC_DEBUG` | Enable debug tracebacks when truthy |
-| `SIDEMANTIC_NO_COLOR` | Disable Sidemantic color when truthy |
-| `SIDEMANTIC_PAGER` | Pager command for long interactive reports |
-| `SIDEMANTIC_PG_PASSWORD_FILE` | PostgreSQL password credential file |
-| `SIDEMANTIC_API_AUTH_TOKEN_FILE` | HTTP API bearer-token credential file |
+| `SQLCTX_PROJECT` | Project root used for discovery |
+| `SQLCTX_CONFIG` | Explicit YAML or JSON config path |
+| `SQLCTX_FORMAT` | Default `table`, `csv`, `json`, or `jsonl` output |
+| `SQLCTX_PLAIN` | Enable plain output when truthy |
+| `SQLCTX_QUIET` | Suppress non-essential diagnostics when truthy |
+| `SQLCTX_VERBOSE` | Enable verbose diagnostics when truthy |
+| `SQLCTX_DEBUG` | Enable debug tracebacks when truthy |
+| `SQLCTX_NO_COLOR` | Disable sqlctx color when truthy |
+| `SQLCTX_PAGER` | Pager command for long interactive reports |
+| `SQLCTX_PG_PASSWORD_FILE` | PostgreSQL password credential file |
+| `SQLCTX_API_AUTH_TOKEN_FILE` | HTTP API bearer-token credential file |
 
 Ordinary settings use flag, environment variable, project config, then
 built-in default precedence. Project config may define the same presentation
@@ -163,20 +167,20 @@ put secret values directly in environment variables.
 Use `-` where a command accepts streamable SQL or a single generated file:
 
 ```bash
-printf 'SELECT orders.revenue FROM orders\n' | sidemantic rewrite -
-printf 'SELECT orders.revenue FROM orders\n' | sidemantic query - --output -
-printf 'SELECT * FROM orders;\n' | sidemantic migrate check - --json
-sidemantic generate client --output -
-sidemantic convert models.yml --to sidemantic --output -
-cat model.yml | sidemantic convert - --from sidemantic --to sidemantic --output -
-cat model.sql | sidemantic convert - --from sidemantic --source-extension .sql --to sidemantic --output -
+printf 'SELECT orders.revenue FROM orders\n' | sqlctx rewrite -
+printf 'SELECT orders.revenue FROM orders\n' | sqlctx query - --output -
+printf 'SELECT * FROM orders;\n' | sqlctx migrate check - --json
+sqlctx generate client --output -
+sqlctx convert models.yml --to sqlctx --output -
+cat model.yml | sqlctx convert - --from sqlctx --to sqlctx --output -
+cat model.sql | sqlctx convert - --from sqlctx --source-extension .sql --to sqlctx --output -
 ```
 
 `rewrite`, `query`, and `explain` read SQL from stdin when their SQL argument is
 `-`. Migration and pre-aggregation query sources do the same. Query and
 single-file code generation write to stdout when output is `-`.
 For formats with multiple file syntaxes, stdin conversion infers JSON and native
-Sidemantic SQL when possible; use `--source-extension` to select explicitly.
+sqlctx SQL when possible; use `--source-extension` to select explicitly.
 
 Some exporters produce directories or multiple files, so they cannot stream to
 stdout. `migrate generate --output -`, directory-only conversion inputs, and
@@ -189,11 +193,11 @@ Never put a PostgreSQL server password or API bearer token directly in a command
 argument. Read it from a credential file:
 
 ```bash
-sidemantic server postgres \
+sqlctx server postgres \
   --username analytics \
   --password-file .secrets/pg-password
 
-sidemantic server api \
+sqlctx server api \
   --auth-token-file .secrets/api-token
 ```
 
@@ -201,8 +205,8 @@ Both credential options accept `-` to read from stdin, which is useful with a
 secret manager:
 
 ```bash
-secret-tool lookup service sidemantic-api |
-  sidemantic server api --auth-token-file -
+secret-tool lookup service sqlctx-api |
+  sqlctx server api --auth-token-file -
 ```
 
 Project configuration can point to the same files. Relative paths are resolved
@@ -230,10 +234,10 @@ release cycle. New command invocations should use credential files or stdin.
 
 ## Terminal documentation and completion
 
-Use `sidemantic help [COMMAND]...` for nested offline help, or install the
-generated `sidemantic(1)` manual page from the wheel. Long human-readable
+Use `sqlctx help [COMMAND]...` for nested offline help, or install the
+generated `sqlctx(1)` manual page from the wheel. Long human-readable
 reports support TTY-aware paging with `--pager`, `--no-pager`, and
-`SIDEMANTIC_PAGER`. Shell completion includes commands, semantic formats,
+`SQLCTX_PAGER`. Shell completion includes commands, semantic formats,
 project model names, dashboard specs, and relevant paths.
 
 See [terminal help, paging, and completion](terminal.md) for the complete

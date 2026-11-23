@@ -4,8 +4,8 @@ import re
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 from tests.utils import fetch_dicts
 
 

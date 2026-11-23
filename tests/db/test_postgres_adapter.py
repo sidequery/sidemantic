@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
-from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.db.postgres import PostgreSQLAdapter, PostgresResult
+from sqlctx.core.semantic_layer import SemanticLayer
+from sqlctx.db.postgres import PostgreSQLAdapter, PostgresResult
 
 
 def _block_import(monkeypatch, module_prefix: str) -> None:

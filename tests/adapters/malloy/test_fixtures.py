@@ -6,7 +6,7 @@ Tests are permissive: parse without errors, check counts, verify key names.
 
 from pathlib import Path
 
-from sidemantic.adapters.malloy import MalloyAdapter
+from sqlctx.adapters.malloy import MalloyAdapter
 
 
 class TestAirports:

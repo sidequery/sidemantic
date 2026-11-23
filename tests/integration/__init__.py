@@ -1,1 +1,1 @@
-"""End-to-end integration tests for the sidemantic semantic layer."""
+"""End-to-end integration tests for the sqlctx semantic layer."""

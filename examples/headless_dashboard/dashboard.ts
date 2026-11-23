@@ -1,9 +1,9 @@
-import { defineDashboard, type DashboardRenderer } from "./sidemantic.generated";
+import { defineDashboard, type DashboardRenderer } from "./sqlctx.generated";
 
 const renderer: DashboardRenderer = "vega-lite";
 
 export default defineDashboard({
-  schema: "sidemantic.dashboard.v1",
+  schema: "sqlctx.dashboard.v1",
   title: "Revenue Performance Explorer",
   defaults: {
     renderer,

@@ -161,7 +161,15 @@ The live replay fetches `https://github.com/sidequery/yardstick.git` at `main` b
 | Facet | Coverage |
 |-------|----------|
 | Model/metric definitions | Checks every parsed `CREATE VIEW ... AS MEASURE`, including definitions within batches, asserting model name, source table/base SQL, primary key, Yardstick metadata, dimension SQL/type/granularity, and metric `agg`/`sql`/`filters`/`type` |
-| Query execution | Replays every upstream query block against Sidemantic's Yardstick rewriter and compares result rows |
+| Query execution | Replays portable upstream SQL against Sidemantic's Yardstick rewriter and compares result rows |
+
+The upstream `definition_store.test` includes native attachment storage, session
+isolation, and concurrent mutation checks that are not Sidemantic APIs. The
+definition check still processes that fixture. Replay runs its portable table
+setup, measure creation and replacement, grouped aggregation, and `AT (ALL)`
+assertions. A fixture checksum makes changes fail the replay until the boundary
+is reviewed. Native storage assertions belong to the upstream extension suite
+and are not exercised by this workflow.
 
 The live definition check covers the `CREATE VIEW ... AS MEASURE` definitions used by Yardstick's SQL tests. Sidemantic's native SQL definition parser owns `MODEL(...)`, `METRIC(...)`, and `DIMENSION(...)` files separately from the Yardstick adapter; the live upstream replay does not treat Yardstick's top-level `yardstick_definitions.sql` helper file as part of the SQL-test corpus.
 

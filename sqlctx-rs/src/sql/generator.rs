@@ -3296,6 +3296,25 @@ impl<'a> SqlGenerator<'a> {
                 lag_cte_columns.push(alias);
             }
 
+            // Keep private LAG columns distinct from user-visible outputs.
+            let mut used_names: HashSet<_> = lag_cte_columns
+                .iter()
+                .map(|name| name.to_lowercase())
+                .collect();
+            let mut previous_columns = HashMap::new();
+            for (metrics, suffix) in [
+                (&time_comparison_metrics, "prev_value"),
+                (&offset_ratio_metrics, "prev_denom"),
+            ] {
+                for metric in metrics {
+                    let mut name = format!("{}_{suffix}", metric.alias);
+                    while !used_names.insert(name.to_lowercase()) {
+                        name.push('_');
+                    }
+                    previous_columns.insert(&metric.alias, self.quote_identifier(&name));
+                }
+            }
+
             for metric_ref in &time_comparison_metrics {
                 let metric = self.metric_for_ref(metric_ref)?;
                 let (time_col, time_granularity) =
@@ -3312,7 +3331,7 @@ impl<'a> SqlGenerator<'a> {
                     metric.comparison_type.as_ref(),
                     time_granularity.as_deref(),
                 );
-                let prev_alias = format!("{}_prev_value", metric_ref.alias);
+                let prev_alias = &previous_columns[&metric_ref.alias];
                 let window_clause =
                     self.lag_window_clause(dimension_refs, &time_col, Some(lag_offset));
                 let prior = self
@@ -3340,7 +3359,7 @@ impl<'a> SqlGenerator<'a> {
                 })?;
                 let denom_alias =
                     self.quote_identifier(&metric_output(denominator, &metric_ref.model)?);
-                let prev_alias = format!("{}_prev_denom", metric_ref.alias);
+                let prev_alias = &previous_columns[&metric_ref.alias];
                 let window_clause = self.lag_window_clause(dimension_refs, &time_col, None);
                 let lag_rows = Self::offset_window_lag_rows(
                     metric.offset_window.as_deref(),
@@ -3382,7 +3401,7 @@ impl<'a> SqlGenerator<'a> {
                 })?;
                 let base_alias =
                     self.quote_identifier(&metric_output(base_ref, &metric_ref.model)?);
-                let prev_value_col = format!("{}_prev_value", metric_ref.alias);
+                let prev_value_col = &previous_columns[&metric_ref.alias];
                 let calculation = metric
                     .calculation
                     .as_ref()
@@ -3399,7 +3418,10 @@ impl<'a> SqlGenerator<'a> {
                     }
                 };
                 let value = self.fill_metric_expression(metric, expr)?;
-                final_selects.push(format!("{value} AS {}", metric_ref.alias));
+                final_selects.push(format!(
+                    "{value} AS {}",
+                    self.quote_identifier(&metric_ref.alias)
+                ));
             }
 
             for metric_ref in &offset_ratio_metrics {
@@ -3412,12 +3434,15 @@ impl<'a> SqlGenerator<'a> {
                 })?;
                 let numerator_alias =
                     self.quote_identifier(&metric_output(numerator, &metric_ref.model)?);
-                let prev_denom_col = format!("{}_prev_denom", metric_ref.alias);
+                let prev_denom_col = &previous_columns[&metric_ref.alias];
                 let value = self.fill_metric_expression(
                     metric,
                     format!("{numerator_alias} / NULLIF({prev_denom_col}, 0)"),
                 )?;
-                final_selects.push(format!("{value} AS {}", metric_ref.alias));
+                final_selects.push(format!(
+                    "{value} AS {}",
+                    self.quote_identifier(&metric_ref.alias)
+                ));
             }
 
             format!(
@@ -3436,10 +3461,16 @@ impl<'a> SqlGenerator<'a> {
 
         if !query.order_by.is_empty() {
             let mut order_parts = Vec::new();
+            let names: Vec<_> = query
+                .metrics
+                .iter()
+                .chain(effective_dimensions)
+                .map(String::as_str)
+                .chain(metric_refs.iter().map(|metric| metric.alias.as_str()))
+                .chain(grouped_outputs.values().map(String::as_str))
+                .collect();
             for order in &query.order_by {
-                let mut tokens = order.split_whitespace();
-                let field = tokens.next().unwrap_or(order);
-                let suffix = tokens.collect::<Vec<&str>>().join(" ");
+                let (field, suffix) = crate::sql::split_order_field(order, &names);
                 let alias = effective_dimensions
                     .iter()
                     .zip(dimension_refs)
@@ -3453,7 +3484,13 @@ impl<'a> SqlGenerator<'a> {
                             .get(field)
                             .map(|alias| self.quote_identifier(alias))
                     })
-                    .unwrap_or_else(|| self.metric_alias_from_ref(field));
+                    .or_else(|| {
+                        metric_refs
+                            .iter()
+                            .find(|metric| metric.alias == field)
+                            .map(|metric| self.quote_identifier(&metric.alias))
+                    })
+                    .unwrap_or_else(|| self.quote_identifier(&self.metric_alias_from_ref(field)));
                 if suffix.is_empty() {
                     order_parts.push(alias);
                 } else {

@@ -59,6 +59,46 @@ def call(query=None, source=None, sql=None, context=None, error=False):
     return result if error else result[0]["sql"]
 
 
+@pytest.mark.parametrize("expression", [False, True])
+def test_graph_window_identity_shadows_same_named_local_aggregate(expression):
+    source = {
+        "version": 1,
+        "input_dialect": "duckdb",
+        "models": [
+            {
+                "name": "events",
+                "sql": """
+                    select * from (values
+                        (1, date '2024-01-01', 10, 900), (2, date '2024-01-02', 20, 800)
+                    ) events(id, day, amount, shadow)
+                """,
+                "primary_key": "id",
+                "dimensions": [{"name": "day", "type": "time", "granularity": "day"}],
+                "metrics": [
+                    {"name": "total", "agg": "sum", "sql": "amount"},
+                    {"name": "running", "agg": "sum", "sql": "shadow"},
+                ],
+            }
+        ],
+        "metrics": [
+            {
+                "name": "events.running",
+                "type": "cumulative",
+                **({"window_expression": "SUM(base.total)"} if expression else {"sql": "total"}),
+            }
+        ],
+        "metric_owners": {"events.running": "events"},
+    }
+    compiled = call(
+        source=source,
+        query={"metrics": ["events.running"], "dimensions": ["events.day"], "order_by": ["events.day"]},
+    )
+    assert execute(compiled) == [
+        {"day": "2024-01-01", "total": "10", "events.running": "10"},
+        {"day": "2024-01-02", "total": "20", "events.running": "30"},
+    ]
+
+
 def test_computed_time_identity_stays_unbucketed_for_join_and_fanout():
     source = {
         "version": 1,

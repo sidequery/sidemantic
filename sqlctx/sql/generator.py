@@ -7523,7 +7523,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 window_value = f"{window_expression} OVER ({partition_clause}ORDER BY {order_col} {frame})"
                 window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
                 select_exprs.append(window_expr)
-                cumulative_window_entries.append((window_expr, metric_alias))
+                cumulative_window_entries.append((window_expr, metric.name))
                 continue
 
             # Option A: Use agg + sql (supports AVG, COUNT, etc.)
@@ -7565,7 +7565,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
 
             window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
             select_exprs.append(window_expr)
-            cumulative_window_entries.append((window_expr, metric_alias))
+            cumulative_window_entries.append((window_expr, metric.name))
 
         # Add time comparison metrics with LAG window functions
         # Note: We'll handle these with a CTE approach similar to offset_ratio_metrics
@@ -7603,6 +7603,20 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
             for cum_expr, cum_alias in cumulative_window_entries:
                 lag_selects.append(cum_expr)
                 lag_cte_columns.append(cum_alias)
+
+            # A private LAG column must not shadow a grouping or metric output.
+            used_names = {name.casefold() for name in lag_cte_columns}
+            used_names.update(
+                metric_ref_alias(plan["base_ref"]).casefold() for plan in time_comparison_base_plans.values()
+            )
+            previous_columns = {}
+            for references, suffix in ((time_comparison_metrics, "prev_value"), (offset_ratio_metrics, "prev_denom")):
+                for reference in references:
+                    name = f"{reference}_{suffix}"
+                    while name.casefold() in used_names:
+                        name += "_"
+                    used_names.add(name.casefold())
+                    previous_columns[reference] = self._quote_alias(name)
 
             # Add LAG expressions for each time comparison metric
             for m in time_comparison_metrics:
@@ -7668,7 +7682,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)
                     exact_lookup = f"LAG({lag_input_expr}, {lag_offset}) OVER ({partition_clause}ORDER BY {time_dim})"
 
-                prev_value_alias = self._quote_alias(f"{m}_prev_value")
+                prev_value_alias = previous_columns[m]
                 lag_selects.append(f"{exact_lookup} AS {prev_value_alias}")
 
             # Add LAG expressions for each offset ratio metric
@@ -7726,7 +7740,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     prior_denominator = (
                         f"LAG({denominator_expr}, {lag_rows}) OVER ({partition_clause}ORDER BY {time_dim})"
                     )
-                prev_denom_alias = self._quote_alias(f"{m}_prev_denom")
+                prev_denom_alias = previous_columns[m]
                 lag_selects.append(f"{prior_denominator} AS {prev_denom_alias}")
 
             # Build intermediate CTE - inner_query already has all the columns we need
@@ -7753,7 +7767,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 base_alias = sql_identifier(metric_ref_alias(base_ref))
 
                 # Quote aliases to handle dotted metric names
-                prev_value_col = self._quote_alias(f"{m}_prev_value")
+                prev_value_col = previous_columns[m]
                 final_alias = self._quote_alias(m)
 
                 # Build calculation based on calculation type
@@ -7780,7 +7794,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 num_alias = sql_identifier(metric_ref_alias(canonical_ref(metric.numerator, resolved_context)))
 
                 # Quote aliases to handle dotted metric names
-                prev_denom_col = self._quote_alias(f"{m}_prev_denom")
+                prev_denom_col = previous_columns[m]
                 final_alias = self._quote_alias(m)
 
                 # Calculate ratio using the lagged value

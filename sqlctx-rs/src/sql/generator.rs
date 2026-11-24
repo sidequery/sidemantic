@@ -33,6 +33,19 @@ use crate::error::{Result, SqlctxError};
 type CtePushdownClassification = (HashMap<String, Vec<String>>, Vec<String>);
 const SOURCE_DIALECT: DialectType = DialectType::DuckDB;
 
+// Expressions reaching the planner have already been normalized to the source dialect.
+fn bind_population_owner(sql: &str, model: &Model) -> Result<String> {
+    if !sql.contains("{model}") {
+        return Ok(sql.to_owned());
+    }
+    let owner = polyglot_sql::generate(
+        &Expression::Identifier(Identifier::quoted(&model.name)),
+        SOURCE_DIALECT,
+    )
+    .map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+    crate::core::replace_model_placeholder(sql, Some(&owner))
+}
+
 /// A semantic query definition
 #[derive(Debug, Clone, Default)]
 pub struct SemanticQuery {
@@ -4274,6 +4287,49 @@ impl<'a> SqlGenerator<'a> {
             entries.push((alias, sql_col));
         }
         Ok(entries)
+    }
+
+    fn population_identifier(&self, name: &str) -> String {
+        polyglot_sql::generate(
+            &Expression::Identifier(Identifier::quoted(name)),
+            self.dialect,
+        )
+        .expect("quoted identifier generation is infallible")
+    }
+
+    // Parse before rewriting owner qualifiers so quoted values remain unchanged.
+    fn population_physical_expression(
+        &self,
+        model: &Model,
+        expression: &str,
+        metric_type: &str,
+    ) -> Result<String> {
+        let expression = bind_population_owner(expression, model)?;
+        let parsed = parse_semantic_expression(&expression)?;
+        crate::core::validate_row_expression(
+            &parsed,
+            &format!("metric.{metric_type}_non_row_expression"),
+        )?;
+        let mut replacements = HashMap::new();
+        for column in semantic_column_references(&expression)? {
+            if column
+                .model
+                .as_ref()
+                .is_some_and(|owner| owner != &model.name && owner != "t")
+            {
+                return Err(SqlctxError::UnsupportedSemanticFeatures {
+                    capabilities: vec![format!("metric.{metric_type}_joined_expression")],
+                });
+            }
+            replacements.insert(
+                (column.model, column.field.clone()),
+                self.population_identifier(&column.field),
+            );
+        }
+        self.emit_expression(&crate::core::replace_semantic_columns(
+            parsed,
+            &replacements,
+        )?)
     }
 
     fn raw_dimension_sql(&self, model: &Model, expr: &str) -> String {

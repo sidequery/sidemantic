@@ -1233,6 +1233,31 @@ fn query_input(query: &str) -> Result<QueryInput> {
     runtime_request(query, "query")
 }
 
+fn population_filter_owner(query: &QueryInput, graph: &SemanticGraph) -> Result<Option<String>> {
+    let [reference] = query.metrics.as_slice() else {
+        return Ok(None);
+    };
+    let is_population = |metric: &Metric| {
+        use crate::core::MetricType::{Cohort, Conversion, Retention};
+        matches!(metric.r#type, Cohort | Conversion | Retention)
+    };
+    if let Some(metric) = graph.get_metric(reference) {
+        return if is_population(metric) {
+            graph.population_metric_owner(reference, metric).map(Some)
+        } else {
+            Ok(None)
+        };
+    }
+    let Ok((owner, name, _)) = graph.parse_reference(reference) else {
+        return Ok(None);
+    };
+    Ok(graph
+        .get_model(&owner)
+        .and_then(|model| model.get_metric(&name))
+        .filter(|metric| is_population(metric))
+        .map(|_| owner))
+}
+
 fn prepare_query_input(mut query: QueryInput, input: &mut SemanticInput) -> Result<QueryInput> {
     let dialect = query
         .query_dialect
@@ -1242,15 +1267,33 @@ fn prepare_query_input(mut query: QueryInput, input: &mut SemanticInput) -> Resu
         .unwrap_or(input.input_dialect);
     query.filters = interpolate_query_filters_with_dialect(
         &input.graph,
-        query.filters,
+        std::mem::take(&mut query.filters),
         &query.parameter_values,
         dialect,
     )
     .map_err(|error| invalid("query.parameter_values", error))?
-    .iter()
-    .map(|sql| {
-        fragments::validate_request_expression(sql, dialect, false)?;
-        dialects::fragment(sql, dialect, dialects::Fragment::Scalar)
+    .into_iter()
+    .map(|mut sql| {
+        // Bind a population filter to its declared or inferred source before
+        // request validation and policy discovery.
+        if sql.contains("{model}")
+            && crate::core::replace_model_placeholder_in_dialect(&sql, Some(""), dialect)? != sql
+        {
+            if let Some(owner) = population_filter_owner(&query, &input.graph)? {
+                let quoted = polyglot_sql::dialects::Dialect::get(dialect)
+                    .generate(&polyglot_sql::Expression::Identifier(
+                        polyglot_sql::expressions::Identifier::quoted(owner),
+                    ))
+                    .map_err(|error| invalid("query.filters", error))?;
+                sql = crate::core::replace_model_placeholder_in_dialect(
+                    &sql,
+                    Some(&quoted),
+                    dialect,
+                )?;
+            }
+        }
+        fragments::validate_request_expression(&sql, dialect, false)?;
+        dialects::fragment(&sql, dialect, dialects::Fragment::Scalar)
     })
     .collect::<Result<Vec<_>>>()?;
     let known_names: Vec<_> = query
@@ -1668,6 +1711,35 @@ mod tests {
                 "metrics": [{"name": "revenue", "agg": "sum", "sql": "amount"}]
             }], "metrics": [], "metric_owners": {}, "metadata": {"source": "orders.yml"}
         })
+    }
+
+    #[test]
+    fn multistep_query_filter_binds_source_placeholder_before_validation() {
+        let mut source = input();
+        source["models"][0]["dimensions"] = json!([
+            {"name":"person", "type":"categorical"},
+            {"name":"region", "type":"categorical"},
+            {"name":"occurred", "type":"time"}
+        ]);
+        source["models"][0]["metrics"] = json!([{
+            "name":"funnel", "type":"conversion", "entity":"person",
+            "steps":["kind = 'signup'", "kind = 'view'", "kind = 'purchase'"]
+        }]);
+        for dialect in ["duckdb", "mysql", "bigquery"] {
+            let query = json!({
+                "metrics":["orders.funnel"],
+                "filters":["{model}.region = '{model}.a'"],
+                "query_dialect":dialect
+            });
+            assert!(
+                validate_with_semantic_input(&source.to_string(), &query.to_string())
+                    .unwrap()
+                    .is_empty()
+            );
+            let sql = compile_with_semantic_input(&source.to_string(), &query.to_string()).unwrap();
+            assert!(sql.contains("'{model}.a'"), "{sql}");
+            assert!(!sql.contains("{model}.region"), "{sql}");
+        }
     }
 
     #[test]

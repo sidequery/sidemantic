@@ -65,8 +65,9 @@ def test_policy_scopes_cohort_and_activity_for_each_tenant(layer):
     assert result(layer) == (DAY_COLUMNS, DAY_ROWS)
 
 
-def test_row_filter_scopes_denominator_as_well_as_activity(layer):
-    assert result(layer, filters=["events.country = 'us'"]) == (
+@pytest.mark.parametrize("owner", ["events", "{model}"])
+def test_row_filter_scopes_denominator_as_well_as_activity(layer, owner):
+    assert result(layer, filters=[f"{owner}.country = 'us'"]) == (
         DAY_COLUMNS,
         [("2024-01-01", day, 1, 2, 50.0) for day in (0, 1, 2)] + [("2024-01-02", 2, 1, 1, 100.0)],
     )
@@ -137,7 +138,8 @@ def test_sql_source_and_model_placeholders_preserve_population(layer):
     model.sql = "select * from retention_events"
     model.get_dimension("occurred").sql = "{model}.event_ts"
     metric = model.get_metric("retained")
-    metric.cohort_event = "{model}.event_kind = 'signup'"
+    layer.adapter.execute("update retention_events set event_kind = '{model}.signup' where event_kind = 'signup'")
+    metric.cohort_event = "{model}.event_kind = '{model}.signup'"
     metric.activity_event = "{model}.event_kind = 'active'"
     assert result(layer) == (DAY_COLUMNS, DAY_ROWS)
 

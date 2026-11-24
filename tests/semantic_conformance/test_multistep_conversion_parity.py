@@ -70,6 +70,11 @@ def test_entrants_chronology_repeated_actions_ties_and_nulls(layer):
     assert result(layer) == (COLUMNS, [(6, 6, 3, 2, 2)])
 
 
+def test_physical_timestamp_alias_does_not_replace_step_chronology(layer):
+    layer.adapter.execute("alter table funnel_events add column __ts timestamp default timestamp '1900-01-01'")
+    assert result(layer) == (COLUMNS, [(6, 6, 3, 2, 2)])
+
+
 def test_later_steps_keep_first_step_dimension_attribution(layer):
     assert result(layer, dimensions=["events.region"], order_by=["events.region"]) == (
         ["region", *COLUMNS],
@@ -94,6 +99,41 @@ def test_repeated_entrant_has_independent_chronology_in_each_first_step_group(la
 
 def test_query_filter_scopes_every_step(layer):
     assert result(layer, filters=["kind != 'view'"]) == (COLUMNS, [(6, 6, 0, 0, 0)])
+
+
+def test_model_placeholder_query_filter_scopes_every_step(layer):
+    assert result(layer, filters=["{model}.region = 'a'"]) == (COLUMNS, [(4, 4, 0, 0, 0)])
+
+
+def test_model_placeholder_filter_keeps_literal_values(layer):
+    layer.adapter.execute("update funnel_events set region = '{model}.a' where region = 'a'")
+    assert result(layer, filters=["{model}.region = '{model}.a'"]) == (COLUMNS, [(4, 4, 0, 0, 0)])
+
+
+def test_model_placeholder_filter_uses_selected_funnel_owner(layer):
+    layer.add_model(
+        Model(name="unrelated", table="unused_events", dimensions=[Dimension(name="person", type="categorical")])
+    )
+    assert result(layer, filters=["{model}.region = 'a'"]) == (COLUMNS, [(4, 4, 0, 0, 0)])
+
+
+def test_graph_funnel_placeholder_filter_infers_entity_owner(layer):
+    metric = layer.graph.models["events"].get_metric("funnel").model_copy(update={"name": "graph_funnel"})
+    layer.graph.add_metric(metric)
+    assert result(layer, metrics=["graph_funnel"], filters=["{model}.region = 'a'"]) == (
+        [*COLUMNS[:-1], "graph_funnel"],
+        [(4, 4, 0, 0, 0)],
+    )
+
+
+def test_graph_funnel_placeholder_filter_rejects_ambiguous_entity_owner(layer):
+    metric = layer.graph.models["events"].get_metric("funnel").model_copy(update={"name": "graph_funnel"})
+    layer.graph.add_metric(metric)
+    layer.add_model(
+        Model(name="other", table="unused_events", dimensions=[Dimension(name="person", type="categorical")])
+    )
+    with pytest.raises(ValueError, match="[Aa]mbiguous"):
+        layer.compile(metrics=["graph_funnel"], filters=["{model}.region = 'a'"], user_attributes={"tenant": 1})
 
 
 def test_metric_filter_scopes_every_step_and_parenthesizes_or(layer):
@@ -164,7 +204,6 @@ def test_funnel_order_preserves_explicit_null_placement(layer, placement):
     )
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
 @pytest.mark.parametrize(
     "expression",
     ["count(*) > 0", "sum(tenant) over () > 0", "(select count(*) from funnel_events) > 0", "other.kind = 'signup'"],
@@ -175,7 +214,6 @@ def test_step_cannot_change_source_scope(layer, expression):
         layer.compile(metrics=["events.funnel"], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
 @pytest.mark.parametrize("alias", ["TOTAL_ENTITIES", "STEP_2_COUNT", "FUNNEL"])
 def test_fixed_output_alias_collisions_are_explicit(layer, alias):
     layer.graph.models["events"].dimensions.append(Dimension(name=alias, sql="region", type="categorical"))
@@ -183,8 +221,7 @@ def test_fixed_output_alias_collisions_are_explicit(layer, alias):
         layer.compile(metrics=["events.funnel"], dimensions=[f"events.{alias}"], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
-@pytest.mark.parametrize("alias", ["ENTITY", "STEP_1_TS", "step_2_ts", "STEP_3_TS"])
+@pytest.mark.parametrize("alias", ["ENTITY", "STEP_1_TS", "step_2_ts", "STEP_3_TS", "group"])
 def test_output_aliases_can_share_names_with_scoped_internal_columns(layer, alias):
     layer.graph.models["events"].dimensions.append(Dimension(name=alias, sql="region", type="categorical"))
     assert result(layer, dimensions=[f"events.{alias}"], order_by=[f"events.{alias}"]) == (
@@ -193,7 +230,6 @@ def test_output_aliases_can_share_names_with_scoped_internal_columns(layer, alia
     )
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
 @pytest.mark.parametrize("source", ["sum(tenant) over ()", "(select max(occurred) from funnel_events)"])
 def test_mapped_time_cannot_change_source_scope(layer, source):
     layer.graph.models["events"].get_dimension("occurred").sql = source

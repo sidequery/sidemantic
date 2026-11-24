@@ -131,13 +131,22 @@ def test_time_bucket_is_carried_through_to_outer_output(layer):
     )
 
 
-def test_filter_applies_before_inner_distinct_aggregation(layer):
-    assert result(layer, filters=["events.platform = 'web'"]) == (["qualified"], [(0,)])
+@pytest.mark.parametrize("owner", ["events", "{model}"])
+def test_filter_applies_before_inner_distinct_aggregation(layer, owner):
+    assert result(layer, filters=[f"{owner}.platform = 'web'"]) == (["qualified"], [(0,)])
 
 
 def test_metric_filter_applies_before_inner_distinct_aggregation(layer):
     cohort_metric(layer).filters = ["raw_amount >= 10"]
     assert result(layer) == (["qualified"], [(2,)])
+
+
+def test_cohort_source_and_result_expressions_preserve_placeholder_literals(layer):
+    layer.graph.models["events"].get_dimension("region").sql = "concat('{model}.', {model}.region)"
+    metric = cohort_metric(layer)
+    metric.filters = ["region = '{model}.EU'"]
+    metric.having = "platforms >= 2 and region = '{model}.EU'"
+    assert result(layer, dimensions=["events.region"]) == (["region", "qualified"], [("{model}.EU", 2)])
 
 
 def test_policy_prevents_cross_tenant_entity_qualification(layer):
@@ -190,19 +199,17 @@ def test_or_predicate_cannot_bypass_metric_filter(layer):
     assert result(layer, filters=["raw_amount > 0 or events.region = 'absent'"]) == (["qualified"], [(0,)])
 
 
-@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
 @pytest.mark.parametrize(
     "source", ["(select count(*) from events)", "sum(raw_amount) over ()", "count(*)", "other.raw_amount"]
 )
-def test_rust_inner_expression_cannot_change_source_scope(layer, source):
+def test_inner_expression_cannot_change_source_scope(layer, source):
     cohort_metric(layer).inner_metrics[1]["sql"] = source
     with pytest.raises(ValueError):
         layer.compile(metrics=[cohort_reference(layer)], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
 @pytest.mark.parametrize("expression", ["hidden", "hidden + 1"])
-def test_rust_declared_dimension_cannot_hide_a_subquery(layer, expression):
+def test_declared_dimension_cannot_hide_a_subquery(layer, expression):
     model = layer.graph.models["events"]
     model.dimensions.append(Dimension(name="hidden", type="numeric", sql="(select count(*) from events)"))
     cohort_metric(layer).inner_metrics[1]["sql"] = expression
@@ -210,8 +217,7 @@ def test_rust_declared_dimension_cannot_hide_a_subquery(layer, expression):
         layer.compile(metrics=[cohort_reference(layer)], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
-def test_rust_row_filter_cannot_hide_a_subquery(layer):
+def test_row_filter_cannot_hide_a_subquery(layer):
     with pytest.raises(ValueError):
         layer.compile(
             metrics=[cohort_reference(layer)],
@@ -239,25 +245,22 @@ def test_inner_source_dimension_root_resolves_physical_expression(layer, express
     assert result(layer) == (["qualified"], [(103,)])
 
 
-@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
 @pytest.mark.parametrize("alias", ["AMOUNT", "USER_ID", "REGION"])
-def test_rust_inner_alias_collisions_ignore_case(layer, alias):
+def test_inner_alias_collisions_ignore_case(layer, alias):
     cohort_metric(layer).inner_metrics.append({"name": alias, "agg": "count"})
     with pytest.raises(ValueError, match="inner_alias_collision"):
         layer.compile(metrics=[cohort_reference(layer)], dimensions=["events.region"], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
-def test_rust_output_alias_collision_ignores_case(layer):
+def test_output_alias_collision_ignores_case(layer):
     layer.graph.models["events"].dimensions.append(Dimension(name="QUALIFIED", sql="region", type="categorical"))
     with pytest.raises(ValueError, match="output_alias_collision"):
         layer.compile(metrics=[cohort_reference(layer)], dimensions=["events.QUALIFIED"], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("layer", ["rust", "rust_owned"], indirect=True)
 @pytest.mark.parametrize("context", ["having", "sql"])
 @pytest.mark.parametrize("expression", ["SUM(amount)", "SUM(amount) OVER ()", "(SELECT amount)"])
-def test_rust_cohort_result_context_requires_scalar_expression(layer, context, expression):
+def test_cohort_result_context_requires_scalar_expression(layer, context, expression):
     metric = cohort_metric(layer)
     if context == "having":
         metric.having = f"{expression} > 20"
@@ -443,19 +446,17 @@ def test_cohort_output_dialects_preserve_qualified_populations(layer, dialect, s
     elif shape == "month":
         query = {"dimensions": ["events.day__month"], "order_by": ["events.day__month"]}
         expected = [("2024-01-01", 1), ("2024-02-01", 2)]
-    if layer.engine == "rust" and dialect == "postgres" and shape in {"inner_approximate", "outer_approximate"}:
-        with pytest.raises(Exception, match="metric.approx_count_distinct_output_dialect"):
+    if dialect == "postgres" and shape in {"inner_approximate", "outer_approximate"}:
+        with pytest.raises(ValueError, match="metric.approx_count_distinct_output_dialect"):
             layer.compile(metrics=[cohort_reference(layer)], user_attributes={"tenant": 1}, dialect=dialect, **query)
         return
     sql = layer.compile(metrics=[cohort_reference(layer)], user_attributes={"tenant": 1}, dialect=dialect, **query)
     parsed = sqlglot.parse_one(sql, read=dialect)
-    if layer.engine == "rust" and dialect == "postgres":
+    if dialect == "postgres":
         from sqlglot import exp
 
-        having = parsed.find(exp.Having)
-        assert having is not None
-        assert having.find(exp.AggFunc) is not None
-        assert all(column.name != "platforms" for column in having.find_all(exp.Column))
+        predicate = parsed.args["where"]
+        assert [(col.table, col.name) for col in predicate.find_all(exp.Column)] == [("cohort_sub", "platforms")]
     # Target AST binding plus translated execution; no live warehouse execution.
     cursor = layer.adapter.execute(parsed.sql(dialect="duckdb"))
     actual = [

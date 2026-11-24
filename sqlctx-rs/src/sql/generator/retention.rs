@@ -70,7 +70,7 @@ impl SqlGenerator<'_> {
         sql: &str,
         dimensions: bool,
     ) -> Result<String> {
-        let sql = sql.replace("{model}", &model.name);
+        let sql = bind_population_owner(sql, model)?;
         let expression = parse_semantic_expression(&sql)?;
         validate_row_expression(&expression, "metric.retention_non_row_expression")?;
         let mut replacements = HashMap::new();

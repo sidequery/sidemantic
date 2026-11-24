@@ -13,27 +13,8 @@ fn unsupported(shape: &str) -> SqlctxError {
 }
 
 impl SqlGenerator<'_> {
-    // Parse before rewriting owner qualifiers so quoted values remain unchanged.
-    fn conversion_physical_expression(&self, model: &Model, expression: &str) -> Result<String> {
-        let expression = expression.replace("{model}", &model.name);
-        let parsed = parse_semantic_expression(&expression)?;
-        validate_row_expression(&parsed, "metric.conversion_non_row_expression")?;
-        let mut replacements = HashMap::new();
-        for column in semantic_column_references(&expression)? {
-            if column
-                .model
-                .as_ref()
-                .is_some_and(|owner| owner != &model.name && owner != "t")
-            {
-                return Err(unsupported("joined_expression"));
-            }
-            replacements.insert((column.model, column.field.clone()), quote(&column.field));
-        }
-        self.emit_expression(&replace_semantic_columns(parsed, &replacements)?)
-    }
-
     fn conversion_source_expression(&self, model: &Model, expression: &str) -> Result<String> {
-        let expression = expression.replace("{model}", &model.name);
+        let expression = bind_population_owner(expression, model)?;
         let parsed = parse_semantic_expression(&expression)?;
         validate_row_expression(&parsed, "metric.conversion_non_row_expression")?;
         let mut replacements = HashMap::new();
@@ -49,7 +30,7 @@ impl SqlGenerator<'_> {
                 if dimension.window.is_some() {
                     return Err(unsupported("non_row_expression"));
                 }
-                self.conversion_physical_expression(model, dimension.sql_expr())?
+                self.population_physical_expression(model, dimension.sql_expr(), "conversion")?
             } else {
                 quote(&column.field)
             };

@@ -163,8 +163,19 @@ pub(crate) fn materialization_sql(
 
 /// Rewrite only actual placeholder tokens, leaving literal and subquery text intact.
 pub(crate) fn replace_model_placeholder(sql: &str, owner: Option<&str>) -> Result<String> {
-    use polyglot_sql::{dialects::Dialect, DialectType, TokenType};
-    let tokens = Dialect::get(DialectType::DuckDB)
+    replace_model_placeholder_in_dialect(sql, owner, polyglot_sql::DialectType::DuckDB)
+}
+
+pub(crate) fn replace_model_placeholder_in_dialect(
+    sql: &str,
+    owner: Option<&str>,
+    dialect: polyglot_sql::DialectType,
+) -> Result<String> {
+    use polyglot_sql::{dialects::Dialect, TokenType};
+    if !sql.contains("{model}") {
+        return Ok(sql.to_owned());
+    }
+    let tokens = Dialect::get(dialect)
         .tokenize(sql)
         .map_err(|error| SqlctxError::SqlParse(error.to_string()))?;
     // Token spans are character offsets, including for Unicode input.

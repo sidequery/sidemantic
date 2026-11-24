@@ -4,7 +4,7 @@ The sqlctx DuckDB extension embeds the Rust native runtime in DuckDB. It is a na
 
 ## Status
 
-The extension is experimental and targets **DuckDB 1.5.6** only. It is **not** in the
+The extension is experimental and targets **DuckDB 2.0.1 and 1.5.6**. It is **not** in the
 DuckDB community extension registry, so `INSTALL sqlctx FROM community` fails.
 Community publication is planned; once it lands, installation will be:
 
@@ -29,16 +29,14 @@ The extension build needs Rust, DuckDB extension build tooling, and Ninja.
 
 ```bash
 cd sqlctx-duckdb
-make deps DUCKDB_VERSION=v1.5.6
+make deps DUCKDB_VERSION=v2.0.1
 make
-make test
+SQLCTX_NATIVE_PEG=1 make test
 ```
 
-`make deps` accepts only `DUCKDB_VERSION=v1.5.6` (the default) or `v2.0-cyanoptera`,
-a pinned DuckDB development commit that CI uses to exercise the native PEG grammar.
-Release artifacts are built for v1.5.6 only. The repository vendors a matching
-`extension-ci-tools` checkout; update both together before building against a
-different DuckDB tag.
+For the DuckDB 1.5.6 compatibility frontend, use `make deps DUCKDB_VERSION=v1.5.6`
+(the default), then `make` and `make test`. Build each host version in a separate
+checkout or clean build directory. The repository vendors the extension build tools.
 
 The local loadable extension is produced at:
 
@@ -49,12 +47,10 @@ sqlctx-duckdb/build/release/extension/sqlctx/sqlctx.duckdb_extension
 Load it in the DuckDB shell built by the extension workflow:
 
 ```bash
-./build/release/duckdb -unsigned
+./build/release/duckdb -unsigned -cmd "LOAD '$PWD/build/release/extension/sqlctx/sqlctx.duckdb_extension';"
 ```
 
-```sql
-LOAD 'build/release/extension/sqlctx/sqlctx.duckdb_extension';
-```
+The official macOS CLI requires an absolute path when loading the extension.
 
 For embedded clients, set DuckDB's `allow_unsigned_extensions` database configuration before opening the connection.
 
@@ -137,10 +133,10 @@ Use `.github/workflows/duckdb-extension-release.yml`.
 
 The workflow:
 
-- fetches DuckDB v1.5.6 with `make deps` and verifies the vendored `extension-ci-tools`,
+- fetches each selected DuckDB release tag with `make deps` and verifies the vendored `extension-ci-tools`,
 - builds the Rust-backed extension for `linux_amd64`, `linux_arm64`, `osx_amd64`, and `osx_arm64`,
 - runs the DuckDB sqllogictests, including native YAML load, native SQL definition file load, relationship rewrite, semantic select, persistence, and invalid-version coverage,
-- uploads the four extension artifacts with their checksums,
+- uploads a separate extension artifact for each DuckDB version and platform with its checksum,
 - on a `sqlctx-duckdb-v*` tag push (or a manual run with `create_github_release`), creates the GitHub release with the artifacts, `SHA256SUMS`, and `LICENSE`. It never overwrites an existing release.
 
 It does not publish to the DuckDB community extension registry.
@@ -152,13 +148,11 @@ It does not publish to the DuckDB community extension registry.
 | Native format | `1` |
 | Rust runtime crate | `0.1.0` |
 | DuckDB extension release | `0.1.0` |
-| DuckDB version | `1.5.6` |
+| DuckDB version | `2.0.1` or `1.5.6` |
 
 DuckDB extension artifacts are ABI-sensitive. Rebuild the extension when changing the DuckDB target version or the Rust native runtime version.
 
-The extension loads only into DuckDB 1.5.6. DuckDB 1.5.6 cannot open database files
-written by DuckDB 2.x (`Trying to read a database file with version number 69`), so
-a file created by a newer DuckDB, for example through a Python environment that
-resolved `duckdb` 2.x, cannot be used with this extension.
+For a database file written in DuckDB 2.0 storage format, open it with DuckDB
+2.0.1 and load the matching 2.0.1 extension.
 
 The extension should accept the same native YAML and native SQL definition contract as the Rust runtime. If extension-only syntax is added, it should either be aligned with the Rust SQL loader or documented as DuckDB-only.

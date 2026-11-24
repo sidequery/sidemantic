@@ -593,14 +593,43 @@ class SQLGenerator:
 
         return plan
 
-    @staticmethod
-    def _agg_sql_name(agg: str) -> str:
+    def _agg_sql_name(self, agg: str) -> str:
         """Return the SQL function name for a normalized metric aggregation."""
+        if agg == "approx_count_distinct":
+            self._check_approximate_dialect()
         return {
             "variance_pop": "VAR_POP",
             "var_pop": "VAR_POP",
             "approx_count_distinct": "APPROX_COUNT_DISTINCT",
         }.get(agg, agg.upper())
+
+    def _check_approximate_dialect(self) -> None:
+        if self.dialect in {"postgres", "mysql", "sqlite"}:
+            raise QueryValidationError(
+                f"{self.dialect} has no built-in approximate distinct aggregate "
+                "(metric.approx_count_distinct_output_dialect)"
+            )
+
+    def _render_metric_expression(self, expression: exp.Expression) -> str:
+        if expression.find(exp.ApproxDistinct) is None:
+            return expression.sql(dialect=self.dialect)
+        self._check_approximate_dialect()
+        if self.dialect == "redshift":
+            # Express FILTER as a nullable input to APPROXIMATE COUNT(DISTINCT ...).
+            def lower_filter(node):
+                if isinstance(node, exp.Filter) and isinstance(node.this, exp.ApproxDistinct):
+                    aggregate = node.this.copy()
+                    aggregate.set("this", exp.case().when(node.expression.this, aggregate.this))
+                    return aggregate
+                return node
+
+            expression = expression.transform(lower_filter)
+            if any(isinstance(window.this, exp.ApproxDistinct) for window in expression.find_all(exp.Window)):
+                raise QueryValidationError(
+                    "Redshift does not support approximate distinct window functions "
+                    "(metric.approx_count_distinct_window_redshift)"
+                )
+        return expression.sql(dialect=self.dialect)
 
     def _safe_divide_sql(self, numerator: str, denominator: str) -> str:
         """Build fractional division without PostgreSQL integer truncation."""
@@ -4145,6 +4174,7 @@ class SQLGenerator:
             elif agg == "count_distinct":
                 aggregate = f"COUNT({raw_ref})" if not measure.sql else f"COUNT(DISTINCT {raw_ref})"
             elif agg == "approx_count_distinct":
+                self._check_approximate_dialect()
                 aggregate = f"COUNT({raw_ref})" if not measure.sql else f"APPROX_COUNT_DISTINCT({raw_ref})"
             else:
                 aggregate = f"{self._agg_sql_name(agg)}({raw_ref})"
@@ -4165,7 +4195,7 @@ class SQLGenerator:
                     "this", exp.to_identifier(internal_name, quoted=not self._is_simple_identifier(internal_name))
                 )
                 column.set("table", exp.to_identifier(dedup_alias, quoted=not self._is_simple_identifier(dedup_alias)))
-            entity_formula = parsed.sql(dialect=self.dialect)
+            entity_formula = self._render_metric_expression(parsed)
             if parsed_dims and not sql_has_aggregate(measure.sql or "", self.dialect):
                 entity_formula = f"ANY_VALUE({entity_formula})"
             return entity_formula
@@ -4251,7 +4281,7 @@ class SQLGenerator:
         if with_totals and parsed_dims:
             outer_select_exprs.append("0 AS _is_total")
 
-        outer_query = select(*outer_select_exprs).from_(inner_query.subquery(dedup_alias))
+        outer_query = select(*outer_select_exprs, dialect=self.dialect).from_(inner_query.subquery(dedup_alias))
         if parsed_dims:
             outer_query = outer_query.group_by(*range(1, len(parsed_dims) + 1))
         for filter_expr in having_filters:
@@ -4269,9 +4299,9 @@ class SQLGenerator:
             for dim_ref, gran in parsed_dims:
                 reference = f"{dim_ref}__{gran}" if gran else dim_ref
                 total_dimensions.append(f"NULL AS {self._quote_alias(output_aliases[reference])}")
-            total_query = select(*total_dimensions, *outer_select_exprs[len(parsed_dims) : -1], "1 AS _is_total").from_(
-                total_rows.subquery(dedup_alias)
-            )
+            total_query = select(
+                *total_dimensions, *outer_select_exprs[len(parsed_dims) : -1], "1 AS _is_total", dialect=self.dialect
+            ).from_(total_rows.subquery(dedup_alias))
             for filter_expr in having_filters:
                 total_query = total_query.having(
                     _parse_fragment(self._rewrite_having_filter(filter_expr, having_metric_expressions), self.dialect)
@@ -4439,7 +4469,9 @@ class SQLGenerator:
             if metric.agg == "count_distinct":
                 aggregate = f"COUNT(DISTINCT {raw_ref})"
             elif metric.agg == "approx_count_distinct":
-                aggregate = f"APPROX_COUNT_DISTINCT({raw_ref})"
+                aggregate = self._render_metric_expression(
+                    exp.ApproxDistinct(this=_parse_fragment(raw_ref, self.dialect))
+                )
             else:
                 aggregate = f"{self._agg_sql_name(metric.agg)}({raw_ref})"
             leaf_aggregates[id(metric)] = self._wrap_with_fill_nulls(aggregate, metric)
@@ -5109,7 +5141,7 @@ class SQLGenerator:
                         self._cte_name(model_name), quoted=not self._is_simple_identifier(self._cte_name(model_name))
                     ),
                 )
-            expr = parsed.sql(dialect=self.dialect)
+            expr = self._render_metric_expression(parsed)
         except SqlglotError:
             logging.debug("Failed to rewrite complete-sql measure expr: %s", expr, exc_info=True)
             expr = self._rewrite_model_refs_to_ctes(expr)
@@ -6948,14 +6980,19 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
             # Classify metric by type
             if metric and metric.type == "cumulative":
                 add_unique(cumulative_metrics, m)
-                if self.dialect == "redshift" and metric.agg == "approx_count_distinct":
+                if (
+                    self.dialect == "redshift"
+                    and metric.agg == "approx_count_distinct"
+                    and not metric.window_expression
+                ):
                     raise QueryValidationError(
                         "Redshift does not support approximate distinct window functions "
                         "(metric.approx_count_distinct_window_redshift)"
                     )
                 if metric.window_expression:
                     expression = sqlglot.parse_one(metric.window_expression, read=self.dialect)
-                    if self.dialect == "redshift" and expression.find(exp.ApproxDistinct):
+                    window_function = expression.this if isinstance(expression, exp.Filter) else expression
+                    if self.dialect == "redshift" and isinstance(window_function, exp.ApproxDistinct):
                         raise QueryValidationError(
                             "Redshift does not support approximate distinct window functions "
                             "(metric.approx_count_distinct_window_redshift)"
@@ -7482,7 +7519,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                             return exp.column(alias, table="base", quoted=True)
                     return node
 
-                window_expression = window_expression.transform(bind_window_input).sql(dialect=self.dialect)
+                window_expression = self._render_metric_expression(window_expression.transform(bind_window_input))
                 window_value = f"{window_expression} OVER ({partition_clause}ORDER BY {order_col} {frame})"
                 window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
                 select_exprs.append(window_expr)

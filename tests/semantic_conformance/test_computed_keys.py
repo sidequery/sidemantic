@@ -5,14 +5,13 @@ from datetime import date
 import pytest
 
 from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
-from sqlctx.rust_bridge import rewrite_semantic_input
-from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 
 
-@pytest.fixture
-def layer():
-    pytest.importorskip("sqlctx_rs", reason="Computed-key acceptance requires the real Rust extension")
-    layer = SemanticLayer(engine="rust", fallback=False, auto_register=False)
+@pytest.fixture(params=["python", "rust"])
+def layer(request):
+    if request.param == "rust":
+        pytest.importorskip("sqlctx_rs", reason="Computed-key acceptance requires the real Rust extension")
+    layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(
             name="accounts",
@@ -55,7 +54,7 @@ def layer():
 
 def result(layer, query, columns, expected):
     sql = layer.compile(**query)
-    assert layer.last_engine_selection["engine"] == "rust"
+    assert layer.last_engine_selection == {"engine": layer.engine, "reason": None}
     data = layer.adapter.execute(sql)
     assert [column[0] for column in data.description] == columns
     assert data.fetchall() == expected
@@ -100,18 +99,15 @@ def test_computed_key_predicate_and_raw_self_reference(layer):
 
 
 def test_from_metrics_sql_uses_structured_key_planning(layer):
-    sql = rewrite_semantic_input(
-        layer.graph,
-        "select accounts.id, events.amount from metrics order by accounts.id",
-    )
-    data = layer.adapter.execute(sql)
+    data = layer.sql("select accounts.id, events.amount from metrics order by accounts.id")
+    assert layer.last_engine_selection == {"engine": layer.engine, "reason": None}
     assert [column[0] for column in data.description] == ["id", "amount"]
     assert data.fetchall() == [(101, 7), (201, 17)]
 
 
 def test_model_sql_uses_computed_identity(layer):
-    sql = rewrite_semantic_input(layer.graph, "select accounts.id, accounts.budget from accounts order by accounts.id")
-    data = layer.adapter.execute(sql)
+    data = layer.sql("select accounts.id, accounts.budget from accounts order by accounts.id")
+    assert layer.last_engine_selection == {"engine": layer.engine, "reason": None}
     assert [column[0] for column in data.description] == ["id", "budget"]
     assert data.fetchall() == [(101, 10), (201, 20)]
 
@@ -168,9 +164,8 @@ def test_compound_computed_keys_join_componentwise(layer):
 )
 def test_unsafe_key_expressions_are_rejected(layer, expression):
     layer.graph.models["accounts"].dimensions[0].sql = expression
-    with pytest.raises(UnsupportedSemanticFeaturesError) as caught:
+    with pytest.raises(ValueError, match="dimension.computed_key_expression"):
         layer.compile(metrics=["accounts.budget"])
-    assert "dimension.computed_key_expression" in caught.value.capabilities
 
 
 def test_disconnected_computed_model_does_not_block_temporal_query(layer):

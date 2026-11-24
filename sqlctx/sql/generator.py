@@ -1028,6 +1028,22 @@ class SQLGenerator:
         """Build a quoted reference to a CTE column."""
         return f"{self._quote_identifier(self._cte_name(model_name))}.{self._quote_identifier(column_name)}"
 
+    def _key_projection_name(self, model_name: str, column: str) -> str:
+        """Keep time identity separate from its default display bucket."""
+        model = self.graph.get_model(model_name)
+        dimension = model.get_dimension(column)
+        if dimension is None or dimension.type != "time" or not dimension.granularity:
+            return column
+        occupied = {field.name.lower() for field in [*model.dimensions, *model.metrics]}
+        occupied.update(key.lower() for key in model.primary_key_columns)
+        name = f"__sqlctx_identity_{column}"
+        while name.lower() in occupied:
+            name = "_" + name
+        return name
+
+    def _key_cte_ref(self, model_name: str, column: str) -> str:
+        return self._cte_ref(model_name, self._key_projection_name(model_name, column))
+
     def _custom_join_condition(self, join_path) -> str:
         """Render a relationship custom SQL join condition for generated CTE names."""
         from_alias = self._quote_identifier(self._cte_name(join_path.from_model))
@@ -2647,23 +2663,43 @@ class SQLGenerator:
                 return sql_expr.replace("{model}", model_table_alias)
             return sql_expr.replace("{model}.", "")
 
-        def add_passthrough_column(column: str) -> None:
-            if column not in columns_added:
-                dimension = model.get_dimension(column) if (model.metadata or {}).get("ossie_source_kind") else None
-                if dimension is not None:
-                    self._ensure_sql_dimension(model_name, dimension)
-                    expression = replace_model_placeholder(self._dimension_base_expr(dimension))
-                else:
-                    expression = self._quote_identifier(column)
-                select_cols.append(f"{expression} AS {self._quote_alias(column)}")
-                columns_added.add(column)
+        def key_source(column: str) -> str:
+            dimension = model.get_dimension(column)
+            if dimension is None:
+                return self._quote_identifier(column)
+            self._ensure_sql_dimension(model_name, dimension)
+            if dimension.sql_expr == column and not dimension.window:
+                return self._quote_identifier(column)
+            source = replace_outside_sql_protected(dimension.sql_expr, "{model}", self._quote_identifier(model.name))
+            tree = _parse_fragment(source, self.dialect)
+            inputs = list(tree.find_all(exp.Column))
+            if (
+                dimension.window
+                or not inputs
+                or tree.find(exp.AggFunc, exp.Window, exp.Query, exp.Rand)
+                or any(col.table not in ("", model.name, model_name) or col.db or col.catalog for col in inputs)
+            ):
+                raise QueryValidationError(
+                    f"Invalid row identity for {model_name}.{column} (dimension.computed_key_expression)"
+                )
+            for col in inputs:
+                col.set("table", None)
+            return tree.sql(dialect=self.dialect)
+
+        def add_key_column(column: str) -> None:
+            alias = self._key_projection_name(model_name, column)
+            if alias not in columns_added:
+                select_cols.append(f"{key_source(column)} AS {self._quote_alias(alias)}")
+                columns_added.add(alias)
 
         # Cross joins do not need keys for the join predicate, but exact fan-out aggregation
         # still de-duplicates metric rows by their entity key after the Cartesian product.
         include_primary_keys = needs_keyed_joins or needs_cross_fanout_key or ungrouped or bool(model.sql)
-        if include_primary_keys:
-            for pk_col in model.primary_key_columns:
-                add_passthrough_column(pk_col)
+        for pk_col in model.primary_key_columns:
+            if include_primary_keys:
+                add_key_column(pk_col)
+            elif model.get_dimension(pk_col) is not None:
+                key_source(pk_col)  # Validate a declared identity even when this projection omits it.
 
         # Include local relationship keys if we're joining OR if they're explicitly requested as dimensions
         for relationship in model.relationships:
@@ -2679,9 +2715,10 @@ class SQLGenerator:
                     # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
                     should_include = (needs_keyed_joins and target_instance in all_models) or fk in needed_dimensions
                     if should_include and fk not in columns_added:
-                        add_passthrough_column(fk)
+                        add_key_column(fk)
                         # Mark FK as "needed" so it's not duplicated as a dimension
-                        needed_dimensions.discard(fk)
+                        if self._key_projection_name(model_name, fk) == fk:
+                            needed_dimensions.discard(fk)
             elif (
                 needs_keyed_joins
                 and target_instance in all_models
@@ -2692,7 +2729,7 @@ class SQLGenerator:
                 # model's declared primary key, so projecting the model PK alone would omit it.
                 local_keys = _relationship_local_key_columns(model, relationship)
                 for pk in local_keys:
-                    add_passthrough_column(pk)
+                    add_key_column(pk)
             elif (
                 needs_keyed_joins
                 and target_instance in all_models
@@ -2705,7 +2742,7 @@ class SQLGenerator:
                 # be its declared primary key), so that exact column must be projected. The legacy
                 # shape (no target key) joins on the model primary key, already projected above.
                 for fk in relationship.foreign_key_columns:
-                    add_passthrough_column(fk)
+                    add_key_column(fk)
 
         # Check if other models have has_many/has_one pointing to this model
         if needs_keyed_joins:
@@ -2726,13 +2763,13 @@ class SQLGenerator:
                         # Other model expects this model to have a foreign key
                         # For has_many/has_one, foreign_key is the FK column in THIS model
                         for fk in other_join.foreign_key_columns:
-                            add_passthrough_column(fk)
+                            add_key_column(fk)
                     elif target_instance == model_name and other_join.type == "many_to_one":
                         target_keys = (
                             other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
                         )
                         for pk in target_keys:
-                            add_passthrough_column(pk)
+                            add_key_column(pk)
                     elif (
                         target_instance == model_name
                         and other_join.type == "many_to_many"
@@ -2745,7 +2782,7 @@ class SQLGenerator:
                             other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
                         )
                         for pk in related_keys:
-                            add_passthrough_column(pk)
+                            add_key_column(pk)
 
             for other_model_name, other_model in self.graph.models.items():
                 if other_model_name not in all_models:
@@ -2755,9 +2792,8 @@ class SQLGenerator:
                         continue
                     junction_self_fks, junction_related_fks = other_join.junction_key_columns()
                     for fk in (*junction_self_fks, *junction_related_fks):
-                        if fk and fk not in columns_added:
-                            select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
-                            columns_added.add(fk)
+                        if fk:
+                            add_key_column(fk)
 
         # Add only needed dimension columns
         for dimension in model.dimensions:
@@ -2974,13 +3010,11 @@ class SQLGenerator:
                     pk_cols = model.primary_key_columns
                     self._require_primary_key(model.name, pk_cols, "for a primary-key count-distinct")
                     if len(pk_cols) == 1:
-                        base_sql = self._quote_identifier(pk_cols[0])
+                        base_sql = key_source(pk_cols[0])
                     else:
                         # For composite keys, concatenate columns for uniqueness
                         base_sql = (
-                            "CONCAT("
-                            + ", '|', ".join(f"CAST({self._quote_identifier(c)} AS VARCHAR)" for c in pk_cols)
-                            + ")"
+                            "CONCAT(" + ", '|', ".join(f"CAST({key_source(c)} AS VARCHAR)" for c in pk_cols) + ")"
                         )
                 else:
                     base_sql = replace_model_placeholder(measure.sql_expr)
@@ -3807,7 +3841,7 @@ class SQLGenerator:
                     )
 
                 join_conditions = [
-                    self._cte_ref(jp.from_model, fk) + " = " + self._cte_ref(jp.to_model, pk)
+                    self._key_cte_ref(jp.from_model, fk) + " = " + self._key_cte_ref(jp.to_model, pk)
                     for fk, pk in zip(jp.from_columns, jp.to_columns)
                 ]
                 join_cond = " AND ".join(join_conditions)
@@ -4055,7 +4089,7 @@ class SQLGenerator:
             )
         for pk_col, internal_name in zip(model.primary_key_columns, pk_internal_names, strict=True):
             inner_select_exprs.append(
-                f"{self._cte_ref(metric_model_name, pk_col)} AS {self._quote_alias(internal_name)}"
+                f"{self._key_cte_ref(metric_model_name, pk_col)} AS {self._quote_alias(internal_name)}"
             )
         for (_metric_ref, measure), internal_name in zip(leaf_metrics, metric_internal_names, strict=True):
             if getattr(measure, "sql_is_complete", False):
@@ -4735,12 +4769,12 @@ class SQLGenerator:
                             )
                             # For composite keys, concatenate columns for hashing
                             if len(pk_cols) == 1:
-                                pk = self._cte_ref(model_name, pk_cols[0])
+                                pk = self._key_cte_ref(model_name, pk_cols[0])
                             else:
                                 pk = (
                                     "CONCAT("
                                     + ", '|', ".join(
-                                        f"CAST({self._cte_ref(model_name, c)} AS VARCHAR)" for c in pk_cols
+                                        f"CAST({self._key_cte_ref(model_name, c)} AS VARCHAR)" for c in pk_cols
                                     )
                                     + ")"
                                 )

@@ -59,6 +59,69 @@ def call(query=None, source=None, sql=None, context=None, error=False):
     return result if error else result[0]["sql"]
 
 
+def test_computed_time_identity_stays_unbucketed_for_join_and_fanout():
+    source = {
+        "version": 1,
+        "input_dialect": "duckdb",
+        "models": [
+            {
+                "name": "events",
+                "sql": """
+                    select * from (values
+                        ('2026-01-01 01:00:00', 3), ('2026-01-01 02:00:00', 4),
+                        ('2026-01-02 01:00:00', 8)
+                    ) events(raw_time, amount)
+                """,
+                "primary_key": "event_time",
+                "dimensions": [
+                    {
+                        "name": "event_time",
+                        "type": "time",
+                        "granularity": "day",
+                        "sql": "cast(raw_time as timestamp)",
+                    }
+                ],
+                "metrics": [
+                    {"name": "amount", "agg": "sum", "sql": "amount"},
+                    {"name": "people", "agg": "count_distinct"},
+                ],
+            },
+            {
+                "name": "logs",
+                "sql": """
+                    select * from (values
+                        (1, '2026-01-01 01:00:00', 'x'), (2, '2026-01-01 01:00:00', 'x'),
+                        (3, '2026-01-01 02:00:00', 'x'), (4, '2026-01-02 01:00:00', 'y')
+                    ) logs(id, raw_time, category)
+                """,
+                "primary_key": "id",
+                "dimensions": [
+                    {
+                        "name": "event_ref",
+                        "type": "time",
+                        "granularity": "day",
+                        "sql": "cast(raw_time as timestamp)",
+                    },
+                    {"name": "category", "type": "categorical"},
+                ],
+                "relationships": [{"name": "events", "type": "many_to_one", "foreign_key": "event_ref"}],
+            },
+        ],
+    }
+    compiled = call(
+        source=source,
+        query={
+            "metrics": ["events.amount", "events.people"],
+            "dimensions": ["events.event_time__day", "logs.category"],
+            "order_by": ["events.event_time__day", "logs.category"],
+        },
+    )
+    assert execute(compiled) == [
+        {"event_time__day": "2026-01-01", "category": "x", "amount": "7", "people": 2},
+        {"event_time__day": "2026-01-02", "category": "y", "amount": "8", "people": 1},
+    ]
+
+
 def test_retention_table_keeps_inactive_cohort_members_in_denominator():
     source = {
         "version": 1,

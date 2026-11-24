@@ -97,11 +97,7 @@ def test_snapshot_computed_population_and_null_unmatched_group(layer):
     }
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
 def test_special_routes_evaluate_computed_keys_instead_of_shadow_columns(layer):
-    # Python currently projects relationship keys as physical columns. The
-    # shared fixtures above qualify population parity; this Rust contract also
-    # proves that computed keys survive special-route recursion.
     layer.adapter.execute("update accounts set key = 999; update events set account_key = 999")
     test_independent_computed_populations_include_empty_anchor(layer)
     test_cumulative_computed_population_excludes_orphans_and_hidden_rows(layer)

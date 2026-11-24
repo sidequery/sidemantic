@@ -1146,6 +1146,15 @@ pub extern "C" fn sqlctx_snapshot_list_models(snapshot: *const c_char) -> Sqlctx
                     .chain(model.metrics.into_iter().map(|field| field.name))
                     .chain(model.segments.into_iter().map(|field| field.name))
                     .collect();
+                for (owner, field) in snapshot
+                    .metrics
+                    .iter()
+                    .filter_map(crate::adapters::ossie::dataset_metric_field)
+                {
+                    if owner == model.name {
+                        fields.push(field.to_owned());
+                    }
+                }
                 fields.sort();
                 fields.dedup();
                 let fields: Vec<CString> = fields

@@ -132,6 +132,13 @@ impl Adapter for OsiAdapter {
             parse_semantic_model(sm_def, &mut doc)?;
         }
 
+        if root.get("version").and_then(Json::as_str) == Some("0.1.1") {
+            for metric in &mut doc.graph_metrics {
+                // A released model metric may combine aggregates at several dataset grains.
+                metric.metadata.get_or_insert_with(|| serde_json::json!({}))["osi_model_metric"] =
+                    Json::Bool(true);
+            }
+        }
         let mut graph_metadata = JsonMap::new();
         graph_metadata.insert("osi".to_string(), Json::Object(osi_meta));
         doc.metadata = Some(Json::Object(graph_metadata));

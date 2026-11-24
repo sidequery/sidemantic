@@ -1424,7 +1424,8 @@ impl<'a> SqlGenerator<'a> {
         metric: &Metric,
         visiting: &mut HashSet<String>,
     ) -> Result<Vec<String>> {
-        if self.graph.has_strict_metric_scope() {
+        if self.graph.has_strict_metric_scope() || aggregate_plan::is_osi_model_calculation(metric)
+        {
             return self.strict_graph_metric_owners(reference, metric, visiting);
         }
         let mut owners = HashSet::new();

@@ -39,11 +39,20 @@ struct Plan<'a, 'g> {
     inline_aggregates: bool,
 }
 
+pub(super) fn is_osi_model_calculation(metric: &Metric) -> bool {
+    metric.r#type == MetricType::Derived
+        && metric
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata["osi_model_metric"].as_bool() == Some(true))
+}
+
 pub(super) fn has_logical_inputs(metric: &Metric) -> bool {
     metric
         .metadata
         .as_ref()
         .is_some_and(|metadata| metadata.get("ossie_expression_dialect").is_some())
+        || is_osi_model_calculation(metric)
 }
 
 fn unsupported(capability: &str) -> SqlctxError {
@@ -625,7 +634,15 @@ pub(super) fn try_generate(
     generator: &SqlGenerator<'_>,
     query: &SemanticQuery,
 ) -> Result<Option<String>> {
-    if !generator.graph.has_strict_metric_scope() || query.metrics.is_empty() {
+    let has_osi_calculation = query.metrics.iter().any(|reference| {
+        generator
+            .graph
+            .get_metric(reference)
+            .is_some_and(is_osi_model_calculation)
+    });
+    if query.metrics.is_empty()
+        || (!generator.graph.has_strict_metric_scope() && !has_osi_calculation)
+    {
         return Ok(None);
     }
     let mut plan = Plan {

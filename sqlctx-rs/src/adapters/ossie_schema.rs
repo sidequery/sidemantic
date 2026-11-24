@@ -10,10 +10,11 @@ use super::ossie::{diagnostic, OssieDiagnostic, OssieProfile};
 const LEGACY: &str = include_str!("../../schemas/ossie/0.2.0.dev0.json");
 const CURRENT: &str = include_str!("../../schemas/ossie/0.2.0.dev0-b6c702e.json");
 const LATEST: &str = include_str!("../../schemas/ossie/0.2.0.dev0-172a3e5.json");
+const DRAFT: &str = include_str!("../../schemas/ossie/0.3.0.dev0-d27a6be.json");
 const STABLE: &str = include_str!("../../schemas/ossie/0.1.1.json");
 
 static SCHEMAS: Lazy<Vec<Result<Value, String>>> = Lazy::new(|| {
-    [STABLE, LEGACY, CURRENT, LATEST]
+    [STABLE, LEGACY, CURRENT, LATEST, DRAFT]
         .iter()
         .map(|text| {
             let schema: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
@@ -25,6 +26,7 @@ static SCHEMAS: Lazy<Vec<Result<Value, String>>> = Lazy::new(|| {
 
 fn schema(profile: &OssieProfile) -> &Result<Value, String> {
     &SCHEMAS[match profile.schema_revision.as_deref() {
+        Some(super::ossie::DRAFT_SCHEMA_REVISION) => 4,
         Some(super::ossie::LATEST_SCHEMA_REVISION) => 3,
         Some(super::ossie::CURRENT_SCHEMA_REVISION) => 2,
         _ if profile.validation_schema_version == "0.1.1" => 0,
@@ -39,7 +41,7 @@ fn check_schema(schema: &Value, root: &Value) -> Result<(), String> {
     for (key, value) in object {
         match key.as_str() {
             "$schema" | "$id" | "title" | "description" | "examples" | "deprecated" | "type"
-            | "const" | "enum" | "required" | "minLength" | "minItems" => {}
+            | "const" | "enum" | "required" | "minLength" | "minItems" | "uniqueItems" => {}
             "$ref" => {
                 let reference = value
                     .as_str()
@@ -146,6 +148,19 @@ fn evaluate(
         }
     }
     if let Some(items) = value.as_array() {
+        if schema.get("uniqueItems") == Some(&Value::Bool(true))
+            && items
+                .iter()
+                .enumerate()
+                .any(|(index, item)| items[..index].contains(item))
+        {
+            errors.push(diagnostic(
+                "ossie.schema.unique_items",
+                "Array items must be unique.",
+                path,
+                None,
+            ));
+        }
         if let Some(min) = schema.get("minItems").and_then(Value::as_u64) {
             if items.len() < min as usize {
                 errors.push(diagnostic(
@@ -250,7 +265,7 @@ mod tests {
     use super::*;
     #[test]
     fn every_pinned_logical_assertion_and_reference_is_supported() {
-        for text in [STABLE, LEGACY, CURRENT, LATEST] {
+        for text in [STABLE, LEGACY, CURRENT, LATEST, DRAFT] {
             let schema: Value = serde_json::from_str(text).unwrap();
             check_schema(&schema, &schema).unwrap();
         }

@@ -6,7 +6,6 @@ use polyglot_sql::expressions::Column;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-const REVISION: &str = "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1";
 fn fail(code: &str, message: impl std::fmt::Display) -> SqlctxError {
     SqlctxError::YardstickBinding(format!("{code}: {message}"))
 }
@@ -200,10 +199,11 @@ impl SqlGenerator<'_> {
     pub(super) fn uses_latest_ossie(&self) -> bool {
         self.graph.models().next().is_some()
             && self.graph.models().all(|m| {
-                m.metadata
-                    .as_ref()
-                    .and_then(|v| v["ossie_schema_revision"].as_str())
-                    == Some(REVISION)
+                crate::adapters::ossie::supports_dataset_metrics(
+                    m.metadata
+                        .as_ref()
+                        .and_then(|v| v["ossie_schema_revision"].as_str()),
+                )
             })
     }
     pub(super) fn generate_latest_ossie(&self, query: &SemanticQuery) -> Result<String> {
@@ -247,7 +247,9 @@ impl SqlGenerator<'_> {
                 .collect::<Vec<_>>()
         };
         let mut request = serde_json::json!({"dimensions": entries(&query.dimensions, "field"), "metrics": entries(&query.metrics, "metric")});
-        if !query.filters.is_empty() {
+        if let [filter] = query.filters.as_slice() {
+            request["filter"] = filter.clone().into();
+        } else if !query.filters.is_empty() {
             request["filter"] = query
                 .filters
                 .iter()
@@ -576,7 +578,7 @@ impl<'a, 'g> Planner<'a, 'g> {
                 stored_dialect(&metric.metadata, DialectType::DuckDB)?,
             )?)?;
             let begin = self.components.len();
-            if nested_aggregate(&value, false) {
+            if !contains_kind(&value, is_window) && nested_aggregate(&value, false) {
                 metric_errors.push((
                     1,
                     "E_INVALID_QUERY",

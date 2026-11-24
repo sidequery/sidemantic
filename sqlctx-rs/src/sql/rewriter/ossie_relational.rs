@@ -3250,12 +3250,13 @@ fn preprocess_measure_syntax(source: &str) -> Result<String> {
 impl QueryRewriter<'_> {
     fn has_ossie_relational_models(&self) -> bool {
         self.graph.models().any(|model| {
-            model
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.get("ossie_schema_revision"))
-                .and_then(Value::as_str)
-                == Some(crate::adapters::ossie::LATEST_SCHEMA_REVISION)
+            crate::adapters::ossie::supports_dataset_metrics(
+                model
+                    .metadata
+                    .as_ref()
+                    .and_then(|meta| meta.get("ossie_schema_revision"))
+                    .and_then(Value::as_str),
+            )
         }) || self.graph.metrics().any(|metric| {
             metric
                 .metadata

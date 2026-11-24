@@ -2297,7 +2297,7 @@ def test_wrapped_preaggregation_preserves_projection_alias_and_order(semantic_la
     assert explanation.chosen_plan == "single_model_preaggregation"
     assert explanation.aliases == {"orders.revenue": "total_revenue"}
     assert "SUM(revenue_raw) AS total_revenue" in explanation.rewritten_sql
-    assert "ORDER BY total_revenue DESC" in explanation.rewritten_sql
+    assert 'ORDER BY "total_revenue" DESC' in explanation.rewritten_sql
 
 
 def test_wrapped_fanout_strategy_selection(semantic_layer):

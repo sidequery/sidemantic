@@ -122,6 +122,52 @@ def test_computed_time_identity_stays_unbucketed_for_join_and_fanout():
     ]
 
 
+@pytest.mark.parametrize("rewrite", [False, True])
+@pytest.mark.parametrize("suffix", ["", " ASC NULLS LAST", " DESC NULLS FIRST"])
+def test_fanout_null_ordering_precedes_pagination(rewrite, suffix):
+    source = {
+        "version": 1,
+        "input_dialect": "duckdb",
+        "models": [
+            {
+                "name": "facts",
+                "sql": "select * from (values (1, 10), (2, 20), (3, 30)) facts(id, amount)",
+                "primary_key": "id",
+                "metrics": [{"name": "total", "agg": "sum", "sql": "amount"}],
+                "relationships": [{"name": "items", "type": "one_to_many", "foreign_key": "fact_id"}],
+            },
+            {
+                "name": "items",
+                "sql": """
+                    select * from (values (1, 1, NULL), (2, 1, NULL), (3, 2, 'a'), (4, 3, 'b'))
+                    items(id, fact_id, label)
+                """,
+                "primary_key": "id",
+                "dimensions": [{"name": "label", "type": "categorical"}],
+            },
+        ],
+    }
+    if rewrite:
+        compiled = call(
+            source=source,
+            sql=f"select items.label, facts.total from metrics order by label{suffix} limit 1",
+            context={},
+        )
+    else:
+        compiled = call(
+            source=source,
+            query={
+                "metrics": ["facts.total"],
+                "dimensions": ["items.label"],
+                "order_by": ["items.label" + suffix],
+                "limit": 1,
+            },
+        )
+    # Structured queries default to NULLS FIRST; semantic SQL keeps DuckDB's NULLS LAST.
+    nulls_first = suffix.endswith("FIRST") or (not rewrite and not suffix)
+    assert execute(compiled) == [{"label": None, "total": "10"} if nulls_first else {"label": "a", "total": "20"}]
+
+
 def test_retention_table_keeps_inactive_cohort_members_in_denominator():
     source = {
         "version": 1,

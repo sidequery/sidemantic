@@ -477,6 +477,14 @@ class QueryRewriter:
             # In non-strict mode, pass through non-SELECT queries
             return cache_result(sql)
 
+        # Check the original scopes before recursive rewrites remove semantic
+        # aliases or an island optimizer leaves an unsupported scope untouched.
+        for select in parsed.find_all(exp.Select):
+            semantic_sources = self._source_aliases(select)
+            if semantic_sources:
+                for clause in self._current_select_clause_expressions(select):
+                    self._validate_subquery_correlations(clause, semantic_sources)
+
         if isinstance(parsed, exp.SetOperation):
             if not self._expression_tree_references_semantic_model(parsed):
                 return cache_result(sql)
@@ -544,7 +552,7 @@ class QueryRewriter:
             return expression
 
         rewritten = expression.copy()
-        for column in rewritten.find_all(exp.Column):
+        for column in self._columns_without_nested_scopes(rewritten):
             if column.table in aliases:
                 column.set("table", exp.to_identifier(aliases[column.table]))
         return rewritten
@@ -1823,10 +1831,8 @@ class QueryRewriter:
                 (name for name, visible_ref in visible_name_to_ref.items() if visible_ref == ref),
                 expression.name,
             )
-            if isinstance(order_expr, exp.Ordered) and order_expr.args.get("desc", False):
-                order_name = f"{order_name} DESC"
-            elif isinstance(order_expr, exp.Ordered):
-                order_name = f"{order_name} ASC"
+            if isinstance(order_expr, exp.Ordered):
+                order_name = self._semantic_order_field(order_name, order_expr)
             order_by.append(order_name)
 
         return order_by
@@ -2591,10 +2597,8 @@ class QueryRewriter:
             order_name = next(
                 (name for name, visible_ref in visible_name_to_ref.items() if visible_ref == ref), column_name
             )
-            if isinstance(order_expr, exp.Ordered) and order_expr.args.get("desc", False):
-                order_name = f"{order_name} DESC"
-            elif isinstance(order_expr, exp.Ordered):
-                order_name = f"{order_name} ASC"
+            if isinstance(order_expr, exp.Ordered):
+                order_name = self._semantic_order_field(order_name, order_expr)
             order_by.append(order_name)
 
         return order_by
@@ -2756,6 +2760,9 @@ class QueryRewriter:
 
         self.inferred_table = self._extract_from_table(parsed)
         self.table_aliases = self._source_aliases(parsed)
+
+        for clause in self._current_select_clause_expressions(parsed):
+            self._validate_subquery_correlations(clause, self.table_aliases)
 
         if self._needs_expression_postprocess(parsed):
             raise ValueError("Semantic expression queries cannot be represented as a simple rewrite plan")
@@ -6543,6 +6550,29 @@ class QueryRewriter:
         plan = self._plan_simple_query(parsed, include_candidate_details=False)
         return self._generate_from_plan(plan, parsed)
 
+    def _validate_subquery_correlations(self, expression: exp.Expression, semantic_sources: dict[str, str]) -> None:
+        """Reject dangling semantic qualifiers without rebinding nested SQL scopes."""
+
+        def visit(node: exp.Expression, local_sources: set[str], nested: bool) -> None:
+            if isinstance(node, exp.Select):
+                local_sources = local_sources.copy()
+                from_clause = node.args.get("from_")
+                sources = ([from_clause.this] if from_clause else []) + [
+                    join.this for join in node.args.get("joins") or []
+                ]
+                local_sources.update(source.alias_or_name for source in sources if source.alias_or_name)
+                nested = True
+            if isinstance(node, exp.Column) and nested:
+                if node.table in semantic_sources and node.table not in local_sources:
+                    raise ValueError(
+                        f"Correlated subquery references semantic source '{node.table}'; "
+                        "correlated semantic subqueries are not supported"
+                    )
+            for child in node.iter_expressions():
+                visit(child, local_sources, nested)
+
+        visit(expression, set(), False)
+
     def _validate_explicit_semantic_joins(self, select: exp.Select) -> list[str]:
         """Allow explicit joins only when they point at modeled semantic relationships."""
         from_clause = select.args.get("from_")
@@ -6799,6 +6829,10 @@ class QueryRewriter:
             rewritten = expression.copy()
 
             def replace_node(node: exp.Expression) -> exp.Expression:
+                if isinstance(node, (exp.Select, exp.Subquery)):
+                    # A replacement copy stops SQLGlot's transform from entering
+                    # the nested scope, whose physical bindings must survive.
+                    return node.copy()
                 if isinstance(node, exp.AggFunc):
                     return exp.column(add_adhoc_metric(node))
                 if isinstance(node, exp.Column):
@@ -7112,6 +7146,17 @@ class QueryRewriter:
 
         return filters
 
+    @staticmethod
+    def _semantic_order_field(name: str, order: exp.Ordered) -> str:
+        descending = bool(order.args.get("desc"))
+        suffix = "DESC" if descending else "ASC"
+        # SQLGlot resolves the source dialect's default. Structured queries
+        # sort NULL low, so preserve SQL ordering when those defaults differ.
+        nulls_first = order.args.get("nulls_first")
+        if nulls_first is not None and nulls_first == descending:
+            suffix += " NULLS FIRST" if nulls_first else " NULLS LAST"
+        return f"{name} {suffix}"
+
     def _extract_order_by(self, select: exp.Select) -> list[str] | None:
         """Extract ORDER BY clause.
 
@@ -7129,9 +7174,8 @@ class QueryRewriter:
             # Get column (might have ASC/DESC)
             if isinstance(order_expr, exp.Ordered):
                 column = self._normalize_source_aliases(order_expr.this)
-                desc = order_expr.args.get("desc", False)
                 col_name = self._get_column_name(column)
-                order_expressions.append(f"{col_name} {'DESC' if desc else 'ASC'}")
+                order_expressions.append(self._semantic_order_field(col_name, order_expr))
             else:
                 col_name = self._get_column_name(self._normalize_source_aliases(order_expr))
                 order_expressions.append(col_name)

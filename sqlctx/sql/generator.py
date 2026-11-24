@@ -8195,23 +8195,18 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
         if order_by:
             order_clauses = []
             for field in order_by:
-                parts = field.rsplit(" ", 1)
-                direction = ""
-                field_ref = field
-                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
-                    field_ref = parts[0]
-                    direction = f" {parts[1].upper()}"
+                field_ref, suffix = split_order_field(field, [*output_names, *output_names.values()])
                 field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
                 output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
                 # Unmatched join keys add a NULL dimension group; order it as
                 # raw planning does instead of by the database default. The
                 # target dialect renders or emulates the NULL placement.
-                descending = direction == " DESC"
+                descending = suffix.startswith("DESC")
                 order_clauses.append(
                     exp.Ordered(
                         this=exp.column(output_name, quoted=True),
                         desc=descending,
-                        nulls_first=not descending,
+                        nulls_first=suffix.endswith("NULLS FIRST") if "NULLS" in suffix else not descending,
                     )
                 )
             order_by_clause = "\n" + exp.Order(expressions=order_clauses).sql(dialect=self.dialect)
@@ -8589,17 +8584,19 @@ LEFT JOIN (
         if order_by:
             order_clauses = []
             for field in order_by:
-                parts = field.rsplit(" ", 1)
-                direction = ""
-                field_ref = field
-                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
-                    field_ref = parts[0]
-                    direction = f" {parts[1].upper()}"
-
+                field_ref, suffix = split_order_field(field, [*output_names, *output_names.values()])
                 field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
                 output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
-                order_clauses.append(f"{self._quote_alias(output_name)}{direction}")
-            order_by_clause = f"\nORDER BY {', '.join(order_clauses)}"
+                order_clauses.append(
+                    exp.Ordered(
+                        this=exp.column(output_name, quoted=True),
+                        desc=suffix.startswith("DESC"),
+                        nulls_first=suffix.endswith("NULLS FIRST")
+                        if "NULLS" in suffix
+                        else not suffix.startswith("DESC"),
+                    )
+                )
+            order_by_clause = "\n" + exp.Order(expressions=order_clauses).sql(dialect=self.dialect)
 
         # Build LIMIT/OFFSET clause
         limit_clause = ""

@@ -1,0 +1,69 @@
+{
+  "data_variant": 0,
+  "family": "base",
+  "features": [
+    "explicit_null_order",
+    "limit"
+  ],
+  "index": 22,
+  "metrics": [],
+  "models": [
+    {
+      "dimensions": [
+        {
+          "name": "category",
+          "type": "categorical"
+        }
+      ],
+      "metrics": [
+        {
+          "agg": "count",
+          "name": "rows"
+        }
+      ],
+      "name": "facts",
+      "primary_key": "id",
+      "table": "generated_facts"
+    }
+  ],
+  "query": {
+    "dimensions": [
+      "facts.category"
+    ],
+    "limit": 1,
+    "metrics": [
+      "facts.rows"
+    ],
+    "order_by": [
+      "facts.category ASC NULLS LAST"
+    ]
+  },
+  "rewrite_shape": "direct",
+  "seed": 20261005,
+  "tables": [
+    {
+      "columns": [
+        [
+          "id",
+          "integer"
+        ],
+        [
+          "category",
+          "varchar"
+        ]
+      ],
+      "name": "generated_facts",
+      "rows": [
+        [
+          1,
+          null
+        ],
+        [
+          2,
+          "a"
+        ]
+      ]
+    }
+  ],
+  "version": 1
+}

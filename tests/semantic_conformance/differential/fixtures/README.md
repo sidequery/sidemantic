@@ -12,6 +12,7 @@ that every feature remains after reduction. Replay uses the stored case directly
 | `cross-source-cumulative.case.json` | A cross-source scalar calculation beside a cumulative metric retains independent grouped source totals. Rust rejected the graph calculation as if it required one owner. | `test_cross_source_windows.py` |
 | `cumulative-dimension-collision.case.json` | Window inputs must use the grouped aliases for both sibling labels. Both engines referenced missing `base.label` instead of `base.items_label` and `base.refunds_label`. | `test_cross_source_windows.py` |
 | `absent-local-calculation.case.json` | A model-local scalar formula uses count zero and metric defaults for a group introduced by another source. Python computed the formula before the full join and returned NULL instead. | `test_absent_counts.py` |
+| `rewrite-null-order.case.json` | A nullable grouping column sorted ascending with NULLS LAST must return the non-null group under LIMIT 1. Python semantic SQL discarded the parsed NULL placement. | `test_source_null_ordering.py` |
 
 The initial reductions were budgeted and preserve the original failure class;
 they are not claims of globally minimal inputs. Their independent result tests

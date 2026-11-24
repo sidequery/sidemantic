@@ -119,3 +119,20 @@ def test_semantic_sql_limit_uses_duckdb_null_order(layer, suffix):
     assert layer.last_engine_selection == {"engine": layer.engine, "reason": None}
     assert [column[0] for column in cursor.description] == ["label", "total"]
     assert cursor.fetchall() == ([(None, 10)] if suffix.endswith("FIRST") else [("a", None)])
+
+
+def test_minimized_four_route_nullable_limit():
+    from tests.semantic_conformance.differential.harness import Case, DifferentialRunner
+
+    pytest.importorskip("sqlctx_rs")
+    case = Case.read(Path(__file__).parent / "differential" / "fixtures" / "rewrite-null-order.case.json")
+    runner = DifferentialRunner()
+    try:
+        outcome = runner.evaluate(case)
+        assert outcome.failure_class is None
+        assert set(outcome.routes()) == {"python", "rust", "python_rewrite", "rust_rewrite"}
+        for result in outcome.routes().values():
+            assert result.columns == ["category", "rows"]
+            assert result.rows == [("a", 1)]
+    finally:
+        runner.close()

@@ -10,6 +10,8 @@
 #cmakedefine01 SQLCTX_INSERT_QUERY_NODE
 #cmakedefine01 SQLCTX_BOUND_TABLE_FUNCTION
 #cmakedefine01 SQLCTX_GRAMMAR_EXTENSION_LIST
+#cmakedefine01 SQLCTX_ARENA_TRANSFORM
+#cmakedefine01 SQLCTX_SHELL_GRAMMAR_CONTEXT
 
 #include "duckdb/parser/parser_options.hpp"
 #if SQLCTX_NEW_IDENTIFIER_API

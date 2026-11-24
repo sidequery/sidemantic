@@ -3,6 +3,9 @@
 #if SQLCTX_GRAMMAR_EXTENSION
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/database.hpp"
+#if SQLCTX_SHELL_GRAMMAR_CONTEXT
+#include "duckdb/main/client_config.hpp"
+#endif
 #include "duckdb/parser/grammar_extension.hpp"
 #include "duckdb/parser/peg/compiled_grammar.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
@@ -33,7 +36,27 @@ public:
     string ToString() const override { return "semantic definition property"; }
 };
 
-static unique_ptr<TransformResultValue> TransformDefinition(PEGTransformer &transformer, ParseResult &result) {
+// Released DuckDB 2.0 owns transform results and processes in its parser arena.
+static auto StatementResult(PEGTransformer &transformer, unique_ptr<SQLStatement> statement) {
+#if SQLCTX_ARENA_TRANSFORM
+    return transformer.MakeResult<unique_ptr<SQLStatement>>(std::move(statement));
+#else
+    unique_ptr<TransformResultValue> result =
+        make_uniq<TypedTransformResult<unique_ptr<SQLStatement>>>(std::move(statement));
+    return result;
+#endif
+}
+
+template <typename Finalizer>
+static auto StartFinalizer(PEGTransformer &transformer, ParseResult &result, Finalizer finalize) {
+#if SQLCTX_ARENA_TRANSFORM
+    return transformer.MakeProcess<FinalizeTransformProcess>(transformer, result, finalize);
+#else
+    return make_uniq<FinalizeTransformProcess>(transformer, result, finalize);
+#endif
+}
+
+static auto TransformDefinition(PEGTransformer &transformer, ParseResult &result) {
     auto location = result.GetLocation();
     string source(location.length, ' ');
     // Preserve token positions and quoted source; comments are intentionally
@@ -49,22 +72,22 @@ static unique_ptr<TransformResultValue> TransformDefinition(PEGTransformer &tran
     }
     auto definition = ParseSqlctxDefinition(source);
     if (!definition) throw InternalException("sqlctx grammar produced an invalid declaration");
-    return make_uniq<TypedTransformResult<unique_ptr<SQLStatement>>>(SqlctxStatement(std::move(definition)));
+    return StatementResult(transformer, SqlctxStatement(std::move(definition)));
 }
 
-static unique_ptr<TransformProcess> StartDefinition(PEGTransformer &transformer, ParseResult &result) {
-    return make_uniq<FinalizeTransformProcess>(transformer, result, TransformDefinition);
+static auto StartDefinition(PEGTransformer &transformer, ParseResult &result) {
+    return StartFinalizer(transformer, result, TransformDefinition);
 }
 
-static unique_ptr<TransformResultValue> TransformSemanticQuery(PEGTransformer &transformer, ParseResult &result) {
+static auto TransformSemanticQuery(PEGTransformer &transformer, ParseResult &result) {
     auto &list = result.Cast<ListParseResult>();
     auto &choice = list.Child<ListParseResult>(1).Child<ChoiceParseResult>(0);
     auto statement = transformer.Transform<unique_ptr<SQLStatement>>(choice.GetResult());
-    return make_uniq<TypedTransformResult<unique_ptr<SQLStatement>>>(WrapSqlctxQuery(std::move(statement), true));
+    return StatementResult(transformer, WrapSqlctxQuery(std::move(statement), true));
 }
 
-static unique_ptr<TransformProcess> StartSemanticQuery(PEGTransformer &transformer, ParseResult &result) {
-    return make_uniq<FinalizeTransformProcess>(transformer, result, TransformSemanticQuery);
+static auto StartSemanticQuery(PEGTransformer &transformer, ParseResult &result) {
+    return StartFinalizer(transformer, result, TransformSemanticQuery);
 }
 
 static unique_ptr<SQLStatement> TransformPreparable(PEGTransformer &transformer, ParseResult &result) {
@@ -72,7 +95,7 @@ static unique_ptr<SQLStatement> TransformPreparable(PEGTransformer &transformer,
     return transformer.Transform<unique_ptr<SQLStatement>>(choice.GetResult());
 }
 
-static unique_ptr<TransformResultValue> TransformPrepare(PEGTransformer &transformer, ParseResult &result) {
+static auto TransformPrepare(PEGTransformer &transformer, ParseResult &result) {
     auto &list = result.Cast<ListParseResult>();
     auto statement = make_uniq<PrepareStatement>();
     statement->name = transformer.Transform<Identifier>(list.GetChild(1));
@@ -81,14 +104,14 @@ static unique_ptr<TransformResultValue> TransformPrepare(PEGTransformer &transfo
     statement->statement->has_anonymous_parameters = transformer.has_anonymous_parameters;
     transformer.ClearParameters();
     unique_ptr<SQLStatement> prepared = std::move(statement);
-    return make_uniq<TypedTransformResult<unique_ptr<SQLStatement>>>(std::move(prepared));
+    return StatementResult(transformer, std::move(prepared));
 }
 
-static unique_ptr<TransformProcess> StartPrepare(PEGTransformer &transformer, ParseResult &result) {
-    return make_uniq<FinalizeTransformProcess>(transformer, result, TransformPrepare);
+static auto StartPrepare(PEGTransformer &transformer, ParseResult &result) {
+    return StartFinalizer(transformer, result, TransformPrepare);
 }
 
-static unique_ptr<TransformResultValue> TransformExplain(PEGTransformer &transformer, ParseResult &result) {
+static auto TransformExplain(PEGTransformer &transformer, ParseResult &result) {
     auto &list = result.Cast<ListParseResult>();
     optional<Identifier> analyze;
     auto &analyze_result = list.Child<OptionalParseResult>(1);
@@ -100,11 +123,11 @@ static unique_ptr<TransformResultValue> TransformExplain(PEGTransformer &transfo
     }
     auto inner = TransformPreparable(transformer, list.GetChild(3));
     auto statement = PEGTransformerFactory::TransformExplainStatement(transformer, analyze, options, std::move(inner));
-    return make_uniq<TypedTransformResult<unique_ptr<SQLStatement>>>(WrapSqlctxQuery(std::move(statement)));
+    return StatementResult(transformer, WrapSqlctxQuery(std::move(statement)));
 }
 
-static unique_ptr<TransformProcess> StartExplain(PEGTransformer &transformer, ParseResult &result) {
-    return make_uniq<FinalizeTransformProcess>(transformer, result, TransformExplain);
+static auto StartExplain(PEGTransformer &transformer, ParseResult &result) {
+    return StartFinalizer(transformer, result, TransformExplain);
 }
 
 class SqlctxGrammar final : public GrammarExtension {
@@ -181,6 +204,17 @@ bool ParseSqlctxGrammar(ParserExtensionInfo *info, const string &sql, const Pars
     if (!native.compiled_grammar || native.compiled_grammar == grammar_info->default_grammar) {
         native.compiled_grammar = grammar_info->grammar;
     }
+#if SQLCTX_SHELL_GRAMMAR_CONTEXT
+    else if (native.context) {
+        auto &config = ClientConfig::GetConfig(*native.context);
+        // The 2.0 CLI enables its expression grammar by default. Compose the
+        // two grammars for this parse so bare shell expressions keep working.
+        if (!config.current_dialect && !config.connected_grammar &&
+            config.active_grammar_extensions == vector<string> {"shell"}) {
+            native.compiled_grammar = CompiledGrammar::Create(*native.context, vector<string> {"shell", "sqlctx"});
+        }
+    }
+#endif
     Parser parser(native);
     parser.ParseQuery(sql);
     statements = std::move(parser.statements);

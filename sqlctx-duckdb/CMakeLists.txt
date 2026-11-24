@@ -21,15 +21,15 @@ function(sqlctx_detect_apis)
             parser/expression/columnref_expression.hpp parser/tableref/basetableref.hpp
             parser/parser_options.hpp parser/expression/constant_expression.hpp
             parser/statement/insert_statement.hpp
-            parser/grammar_extension.hpp parser/peg/compiled_grammar.hpp
-            planner/operator/logical_get.hpp)
+            parser/grammar_extension.hpp parser/peg/compiled_grammar.hpp parser/peg/transformer/peg_transformer.hpp
+            planner/operator/logical_get.hpp main/client_config.hpp)
         if(EXISTS "${CMAKE_SOURCE_DIR}/src/include/duckdb/${header}")
             file(SHA256 "${CMAKE_SOURCE_DIR}/src/include/duckdb/${header}" header_hash)
             string(APPEND host_api ";${header_hash}")
         endif()
     endforeach()
     if(NOT SQLCTX_HOST_API STREQUAL host_api)
-        foreach(api TOKEN_PARSE_FN NEW_IDENTIFIER_API NEW_EXPRESSION_API QUALIFIED_TABLE_API BUILTIN_PARSER_OPTIONS LITERAL_API GRAMMAR_EXTENSION INSERT_QUERY_NODE BOUND_TABLE_FUNCTION GRAMMAR_EXTENSION_LIST)
+        foreach(api TOKEN_PARSE_FN NEW_IDENTIFIER_API NEW_EXPRESSION_API QUALIFIED_TABLE_API BUILTIN_PARSER_OPTIONS LITERAL_API GRAMMAR_EXTENSION INSERT_QUERY_NODE BOUND_TABLE_FUNCTION GRAMMAR_EXTENSION_LIST ARENA_TRANSFORM SHELL_GRAMMAR_CONTEXT)
             unset(SQLCTX_${api} CACHE)
         endforeach()
         set(SQLCTX_HOST_API "${host_api}" CACHE INTERNAL "DuckDB headers used for compatibility probes" FORCE)
@@ -87,6 +87,21 @@ function(sqlctx_detect_apis)
             duckdb::CompiledGrammar::Create(duckdb::vector<duckdb::reference<duckdb::GrammarExtension>> {extension});
         }
     " SQLCTX_GRAMMAR_EXTENSION_LIST)
+    check_cxx_source_compiles("
+        #include <duckdb/parser/peg/transformer/peg_transformer.hpp>
+        void probe(duckdb::PEGTransformer &transformer) { transformer.MakeResult<bool>(true); }
+    " SQLCTX_ARENA_TRANSFORM)
+    check_cxx_source_compiles("
+        #include <duckdb/main/client_config.hpp>
+        #include <duckdb/parser/parser_options.hpp>
+        #include <duckdb/parser/peg/compiled_grammar.hpp>
+        using namespace duckdb;
+        void probe(ParserOptions &options) {
+            auto &config = ClientConfig::GetConfig(*options.context);
+            if (!config.current_dialect && !config.connected_grammar)
+                CompiledGrammar::Create(*options.context, vector<string>{\"shell\", \"sqlctx\"});
+        }
+    " SQLCTX_SHELL_GRAMMAR_CONTEXT)
     configure_file(src/include/sqlctx_compat.hpp.in sqlctx_compat.hpp)
     cmake_pop_check_state()
 endfunction()

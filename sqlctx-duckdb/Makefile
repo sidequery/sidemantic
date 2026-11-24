@@ -5,19 +5,23 @@ PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 EXT_NAME=sqlctx
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 SUPPORTED_DUCKDB_VERSION := v1.5.6
+SUPPORTED_DUCKDB_2 := v2.0.1
 SUPPORTED_DUCKDB_NEXT := v2.0-cyanoptera
 # Pin the moving development branch to the native PEG API exercised by CI.
 DUCKDB_NEXT_COMMIT := 80e17fc252edd6d9e9b090ae00a1100daef4876a
 DUCKDB_VERSION ?= $(SUPPORTED_DUCKDB_VERSION)
+# DuckDB 2.0 derives a development ABI from the commit count unless the
+# release version is supplied. Use the tag on the source being compiled.
+OVERRIDE_GIT_DESCRIBE ?= $(filter $(SUPPORTED_DUCKDB_2),$(shell git -C $(DUCKDB_SRCDIR) tag --points-at HEAD 2>/dev/null))
 # Exercise coexistence with the parser override preloaded by packaged shells.
 DEFAULT_TEST_EXTENSION_DEPS := autocomplete
 
 .PHONY: deps
 deps:
-	@if [ "$(DUCKDB_VERSION)" != "$(SUPPORTED_DUCKDB_VERSION)" ] && [ "$(DUCKDB_VERSION)" != "$(SUPPORTED_DUCKDB_NEXT)" ]; then \
-		echo "Use DUCKDB_VERSION=$(SUPPORTED_DUCKDB_VERSION) or $(SUPPORTED_DUCKDB_NEXT)."; \
-		exit 1; \
-	fi
+	@case "$(DUCKDB_VERSION)" in \
+		$(SUPPORTED_DUCKDB_VERSION)|$(SUPPORTED_DUCKDB_2)|$(SUPPORTED_DUCKDB_NEXT)) ;; \
+		*) echo "Use DUCKDB_VERSION=$(SUPPORTED_DUCKDB_VERSION), $(SUPPORTED_DUCKDB_2), or $(SUPPORTED_DUCKDB_NEXT)."; exit 1 ;; \
+	esac
 	@if [ ! -d duckdb/.git ]; then \
 		rm -rf duckdb; \
 		git clone --depth 1 --branch $(DUCKDB_VERSION) https://github.com/duckdb/duckdb.git duckdb; \

@@ -412,12 +412,15 @@ private:
         if (!use.semantic_field.empty() || explicit_semantic) return;
         // Every reference binds to the table, so the query keeps its native
         // meaning, including inside a statement that the compiler rewrites.
+        QualifyPhysicalTable(*use.table, use.model, use.physical);
+    }
+
+    static void QualifyPhysicalTable(BaseTableRef &table, const string &name, const SqlctxPhysicalRelation &physical) {
 #if SQLCTX_QUALIFIED_TABLE_API
-        use.table->SetQualifiedName(Identifier(use.physical.catalog), Identifier(use.physical.schema),
-                                    Identifier(use.model));
+        table.SetQualifiedName(Identifier(physical.catalog), Identifier(physical.schema), Identifier(name));
 #else
-        use.table->catalog_name = use.physical.catalog;
-        use.table->schema_name = use.physical.schema;
+        table.catalog_name = physical.catalog;
+        table.schema_name = physical.schema;
 #endif
     }
 
@@ -454,6 +457,17 @@ private:
                 !SqlctxPhysicalRelationExists(context, name);
             auto entry = models.find(name);
             if (((!qualified && !ctes.count(name)) || semantic_schema) && entry != models.end()) model = entry->second.model;
+            // FROM metrics is the global semantic namespace. A CTE or a real
+            // table on the search path still owns its name in ordinary SQL.
+            if (!model && !qualified && !ctes.count(name) && !models.empty() &&
+                StringUtil::CIEquals(name, "metrics")) {
+                SqlctxPhysicalRelation physical;
+                if (!explicit_semantic && SqlctxFindPhysicalRelation(context, name, physical)) {
+                    QualifyPhysicalTable(table, name, physical);
+                } else {
+                    found = true;
+                }
+            }
             if (model) {
                 virtual_relation = semantic_schema;
                 name = model->name;

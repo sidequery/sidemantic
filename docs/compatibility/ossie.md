@@ -468,8 +468,10 @@ Schema validation, ontology validation, permissive import, and export remain
 owned by that shared interchange API for both engine choices.
 
 The separate native Rust forward importer validates logical documents against
-the same four immutable JSON Schemas as Python: `0.1.1` and all three pinned
-development revisions. These schemas are bundled for offline native and WASM
+five immutable logical schemas. Four are shared with Python (`0.1.1` and the
+three `0.2.0.dev0` revisions). The fifth is the flat Apache `0.3.0.dev0`
+draft at `d27a6be`. DuckDB can load that draft directly from a model file.
+These schemas are bundled for offline native and WASM
 builds. The evaluator covers every assertion used by those schemas and fails
 closed if an unsupported assertion is introduced. Logical validation reports
 `pinned_json_schema`; semantic checks also validate recognized SQL variants even

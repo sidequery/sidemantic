@@ -3,8 +3,10 @@
 # ///
 """Exercise semantic catalog SQL through each built DuckDB shell."""
 
+import hashlib
 import json
 import os
+import re
 import subprocess
 from decimal import Decimal
 from pathlib import Path
@@ -428,6 +430,125 @@ def test_standard_catalog_numeric_metadata_matches_host():
         setup=setup,
     )
     assert native == semantic
+
+
+def test_prefixless_metrics_namespace_respects_duckdb_tables_and_ctes():
+    totals = execute("select orders.revenue from metrics;")
+    assert totals == [[{"revenue": "45.00"}]]
+    rows = execute("""
+        create temp table metrics as select 7 as revenue;
+        select revenue from metrics;
+        with metrics as (select 9 as revenue) select revenue from metrics;
+        select revenue from metrics union all select orders.revenue from orders order by revenue;
+    """)
+    assert rows[-3:] == [[{"revenue": 7}], [{"revenue": 9}], [{"revenue": "7.00"}, {"revenue": "45.00"}]]
+
+
+TPCDS_SETUP = """
+create schema public;
+create table public.store_sales(
+    ss_item_sk integer, ss_ticket_number integer, ss_customer_sk integer,
+    ss_store_sk integer, ss_sold_date_sk integer, ss_quantity integer,
+    ss_sales_price decimal(10,2), ss_ext_sales_price decimal(10,2), ss_net_profit decimal(10,2)
+);
+insert into public.store_sales values
+    (1, 100, 1, 1, 1, 2, 10, 20, 4),
+    (1, 101, 1, 1, 1, 3, 10, 30, 6),
+    (2, 102, 2, 2, 2, 1, 15, 15, -2);
+create table public.item(
+    i_item_sk integer, i_item_id varchar, i_item_desc varchar,
+    i_brand varchar, i_category varchar, i_current_price decimal(10,2)
+);
+insert into public.item values
+    (1, 'A', 'First item', 'Acme', 'Home', 10),
+    (2, 'B', 'Second item', 'Beta', 'Garden', 15);
+create table public.customer(
+    c_customer_sk integer, c_customer_id varchar, c_first_name varchar,
+    c_last_name varchar, c_email_address varchar
+);
+insert into public.customer values
+    (1, 'C1', 'Ada', 'Lovelace', 'ada@example.test'),
+    (2, 'C2', 'Grace', 'Hopper', 'grace@example.test');
+create table public.store(
+    s_store_sk integer, s_store_id varchar, s_store_name varchar,
+    s_city varchar, s_state varchar, s_number_employees integer
+);
+insert into public.store values (1, 'S1', 'North', 'Seattle', 'WA', 5), (2, 'S2', 'South', 'Portland', 'OR', 3);
+create table public.date_dim(
+    d_date_sk integer, d_date date, d_year integer, d_quarter_name varchar,
+    d_month_name varchar, d_moy integer
+);
+insert into public.date_dim values
+    (1, '2026-01-01', 2026, '2026Q1', 'January', 1),
+    (2, '2026-02-01', 2026, '2026Q1', 'February', 2);
+"""
+
+
+@pytest.mark.parametrize(
+    ("pin", "checksum", "dataset_metric"),
+    [
+        ("faf5810", "1c8c8e1a41d6b1b4d957ae5934b883b46ca07ad3901927ec6ce0ecff55d2cb6b", False),
+        ("d27a6be", "72a98b17eda7daa6bcb777125ea44b1cbbb7788bdd6167430e0f58ea7e06a1ce", True),
+    ],
+    ids=["upstream-0.1.1", "upstream-0.3.0.dev0"],
+)
+def test_upstream_ossie_file_metrics_and_reopen(tmp_path, pin, checksum, dataset_metric):
+    fixture = (
+        Path(__file__).resolve().parents[2]
+        / "tests/ossie-fixtures/upstream"
+        / pin
+        / "examples/tpcds_semantic_model.yaml"
+    )
+    # Keep the upstream bytes unchanged, including physical source catalog names.
+    assert hashlib.sha256(fixture.read_bytes()).hexdigest() == checksum
+    database = tmp_path / "tpcds.duckdb"
+    query = """
+        select total_sales, total_profit from metrics;
+        select item.i_brand, sales_by_brand from metrics order by item.i_brand;
+        select total_sales from metrics where store_sales.ss_quantity > 1;
+        select customer_lifetime_value, store_productivity from metrics;
+    """
+    if dataset_metric:
+        query += "select agg(s.total_quantity) as total_quantity from store_sales s; show metrics from store_sales;"
+        documentation = (Path(__file__).resolve().parents[2] / "docs/duckdb-extension.md").read_text()
+        window_section = documentation.split("#### Windowed metrics in plain SQL", 1)[1].split(
+            "### Native SQL definitions", 1
+        )[0]
+        window_queries = re.findall(r"```sql\n(.*?)```", window_section, re.DOTALL)
+        assert len(window_queries) == 3
+        query += "\n".join(window_queries)
+    results = execute(
+        query,
+        setup=TPCDS_SETUP + f"select * from sqlctx_load_file({literal(str(fixture))});",
+        database=database,
+    )
+    assert results[0] == [{"total_sales": "65.00", "total_profit": "8.00"}]
+    assert results[1] == [
+        {"i_brand": "Acme", "sales_by_brand": "50.00"},
+        {"i_brand": "Beta", "sales_by_brand": "15.00"},
+    ]
+    assert results[2] == [{"total_sales": "50.00"}]
+    assert results[3] == [{"customer_lifetime_value": 32.5, "store_productivity": 8.125}]
+    if dataset_metric:
+        assert results[4] == [{"total_quantity": "6"}]
+        assert [row["qualified_name"] for row in results[5]] == ["store_sales.total_quantity"]
+        assert results[6] == [
+            {"sale_date": "2026-01-01", "cumulative_sales": "50.00"},
+            {"sale_date": "2026-02-01", "cumulative_sales": "65.00"},
+        ]
+        assert results[7] == [
+            {"store_id": 1, "brand": "Acme", "brand_rank_in_store": 1},
+            {"store_id": 2, "brand": "Beta", "brand_rank_in_store": 1},
+        ]
+        assert results[8] == [
+            {"sale_year": 2026, "sale_month": 1, "monthly_sales_change": None},
+            {"sale_year": 2026, "sale_month": 2, "monthly_sales_change": "-35.00"},
+        ]
+        for metric in ["cumulative_sales", "brand_rank_in_store", "monthly_sales_change"]:
+            execute(f"select {metric} from metrics;", setup="", database=database, error="E_DEFERRED_WINDOWED_METRIC")
+    # Reopen with no definitions loaded and no write permission: both physical
+    # data and the imported semantic catalog must survive the shell process.
+    assert execute(query, setup="", database=database, readonly=True) == results
 
 
 if __name__ == "__main__":

@@ -1612,10 +1612,12 @@ impl<'a> SqlGenerator<'a> {
         Ok(owners)
     }
 
-    /// A column-free Ossie aggregate still has an unambiguous population when
-    /// its scope declares exactly one dataset. Never guess among several.
+    /// A column-free Ossie aggregate or released OSI calculation has an
+    /// unambiguous population with exactly one dataset. Never guess among several.
     fn logical_constant_owner(&self, metric: &Metric) -> Result<Option<String>> {
-        if !metric.sql_is_complete || !aggregate_plan::has_logical_inputs(metric) {
+        if !(metric.sql_is_complete && aggregate_plan::has_logical_inputs(metric)
+            || aggregate_plan::is_osi_model_calculation(metric))
+        {
             return Ok(None);
         }
         let Some(sql) = metric.sql.as_deref() else {

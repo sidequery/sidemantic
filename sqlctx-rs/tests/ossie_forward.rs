@@ -38,6 +38,49 @@ fn fixture_root() -> PathBuf {
 }
 
 #[test]
+fn released_column_free_calculation_requires_one_dataset() {
+    for dataset_count in [1, 2] {
+        let datasets: Vec<_> = (0..dataset_count)
+            .map(|index| {
+                serde_json::json!({
+                    "name": format!("orders{index}"),
+                    "source": format!("raw_orders{index}"),
+                    "fields": [{"name": "id", "expression": {"dialects": [
+                        {"dialect": "ANSI_SQL", "expression": "id"}
+                    ]}}]
+                })
+            })
+            .collect();
+        let document = serde_json::json!({
+            "version": "0.1.1",
+            "semantic_model": [{
+                "name": "shop",
+                "datasets": datasets,
+                "metrics": [{"name": "adjusted_count", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(*) + 1"}
+                ]}}]
+            }]
+        });
+        let graph = sqlctx::load_from_string(&document.to_string()).unwrap();
+        let metric = graph.get_metric("adjusted_count").unwrap();
+        assert_eq!(metric.r#type, sqlctx::MetricType::Derived);
+        assert!(!metric.sql_is_complete);
+        let result = sqlctx::SqlGenerator::new(&graph)
+            .generate(&sqlctx::SemanticQuery::new().with_metrics(vec!["adjusted_count".into()]));
+        if dataset_count == 1 {
+            let sql = result.unwrap();
+            assert!(sql.contains("COUNT(*)"), "{sql}");
+            assert!(sql.contains("raw_orders0"), "{sql}");
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("metric.graph_scope.adjusted_count"));
+        }
+    }
+}
+
+#[test]
 fn shared_ossie_fixture_manifest_matches_strict_rust_diagnostics() {
     let root = fixture_root();
     let manifest: Manifest =

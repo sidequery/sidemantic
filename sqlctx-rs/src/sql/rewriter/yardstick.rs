@@ -797,10 +797,12 @@ impl Lowerer<'_, '_> {
                 "yardstick() is not supported while semantic security controls are active".into(),
             ));
         }
-        let [Expression::Literal(polyglot_sql::expressions::Literal::String(sql))] =
-            function.args.as_slice()
-        else {
-            return Err(invalid("yardstick() requires one literal SQL query"));
+        let sql = match function.args.as_slice() {
+            [Expression::Literal(polyglot_sql::expressions::Literal::String(sql))] => sql.clone(),
+            [Expression::Literal(polyglot_sql::expressions::Literal::DollarString(sql))] => {
+                polyglot_sql::tokens::parse_dollar_string_token(sql).1
+            }
+            _ => return Err(invalid("yardstick() requires one literal SQL query")),
         };
         let mut validator = Lowerer {
             rewriter: self.rewriter,
@@ -809,7 +811,7 @@ impl Lowerer<'_, '_> {
             reserved: HashSet::new(),
             changed: false,
         };
-        let (normalized, _) = validator.normalize(sql)?;
+        let (normalized, _) = validator.normalize(&sql)?;
         let normalized = dialects::query(&normalized, self.source_dialect)?;
         let statements = parse_sql_with_dialect(&normalized, DialectType::DuckDB)?;
         if statements.len() != 1
@@ -842,7 +844,7 @@ impl Lowerer<'_, '_> {
             ));
         }
         let rewritten = self.rewriter.rewrite_with_output_dialect(
-            sql,
+            &sql,
             self.source_dialect,
             DialectType::DuckDB,
         )?;
@@ -1002,9 +1004,10 @@ impl Lowerer<'_, '_> {
         if let Some(predicate) = outer_where {
             self.fixed_context(&predicate.this, &mut ambient)?;
         }
-        let mut filters: Vec<(Expression, HashSet<String>)> = Vec::new();
+        let mut filters: Vec<(Expression, HashSet<String>, usize)> = Vec::new();
         let mut set_predicates = std::collections::BTreeMap::new();
-        let mut set_bindings = HashMap::new();
+        let mut set_bindings: HashMap<String, (usize, Expression)> = HashMap::new();
+        let mut set_errors = std::collections::BTreeMap::new();
         let mut visible = implicit_visible;
         let mut has_all = false;
         let mut has_global_all = false;
@@ -1019,29 +1022,39 @@ impl Lowerer<'_, '_> {
                         single,
                     )?,
                     HashSet::new(),
+                    0,
                 ));
             }
         }
-        for modifier in &call.modifiers {
+        for (position, modifier) in call.modifiers.iter().enumerate() {
             let stream = tokens(modifier, self.source_dialect)?;
             let Some(head) = stream.first() else { continue };
             let body = modifier[head.span.end..].trim();
 
             let current = || -> Result<HashMap<String, Expression>> {
                 let mut effective = ambient.clone();
-                for (filter, removed) in &filters {
+                for (key, _, outer, _) in &active {
+                    effective.insert(key.clone(), self.expression(outer)?);
+                }
+                // CURRENT reads the most recently applied binding, whether it
+                // came from SET, WHERE, or a later VISIBLE predicate.
+                let mut candidates = Vec::new();
+                for (filter, removed, position) in &filters {
                     let mut fixed = HashMap::new();
                     self.fixed_context(filter, &mut fixed)?;
                     for (key, expr) in fixed {
                         if !removed.contains(&key) {
-                            effective.insert(key, expr);
+                            candidates.push((*position, key, expr));
                         }
                     }
                 }
-                for (key, _, outer, _) in &active {
-                    effective.insert(key.clone(), self.expression(outer)?);
+                for (key, (position, expression)) in &set_bindings {
+                    candidates.push((*position, key.clone(), expression.clone()));
                 }
-                effective.extend(set_bindings.clone());
+                candidates.sort_by_key(|(position, _, _)| *position);
+                for (_, key, expression) in candidates {
+                    effective.insert(key, expression);
+                }
                 Ok(effective)
             };
 
@@ -1052,6 +1065,7 @@ impl Lowerer<'_, '_> {
                     active.clear();
                     set_predicates.clear();
                     set_bindings.clear();
+                    set_errors.clear();
                     filters.clear();
                     ambient.clear();
                     visible = false;
@@ -1063,8 +1077,9 @@ impl Lowerer<'_, '_> {
                         active.retain(|(signature, _, _, _)| signature != &key);
                         set_predicates.remove(&key);
                         set_bindings.remove(&key);
+                        set_errors.remove(&key);
                         ambient.remove(&key);
-                        for (_, removed) in &mut filters {
+                        for (_, removed, _) in &mut filters {
                             removed.insert(key.clone());
                         }
                     }
@@ -1080,6 +1095,7 @@ impl Lowerer<'_, '_> {
                                 single,
                             )?,
                             HashSet::new(),
+                            position,
                         ));
                     }
                 }
@@ -1088,19 +1104,25 @@ impl Lowerer<'_, '_> {
                     active.clear();
                     set_predicates.clear();
                     set_bindings.clear();
+                    set_errors.clear();
                     filters.clear();
                     ambient.clear();
                     visible = false;
-                    // Apply outer bindings only after mapping the authored filter
-                    // columns to the measure's source.
-                    let predicate =
-                        self.remap(expression, &[model_name, alias], "_inner", single)?;
-                    filters.push((self.replace_current(predicate, &bindings)?, HashSet::new()));
+                    // An explicit query alias in authored WHERE is an outer
+                    // correlation. Only the model name and unqualified columns
+                    // bind to the inner measure source; VISIBLE maps both aliases.
+                    let predicate = self.remap(expression, &[model_name], "_inner", single)?;
+                    filters.push((
+                        self.replace_current(predicate, &bindings)?,
+                        HashSet::new(),
+                        position,
+                    ));
                 }
                 "SET" => {
                     has_set = true;
                     let (direct, empty) = self.current(body, &HashMap::new())?;
                     let direct = self.replace_current(direct, &empty)?;
+                    let mut binding_error = None;
                     if let Expression::Eq(eq) = direct {
                         let key = self.signature(eq.left.clone())?;
                         if let Some((_, dimension)) = reference(&eq.left) {
@@ -1112,9 +1134,9 @@ impl Lowerer<'_, '_> {
                             if self_reference
                                 && !context.iter().any(|(signature, _, _, _)| signature == &key)
                             {
-                                return Err(SqlctxError::YardstickBinding(format!(
+                                binding_error = Some(format!(
                                     "AT ({modifier}) references {dimension}, but the query does not group by {dimension}. Add {dimension} to SELECT/GROUP BY or use a constant SET value."
-                                )));
+                                ));
                             }
                         }
                     }
@@ -1127,9 +1149,13 @@ impl Lowerer<'_, '_> {
                     };
                     active.retain(|(signature, _, _, _)| signature != &key);
                     set_bindings.remove(&key);
+                    set_errors.remove(&key);
                     ambient.remove(&key);
-                    for (_, removed) in &mut filters {
+                    for (_, removed, _) in &mut filters {
                         removed.insert(key.clone());
+                    }
+                    if let Some(error) = binding_error {
+                        set_errors.insert(key.clone(), error);
                     }
                     match expression {
                         Expression::Eq(eq) => {
@@ -1158,7 +1184,7 @@ impl Lowerer<'_, '_> {
                             })?;
                             let right = self.remap(decode(right)?, &[model_name], alias, single)?;
                             let right = self.replace_current(right, &bindings)?;
-                            set_bindings.insert(key.clone(), right.clone());
+                            set_bindings.insert(key.clone(), (position, right.clone()));
                             set_predicates.insert(
                                 key,
                                 format!(
@@ -1184,8 +1210,13 @@ impl Lowerer<'_, '_> {
                 _ => return Err(invalid(format!("Unsupported AT modifier: {modifier}"))),
             }
         }
+        // A later ALL, WHERE, or SET can discard an invalid self-reference.
+        // Only bindings that survive the complete modifier chain must validate.
+        if let Some(error) = set_errors.into_values().next() {
+            return Err(SqlctxError::YardstickBinding(error));
+        }
         let mut base = Vec::new();
-        for (filter, removed) in filters {
+        for (filter, removed, _) in filters {
             if let Some(predicate) = self.project_at_filter(filter, &removed)? {
                 base.push(self.sql(&predicate)?);
             }
@@ -1384,6 +1415,22 @@ impl Lowerer<'_, '_> {
         Ok(())
     }
 
+    fn fixed_value(expression: &Expression) -> bool {
+        match expression {
+            Expression::Literal(_) | Expression::Null(_) | Expression::Boolean(_) => true,
+            Expression::Paren(paren) => Self::fixed_value(&paren.this),
+            Expression::Neg(neg) => Self::fixed_value(&neg.this),
+            Expression::Add(binary)
+            | Expression::Sub(binary)
+            | Expression::Mul(binary)
+            | Expression::Div(binary)
+            | Expression::Mod(binary) => {
+                Self::fixed_value(&binary.left) && Self::fixed_value(&binary.right)
+            }
+            _ => false,
+        }
+    }
+
     fn fixed_context(
         &self,
         expression: &Expression,
@@ -1396,10 +1443,10 @@ impl Lowerer<'_, '_> {
                 self.fixed_context(&and.right, fixed)?;
             }
             Expression::Eq(eq) => {
-                if matches!(eq.right, Expression::Literal(_)) {
+                if Self::fixed_value(&eq.right) {
                     fixed.insert(self.signature(eq.left.clone())?, eq.right.clone());
                 }
-                if matches!(eq.left, Expression::Literal(_)) {
+                if Self::fixed_value(&eq.left) {
                     fixed.insert(self.signature(eq.right.clone())?, eq.left.clone());
                 }
             }
@@ -1643,8 +1690,8 @@ impl Lowerer<'_, '_> {
         let value = encode(&expression)?;
         let boolean_complex = contains_kind(&value, "and") || contains_kind(&value, "or");
         if boolean_complex && !Self::repeatable_at_filter(&expression) {
-            return Err(invalid(
-                "AT dimension replacement cannot safely normalize a volatile or unproven predicate; use an explicit AT WHERE predicate",
+            return Err(SqlctxError::YardstickBinding(
+                "AT dimension replacement cannot safely normalize a volatile or unproven predicate; use an explicit AT WHERE predicate".into(),
             ));
         }
         let normalized = Self::normalize_at_filter(expression)?;
@@ -1652,8 +1699,8 @@ impl Lowerer<'_, '_> {
             return self.project_at_filter(normalized, removed);
         }
         match dependencies(&normalized)? {
-            (true, true) => Err(invalid(
-                "mixed VISIBLE predicate: use an explicit AT context",
+            (true, true) => Err(SqlctxError::YardstickBinding(
+                "mixed VISIBLE predicate: use an explicit AT context".into(),
             )),
             (true, false) => Ok(None),
             _ => Ok(Some(normalized)),
@@ -1832,12 +1879,21 @@ fn split_modifiers(sql: &str, dialect: DialectType) -> Result<Vec<String>> {
         // context modifier at the end or just before the next modifier.
         if token.text.eq_ignore_ascii_case("VISIBLE") {
             let preceding = &stream[index - 1];
-            if [
+            if (!matches!(
+                preceding.token_type,
+                TokenType::String
+                    | TokenType::DollarString
+                    | TokenType::RawString
+                    | TokenType::NationalString
+                    | TokenType::EscapeString
+                    | TokenType::TripleDoubleQuotedString
+                    | TokenType::TripleSingleQuotedString
+            ) && [
                 ".", "=", "!=", "<>", "<", ">", "<=", ">=", "+", "-", "*", "/", "%", "AND", "OR",
                 "NOT", "IS", "LIKE", "ILIKE", "WHERE", "SET",
             ]
             .iter()
-            .any(|word| preceding.text.eq_ignore_ascii_case(word))
+            .any(|word| preceding.text.eq_ignore_ascii_case(word)))
                 || !stream
                     .get(index + 1)
                     .is_none_or(|next| head(next) || next.token_type == TokenType::Eof)

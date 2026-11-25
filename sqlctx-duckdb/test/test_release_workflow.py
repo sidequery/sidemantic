@@ -1,6 +1,7 @@
 """Execute the release input boundary without running builds or publishing."""
 
 import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/duckdb-extension-release.yml"
+VERSIONS = ["v1.5.6", "v2.0.1"]
 PLATFORMS = ["linux_amd64", "linux_arm64", "osx_amd64", "osx_arm64"]
 
 
@@ -23,7 +25,7 @@ def workflow_step(job, name):
 )
 def test_release_rejects_unsupported_input_without_shell_execution(tmp_path, version):
     workflow = yaml.safe_load(WORKFLOW.read_text())
-    step = next(step for step in workflow["jobs"]["build"]["steps"] if step.get("id") == "duckdb")
+    step = next(step for step in workflow["jobs"]["versions"]["steps"] if step.get("id") == "duckdb")
     output = tmp_path / "output"
     output.touch()
     result = subprocess.run(
@@ -43,24 +45,28 @@ def test_release_rejects_unsupported_input_without_shell_execution(tmp_path, ver
     assert output.read_text() == ""
 
 
-@pytest.mark.parametrize("event", ["workflow_dispatch", "push"])
-def test_release_accepts_supported_version(tmp_path, event):
+@pytest.mark.parametrize("event", ["workflow_dispatch", "push", "pull_request"])
+@pytest.mark.parametrize("version", VERSIONS)
+def test_release_accepts_supported_version(tmp_path, event, version):
     workflow = yaml.safe_load(WORKFLOW.read_text())
-    step = next(step for step in workflow["jobs"]["build"]["steps"] if step.get("id") == "duckdb")
+    step = next(step for step in workflow["jobs"]["versions"]["steps"] if step.get("id") == "duckdb")
     output = tmp_path / "output"
     result = subprocess.run(
         ["bash", "-e", "-c", step["run"]],
         cwd=tmp_path,
-        env={**os.environ, "EVENT_NAME": event, "REQUESTED_VERSION": "v1.5.6", "GITHUB_OUTPUT": str(output)},
+        env={**os.environ, "EVENT_NAME": event, "REQUESTED_VERSION": version, "GITHUB_OUTPUT": str(output)},
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert output.read_text() == "version=v1.5.6\n"
+    assert json.loads(output.read_text().removeprefix("versions=")) == (
+        [version] if event == "workflow_dispatch" else VERSIONS
+    )
 
 
+@pytest.mark.parametrize("version", VERSIONS)
 @pytest.mark.parametrize("platform", PLATFORMS)
-def test_release_packages_matching_platform_with_verifiable_checksum(tmp_path, platform):
+def test_release_packages_matching_platform_with_verifiable_checksum(tmp_path, platform, version):
     extension = tmp_path / "build/release/extension/sqlctx/sqlctx.duckdb_extension"
     extension.parent.mkdir(parents=True)
     extension.write_bytes(b"extension payload")
@@ -68,12 +74,12 @@ def test_release_packages_matching_platform_with_verifiable_checksum(tmp_path, p
     result = subprocess.run(
         ["bash", "-e", "-c", step["run"]],
         cwd=tmp_path,
-        env={**os.environ, "DUCKDB_VERSION": "v1.5.6", "PLATFORM": platform},
+        env={**os.environ, "DUCKDB_VERSION": version, "PLATFORM": platform},
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    asset = tmp_path / "dist" / f"sqlctx-duckdb-1.5.6-{platform}.duckdb_extension"
+    asset = tmp_path / "dist" / f"sqlctx-duckdb-{version.removeprefix('v')}-{platform}.duckdb_extension"
     assert asset.read_bytes() == extension.read_bytes()
     assert asset.with_suffix(".duckdb_extension.sha256").read_text() == (
         f"{hashlib.sha256(extension.read_bytes()).hexdigest()}  {asset.name}\n"
@@ -81,16 +87,18 @@ def test_release_packages_matching_platform_with_verifiable_checksum(tmp_path, p
 
 
 @pytest.mark.parametrize("failure", ["mismatched_tag", "missing_platform", "corrupt_payload", "existing_release", None])
-def test_publication_checks_provenance_and_all_payloads_before_creating_release(tmp_path, failure):
+@pytest.mark.parametrize("versions", [["v1.5.6"], ["v2.0.1"], VERSIONS])
+def test_publication_checks_provenance_and_all_payloads_before_creating_release(tmp_path, failure, versions):
     dist = tmp_path / "dist"
     dist.mkdir()
-    for platform in PLATFORMS:
-        asset = dist / f"sqlctx-duckdb-1.5.6-{platform}.duckdb_extension"
-        payload = platform.encode()
-        asset.write_bytes(payload)
-        asset.with_suffix(".duckdb_extension.sha256").write_text(
-            f"{hashlib.sha256(payload).hexdigest()}  {asset.name}\n"
-        )
+    for version in versions:
+        for platform in PLATFORMS:
+            asset = dist / f"sqlctx-duckdb-{version.removeprefix('v')}-{platform}.duckdb_extension"
+            payload = platform.encode()
+            asset.write_bytes(payload)
+            asset.with_suffix(".duckdb_extension.sha256").write_text(
+                f"{hashlib.sha256(payload).hexdigest()}  {asset.name}\n"
+            )
     if failure == "missing_platform":
         asset.unlink()
     elif failure == "corrupt_payload":
@@ -114,6 +122,7 @@ def test_publication_checks_provenance_and_all_payloads_before_creating_release(
             "PATH": f"{commands}{os.pathsep}{os.environ['PATH']}",
             "TAG": "sqlctx-duckdb-v0.1.0",
             "RELEASE_COMMIT": "built-commit",
+            "DUCKDB_VERSIONS": " ".join(versions),
             "TAG_COMMIT": "other-commit" if failure == "mismatched_tag" else "built-commit",
             "GH_ARGS": str(args),
             "GH_STATUS": "1" if failure == "existing_release" else "0",
@@ -125,7 +134,7 @@ def test_publication_checks_provenance_and_all_payloads_before_creating_release(
         assert result.returncode != 0
     else:
         assert result.returncode == 0, result.stderr
-        assert len((dist / "SHA256SUMS").read_text().splitlines()) == len(PLATFORMS)
+        assert len((dist / "SHA256SUMS").read_text().splitlines()) == len(PLATFORMS) * len(versions)
         assert (dist / "LICENSE").read_text() == "Test license\n"
     if failure in {"mismatched_tag", "missing_platform", "corrupt_payload"}:
         assert not args.exists()
@@ -134,7 +143,7 @@ def test_publication_checks_provenance_and_all_payloads_before_creating_release(
         assert arguments[:3] == ["release", "create", "sqlctx-duckdb-v0.1.0"]
         assert "--verify-tag" in arguments
         assert "--clobber" not in arguments
-        assert sum(arg.endswith(".duckdb_extension") for arg in arguments) == len(PLATFORMS)
+        assert sum(arg.endswith(".duckdb_extension") for arg in arguments) == len(PLATFORMS) * len(versions)
 
 
 @pytest.mark.parametrize("matching_commit", [True, False])
@@ -200,6 +209,7 @@ def test_publication_verifies_remote_annotated_tag_without_replacing_checkout_re
             "PATH": f"{commands}{os.pathsep}{os.environ['PATH']}",
             "TAG": tag,
             "RELEASE_COMMIT": built_commit,
+            "DUCKDB_VERSIONS": "v1.5.6",
             "GH_ARGS": str(args),
         },
         capture_output=True,

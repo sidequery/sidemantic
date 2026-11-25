@@ -12,26 +12,22 @@ A DuckDB extension that adds a SQL-first semantic layer. Define metrics and dime
 - **Transactional Definitions**: Commit and roll back model changes with DuckDB transactions
 - **Catalog Discovery**: Inspect definitions, metadata, relationships and compatible dimensions with SQL
 - **SQL Containers**: Use semantic queries in views, `CREATE TABLE AS`, and `INSERT ... SELECT`
-- **Native PEG Grammar**: Composable grammar on the pinned Cyanoptera development build, with a DuckDB 1.5.6 compatibility frontend
+- **Native PEG Grammar**: Composable grammar on DuckDB 2.0.1, with a DuckDB 1.5.6 compatibility frontend
 
 ## Installation
 
-Build locally against DuckDB 1.5.6:
+Build locally against DuckDB 2.0.1:
 
 ```bash
-make deps DUCKDB_VERSION=v1.5.6
+make deps DUCKDB_VERSION=v2.0.1
 make
-make test
-./build/release/duckdb -unsigned
-```
-
-```sql
-LOAD 'build/release/extension/sqlctx/sqlctx.duckdb_extension';
+SQLCTX_NATIVE_PEG=1 make test
+./build/release/duckdb -unsigned -cmd "LOAD '$PWD/build/release/extension/sqlctx/sqlctx.duckdb_extension';"
 ```
 
 For embedded clients, set DuckDB's `allow_unsigned_extensions` database configuration before opening the connection. Community extension installation is planned, but this repository does not yet publish the signed multi-platform artifacts required for `INSTALL sqlctx FROM community`.
 
-The release workflow builds unsigned DuckDB 1.5.6 packages for Linux and macOS
+The release workflow builds unsigned DuckDB 2.0.1 and 1.5.6 packages for Linux and macOS
 on AMD64 and ARM64. Linux builds use a glibc 2.28 baseline. When installing a
 release artifact, verify it against `SHA256SUMS` and give it the filename
 `sqlctx.duckdb_extension` before loading it.
@@ -333,7 +329,7 @@ files raise errors when the semantic catalog is accessed.
 
 ## Native PEG frontend
 
-DuckDB 1.5.6 uses the compatibility frontend. The pinned `v2.0-cyanoptera` build
+DuckDB 1.5.6 uses the compatibility frontend. DuckDB 2.0.1
 registers a `sqlctx` grammar extension for definitions, discovery, removal,
 import/export and explicit semantic queries, including nested `PREPARE` and `EXPLAIN`. Definition properties
 still use the shared Rust configuration parser; semantic query compilation still
@@ -586,8 +582,8 @@ rows, including equal-valued metrics on distinct customers.
   use `sqlctx_compile_semantic_input` and execute its returned SQL. A scalar projection such as
   `SEMANTIC SELECT events.retention FROM events` is rejected. These contracts
   do not establish full parity with every Python adapter or API.
-- DuckDB 1.5.6 uses the compatibility frontend. Native PEG support is tested against
-  the pinned 2.x commit, not an arbitrary future 2.x build. Rust still parses model
+- DuckDB 1.5.6 uses the compatibility frontend. Native PEG support targets
+  the released DuckDB 2.0.1 host. Rust parses model
   properties and compiles semantic queries.
 - The release workflow packages unsigned Linux and macOS builds on AMD64 and ARM64.
   Signed community installation is not yet provided by this repository.
@@ -626,8 +622,7 @@ SELECT sqlctx_rewrite_sql('SELECT orders.revenue FROM orders');
 # From this repository checkout
 cd sqlctx-duckdb
 
-# Fetch the DuckDB source version used by CI.
-# Stable builds and release artifacts target v1.5.6.
+# Build the compatibility frontend for DuckDB 1.5.6.
 make deps DUCKDB_VERSION=v1.5.6
 
 # Build the extension. CMake builds the sibling sqlctx-rs static library automatically.
@@ -640,12 +635,9 @@ make test
 ./build/release/duckdb -unsigned
 ```
 
-CI also builds `make deps DUCKDB_VERSION=v2.0-cyanoptera`, pinned in the Makefile to
-commit `80e17fc252edd6d9e9b090ae00a1100daef4876a`. Run its tests with
-`SQLCTX_NATIVE_PEG=1 make test`. Use separate build directories/checkouts when
-switching DuckDB versions. CMake probes host APIs rather than assuming C++ ABI
-compatibility across releases. Release packaging targets unsigned Linux and macOS
-builds for 1.5.6; development-version CI does not publish stable artifacts.
+CI builds both released hosts. For 2.0.1, use `make deps DUCKDB_VERSION=v2.0.1`,
+`make`, and `SQLCTX_NATIVE_PEG=1 make test`. Use separate build directories/checkouts
+when switching DuckDB versions. Each loadable binary targets its host's C++ ABI.
 
 A preview artifact for a published 2.0 alpha runtime must be built from that
 runtime's exact commit and carry its version string, because the C++ extension

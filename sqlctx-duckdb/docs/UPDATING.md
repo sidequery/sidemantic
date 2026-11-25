@@ -3,15 +3,15 @@
 The extension builds against DuckDB's internal C++ API. A loadable extension must
 match its host version and platform; source compatibility is not binary compatibility.
 
-The Makefile selects stable DuckDB 1.5.6 or a pinned Cyanoptera development commit.
-CI builds both and runs the SQL and SemanticInput host suites. The development job
+The Makefile supports the DuckDB 1.5.6 and 2.0.1 release tags.
+CI builds both and runs the SQL and SemanticInput host suites. The 2.0.1 job
 sets `SQLCTX_NATIVE_PEG=1` to require tests that disable parser overrides and use
-sqlctx's registered native grammar. Release packaging intentionally accepts only
-the stable version and currently produces unsigned Linux amd64 artifacts.
+sqlctx's registered native grammar. Release packaging builds unsigned Linux and
+macOS artifacts for AMD64 and ARM64 for the selected release tags.
 
 When updating:
 
-1. Change the stable version or `DUCKDB_NEXT_COMMIT` in the Makefile and the CI matrix
+1. Update the release tags in the Makefile and the CI matrix
    as appropriate. Keep the release workflow's stable allowlist and input tests aligned.
 2. Use fresh build directories for each host. `src/include/sqlctx_compat.hpp.in`
    is generated from the API probes in CMake; adapt those probes and frontend code

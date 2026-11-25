@@ -12,7 +12,7 @@ or
 make test_debug
 ```
 
-For the pinned Cyanoptera build, use `SQLCTX_NATIVE_PEG=1 make test`. Its native
+For DuckDB 2.0.1, use `SQLCTX_NATIVE_PEG=1 make test`. Its native
 grammar suite explicitly disables parser overrides before executing custom syntax.
 The same suite is skipped on DuckDB 1.5.6.
 

@@ -133,6 +133,21 @@ def test_catalog_discovery_and_select_combinations():
     ]
 
 
+def test_default_shell_grammar_composes_with_semantic_statements():
+    settings = execute("select value from duckdb_settings() where name = 'active_grammar_extensions';")[0]
+    if settings != [{"value": "[shell]"}]:
+        pytest.skip("Host does not enable the DuckDB 2.0 shell grammar by default")
+    before, expression, metrics, after = execute("""
+        select current_setting('active_grammar_extensions') as grammars;
+        40 + 2 as answer;
+        show metrics from orders;
+        select current_setting('active_grammar_extensions') as grammars;
+    """)
+    assert expression == [{"answer": 42}]
+    assert [row["qualified_name"] for row in metrics] == ["orders.revenue"]
+    assert before == after == [{"grammars": ["shell"]}]
+
+
 @pytest.mark.parametrize(
     ("sql", "error"),
     [

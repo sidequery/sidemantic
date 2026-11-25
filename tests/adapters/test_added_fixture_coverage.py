@@ -594,6 +594,16 @@ def _pick_execution_query(graph):
         # Isolated model queries do not require an entity key. Unknown identity is represented by
         # an empty list rather than inventing an ``id`` column for execution fixtures.
         base_column_types = {pk: "INTEGER" for pk in model.primary_key_columns}
+        # Derived-source fixtures project identity expressions too. Materialize
+        # their physical inputs, which can differ from the semantic key name.
+        if base_requires_sql_override:
+            for key in model.primary_key_columns:
+                dimension = model.get_dimension(key)
+                if dimension is not None:
+                    columns, _qualifier, ok = _extract_sql_columns(dimension.sql_expr)
+                    if ok:
+                        for column in columns:
+                            base_column_types.setdefault(column, "INTEGER")
         for column, column_type in _invariant_filter_column_types(model.invariant_filters).items():
             base_column_types.setdefault(column, column_type)
 

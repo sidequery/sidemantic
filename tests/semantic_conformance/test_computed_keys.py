@@ -168,6 +168,30 @@ def test_unsafe_key_expressions_are_rejected(layer, expression):
         layer.compile(metrics=["accounts.budget"])
 
 
+def test_imported_raw_string_identity_is_validated_and_rendered_in_query_dialect():
+    layer = SemanticLayer(engine="python", fallback=False, auto_register=False)
+    model = Model(
+        name="events",
+        table="imported_key_events",
+        primary_key="id",
+        dimensions=[Dimension(name="id", type="categorical", sql=r"regexp_extract(raw_id, r'^\d+')")],
+        metrics=[Metric(name="count", agg="count"), Metric(name="distinct_ids", agg="count_distinct")],
+    )
+    layer.add_model(model)
+    try:
+        layer.adapter.execute("create table imported_key_events(raw_id varchar)")
+        layer.adapter.execute("insert into imported_key_events values ('12a'), ('12b'), ('34c')")
+        # The unused identity is validated for count(*); count-distinct also
+        # executes it, preserving the raw-string regex through dialect conversion.
+        result(layer, {"metrics": ["events.count"]}, ["count"], [(3,)])
+        result(layer, {"metrics": ["events.distinct_ids"]}, ["distinct_ids"], [(2,)])
+        model.dimensions[0].sql = r"(select regexp_extract(raw_id, r'^\d+') from other)"
+        with pytest.raises(ValueError, match="dimension.computed_key_expression"):
+            layer.compile(metrics=["events.count"])
+    finally:
+        layer.adapter.close()
+
+
 def test_disconnected_computed_model_does_not_block_temporal_query(layer):
     layer.add_model(
         Model(

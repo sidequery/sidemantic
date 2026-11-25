@@ -2703,7 +2703,17 @@ class SQLGenerator:
             if dimension.sql_expr == column and not dimension.window:
                 return self._quote_identifier(column)
             source = replace_outside_sql_protected(dimension.sql_expr, "{model}", self._quote_identifier(model.name))
-            tree = _parse_fragment(source, self.dialect)
+            try:
+                tree = _parse_fragment(source, self.dialect)
+            except SqlglotError:
+                # Imported declarations can retain source-dialect syntax (for
+                # example BigQuery raw strings), even when this query does not
+                # project the key. Validate their structure before rendering.
+                tree = parse_sql_fragment(source)
+                if tree is None:
+                    raise QueryValidationError(
+                        f"Invalid row identity for {model_name}.{column} (dimension.computed_key_expression)"
+                    ) from None
             inputs = list(tree.find_all(exp.Column))
             if (
                 dimension.window

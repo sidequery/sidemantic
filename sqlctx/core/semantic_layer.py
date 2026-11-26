@@ -2429,6 +2429,7 @@ class SemanticLayer:
             use_rust_rewriter=self._use_rust_sql_generator if self._explicit_engine else None,
             rust_no_fallback=self._rust_no_fallback,
             allow_non_additive_unsafe=self.allow_non_additive_unsafe,
+            model_columns=self._get_model_columns,
         )
         explanation = rewriter.explain(query, strict=strict)
         self.last_engine_selection = rewriter.last_engine_selection

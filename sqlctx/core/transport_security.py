@@ -192,6 +192,7 @@ def rewrite_transport_sql(
         ),
         rust_no_fallback=getattr(layer, "_rust_no_fallback", None),
         allow_non_additive_unsafe=getattr(layer, "allow_non_additive_unsafe", False),
+        model_columns=getattr(layer, "_get_model_columns", None),
     )
     # Yardstick's explicit and implicit measure paths expand directly against
     # physical model tables. They do not currently route those reads through

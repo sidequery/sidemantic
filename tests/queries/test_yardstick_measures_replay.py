@@ -919,6 +919,49 @@ s\t50\t1\t50.0
     _replay_yardstick_sql_test(path)
 
 
+def test_wildcard_source_column_precedes_measure_projection_alias(tmp_path):
+    path = tmp_path / "wildcard-alias.test"
+    path.write_text(
+        """statement ok
+CREATE TABLE sales(year INTEGER);
+
+statement ok
+INSERT INTO sales VALUES (2022), (2022), (2023);
+
+statement ok
+CREATE VIEW sales_v AS SELECT *, COUNT(*) AS MEASURE tally FROM sales;
+
+query II rowsort
+SELECT AGGREGATE(tally) AS year, year + 1 AS next_year FROM sales_v;
+----
+2\t2023
+1\t2024
+"""
+    )
+    _replay_yardstick_sql_test(path)
+
+
+def test_connected_wildcard_alias_checks_current_physical_columns():
+    layer = SemanticLayer(connection="duckdb:///:memory:", engine="python")
+    try:
+        layer.adapter.execute("CREATE TABLE sales(amount INTEGER)")
+        layer.adapter.execute("INSERT INTO sales VALUES (10), (20), (30)")
+        _execute_statement_sql(
+            layer, YardstickAdapter(), "CREATE VIEW sales_v AS SELECT *, COUNT(*) AS MEASURE tally FROM sales"
+        )
+        query = "SELECT AGGREGATE(tally) AS year, year + 1 AS next_year FROM sales_v ORDER BY next_year"
+        assert layer.sql(query).fetchall() == [(3, 4)]
+
+        layer.adapter.execute("ALTER TABLE sales ADD COLUMN year INTEGER DEFAULT 2022")
+        layer.adapter.execute("UPDATE sales SET year = 2023 WHERE amount = 30")
+        assert layer.sql(query).fetchall() == [(2, 2023), (1, 2024)]
+        assert layer.sql(
+            "SELECT AGGREGATE(tally) AS year, year + 1 AS next_year FROM sales_v GROUP BY year ORDER BY next_year"
+        ).fetchall() == [(2, 2023), (1, 2024)]
+    finally:
+        layer.adapter.close()
+
+
 def test_parse_statement_record_preserves_batch_and_unterminated_error(tmp_path):
     path = tmp_path / "batch.test"
     path.write_text(

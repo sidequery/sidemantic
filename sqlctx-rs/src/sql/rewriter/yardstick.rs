@@ -23,6 +23,13 @@ struct Call {
     visible: bool,
 }
 
+struct ContextFilter {
+    predicate: Expression,
+    removed: HashSet<String>,
+    position: usize,
+    current_bindings: HashMap<String, Expression>,
+}
+
 struct Lowerer<'a, 'g> {
     rewriter: &'a QueryRewriter<'g>,
     source_dialect: DialectType,
@@ -157,6 +164,26 @@ impl Lowerer<'_, '_> {
             self.source_dialect,
             dialects::Fragment::Scalar,
         )?)
+    }
+
+    fn has_wildcard_source(&self, model_name: &str) -> Result<bool> {
+        let view_sql = self
+            .rewriter
+            .graph
+            .get_model(model_name)
+            .and_then(|model| model.metadata.as_ref())
+            .and_then(|metadata| metadata.get("yardstick"))
+            .and_then(|metadata| metadata.get("view_sql"))
+            .and_then(Value::as_str);
+        let Some(view_sql) = view_sql else {
+            return Ok(false);
+        };
+        let statements = parse_sql_with_dialect(view_sql, self.source_dialect)?;
+        Ok(
+            matches!(statements.as_slice(), [Expression::Select(select)] if select.expressions.iter().any(|projection| {
+                matches!(projection, Expression::Star(_)) || reference(projection).is_some_and(|(_, name)| name == "*")
+            })),
+        )
     }
 
     fn register(&mut self, call: Call) -> String {
@@ -481,6 +508,28 @@ impl Lowerer<'_, '_> {
             .iter()
             .map(|projection| reference(projection).map(|(_, name)| name))
             .collect::<Vec<_>>();
+        let wildcard_source = single
+            && self.source_dialect == DialectType::DuckDB
+            && self.has_wildcard_source(&sources[0].0)?;
+        if wildcard_source {
+            // Wildcard imports leave physical columns undeclared. In projection
+            // expressions they take precedence over same-named output aliases.
+            // Keep ORDER BY/HAVING aliases outside this qualification pass.
+            for projection in &mut select.expressions {
+                let mut expression = encode(&*projection)?;
+                map_columns(&mut expression, &mut |node| {
+                    if reference(&node).is_some_and(|(table, name)| {
+                        table.is_none() && !scope_calls.contains(&name)
+                    }) {
+                        self.remap(node, &[], &sources[0].1, true)
+                    } else {
+                        Ok(node)
+                    }
+                })?;
+                *projection = decode(expression)?;
+            }
+            value = encode(&select)?;
+        }
         // Expand declared dimension expressions before computing context keys.
         map_columns(&mut value, &mut |node| {
             let Some((table, name)) = reference(&node) else {
@@ -610,7 +659,13 @@ impl Lowerer<'_, '_> {
                     }
                 } else if let Some((None, name)) = reference(expression) {
                     if let Some(Expression::Alias(alias)) = select.expressions.iter().find(|projection| matches!(projection, Expression::Alias(alias) if alias.alias.name == name)) {
-                        *expression = alias.this.clone();
+                        *expression = if wildcard_source && contains_call(&alias.this)? {
+                            // A wildcard input column wins over a measure alias
+                            // with the same name, just as it does in SELECT.
+                            self.remap(expression.clone(), &[], &sources[0].1, true)?
+                        } else {
+                            alias.this.clone()
+                        };
                     }
                 }
             }
@@ -928,6 +983,9 @@ impl Lowerer<'_, '_> {
             }
             Some(aggregation) => format!("{}({expression_sql})", aggregation.as_sql()),
         };
+        let wildcard_source = single
+            && self.source_dialect == DialectType::DuckDB
+            && self.has_wildcard_source(model_name)?;
         let mut context = Vec::new();
         for group in groups {
             let mut expanded = Vec::new();
@@ -973,7 +1031,15 @@ impl Lowerer<'_, '_> {
                 }) {
                     continue;
                 }
-                if let Some(output_alias) = context_aliases.get(&signature).filter(|_| !optional) {
+                if wildcard_source {
+                    // Correlate on the qualified group key itself: an output
+                    // alias may shadow a physical column or follow the measure.
+                    if reference(&outer).is_none() {
+                        outer = self.expression(&format!("ANY_VALUE({})", self.sql(&outer)?))?;
+                    }
+                } else if let Some(output_alias) =
+                    context_aliases.get(&signature).filter(|_| !optional)
+                {
                     // SELECT * imports can expose physical grouping columns
                     // without declaring dimensions. An unqualified output
                     // alias with that same name would bind to the inner source
@@ -1002,9 +1068,9 @@ impl Lowerer<'_, '_> {
         let implicit_visible = call.visible && call.modifiers.is_empty();
         let mut ambient = HashMap::new();
         if let Some(predicate) = outer_where {
-            self.fixed_context(&predicate.this, &mut ambient)?;
+            self.fixed_context(&predicate.this, &HashMap::new(), &mut ambient)?;
         }
-        let mut filters: Vec<(Expression, HashSet<String>, usize)> = Vec::new();
+        let mut filters: Vec<ContextFilter> = Vec::new();
         let mut set_predicates = std::collections::BTreeMap::new();
         let mut set_bindings: HashMap<String, (usize, Expression)> = HashMap::new();
         let mut set_errors = std::collections::BTreeMap::new();
@@ -1014,16 +1080,17 @@ impl Lowerer<'_, '_> {
         let mut has_set = false;
         if implicit_visible {
             if let Some(predicate) = outer_where {
-                filters.push((
-                    self.remap(
+                filters.push(ContextFilter {
+                    predicate: self.remap(
                         predicate.this.clone(),
                         &[model_name, alias],
                         "_inner",
                         single,
                     )?,
-                    HashSet::new(),
-                    0,
-                ));
+                    removed: HashSet::new(),
+                    position: 0,
+                    current_bindings: HashMap::new(),
+                });
             }
         }
         for (position, modifier) in call.modifiers.iter().enumerate() {
@@ -1039,12 +1106,12 @@ impl Lowerer<'_, '_> {
                 // CURRENT reads the most recently applied binding, whether it
                 // came from SET, WHERE, or a later VISIBLE predicate.
                 let mut candidates = Vec::new();
-                for (filter, removed, position) in &filters {
+                for filter in &filters {
                     let mut fixed = HashMap::new();
-                    self.fixed_context(filter, &mut fixed)?;
+                    self.fixed_context(&filter.predicate, &filter.current_bindings, &mut fixed)?;
                     for (key, expr) in fixed {
-                        if !removed.contains(&key) {
-                            candidates.push((*position, key, expr));
+                        if !filter.removed.contains(&key) {
+                            candidates.push((filter.position, key, expr));
                         }
                     }
                 }
@@ -1079,24 +1146,25 @@ impl Lowerer<'_, '_> {
                         set_bindings.remove(&key);
                         set_errors.remove(&key);
                         ambient.remove(&key);
-                        for (_, removed, _) in &mut filters {
-                            removed.insert(key.clone());
+                        for filter in &mut filters {
+                            filter.removed.insert(key.clone());
                         }
                     }
                 }
                 "VISIBLE" => {
                     visible = true;
                     if let Some(predicate) = outer_where {
-                        filters.push((
-                            self.remap(
+                        filters.push(ContextFilter {
+                            predicate: self.remap(
                                 predicate.this.clone(),
                                 &[model_name, alias],
                                 "_inner",
                                 single,
                             )?,
-                            HashSet::new(),
+                            removed: HashSet::new(),
                             position,
-                        ));
+                            current_bindings: HashMap::new(),
+                        });
                     }
                 }
                 "WHERE" => {
@@ -1112,11 +1180,14 @@ impl Lowerer<'_, '_> {
                     // correlation. Only the model name and unqualified columns
                     // bind to the inner measure source; VISIBLE maps both aliases.
                     let predicate = self.remap(expression, &[model_name], "_inner", single)?;
-                    filters.push((
-                        self.replace_current(predicate, &bindings)?,
-                        HashSet::new(),
+                    // CURRENT is a captured context value, not another input
+                    // dimension. Keep it opaque until filter projection finishes.
+                    filters.push(ContextFilter {
+                        predicate,
+                        removed: HashSet::new(),
                         position,
-                    ));
+                        current_bindings: bindings,
+                    });
                 }
                 "SET" => {
                     has_set = true;
@@ -1151,8 +1222,8 @@ impl Lowerer<'_, '_> {
                     set_bindings.remove(&key);
                     set_errors.remove(&key);
                     ambient.remove(&key);
-                    for (_, removed, _) in &mut filters {
-                        removed.insert(key.clone());
+                    for filter in &mut filters {
+                        filter.removed.insert(key.clone());
                     }
                     if let Some(error) = binding_error {
                         set_errors.insert(key.clone(), error);
@@ -1216,8 +1287,11 @@ impl Lowerer<'_, '_> {
             return Err(SqlctxError::YardstickBinding(error));
         }
         let mut base = Vec::new();
-        for (filter, removed, _) in filters {
-            if let Some(predicate) = self.project_at_filter(filter, &removed)? {
+        for filter in filters {
+            if let Some(predicate) =
+                self.project_at_filter(filter.predicate, &filter.removed, &filter.current_bindings)?
+            {
+                let predicate = self.replace_current(predicate, &filter.current_bindings)?;
                 base.push(self.sql(&predicate)?);
             }
         }
@@ -1415,39 +1489,47 @@ impl Lowerer<'_, '_> {
         Ok(())
     }
 
-    fn fixed_value(expression: &Expression) -> bool {
+    fn fixed_value(expression: &Expression, bindings: &HashMap<String, Expression>) -> bool {
         match expression {
             Expression::Literal(_) | Expression::Null(_) | Expression::Boolean(_) => true,
-            Expression::Paren(paren) => Self::fixed_value(&paren.this),
-            Expression::Neg(neg) => Self::fixed_value(&neg.this),
+            Expression::Paren(paren) => Self::fixed_value(&paren.this, bindings),
+            Expression::Neg(neg) => Self::fixed_value(&neg.this, bindings),
             Expression::Add(binary)
             | Expression::Sub(binary)
             | Expression::Mul(binary)
             | Expression::Div(binary)
             | Expression::Mod(binary) => {
-                Self::fixed_value(&binary.left) && Self::fixed_value(&binary.right)
+                Self::fixed_value(&binary.left, bindings)
+                    && Self::fixed_value(&binary.right, bindings)
             }
-            _ => false,
+            _ => reference(expression).is_some_and(|(_, name)| bindings.contains_key(&name)),
         }
     }
 
     fn fixed_context(
         &self,
         expression: &Expression,
+        bindings: &HashMap<String, Expression>,
         fixed: &mut HashMap<String, Expression>,
     ) -> Result<()> {
         match expression {
-            Expression::Paren(paren) => self.fixed_context(&paren.this, fixed)?,
+            Expression::Paren(paren) => self.fixed_context(&paren.this, bindings, fixed)?,
             Expression::And(and) => {
-                self.fixed_context(&and.left, fixed)?;
-                self.fixed_context(&and.right, fixed)?;
+                self.fixed_context(&and.left, bindings, fixed)?;
+                self.fixed_context(&and.right, bindings, fixed)?;
             }
             Expression::Eq(eq) => {
-                if Self::fixed_value(&eq.right) {
-                    fixed.insert(self.signature(eq.left.clone())?, eq.right.clone());
+                if Self::fixed_value(&eq.right, bindings) {
+                    fixed.insert(
+                        self.signature(eq.left.clone())?,
+                        self.replace_current(eq.right.clone(), bindings)?,
+                    );
                 }
-                if Self::fixed_value(&eq.left) {
-                    fixed.insert(self.signature(eq.right.clone())?, eq.left.clone());
+                if Self::fixed_value(&eq.left, bindings) {
+                    fixed.insert(
+                        self.signature(eq.right.clone())?,
+                        self.replace_current(eq.left.clone(), bindings)?,
+                    );
                 }
             }
             _ => {}
@@ -1646,6 +1728,7 @@ impl Lowerer<'_, '_> {
         &self,
         expression: Expression,
         removed: &HashSet<String>,
+        bindings: &HashMap<String, Expression>,
     ) -> Result<Option<Expression>> {
         if removed.is_empty() {
             return Ok(Some(expression));
@@ -1655,6 +1738,7 @@ impl Lowerer<'_, '_> {
                 lowerer: &Lowerer<'_, '_>,
                 value: &Value,
                 removed: &HashSet<String>,
+                bindings: &HashMap<String, Expression>,
                 dropped: &mut bool,
                 retained: &mut bool,
             ) -> Result<()> {
@@ -1665,6 +1749,11 @@ impl Lowerer<'_, '_> {
                             return Ok(());
                         }
                         if let Ok(expression) = decode::<Expression>(value.clone()) {
+                            if reference(&expression)
+                                .is_some_and(|(_, name)| bindings.contains_key(&name))
+                            {
+                                return Ok(());
+                            }
                             // Match the complete target before descending into its
                             // inputs: replacing YEAR(date) does not replace date.
                             if removed.contains(&lowerer.signature(expression.clone())?) {
@@ -1689,12 +1778,12 @@ impl Lowerer<'_, '_> {
                             }
                         }
                         for child in fields.values() {
-                            visit(lowerer, child, removed, dropped, retained)?;
+                            visit(lowerer, child, removed, bindings, dropped, retained)?;
                         }
                     }
                     Value::Array(children) => {
                         for child in children {
-                            visit(lowerer, child, removed, dropped, retained)?;
+                            visit(lowerer, child, removed, bindings, dropped, retained)?;
                         }
                     }
                     _ => {}
@@ -1707,6 +1796,7 @@ impl Lowerer<'_, '_> {
                 self,
                 &encode(expression)?,
                 removed,
+                bindings,
                 &mut dropped,
                 &mut retained,
             )?;
@@ -1717,11 +1807,13 @@ impl Lowerer<'_, '_> {
             return Ok(Some(expression)); // Preserve unrelated predicate shape and evaluation.
         }
         let expression = match expression {
-            Expression::Paren(paren) => return self.project_at_filter(paren.this, removed),
+            Expression::Paren(paren) => {
+                return self.project_at_filter(paren.this, removed, bindings)
+            }
             Expression::And(mut and) => {
                 return match (
-                    self.project_at_filter(and.left.clone(), removed)?,
-                    self.project_at_filter(and.right.clone(), removed)?,
+                    self.project_at_filter(and.left.clone(), removed, bindings)?,
+                    self.project_at_filter(and.right.clone(), removed, bindings)?,
                 ) {
                     (Some(left), Some(right)) => {
                         and.left = left;
@@ -1742,7 +1834,7 @@ impl Lowerer<'_, '_> {
         }
         let normalized = Self::normalize_at_filter(expression)?;
         if matches!(normalized, Expression::And(_)) {
-            return self.project_at_filter(normalized, removed);
+            return self.project_at_filter(normalized, removed, bindings);
         }
         match dependencies(&normalized)? {
             (true, true) => Err(SqlctxError::YardstickBinding(

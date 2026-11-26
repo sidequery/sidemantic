@@ -756,6 +756,43 @@ FROM sales_yearly
     ).fetchall() == [(225.0,)]
 
 
+@pytest.mark.parametrize("replacement,expected", [("SET year=2022", 150.0), ("ALL year", 375.0)])
+def test_yardstick_current_filter_can_be_replaced(yardstick_layer, replacement, expected):
+    assert yardstick_layer.sql(
+        f"SELECT o.year, AGGREGATE(revenue) AT (WHERE year=CURRENT year {replacement}) "
+        "FROM sales_v o GROUP BY o.year ORDER BY o.year"
+    ).fetchall() == [(2022, expected), (2023, expected)]
+
+
+def test_yardstick_current_filter_retains_independent_bindings(yardstick_layer):
+    assert yardstick_layer.sql(
+        "SELECT o.year, o.region, AGGREGATE(revenue) "
+        "AT (WHERE year=CURRENT year AND region=CURRENT region SET year=2022) "
+        "FROM sales_v o GROUP BY o.year, o.region ORDER BY o.year, o.region"
+    ).fetchall() == [(2022, "EU", 50.0), (2022, "US", 100.0), (2023, "EU", 50.0), (2023, "US", 100.0)]
+    # A later CURRENT reads the WHERE binding captured from the original group.
+    assert yardstick_layer.sql(
+        "SELECT o.year, AGGREGATE(revenue) "
+        "AT (WHERE year=CURRENT year SET year=CURRENT year-1) "
+        "FROM sales_v o GROUP BY o.year ORDER BY o.year"
+    ).fetchall() == [(2022, None), (2023, 150.0)]
+
+
+@pytest.mark.parametrize("year", ["year", "s.year"])
+@pytest.mark.parametrize("grouping", ["", "GROUP BY year", "GROUP BY s.year", "GROUP BY next_year"])
+def test_yardstick_wildcard_grouping_precedes_measure_output_alias(tmp_path, year, grouping):
+    (tmp_path / "wildcard.sql").write_text("CREATE VIEW sales_v AS SELECT *, COUNT(*) AS MEASURE tally FROM sales;")
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    try:
+        layer.adapter.execute("CREATE TABLE sales(year INTEGER); INSERT INTO sales VALUES (2022), (2022), (2023)")
+        load_from_directory(layer, tmp_path)
+        assert layer.sql(
+            f"SELECT AGGREGATE(tally) AS year, {year}+1 AS next_year FROM sales_v s {grouping} ORDER BY next_year"
+        ).fetchall() == [(2, 2023), (1, 2024)]
+    finally:
+        layer.adapter.close()
+
+
 def test_yardstick_visible_set_projects_conjuncts_and_rejects_mixed_predicates(yardstick_layer):
     query = "SELECT year, AGGREGATE(revenue) AT (VISIBLE SET year = year - 1) FROM sales_v WHERE {}"
     assert yardstick_layer.sql(query.format("year = 2023 AND region = 'US'")).fetchall() == [(2023, 100.0)]

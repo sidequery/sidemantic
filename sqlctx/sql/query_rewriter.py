@@ -8,6 +8,7 @@ import re
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import cache
 from typing import Any
 
 import sqlglot
@@ -15,6 +16,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.tokens import TokenType
 
+from sqlctx.core.model import Model
 from sqlctx.core.semantic_graph import SemanticGraph
 from sqlctx.rust_bridge import rewrite_semantic_input
 from sqlctx.semantic_handoff import (
@@ -158,6 +160,7 @@ class QueryRewriter:
         use_rust_rewriter: bool | None = None,
         rust_no_fallback: bool | None = None,
         allow_non_additive_unsafe: bool = False,
+        model_columns: Callable[[Model], list[dict]] | None = None,
     ):
         """Initialize query rewriter.
 
@@ -169,8 +172,10 @@ class QueryRewriter:
             use_rust_rewriter: Override the environment-controlled Rust rewrite path
             rust_no_fallback: Reject unsupported Rust requirements instead of falling back
             allow_non_additive_unsafe: Aggregate all snapshots without semi-additive protection
+            model_columns: Optional catalog lookup for binding aliases on wildcard Yardstick views
         """
         self.graph = graph
+        self._model_columns = model_columns
         self.dialect = dialect
         self.use_preaggregations = use_preaggregations
         self.allow_non_additive_unsafe = allow_non_additive_unsafe
@@ -3700,18 +3705,31 @@ class QueryRewriter:
         if not scope_placeholders:
             return select_scope
 
+        # Physical columns take precedence over aliases. A wildcard import needs
+        # catalog metadata to prove a name is absent; resolve it only on collision.
+        @cache
+        def source_columns(model_name: str) -> set[str] | None:
+            model = self.graph.get_model(model_name)
+            names = {dimension.name.lower() for dimension in model.dimensions}
+            if self.dialect == "duckdb" and self._yardstick_view_has_wildcard(model):
+                columns = self._model_columns(model) if self._model_columns else []
+                if not columns:
+                    return None
+                names.update(column["column_name"].lower() for column in columns)
+            return names
+
+        def can_bind_alias(name: str) -> bool:
+            names = source_columns(source_models[default_alias])
+            return names is not None and name.lower() not in names
+
         if single_model_scope and self.dialect == "duckdb":
-            model = self.graph.get_model(source_models[default_alias])
-            known_columns = {dimension.name.lower() for dimension in model.dimensions}
             measure_aliases: dict[str, exp.Expression] = {}
             for projection in select_scope.expressions:
                 expression = projection.this if isinstance(projection, exp.Alias) else projection
                 replacements = {
                     id(column): measure_aliases[column.name.lower()]
                     for column in self._columns_without_nested_scopes(expression)
-                    if not column.table
-                    and column.name.lower() in measure_aliases
-                    and column.name.lower() not in known_columns
+                    if not column.table and column.name.lower() in measure_aliases and can_bind_alias(column.name)
                 }
                 if replacements:
                     expanded = expression.transform(
@@ -3816,7 +3834,6 @@ class QueryRewriter:
         if group_clause:
             self._resolve_yardstick_group_ordinals(group_clause, select_scope.expressions)
         if group_clause and default_alias and single_model_scope:
-            model = self.graph.get_model(source_models[default_alias])
             group_aliases = {
                 item.alias.lower(): item.this for item in select_scope.expressions if isinstance(item, exp.Alias)
             }
@@ -3827,7 +3844,7 @@ class QueryRewriter:
                     if isinstance(expr, exp.Column)
                     and not expr.table
                     and expr.name.lower() in group_aliases
-                    and not model.get_dimension(expr.name)
+                    and can_bind_alias(expr.name)
                     else expr
                     for expr in group_clause.expressions
                 ],
@@ -4733,6 +4750,10 @@ class QueryRewriter:
         )
         return expr, column.name
 
+    def _yardstick_view_has_wildcard(self, model: Model) -> bool:
+        view_sql = (model.metadata or {}).get("yardstick", {}).get("view_sql")
+        return bool(view_sql and any(item.is_star for item in parse_fragment(view_sql, self.dialect).expressions))
+
     def _expand_yardstick_measure_exclusions(
         self, select: exp.Select, source_models: dict[str, str], default_alias: str | None
     ) -> exp.Select:
@@ -4767,8 +4788,7 @@ class QueryRewriter:
                 continue
 
             if explicit_view is None:
-                view = sqlglot.parse_one(view_sql, read=self.dialect)
-                explicit_view = not any(item.is_star for item in view.expressions)
+                explicit_view = not self._yardstick_view_has_wildcard(model)
             if not explicit_view:
                 projections.append(projection)
                 continue
@@ -5157,6 +5177,7 @@ class QueryRewriter:
         context_dimensions: list[dict[str, str]] = []
         model = self.graph.get_model(model_name)
         seen_signatures: set[tuple[str, str]] = set()
+        wildcard_source = single_model_scope and self.dialect == "duckdb" and self._yardstick_view_has_wildcard(model)
 
         for raw_group_expr in group_expressions:
             expanded_group_expressions = self._expand_group_expression_for_yardstick_context(raw_group_expr)
@@ -5209,7 +5230,12 @@ class QueryRewriter:
                         if dim_expr.strip().lower() == dimension.name.lower():
                             unsafe_aliases.add(dimension.name.lower())
 
-                if projection_alias and projection_alias.lower() not in unsafe_aliases:
+                if wildcard_source:
+                    # An output alias can shadow a physical column, or appear after
+                    # the measure. Correlate on the qualified grouping key itself.
+                    if not isinstance(outer_expr, exp.Column):
+                        outer_sql = f"ANY_VALUE({outer_sql})"
+                elif projection_alias and projection_alias.lower() not in unsafe_aliases:
                     outer_sql = exp.to_identifier(projection_alias).sql(dialect=self.dialect)
 
                 context_dimensions.append(

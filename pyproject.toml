@@ -1,6 +1,6 @@
 [project]
 name = "sqlctx"
-version = "0.13.2"
+version = "0.14.0"
 description = "Universal semantic layer - import from Cube, dbt, LookML, Hex, and more"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -22,7 +22,7 @@ sqlctx = "sqlctx.cli:app"
 [project.optional-dependencies]
 rust = [
     # PYODIDE: Native wheels are excluded from Emscripten installs.
-    "sqlctx-rs==0.13.2; sys_platform != 'emscripten'",
+    "sqlctx-rs==0.14.0; sys_platform != 'emscripten'",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -120,7 +120,7 @@ lsp = [
     "pygls>=2.0.0",
 ]
 dax = [
-    "sqlctx-dax>=0.13.2",
+    "sqlctx-dax>=0.14.0",
 ]
 lookml = [
     "lkml>=1.3.7",

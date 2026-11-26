@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sqlctx-dax"
-version = "0.13.2"
+version = "0.14.0"
 description = "Python bindings for dax-parser"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sqlctx-rs"
-version = "0.13.2"
+version = "0.14.0"
 description = "Standalone Rust runtime bindings for sqlctx"
 license = "AGPL-3.0-only"
 requires-python = ">=3.11"

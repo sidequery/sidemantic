@@ -3658,7 +3658,7 @@ wheels = [
 
 [[package]]
 name = "sqlctx"
-version = "0.13.2"
+version = "0.14.0"
 source = { editable = "." }
 dependencies = [
     { name = "antlr4-python3-runtime" },
@@ -3944,12 +3944,12 @@ dev = [
 
 [[package]]
 name = "sqlctx-dax"
-version = "0.13.2"
+version = "0.14.0"
 source = { directory = "crates/dax-pyo3" }
 
 [[package]]
 name = "sqlctx-rs"
-version = "0.13.2"
+version = "0.14.0"
 source = { directory = "sqlctx-rs" }
 
 [[package]]

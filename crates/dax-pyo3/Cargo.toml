@@ -1,6 +1,6 @@
 [package]
 name = "dax-pyo3"
-version = "0.13.2"
+version = "0.14.0"
 edition = "2021"
 description = "Python bindings for dax-parser"
 license = "AGPL-3.0-only"

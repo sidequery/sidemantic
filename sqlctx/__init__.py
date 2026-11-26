@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.13.2"
+__version__ = "0.14.0"
 
 from sqlctx.core.consumption import Explore, SavedQuery, View
 from sqlctx.core.dimension import Dimension

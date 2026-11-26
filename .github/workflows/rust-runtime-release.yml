@@ -89,7 +89,7 @@ jobs:
             artifact: linux-x86_64
           - os: macos-15-intel
             artifact: macos-x86_64
-          - os: macos-14
+          - os: macos-26
             artifact: macos-arm64
           - os: windows-latest
             artifact: windows-x86_64

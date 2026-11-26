@@ -44,9 +44,10 @@ runs:
         MBX_CACHE_DIR: ${{ github.workspace }}/.ci-mbx
         MBX_TARGET_VIEWS: '0'
       with:
-        version: ${{ (runner.os != 'macOS' || runner.arch != 'X64') && '1.11.0' || '' }}
+        # MBX 1.27.0 fixes native Windows Cargo build-script dispatch (upstream #787).
+        version: ${{ runner.os == 'Windows' && '1.27.0' || (runner.os != 'macOS' || runner.arch != 'X64') && '1.11.0' || '' }}
         github-cache-mode: objects
-        cache-generation: sqlctx-v1-${{ inputs.suffix }}
+        cache-generation: ${{ runner.os == 'Windows' && 'sqlctx-windows-mbx-1.27.0' || 'sqlctx-v1' }}-${{ inputs.suffix }}
 
     - name: Remove imported Rust cache archive
       env:

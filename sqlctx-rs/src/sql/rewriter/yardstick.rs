@@ -23,6 +23,13 @@ struct Call {
     visible: bool,
 }
 
+struct ContextFilter {
+    predicate: Expression,
+    removed: HashSet<String>,
+    position: usize,
+    current_bindings: HashMap<String, Expression>,
+}
+
 struct Lowerer<'a, 'g> {
     rewriter: &'a QueryRewriter<'g>,
     source_dialect: DialectType,
@@ -159,6 +166,26 @@ impl Lowerer<'_, '_> {
         )?)
     }
 
+    fn has_wildcard_source(&self, model_name: &str) -> Result<bool> {
+        let view_sql = self
+            .rewriter
+            .graph
+            .get_model(model_name)
+            .and_then(|model| model.metadata.as_ref())
+            .and_then(|metadata| metadata.get("yardstick"))
+            .and_then(|metadata| metadata.get("view_sql"))
+            .and_then(Value::as_str);
+        let Some(view_sql) = view_sql else {
+            return Ok(false);
+        };
+        let statements = parse_sql_with_dialect(view_sql, self.source_dialect)?;
+        Ok(
+            matches!(statements.as_slice(), [Expression::Select(select)] if select.expressions.iter().any(|projection| {
+                matches!(projection, Expression::Star(_)) || reference(projection).is_some_and(|(_, name)| name == "*")
+            })),
+        )
+    }
+
     fn register(&mut self, call: Call) -> String {
         let mut index = self.calls.len();
         loop {
@@ -235,7 +262,7 @@ impl Lowerer<'_, '_> {
                 index += 1;
                 continue;
             };
-            let mut modifiers = Vec::new();
+            let mut clauses = Vec::new();
             while stream
                 .get(end + 1)
                 .is_some_and(|token| token.text.eq_ignore_ascii_case("AT"))
@@ -245,7 +272,7 @@ impl Lowerer<'_, '_> {
             {
                 let open = end + 2;
                 end = matching(&stream, open)?;
-                modifiers.extend(split_modifiers(
+                clauses.push(split_modifiers(
                     &sql[stream[open].span.end..stream[end].span.start],
                     self.source_dialect,
                 )?);
@@ -253,7 +280,7 @@ impl Lowerer<'_, '_> {
             output.push_str(&sql[cursor..stream[start].span.start]);
             output.push_str(&self.register(Call {
                 argument,
-                modifiers,
+                modifiers: clauses.into_iter().rev().flatten().collect(),
                 visible,
             }));
             cursor = stream[end].span.end;
@@ -481,6 +508,28 @@ impl Lowerer<'_, '_> {
             .iter()
             .map(|projection| reference(projection).map(|(_, name)| name))
             .collect::<Vec<_>>();
+        let wildcard_source = single
+            && self.source_dialect == DialectType::DuckDB
+            && self.has_wildcard_source(&sources[0].0)?;
+        if wildcard_source {
+            // Wildcard imports leave physical columns undeclared. In projection
+            // expressions they take precedence over same-named output aliases.
+            // Keep ORDER BY/HAVING aliases outside this qualification pass.
+            for projection in &mut select.expressions {
+                let mut expression = encode(&*projection)?;
+                map_columns(&mut expression, &mut |node| {
+                    if reference(&node).is_some_and(|(table, name)| {
+                        table.is_none() && !scope_calls.contains(&name)
+                    }) {
+                        self.remap(node, &[], &sources[0].1, true)
+                    } else {
+                        Ok(node)
+                    }
+                })?;
+                *projection = decode(expression)?;
+            }
+            value = encode(&select)?;
+        }
         // Expand declared dimension expressions before computing context keys.
         map_columns(&mut value, &mut |node| {
             let Some((table, name)) = reference(&node) else {
@@ -562,6 +611,40 @@ impl Lowerer<'_, '_> {
                 });
             }
         }
+        if select
+            .group_by
+            .as_ref()
+            .is_some_and(|group| group.all == Some(true))
+            && !select
+                .expressions
+                .iter()
+                .any(|projection| matches!(projection, Expression::Star(_)))
+        {
+            let mut groups = Vec::new();
+            for projection in &select.expressions {
+                let expression = match projection {
+                    Expression::Alias(alias) => &alias.this,
+                    other => other,
+                };
+                if !contains_call(expression)?
+                    && !has_aggregate_semantics(&encode(expression)?)
+                    && !matches!(
+                        expression,
+                        Expression::Literal(_) | Expression::Null(_) | Expression::Boolean(_)
+                    )
+                {
+                    groups.push(expression.clone());
+                }
+            }
+            if !groups.is_empty() {
+                select.group_by = Some(GroupBy {
+                    expressions: groups,
+                    all: None,
+                    totals: false,
+                    comments: vec![],
+                });
+            }
+        }
         if let Some(group) = &mut select.group_by {
             for expression in &mut group.expressions {
                 if let Ok(index) = self.sql(expression)?.parse::<usize>() {
@@ -576,7 +659,13 @@ impl Lowerer<'_, '_> {
                     }
                 } else if let Some((None, name)) = reference(expression) {
                     if let Some(Expression::Alias(alias)) = select.expressions.iter().find(|projection| matches!(projection, Expression::Alias(alias) if alias.alias.name == name)) {
-                        *expression = alias.this.clone();
+                        *expression = if wildcard_source && contains_call(&alias.this)? {
+                            // A wildcard input column wins over a measure alias
+                            // with the same name, just as it does in SELECT.
+                            self.remap(expression.clone(), &[], &sources[0].1, true)?
+                        } else {
+                            alias.this.clone()
+                        };
                     }
                 }
             }
@@ -616,6 +705,18 @@ impl Lowerer<'_, '_> {
                 }
             }
         }
+        let mut having_calls = HashSet::new();
+        if let Some(having) = &select.having {
+            map_columns(&mut encode(&having.this)?, &mut |node| {
+                if let Some((None, name)) = reference(&node) {
+                    if scope_calls.contains(&name) {
+                        having_calls.insert(name);
+                    }
+                }
+                Ok(node)
+            })?;
+        }
+        let no_aliases = HashMap::new();
         let mut replacements = HashMap::new();
         for name in &scope_calls {
             let call = &self.calls[name];
@@ -636,7 +737,11 @@ impl Lowerer<'_, '_> {
                 &groups,
                 select.where_clause.as_ref(),
                 single,
-                &context_aliases,
+                if having_calls.contains(name) {
+                    &no_aliases
+                } else {
+                    &context_aliases
+                },
                 &mut HashSet::new(),
                 &mut correlated,
             )?;
@@ -747,10 +852,12 @@ impl Lowerer<'_, '_> {
                 "yardstick() is not supported while semantic security controls are active".into(),
             ));
         }
-        let [Expression::Literal(polyglot_sql::expressions::Literal::String(sql))] =
-            function.args.as_slice()
-        else {
-            return Err(invalid("yardstick() requires one literal SQL query"));
+        let sql = match function.args.as_slice() {
+            [Expression::Literal(polyglot_sql::expressions::Literal::String(sql))] => sql.clone(),
+            [Expression::Literal(polyglot_sql::expressions::Literal::DollarString(sql))] => {
+                polyglot_sql::tokens::parse_dollar_string_token(sql).1
+            }
+            _ => return Err(invalid("yardstick() requires one literal SQL query")),
         };
         let mut validator = Lowerer {
             rewriter: self.rewriter,
@@ -759,7 +866,7 @@ impl Lowerer<'_, '_> {
             reserved: HashSet::new(),
             changed: false,
         };
-        let (normalized, _) = validator.normalize(sql)?;
+        let (normalized, _) = validator.normalize(&sql)?;
         let normalized = dialects::query(&normalized, self.source_dialect)?;
         let statements = parse_sql_with_dialect(&normalized, DialectType::DuckDB)?;
         if statements.len() != 1
@@ -792,7 +899,7 @@ impl Lowerer<'_, '_> {
             ));
         }
         let rewritten = self.rewriter.rewrite_with_output_dialect(
-            sql,
+            &sql,
             self.source_dialect,
             DialectType::DuckDB,
         )?;
@@ -876,11 +983,14 @@ impl Lowerer<'_, '_> {
             }
             Some(aggregation) => format!("{}({expression_sql})", aggregation.as_sql()),
         };
+        let wildcard_source = single
+            && self.source_dialect == DialectType::DuckDB
+            && self.has_wildcard_source(model_name)?;
         let mut context = Vec::new();
         for group in groups {
             let mut expanded = Vec::new();
-            expand_groups(group, &mut expanded)?;
-            for group in expanded {
+            expand_groups(group, false, &mut expanded)?;
+            for (group, optional) in expanded {
                 let mut columns = Vec::new();
                 map_columns(&mut encode(&group)?, &mut |node| {
                     if let Some(reference) = reference(&node) {
@@ -907,16 +1017,29 @@ impl Lowerer<'_, '_> {
                     continue;
                 }
                 let signature = self.signature(group.clone())?;
-                if context.iter().any(|(key, _, _)| key == &signature) {
-                    continue;
-                }
                 let aliases = columns
                     .iter()
                     .filter_map(|(table, _)| table.as_deref())
                     .collect::<Vec<_>>();
                 let inner = self.remap(group.clone(), &aliases, "_inner", single)?;
                 let mut outer = self.remap(group, &[model_name], alias, single)?;
-                if let Some(output_alias) = context_aliases.get(&signature) {
+                // A subtotal omits this expression, rather than grouping its NULL values.
+                // GROUPING must refer to the group expression, not its output alias.
+                let grouping = optional.then(|| self.sql(&outer)).transpose()?;
+                if context.iter().any(|(key, _, _, existing_grouping)| {
+                    key == &signature && existing_grouping == &grouping
+                }) {
+                    continue;
+                }
+                if wildcard_source {
+                    // Correlate on the qualified group key itself: an output
+                    // alias may shadow a physical column or follow the measure.
+                    if reference(&outer).is_none() {
+                        outer = self.expression(&format!("ANY_VALUE({})", self.sql(&outer)?))?;
+                    }
+                } else if let Some(output_alias) =
+                    context_aliases.get(&signature).filter(|_| !optional)
+                {
                     // SELECT * imports can expose physical grouping columns
                     // without declaring dimensions. An unqualified output
                     // alias with that same name would bind to the inner source
@@ -938,75 +1061,141 @@ impl Lowerer<'_, '_> {
                         outer = Expression::Identifier(Identifier::new(output_alias));
                     }
                 }
-                context.push((signature, self.sql(&inner)?, self.sql(&outer)?));
+                context.push((signature, self.sql(&inner)?, self.sql(&outer)?, grouping));
             }
         }
-        let mut current = context
-            .iter()
-            .map(|(key, _, _)| key.clone())
-            .collect::<HashSet<_>>();
-        if let Some(predicate) = outer_where {
-            self.fixed_context(&predicate.this, &mut current)?;
-        }
         let mut active = context.clone();
-        let mut visible = call.visible && call.modifiers.is_empty();
-        let mut where_predicates = Vec::new();
+        let implicit_visible = call.visible && call.modifiers.is_empty();
+        let mut ambient = HashMap::new();
+        if let Some(predicate) = outer_where {
+            self.fixed_context(&predicate.this, &HashMap::new(), &mut ambient)?;
+        }
+        let mut filters: Vec<ContextFilter> = Vec::new();
         let mut set_predicates = std::collections::BTreeMap::new();
-        let mut removed = HashSet::new();
-        let has_set = call.modifiers.iter().any(|modifier| {
-            modifier
-                .split_whitespace()
-                .next()
-                .is_some_and(|head| head.eq_ignore_ascii_case("SET"))
-        });
-        let mut global_all = false;
-        for modifier in call.modifiers.iter().rev() {
+        let mut set_bindings: HashMap<String, (usize, Expression)> = HashMap::new();
+        let mut set_errors = std::collections::BTreeMap::new();
+        let mut visible = implicit_visible;
+        let mut has_all = false;
+        let mut has_global_all = false;
+        let mut has_set = false;
+        if implicit_visible {
+            if let Some(predicate) = outer_where {
+                filters.push(ContextFilter {
+                    predicate: self.remap(
+                        predicate.this.clone(),
+                        &[model_name, alias],
+                        "_inner",
+                        single,
+                    )?,
+                    removed: HashSet::new(),
+                    position: 0,
+                    current_bindings: HashMap::new(),
+                });
+            }
+        }
+        for (position, modifier) in call.modifiers.iter().enumerate() {
             let stream = tokens(modifier, self.source_dialect)?;
             let Some(head) = stream.first() else { continue };
             let body = modifier[head.span.end..].trim();
+
+            let current = || -> Result<HashMap<String, Expression>> {
+                let mut effective = ambient.clone();
+                for (key, _, outer, _) in &active {
+                    effective.insert(key.clone(), self.expression(outer)?);
+                }
+                // CURRENT reads the most recently applied binding, whether it
+                // came from SET, WHERE, or a later VISIBLE predicate.
+                let mut candidates = Vec::new();
+                for filter in &filters {
+                    let mut fixed = HashMap::new();
+                    self.fixed_context(&filter.predicate, &filter.current_bindings, &mut fixed)?;
+                    for (key, expr) in fixed {
+                        if !filter.removed.contains(&key) {
+                            candidates.push((filter.position, key, expr));
+                        }
+                    }
+                }
+                for (key, (position, expression)) in &set_bindings {
+                    candidates.push((*position, key.clone(), expression.clone()));
+                }
+                candidates.sort_by_key(|(position, _, _)| *position);
+                for (_, key, expression) in candidates {
+                    effective.insert(key, expression);
+                }
+                Ok(effective)
+            };
+
             match head.text.to_ascii_uppercase().as_str() {
                 "ALL" if body.is_empty() => {
+                    has_all = true;
+                    has_global_all = true;
                     active.clear();
                     set_predicates.clear();
-                    where_predicates.clear();
+                    set_bindings.clear();
+                    set_errors.clear();
+                    filters.clear();
+                    ambient.clear();
                     visible = false;
-                    global_all = true;
                 }
-                _ if global_all => {}
                 "ALL" => {
+                    has_all = true;
                     for target in self.all_targets(body)? {
                         let key = self.signature(target)?;
-                        active.retain(|(signature, _, _)| signature != &key);
-                        removed.insert(key);
+                        active.retain(|(signature, _, _, _)| signature != &key);
+                        set_predicates.remove(&key);
+                        set_bindings.remove(&key);
+                        set_errors.remove(&key);
+                        ambient.remove(&key);
+                        for filter in &mut filters {
+                            filter.removed.insert(key.clone());
+                        }
                     }
                 }
                 "VISIBLE" => {
-                    if !has_set {
-                        visible = true;
-                        where_predicates.clear();
+                    visible = true;
+                    if let Some(predicate) = outer_where {
+                        filters.push(ContextFilter {
+                            predicate: self.remap(
+                                predicate.this.clone(),
+                                &[model_name, alias],
+                                "_inner",
+                                single,
+                            )?,
+                            removed: HashSet::new(),
+                            position,
+                            current_bindings: HashMap::new(),
+                        });
                     }
                 }
                 "WHERE" => {
-                    let expression = self.remap(
-                        self.authored_expression(body)?,
-                        &[model_name],
-                        "_inner",
-                        single,
-                    )?;
-                    where_predicates = vec![self.sql(&expression)?];
+                    let (expression, bindings) = self.current(body, &current()?)?;
+                    active.clear();
+                    set_predicates.clear();
+                    set_bindings.clear();
+                    set_errors.clear();
+                    filters.clear();
+                    ambient.clear();
                     visible = false;
-                    if call.modifiers.len() == 1 {
-                        active.clear();
-                    }
+                    // An explicit query alias in authored WHERE is an outer
+                    // correlation. Only the model name and unqualified columns
+                    // bind to the inner measure source; VISIBLE maps both aliases.
+                    let predicate = self.remap(expression, &[model_name], "_inner", single)?;
+                    // CURRENT is a captured context value, not another input
+                    // dimension. Keep it opaque until filter projection finishes.
+                    filters.push(ContextFilter {
+                        predicate,
+                        removed: HashSet::new(),
+                        position,
+                        current_bindings: bindings,
+                    });
                 }
                 "SET" => {
-                    visible = false;
-                    let direct = self.authored_expression(&self.current(body, &HashSet::new())?)?;
+                    has_set = true;
+                    let (direct, empty) = self.current(body, &HashMap::new())?;
+                    let direct = self.replace_current(direct, &empty)?;
+                    let mut binding_error = None;
                     if let Expression::Eq(eq) = direct {
                         let key = self.signature(eq.left.clone())?;
-                        if removed.contains(&key) {
-                            continue;
-                        }
                         if let Some((_, dimension)) = reference(&eq.left) {
                             let mut self_reference = false;
                             map_columns(&mut encode(eq.right)?, &mut |node| {
@@ -1014,23 +1203,33 @@ impl Lowerer<'_, '_> {
                                 Ok(node)
                             })?;
                             if self_reference
-                                && !context.iter().any(|(signature, _, _)| signature == &key)
+                                && !context.iter().any(|(signature, _, _, _)| signature == &key)
                             {
-                                return Err(SqlctxError::YardstickBinding(format!(
+                                binding_error = Some(format!(
                                     "AT ({modifier}) references {dimension}, but the query does not group by {dimension}. Add {dimension} to SELECT/GROUP BY or use a constant SET value."
-                                )));
+                                ));
                             }
                         }
                     }
-                    let rewritten = self.current(body, &current)?;
-                    let expression = self.authored_expression(&rewritten)?;
+
+                    let (expression, bindings) = self.current(body, &current()?)?;
+                    let key = match &expression {
+                        Expression::Eq(eq) => self.signature(eq.left.clone())?,
+                        Expression::In(set) => self.signature(set.this.clone())?,
+                        _ => return Err(invalid(format!("Unsupported SET modifier: {modifier}"))),
+                    };
+                    active.retain(|(signature, _, _, _)| signature != &key);
+                    set_bindings.remove(&key);
+                    set_errors.remove(&key);
+                    ambient.remove(&key);
+                    for filter in &mut filters {
+                        filter.removed.insert(key.clone());
+                    }
+                    if let Some(error) = binding_error {
+                        set_errors.insert(key.clone(), error);
+                    }
                     match expression {
                         Expression::Eq(eq) => {
-                            let key = self.signature(eq.left.clone())?;
-                            active.retain(|(signature, _, _)| signature != &key);
-                            if removed.contains(&key) {
-                                continue;
-                            }
                             let left =
                                 self.remap(eq.left, &[model_name, alias], "_inner", single)?;
                             let mut right = encode(eq.right)?;
@@ -1055,6 +1254,8 @@ impl Lowerer<'_, '_> {
                                 Ok(node)
                             })?;
                             let right = self.remap(decode(right)?, &[model_name], alias, single)?;
+                            let right = self.replace_current(right, &bindings)?;
+                            set_bindings.insert(key.clone(), (position, right.clone()));
                             set_predicates.insert(
                                 key,
                                 format!(
@@ -1065,59 +1266,74 @@ impl Lowerer<'_, '_> {
                             );
                         }
                         Expression::In(in_expr) => {
-                            let key = self.signature(in_expr.this.clone())?;
-                            if removed.contains(&key) {
-                                continue;
-                            }
-                            active.retain(|(signature, _, _)| signature != &key);
                             let expression = self.remap(
                                 Expression::In(in_expr),
-                                &[model_name],
+                                &[model_name, alias],
                                 "_inner",
                                 single,
                             )?;
+                            let expression = self.replace_current(expression, &bindings)?;
                             set_predicates.insert(key, self.sql(&expression)?);
                         }
-                        _ => return Err(invalid(format!("Unsupported SET modifier: {modifier}"))),
+                        _ => unreachable!(),
                     }
                 }
                 _ => return Err(invalid(format!("Unsupported AT modifier: {modifier}"))),
             }
         }
+        // A later ALL, WHERE, or SET can discard an invalid self-reference.
+        // Only bindings that survive the complete modifier chain must validate.
+        if let Some(error) = set_errors.into_values().next() {
+            return Err(SqlctxError::YardstickBinding(error));
+        }
+        let mut base = Vec::new();
+        for filter in filters {
+            if let Some(predicate) =
+                self.project_at_filter(filter.predicate, &filter.removed, &filter.current_bindings)?
+            {
+                let predicate = self.replace_current(predicate, &filter.current_bindings)?;
+                base.push(self.sql(&predicate)?);
+            }
+        }
+        let no_replacements = std::collections::BTreeMap::new();
+        // Like upstream, a global ALL is a deliberate reset of the visible
+        // filters, even if a later clause adds an explicit replacement.
+        let warning_modifier = if visible {
+            None
+        } else if has_all {
+            Some("ALL")
+        } else if has_set {
+            Some("SET")
+        } else {
+            None
+        };
         self.warn_dropped_filters(
             model,
             alias,
             name,
-            call,
             outer_where,
             &active,
-            &where_predicates,
-            &set_predicates,
-            visible,
+            if has_global_all { &[] } else { &base },
+            if has_global_all {
+                &no_replacements
+            } else {
+                &set_predicates
+            },
+            warning_modifier,
         )?;
-        let mut base = where_predicates;
-        if visible {
-            if let Some(predicate) = outer_where {
-                let expression = self.remap(
-                    predicate.this.clone(),
-                    &[model_name, alias],
-                    "_inner",
-                    single,
-                )?;
-                base.push(self.sql(&expression)?);
-            }
-        }
         for filter in &metric.filters {
             let expression = self.expression(&filter.replace("{model}", "_inner"))?;
             let expression = self.remap(expression, &[model_name, alias], "_inner", single)?;
             base.push(self.sql(&expression)?);
         }
         let mut post = set_predicates.into_values().collect::<Vec<_>>();
-        post.extend(
-            active
-                .into_iter()
-                .map(|(_, inner, outer)| format!("({inner}) IS NOT DISTINCT FROM ({outer})")),
-        );
+        post.extend(active.into_iter().map(|(_, inner, outer, grouping)| {
+            let equality = format!("({inner}) IS NOT DISTINCT FROM ({outer})");
+            match grouping {
+                Some(group) => format!("GROUPING({group}) = 1 OR ({equality})"),
+                None => equality,
+            }
+        }));
         let source = model
             .sql
             .as_ref()
@@ -1139,7 +1355,11 @@ impl Lowerer<'_, '_> {
             || contains_kind(&encode(&expression)?, "window_function")
         {
             let message = name.replace('\'', "''");
-            format!("(SELECT CASE WHEN COUNT(*) = 0 THEN NULL WHEN COUNT(DISTINCT __ys_window_value) = 1 THEN MIN(__ys_window_value) ELSE error('Window measure {message} returned multiple values for the evaluation context') END FROM (SELECT _inner.*, {aggregate} AS __ys_window_value FROM {source} AS _inner{}) AS _inner{})", predicate_clause(&base), predicate_clause(&post))
+            format!(
+                "(SELECT CASE WHEN COUNT(*) = 0 THEN NULL WHEN COUNT(DISTINCT __ys_window_value) = 1 THEN MIN(__ys_window_value) ELSE error('Window measure {message} returned multiple values for the evaluation context') END FROM (SELECT _inner.*, {aggregate} AS __ys_window_value FROM {source} AS _inner{}) AS _inner{})",
+                predicate_clause(&base),
+                predicate_clause(&post)
+            )
         } else {
             format!(
                 "(SELECT {aggregate} FROM {source} AS _inner{})",
@@ -1156,26 +1376,15 @@ impl Lowerer<'_, '_> {
         model: &crate::core::Model,
         alias: &str,
         name: &str,
-        call: &Call,
         outer_where: Option<&Where>,
-        active: &[(String, String, String)],
+        active: &[(String, String, String, Option<String>)],
         where_predicates: &[String],
         set_predicates: &std::collections::BTreeMap<String, String>,
-        visible: bool,
+        warning_modifier: Option<&str>,
     ) -> Result<()> {
-        let Some(outer_where) = outer_where else {
+        let (Some(outer_where), Some(warning_modifier)) = (outer_where, warning_modifier) else {
             return Ok(());
         };
-        if visible
-            || !call.modifiers.iter().any(|modifier| {
-                modifier
-                    .split_whitespace()
-                    .next()
-                    .is_some_and(|head| head.eq_ignore_ascii_case("ALL"))
-            })
-        {
-            return Ok(());
-        }
         let mut source_names = model
             .dimensions
             .iter()
@@ -1213,7 +1422,7 @@ impl Lowerer<'_, '_> {
             return Ok(());
         }
         let mut encoded = HashSet::new();
-        for (_, inner, _) in active {
+        for (_, inner, _, _) in active {
             let expression = self.expression(inner)?;
             if reference(&expression).is_some() {
                 encoded.extend(source_columns(&expression)?);
@@ -1247,7 +1456,7 @@ impl Lowerer<'_, '_> {
         dropped.sort();
         if !dropped.is_empty() {
             self.rewriter.warnings.borrow_mut().push(format!(
-                "AT (ALL ...) on AGGREGATE({name}) does not preserve outer WHERE filter(s) on ungrouped dimension(s): {}. Add the filter dimension(s) to SELECT/GROUP BY or use an explicit AT modifier that encodes the intended denominator.", dropped.join(", ")
+                "AT ({warning_modifier} ...) on AGGREGATE({name}) does not preserve outer WHERE filter(s) on ungrouped dimension(s): {}. Add the filter dimension(s) to SELECT/GROUP BY or use an explicit AT modifier that encodes the intended denominator.", dropped.join(", ")
             ));
         }
         Ok(())
@@ -1280,18 +1489,47 @@ impl Lowerer<'_, '_> {
         Ok(())
     }
 
-    fn fixed_context(&self, expression: &Expression, fixed: &mut HashSet<String>) -> Result<()> {
+    fn fixed_value(expression: &Expression, bindings: &HashMap<String, Expression>) -> bool {
         match expression {
+            Expression::Literal(_) | Expression::Null(_) | Expression::Boolean(_) => true,
+            Expression::Paren(paren) => Self::fixed_value(&paren.this, bindings),
+            Expression::Neg(neg) => Self::fixed_value(&neg.this, bindings),
+            Expression::Add(binary)
+            | Expression::Sub(binary)
+            | Expression::Mul(binary)
+            | Expression::Div(binary)
+            | Expression::Mod(binary) => {
+                Self::fixed_value(&binary.left, bindings)
+                    && Self::fixed_value(&binary.right, bindings)
+            }
+            _ => reference(expression).is_some_and(|(_, name)| bindings.contains_key(&name)),
+        }
+    }
+
+    fn fixed_context(
+        &self,
+        expression: &Expression,
+        bindings: &HashMap<String, Expression>,
+        fixed: &mut HashMap<String, Expression>,
+    ) -> Result<()> {
+        match expression {
+            Expression::Paren(paren) => self.fixed_context(&paren.this, bindings, fixed)?,
             Expression::And(and) => {
-                self.fixed_context(&and.left, fixed)?;
-                self.fixed_context(&and.right, fixed)?;
+                self.fixed_context(&and.left, bindings, fixed)?;
+                self.fixed_context(&and.right, bindings, fixed)?;
             }
             Expression::Eq(eq) => {
-                if matches!(eq.right, Expression::Literal(_)) {
-                    fixed.insert(self.signature(eq.left.clone())?);
+                if Self::fixed_value(&eq.right, bindings) {
+                    fixed.insert(
+                        self.signature(eq.left.clone())?,
+                        self.replace_current(eq.right.clone(), bindings)?,
+                    );
                 }
-                if matches!(eq.left, Expression::Literal(_)) {
-                    fixed.insert(self.signature(eq.right.clone())?);
+                if Self::fixed_value(&eq.left, bindings) {
+                    fixed.insert(
+                        self.signature(eq.right.clone())?,
+                        self.replace_current(eq.left.clone(), bindings)?,
+                    );
                 }
             }
             _ => {}
@@ -1299,13 +1537,22 @@ impl Lowerer<'_, '_> {
         Ok(())
     }
 
-    fn current(&self, sql: &str, context: &HashSet<String>) -> Result<String> {
+    fn current(
+        &self,
+        sql: &str,
+        context: &HashMap<String, Expression>,
+    ) -> Result<(Expression, HashMap<String, Expression>)> {
         let stream = tokens(sql, self.source_dialect)?;
         let mut output = String::new();
+        let mut bindings = HashMap::new();
         let mut cursor = 0;
         let mut index = 0;
         while index + 1 < stream.len() {
-            if !stream[index].text.eq_ignore_ascii_case("CURRENT") {
+            if !matches!(
+                stream[index].token_type,
+                TokenType::Current | TokenType::Var
+            ) || !stream[index].text.eq_ignore_ascii_case("CURRENT")
+            {
                 index += 1;
                 continue;
             }
@@ -1335,16 +1582,267 @@ impl Lowerer<'_, '_> {
             };
             output.push_str(&sql[cursor..stream[index].span.start]);
             let key = self.signature(self.authored_expression(target)?)?;
-            output.push_str(if context.contains(&key) {
-                target
-            } else {
-                "NULL"
-            });
+            let placeholder = (bindings.len()..)
+                .map(|n| format!("__ys_at_current_{n}"))
+                .find(|name| {
+                    !bindings.contains_key(name)
+                        && !stream
+                            .iter()
+                            .any(|token| token.text.eq_ignore_ascii_case(name))
+                })
+                .expect("unbounded placeholder iterator");
+            output.push_str(&placeholder);
+            let value = context
+                .get(&key)
+                .cloned()
+                .map(Ok)
+                .unwrap_or_else(|| self.expression("NULL"))?;
+            bindings.insert(placeholder, value);
             cursor = stream[end].span.end;
             index = end + 1;
         }
         output.push_str(&sql[cursor..]);
-        Ok(output)
+        Ok((self.authored_expression(&output)?, bindings))
+    }
+
+    fn replace_current(
+        &self,
+        expression: Expression,
+        bindings: &HashMap<String, Expression>,
+    ) -> Result<Expression> {
+        let mut value = encode(&expression)?;
+        map_columns(&mut value, &mut |node| {
+            if let Some((_, name)) = reference(&node) {
+                if let Some(bound) = bindings.get(&name) {
+                    return Ok(bound.clone());
+                }
+            }
+            Ok(node)
+        })?;
+        decode(value)
+    }
+
+    fn repeatable_at_filter(expression: &Expression) -> bool {
+        // The offline semantic graph cannot prove the stability of unknown
+        // functions or subqueries. Normalize only known repeatable operators.
+        match expression {
+            Expression::Column(_)
+            | Expression::Literal(_)
+            | Expression::Null(_)
+            | Expression::Boolean(_) => true,
+            Expression::And(binary)
+            | Expression::Or(binary)
+            | Expression::Eq(binary)
+            | Expression::Neq(binary)
+            | Expression::Lt(binary)
+            | Expression::Lte(binary)
+            | Expression::Gt(binary)
+            | Expression::Gte(binary)
+            | Expression::NullSafeEq(binary)
+            | Expression::NullSafeNeq(binary) => {
+                Self::repeatable_at_filter(&binary.left)
+                    && Self::repeatable_at_filter(&binary.right)
+            }
+            Expression::Paren(paren) => Self::repeatable_at_filter(&paren.this),
+            Expression::Not(unary) => Self::repeatable_at_filter(&unary.this),
+            Expression::IsNull(is_null) => Self::repeatable_at_filter(&is_null.this),
+            _ => false,
+        }
+    }
+
+    fn normalize_at_filter(expression: Expression) -> Result<Expression> {
+        use polyglot_sql::expressions::{BinaryOp, UnaryOp};
+
+        fn and(left: Expression, right: Expression) -> Expression {
+            Expression::And(Box::new(BinaryOp::new(left, right)))
+        }
+        fn or(left: Expression, right: Expression) -> Expression {
+            Expression::Or(Box::new(BinaryOp::new(left, right)))
+        }
+        fn not(inner: Expression) -> Expression {
+            Expression::Not(Box::new(UnaryOp::new(inner)))
+        }
+        fn conjuncts(expression: Expression, output: &mut Vec<Expression>) {
+            match expression {
+                Expression::And(binary) => {
+                    conjuncts(binary.left, output);
+                    conjuncts(binary.right, output);
+                }
+                Expression::Paren(paren) => conjuncts(paren.this, output),
+                expression => output.push(expression),
+            }
+        }
+        Ok(match expression {
+            Expression::Paren(paren) => Self::normalize_at_filter(paren.this)?,
+            Expression::Not(unary) => match Self::normalize_at_filter(unary.this)? {
+                Expression::Or(binary) => and(
+                    Self::normalize_at_filter(not(binary.left))?,
+                    Self::normalize_at_filter(not(binary.right))?,
+                ),
+                Expression::And(binary) => or(
+                    Self::normalize_at_filter(not(binary.left))?,
+                    Self::normalize_at_filter(not(binary.right))?,
+                ),
+                Expression::Not(inner) => inner.this,
+                inner => not(inner),
+            },
+            Expression::And(binary) => and(
+                Self::normalize_at_filter(binary.left)?,
+                Self::normalize_at_filter(binary.right)?,
+            ),
+            Expression::Or(binary) => {
+                let left = Self::normalize_at_filter(binary.left)?;
+                let right = Self::normalize_at_filter(binary.right)?;
+                let mut left_terms = Vec::new();
+                let mut right_terms = Vec::new();
+                conjuncts(left.clone(), &mut left_terms);
+                conjuncts(right.clone(), &mut right_terms);
+                let mut common = Vec::new();
+                left_terms.retain(|candidate| {
+                    if Self::repeatable_at_filter(candidate) {
+                        if let Some(index) = right_terms.iter().position(|term| term == candidate) {
+                            common.push(candidate.clone());
+                            right_terms.remove(index);
+                            return false;
+                        }
+                    }
+                    true
+                });
+                let Some(shared) = common.into_iter().reduce(and) else {
+                    return Ok(or(left, right));
+                };
+                match (
+                    left_terms.into_iter().reduce(and),
+                    right_terms.into_iter().reduce(and),
+                ) {
+                    (Some(left), Some(right)) => and(shared, or(left, right)),
+                    // (C AND P) OR C = C in SQL's three-valued logic.
+                    _ => shared,
+                }
+            }
+            expression => expression,
+        })
+    }
+
+    fn project_at_filter(
+        &self,
+        expression: Expression,
+        removed: &HashSet<String>,
+        bindings: &HashMap<String, Expression>,
+    ) -> Result<Option<Expression>> {
+        if removed.is_empty() {
+            return Ok(Some(expression));
+        }
+        let dependencies = |expression: &Expression| -> Result<(bool, bool)> {
+            fn visit(
+                lowerer: &Lowerer<'_, '_>,
+                value: &Value,
+                removed: &HashSet<String>,
+                bindings: &HashMap<String, Expression>,
+                dropped: &mut bool,
+                retained: &mut bool,
+            ) -> Result<()> {
+                match value {
+                    Value::Object(fields) => {
+                        if fields.contains_key("select") || fields.contains_key("subquery") {
+                            *retained = true;
+                            return Ok(());
+                        }
+                        if let Ok(expression) = decode::<Expression>(value.clone()) {
+                            if reference(&expression)
+                                .is_some_and(|(_, name)| bindings.contains_key(&name))
+                            {
+                                return Ok(());
+                            }
+                            // Match the complete target before descending into its
+                            // inputs: replacing YEAR(date) does not replace date.
+                            if removed.contains(&lowerer.signature(expression.clone())?) {
+                                let mut has_columns = false;
+                                let mut own = true;
+                                map_columns(&mut value.clone(), &mut |column| {
+                                    if let Some((table, _)) = reference(&column) {
+                                        has_columns = true;
+                                        own &=
+                                            table.as_deref().is_none_or(|table| table == "_inner");
+                                    }
+                                    Ok(column)
+                                })?;
+                                if has_columns && own {
+                                    *dropped = true;
+                                    return Ok(());
+                                }
+                            }
+                            if reference(&expression).is_some() {
+                                *retained = true;
+                                return Ok(());
+                            }
+                        }
+                        for child in fields.values() {
+                            visit(lowerer, child, removed, bindings, dropped, retained)?;
+                        }
+                    }
+                    Value::Array(children) => {
+                        for child in children {
+                            visit(lowerer, child, removed, bindings, dropped, retained)?;
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }
+            let mut retained = false;
+            let mut dropped = false;
+            visit(
+                self,
+                &encode(expression)?,
+                removed,
+                bindings,
+                &mut dropped,
+                &mut retained,
+            )?;
+            Ok((dropped, retained))
+        };
+        let (dropped, _) = dependencies(&expression)?;
+        if !dropped {
+            return Ok(Some(expression)); // Preserve unrelated predicate shape and evaluation.
+        }
+        let expression = match expression {
+            Expression::Paren(paren) => {
+                return self.project_at_filter(paren.this, removed, bindings)
+            }
+            Expression::And(mut and) => {
+                return match (
+                    self.project_at_filter(and.left.clone(), removed, bindings)?,
+                    self.project_at_filter(and.right.clone(), removed, bindings)?,
+                ) {
+                    (Some(left), Some(right)) => {
+                        and.left = left;
+                        and.right = right;
+                        Ok(Some(Expression::And(and)))
+                    }
+                    (left, right) => Ok(left.or(right)),
+                };
+            }
+            expression => expression,
+        };
+        let value = encode(&expression)?;
+        let boolean_complex = contains_kind(&value, "and") || contains_kind(&value, "or");
+        if boolean_complex && !Self::repeatable_at_filter(&expression) {
+            return Err(SqlctxError::YardstickBinding(
+                "AT dimension replacement cannot safely normalize a volatile or unproven predicate; use an explicit AT WHERE predicate".into(),
+            ));
+        }
+        let normalized = Self::normalize_at_filter(expression)?;
+        if matches!(normalized, Expression::And(_)) {
+            return self.project_at_filter(normalized, removed, bindings);
+        }
+        match dependencies(&normalized)? {
+            (true, true) => Err(SqlctxError::YardstickBinding(
+                "mixed VISIBLE predicate: use an explicit AT context".into(),
+            )),
+            (true, false) => Ok(None),
+            _ => Ok(Some(normalized)),
+        }
     }
 
     fn all_targets(&self, sql: &str) -> Result<Vec<Expression>> {
@@ -1459,7 +1957,11 @@ fn has_aggregate_semantics(value: &Value) -> bool {
     }
 }
 
-fn expand_groups(expression: &Expression, output: &mut Vec<Expression>) -> Result<()> {
+fn expand_groups(
+    expression: &Expression,
+    optional: bool,
+    output: &mut Vec<(Expression, bool)>,
+) -> Result<()> {
     // The pinned parser represents inline ROLLUP/CUBE as ordinary functions,
     // but WITH ROLLUP/CUBE as the typed variants handled below.
     if let Expression::Function(function) = expression {
@@ -1468,7 +1970,7 @@ fn expand_groups(expression: &Expression, output: &mut Vec<Expression>) -> Resul
             .any(|name| function.name.eq_ignore_ascii_case(name))
         {
             for child in &function.args {
-                expand_groups(child, output)?;
+                expand_groups(child, true, output)?;
             }
             return Ok(());
         }
@@ -1477,18 +1979,18 @@ fn expand_groups(expression: &Expression, output: &mut Vec<Expression>) -> Resul
     let Some(fields) = value.as_object() else {
         return Ok(());
     };
-    if let Some(group) = ["rollup", "cube", "grouping_sets", "tuple"]
-        .iter()
-        .find_map(|kind| fields.get(*kind))
+    if let Some((kind, group)) = ["rollup", "cube", "grouping_sets", "tuple"]
+        .into_iter()
+        .find_map(|kind| fields.get(kind).map(|group| (kind, group)))
     {
         if let Some(children) = group.get("expressions").and_then(Value::as_array) {
             for child in children {
-                expand_groups(&decode(child.clone())?, output)?;
+                expand_groups(&decode(child.clone())?, optional || kind != "tuple", output)?;
             }
             return Ok(());
         }
     }
-    output.push(expression.clone());
+    output.push((expression.clone(), optional));
     Ok(())
 }
 
@@ -1496,20 +1998,48 @@ fn split_modifiers(sql: &str, dialect: DialectType) -> Result<Vec<String>> {
     let stream = tokens(sql, dialect)?;
     let mut starts = vec![0];
     let mut depth = 0;
+    let head = |token: &Token| {
+        matches!(
+            token.token_type,
+            TokenType::All | TokenType::Set | TokenType::Where
+        ) || (token.token_type == TokenType::Var && token.text.eq_ignore_ascii_case("VISIBLE"))
+    };
     for (index, token) in stream.iter().enumerate() {
         match token.token_type {
             TokenType::LParen => depth += 1,
             TokenType::RParen => depth -= 1,
             _ => {}
         }
-        if index > 0
-            && depth == 0
-            && ["ALL", "SET", "WHERE", "VISIBLE"]
-                .iter()
-                .any(|word| token.text.eq_ignore_ascii_case(word))
-        {
-            starts.push(token.span.start);
+        if index == 0 || depth != 0 || !head(token) {
+            continue;
         }
+        // VISIBLE is also a valid unquoted column name; it can only start a
+        // context modifier at the end or just before the next modifier.
+        if token.text.eq_ignore_ascii_case("VISIBLE") {
+            let preceding = &stream[index - 1];
+            if (!matches!(
+                preceding.token_type,
+                TokenType::String
+                    | TokenType::DollarString
+                    | TokenType::RawString
+                    | TokenType::NationalString
+                    | TokenType::EscapeString
+                    | TokenType::TripleDoubleQuotedString
+                    | TokenType::TripleSingleQuotedString
+            ) && [
+                ".", "=", "!=", "<>", "<", ">", "<=", ">=", "+", "-", "*", "/", "%", "AND", "OR",
+                "NOT", "IS", "LIKE", "ILIKE", "WHERE", "SET",
+            ]
+            .iter()
+            .any(|word| preceding.text.eq_ignore_ascii_case(word)))
+                || !stream
+                    .get(index + 1)
+                    .is_none_or(|next| head(next) || next.token_type == TokenType::Eof)
+            {
+                continue;
+            }
+        }
+        starts.push(token.span.start);
     }
     starts.push(sql.len());
     Ok(starts
@@ -1597,6 +2127,148 @@ mod tests {
                 "{sql}"
             );
             assert!(!sql.contains("IS NOT DISTINCT FROM (product)"), "{sql}");
+            assert_eq!(
+                sql.contains("GROUPING(o.product) = 1"),
+                grouping != "o.product",
+                "{sql}"
+            );
         }
+    }
+
+    #[test]
+    fn grouping_sets_keep_visible_filters_outside_grouping_guard() {
+        let mut model = Model::new("orders_v", "id")
+            .with_table("raw_orders")
+            .with_metric(Metric::sum("revenue", "amount"));
+        model.metadata = Some(serde_json::json!({"yardstick": {}}));
+        let mut graph = SemanticGraph::new();
+        graph.add_model(model).unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+        for grouping in [
+            "ROLLUP(o.product, o.year)",
+            "CUBE(o.product, o.year)",
+            "GROUPING SETS ((o.product), (o.year), ())",
+        ] {
+            let sql = rewriter.rewrite(&format!(
+                "SELECT o.product, o.year, COUNT(*) AS c, AGGREGATE(o.revenue) AS vis, o.revenue AS plain FROM orders_v o WHERE o.customer <> 'Bob' GROUP BY {grouping}"
+            )).unwrap();
+            assert_eq!(sql.matches("GROUPING(o.product) = 1").count(), 2, "{sql}");
+            assert_eq!(sql.matches("GROUPING(o.year) = 1").count(), 2, "{sql}");
+            assert_eq!(sql.matches("_inner.customer <> 'Bob'").count(), 1, "{sql}");
+            assert!(
+                sql.contains("(_inner.product) IS NOT DISTINCT FROM (o.product)"),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn optional_grouping_retains_relation_identity_and_ignores_output_aliases() {
+        let mut model = Model::new("orders_v", "id")
+            .with_table("raw_orders")
+            .with_dimension(crate::core::Dimension::categorical("year"))
+            .with_metric(Metric::count("orders"));
+        model.metadata = Some(serde_json::json!({"yardstick": {}}));
+        let mut graph = SemanticGraph::new();
+        graph.add_model(model).unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+        let sql = rewriter.rewrite(
+            "SELECT o.year AS order_year, y.year AS joined_year, AGGREGATE(o.orders) FROM orders_v o JOIN (SELECT DISTINCT year FROM raw_orders) y ON o.year = y.year GROUP BY GROUPING SETS ((o.year), (y.year), ())"
+        ).unwrap();
+        for qualifier in ["o", "y"] {
+            assert!(sql.contains(&format!("GROUPING({qualifier}.year) = 1 OR ((_inner.year) IS NOT DISTINCT FROM ({qualifier}.year))")), "{sql}");
+        }
+    }
+    fn at_graph() -> SemanticGraph {
+        let mut model = Model::new("orders_v", "id")
+            .with_table("raw_orders")
+            .with_dimension(crate::core::Dimension::categorical("year"))
+            .with_dimension(crate::core::Dimension::categorical("region"))
+            .with_metric(Metric::sum("revenue", "amount"));
+        model.metadata = Some(serde_json::json!({"yardstick": {}}));
+        let mut graph = SemanticGraph::new();
+        graph.add_model(model).unwrap();
+        graph
+    }
+
+    #[test]
+    fn at_clauses_apply_outer_inward_but_parts_apply_in_written_order() {
+        let graph = at_graph();
+        let rewriter = QueryRewriter::new(&graph);
+        let query = |modifier| {
+            rewriter
+                .rewrite(&format!(
+                    "SELECT AGGREGATE(revenue) {modifier} FROM orders_v WHERE year=2023"
+                ))
+                .unwrap()
+        };
+        let compound = query("AT (WHERE region='N' VISIBLE)");
+        assert!(compound.contains("_inner.region = 'N'"), "{compound}");
+        assert!(compound.contains("_inner.year = 2023"), "{compound}");
+        let chained = query("AT (WHERE region='N') AT (VISIBLE)");
+        assert!(chained.contains("_inner.region = 'N'"), "{chained}");
+        assert!(!chained.contains("_inner.year = 2023"), "{chained}");
+        let reset_then_set = query("AT (ALL SET year=2024)");
+        assert!(
+            reset_then_set.contains("IS NOT DISTINCT FROM (2024)"),
+            "{reset_then_set}"
+        );
+        let set_then_reset = query("AT (SET year=2024 ALL)");
+        assert!(!set_then_reset.contains("2024"), "{set_then_reset}");
+    }
+
+    #[test]
+    fn at_current_uses_prior_binding_and_filter_projection_is_ordered() {
+        let graph = at_graph();
+        let rewriter = QueryRewriter::new(&graph);
+        let sql = rewriter.rewrite(
+            "SELECT AGGREGATE(revenue) AT (WHERE year=2024 AND region='N' SET year=CURRENT year-1) FROM orders_v",
+        ).unwrap();
+        assert!(sql.contains("2024 - 1"), "{sql}");
+        assert!(sql.contains("_inner.region = 'N'"), "{sql}");
+        assert!(!sql.contains("_inner.year = 2024"), "{sql}");
+        let mixed = rewriter.rewrite(
+            "SELECT AGGREGATE(revenue) AT (VISIBLE SET year=2024) FROM orders_v WHERE year=2023 OR region='N'",
+        ).unwrap_err();
+        assert!(
+            mixed.to_string().contains("mixed VISIBLE predicate"),
+            "{mixed}"
+        );
+        for word in ["ALL", "SET", "WHERE", "VISIBLE", "CURRENT"] {
+            let sql = rewriter
+                .rewrite(&format!(
+                    "SELECT AGGREGATE(revenue) AT (WHERE region='{word}') FROM orders_v"
+                ))
+                .unwrap();
+            assert!(sql.contains(&format!("_inner.region = '{word}'")), "{sql}");
+        }
+    }
+    #[test]
+    fn at_projection_separates_deterministic_predicates_but_not_volatile_disjunctions() {
+        let graph = at_graph();
+        let rewriter = QueryRewriter::new(&graph);
+        let query = |predicate| {
+            rewriter.rewrite(&format!(
+                "SELECT year, AGGREGATE(revenue) AT (VISIBLE SET year=year-1) FROM orders_v WHERE {predicate} GROUP BY year"
+            ))
+        };
+        for predicate in [
+            "NOT (year<>2024 OR region<>'N')",
+            "(year=2024 AND region='N') OR (year=2025 AND region='N')",
+            "NOT (year<>2024 OR region IS DISTINCT FROM NULL)",
+        ] {
+            let sql = query(predicate).unwrap();
+            assert!(sql.contains("_inner.region"), "{sql}");
+            assert!(!sql.contains("_inner.year = 2024"), "{sql}");
+        }
+        let volatile = query(
+            "(year=2024 AND random() > 0.5 AND region='N') OR (year=2025 AND random() > 0.5 AND region='N')",
+        ).unwrap_err();
+        assert!(
+            volatile
+                .to_string()
+                .contains("volatile or unproven predicate"),
+            "{volatile}"
+        );
     }
 }

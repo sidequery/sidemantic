@@ -101,7 +101,6 @@ def test_invariant_restriction_still_scopes_every_filtered_measure(layer):
     )
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
 def test_qualified_physical_columns_do_not_rewrite_string_literals(layer):
     layer.graph.models["orders"].metrics.append(
         Metric(name="vip", sql="SUM(orders.amount)", sql_is_complete=True, filters=["orders.status = 'orders.vip'"])
@@ -109,7 +108,6 @@ def test_qualified_physical_columns_do_not_rewrite_string_literals(layer):
     assert_result(layer, {"metrics": ["orders.vip"]}, ["vip"], [(4,)])
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
 def test_filter_conjunction_preserves_disjunction_grouping(layer):
     layer.graph.models["orders"].metrics.append(
         Metric(

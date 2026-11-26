@@ -322,7 +322,7 @@ fixtures:
         file: queries/multi_platform_users.query.yml
         expected_result: expected/multi_platform_users_result.json
         result_columns: [region, multi_platform_users]
-        sql_contains: [cohort_sub, platform_count, HAVING, multi_platform_users]
+        sql_contains: [cohort_sub, platform_count, ">= 2", multi_platform_users]
 
   - name: invalid_duplicate_dimension
     valid: false

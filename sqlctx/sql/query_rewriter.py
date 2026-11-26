@@ -6,7 +6,9 @@ Parses user SQL and rewrites it to use the semantic layer.
 import os
 import re
 import warnings
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from functools import cache
 from typing import Any
 
 import sqlglot
@@ -14,9 +16,13 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.tokens import TokenType
 
+from sqlctx.core.model import Model
 from sqlctx.core.semantic_graph import SemanticGraph
 from sqlctx.rust_bridge import rewrite_semantic_input
-from sqlctx.semantic_handoff import RustBackendUnavailableError, UnsupportedSemanticFeaturesError
+from sqlctx.semantic_handoff import (
+    RustBackendUnavailableError,
+    UnsupportedSemanticFeaturesError,
+)
 from sqlctx.sql.aggregation_detection import sql_has_aggregate
 from sqlctx.sql.generator import DATE_GRANULARITIES, SQLGenerator
 from sqlctx.sql.parsing import parse_fragment
@@ -50,6 +56,15 @@ class _YardstickAggregateCall:
     argument_sql: str
     modifiers: list[str]
     include_visible_default: bool
+
+
+@dataclass
+class _YardstickContextFilter:
+    predicate: exp.Expression
+    visible: bool
+    position: int
+    bindings: dict[str, str] = field(default_factory=dict)
+    excluded_dimensions: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -145,6 +160,7 @@ class QueryRewriter:
         use_rust_rewriter: bool | None = None,
         rust_no_fallback: bool | None = None,
         allow_non_additive_unsafe: bool = False,
+        model_columns: Callable[[Model], list[dict]] | None = None,
     ):
         """Initialize query rewriter.
 
@@ -156,8 +172,10 @@ class QueryRewriter:
             use_rust_rewriter: Override the environment-controlled Rust rewrite path
             rust_no_fallback: Reject unsupported Rust requirements instead of falling back
             allow_non_additive_unsafe: Aggregate all snapshots without semi-additive protection
+            model_columns: Optional catalog lookup for binding aliases on wildcard Yardstick views
         """
         self.graph = graph
+        self._model_columns = model_columns
         self.dialect = dialect
         self.use_preaggregations = use_preaggregations
         self.allow_non_additive_unsafe = allow_non_additive_unsafe
@@ -459,6 +477,14 @@ class QueryRewriter:
             # In non-strict mode, pass through non-SELECT queries
             return cache_result(sql)
 
+        # Check the original scopes before recursive rewrites remove semantic
+        # aliases or an island optimizer leaves an unsupported scope untouched.
+        for select in parsed.find_all(exp.Select):
+            semantic_sources = self._source_aliases(select)
+            if semantic_sources:
+                for clause in self._current_select_clause_expressions(select):
+                    self._validate_subquery_correlations(clause, semantic_sources)
+
         if isinstance(parsed, exp.SetOperation):
             if not self._expression_tree_references_semantic_model(parsed):
                 return cache_result(sql)
@@ -526,7 +552,7 @@ class QueryRewriter:
             return expression
 
         rewritten = expression.copy()
-        for column in rewritten.find_all(exp.Column):
+        for column in self._columns_without_nested_scopes(rewritten):
             if column.table in aliases:
                 column.set("table", exp.to_identifier(aliases[column.table]))
         return rewritten
@@ -1805,10 +1831,8 @@ class QueryRewriter:
                 (name for name, visible_ref in visible_name_to_ref.items() if visible_ref == ref),
                 expression.name,
             )
-            if isinstance(order_expr, exp.Ordered) and order_expr.args.get("desc", False):
-                order_name = f"{order_name} DESC"
-            elif isinstance(order_expr, exp.Ordered):
-                order_name = f"{order_name} ASC"
+            if isinstance(order_expr, exp.Ordered):
+                order_name = self._semantic_order_field(order_name, order_expr)
             order_by.append(order_name)
 
         return order_by
@@ -2573,10 +2597,8 @@ class QueryRewriter:
             order_name = next(
                 (name for name, visible_ref in visible_name_to_ref.items() if visible_ref == ref), column_name
             )
-            if isinstance(order_expr, exp.Ordered) and order_expr.args.get("desc", False):
-                order_name = f"{order_name} DESC"
-            elif isinstance(order_expr, exp.Ordered):
-                order_name = f"{order_name} ASC"
+            if isinstance(order_expr, exp.Ordered):
+                order_name = self._semantic_order_field(order_name, order_expr)
             order_by.append(order_name)
 
         return order_by
@@ -2738,6 +2760,9 @@ class QueryRewriter:
 
         self.inferred_table = self._extract_from_table(parsed)
         self.table_aliases = self._source_aliases(parsed)
+
+        for clause in self._current_select_clause_expressions(parsed):
+            self._validate_subquery_correlations(clause, self.table_aliases)
 
         if self._needs_expression_postprocess(parsed):
             raise ValueError("Semantic expression queries cannot be represented as a simple rewrite plan")
@@ -3436,7 +3461,9 @@ class QueryRewriter:
             ):
                 raise ValueError("yardstick() is not supported while semantic security controls are active")
             args = function.expressions
-            if len(args) != 1 or not isinstance(args[0], exp.Literal) or not args[0].is_string:
+            if len(args) != 1 or not (
+                isinstance(args[0], exp.RawString) or (isinstance(args[0], exp.Literal) and args[0].is_string)
+            ):
                 raise ValueError("yardstick() requires one literal SQL query")
             inner_sql = args[0].this
             transformed, _ = self._replace_yardstick_aggregate_calls(inner_sql)
@@ -3578,6 +3605,8 @@ class QueryRewriter:
                 candidate_expressions.extend(order_expr.this for order_expr in order_clause.expressions)
 
             for candidate_expr in candidate_expressions:
+                if candidate_expr.is_star:
+                    continue
                 for column in candidate_expr.find_all(exp.Column):
                     if self._resolve_implicit_yardstick_measure_reference(
                         column,
@@ -3683,6 +3712,48 @@ class QueryRewriter:
         if not scope_placeholders:
             return select_scope
 
+        # Physical columns take precedence over aliases. A wildcard import needs
+        # catalog metadata to prove a name is absent; resolve it only on collision.
+        @cache
+        def source_columns(model_name: str) -> set[str] | None:
+            model = self.graph.get_model(model_name)
+            names = {dimension.name.lower() for dimension in model.dimensions}
+            if self.dialect == "duckdb" and self._yardstick_view_has_wildcard(model):
+                columns = self._model_columns(model) if self._model_columns else []
+                if not columns:
+                    return None
+                names.update(column["column_name"].lower() for column in columns)
+            return names
+
+        def can_bind_alias(name: str) -> bool:
+            names = source_columns(source_models[default_alias])
+            return names is not None and name.lower() not in names
+
+        if single_model_scope and self.dialect == "duckdb":
+            measure_aliases: dict[str, exp.Expression] = {}
+            for projection in select_scope.expressions:
+                expression = projection.this if isinstance(projection, exp.Alias) else projection
+                replacements = {
+                    id(column): measure_aliases[column.name.lower()]
+                    for column in self._columns_without_nested_scopes(expression)
+                    if not column.table and column.name.lower() in measure_aliases and can_bind_alias(column.name)
+                }
+                if replacements:
+                    expanded = expression.transform(
+                        lambda node: replacements[id(node)].copy() if id(node) in replacements else node,
+                        copy=False,
+                    )
+                    if isinstance(projection, exp.Alias):
+                        projection.set("this", expanded)
+                        expression = expanded
+                if isinstance(projection, exp.Alias):
+                    alias = projection.alias.lower()
+                    if self._expression_contains_yardstick_placeholder(expression, scope_placeholders):
+                        measure_aliases[alias] = expression
+                    else:
+                        measure_aliases.pop(alias, None)
+
+        select_scope = self._expand_yardstick_measure_exclusions(select_scope, source_models, default_alias)
         select_scope = self._expand_yardstick_dimension_references(
             select_scope,
             source_models=source_models,
@@ -3728,7 +3799,10 @@ class QueryRewriter:
         if has_metric_projection and select_scope.args.get("group") is None:
             group_exprs = []
             for projection, is_metric, is_literal in zip(
-                select_scope.expressions, projection_is_metric, projection_is_literal, strict=False
+                select_scope.expressions,
+                projection_is_metric,
+                projection_is_literal,
+                strict=False,
             ):
                 if is_metric:
                     continue
@@ -3744,9 +3818,44 @@ class QueryRewriter:
                 scalar_aggregate = True
 
         group_clause = select_scope.args.get("group")
+        if (
+            group_clause
+            and group_clause.args.get("all")
+            and not any(projection.is_star for projection in select_scope.expressions)
+        ):
+            # Resolve the implicit grain before lowering measures to scalar subqueries.
+            # Otherwise a HAVING-only measure sees a grand total instead of its group.
+            group_expressions = []
+            for projection, is_metric, is_literal in zip(
+                select_scope.expressions,
+                projection_is_metric,
+                projection_is_literal,
+                strict=True,
+            ):
+                expression = projection.this if isinstance(projection, exp.Alias) else projection
+                if not is_metric and not is_literal and not expression.find(exp.AggFunc, exp.Window):
+                    group_expressions.append(expression.copy())
+            if group_expressions:
+                group_clause = exp.Group(expressions=group_expressions)
+                select_scope.set("group", group_clause)
         if group_clause:
             self._resolve_yardstick_group_ordinals(group_clause, select_scope.expressions)
         if group_clause and default_alias and single_model_scope:
+            group_aliases = {
+                item.alias.lower(): item.this for item in select_scope.expressions if isinstance(item, exp.Alias)
+            }
+            group_clause.set(
+                "expressions",
+                [
+                    group_aliases[expr.name.lower()].copy()
+                    if isinstance(expr, exp.Column)
+                    and not expr.table
+                    and expr.name.lower() in group_aliases
+                    and can_bind_alias(expr.name)
+                    else expr
+                    for expr in group_clause.expressions
+                ],
+            )
             group_clause.set(
                 "expressions",
                 [
@@ -3766,6 +3875,32 @@ class QueryRewriter:
                     )
         group_expressions = self._collect_yardstick_group_expressions(group_clause) if group_clause else []
         outer_where = select_scope.args.get("where")
+        joined_scope = self._yardstick_joined_scope(select_scope, source_models)
+        joined_visibility = None
+        if joined_scope is not None:
+            source_alias, rhs_columns = joined_scope
+            select_aliases = {
+                projection.alias.casefold() for projection in select_scope.expressions if projection.alias
+            }
+            qualified_groups = []
+            for group_expr in group_expressions:
+                group_expr = group_expr.copy()
+                for column in self._columns_without_nested_scopes(group_expr):
+                    if not column.table and column.name.casefold() not in rhs_columns | select_aliases:
+                        column.set("table", exp.to_identifier(source_alias))
+                qualified_groups.append(group_expr)
+            group_expressions = qualified_groups
+            if outer_where is not None and not outer_where.find(exp.Select, exp.Subquery):
+
+                def render_visibility(predicate: exp.Expression) -> str | None:
+                    return self._yardstick_visible_join_sql(
+                        select_scope,
+                        source_alias,
+                        exp.Where(this=predicate),
+                        scope_placeholders,
+                    )
+
+                joined_visibility = render_visibility
         projection_aliases: dict[str, str] = {}
         for projection in select_scope.expressions:
             if not isinstance(projection, exp.Alias):
@@ -3775,16 +3910,23 @@ class QueryRewriter:
             signature = self._expr_signature_without_tables(projection.this)
             projection_aliases[signature] = projection.alias
 
+        having = select_scope.args.get("having")
+        having_placeholders = (
+            {column.name for column in self._columns_without_nested_scopes(having) if not column.table}
+            if having
+            else set()
+        )
         replacement_sql: dict[str, str] = {}
         for placeholder in scope_placeholders:
             replacement_sql[placeholder] = self._build_yardstick_call_sql(
                 call=call_map[placeholder],
                 source_models=source_models,
                 group_expressions=group_expressions,
-                projection_aliases=projection_aliases,
+                projection_aliases={} if placeholder in having_placeholders else projection_aliases,
                 outer_where=outer_where,
                 default_alias=default_alias,
                 single_model_scope=single_model_scope,
+                joined_visibility=joined_visibility,
             )
 
         replacement_expr_cache = {key: parse_fragment(value, self.dialect) for key, value in replacement_sql.items()}
@@ -3816,6 +3958,111 @@ class QueryRewriter:
             rewritten.set("group", exp.Group(expressions=[exp.Tuple()]))
         rewritten = self._inline_yardstick_order_by_subquery_aliases(rewritten)
         return self._rewrite_source_model_relations(rewritten)
+
+    def _yardstick_joined_scope(
+        self,
+        select: exp.Select,
+        source_models: dict[str, str],
+    ) -> tuple[str, set[str]] | None:
+        """Recognize one measure source joined to a relation with known output names."""
+        if self.dialect != "duckdb" or len(source_models) != 1:
+            return None
+        from_clause = select.args.get("from_")
+        if from_clause is None or not isinstance(from_clause.this, exp.Table):
+            return None
+        source_alias = from_clause.this.alias_or_name
+        if source_alias not in source_models or from_clause.this.args.get("db") or from_clause.this.args.get("catalog"):
+            return None
+        if not self._is_yardstick_model(source_models[source_alias]):
+            return None
+        joins = select.args.get("joins") or []
+        if len(joins) != 1:
+            return None
+        join = joins[0]
+        if join.side not in {"", "LEFT"} or join.kind not in {"", "INNER", "OUTER"}:
+            return None
+        using = {column.name.casefold() for column in join.args.get("using") or []}
+        if join.method or (not using and join.args.get("on") is None):
+            return None
+
+        relation = join.this
+        alias = relation.args.get("alias")
+        if isinstance(relation, exp.Values):
+            if alias is None or not alias.args.get("columns") or relation.find(exp.Column, exp.Subquery):
+                return None
+            outputs = {column.name.casefold() for column in alias.args["columns"]}
+            if len(outputs) != len(alias.args["columns"]) or not using <= outputs:
+                return None
+            return source_alias, outputs - using
+        if alias is not None and alias.args.get("columns"):
+            return None
+        if isinstance(relation, exp.Subquery):
+            rhs = relation.this
+        elif isinstance(relation, exp.Table) and not relation.args.get("db") and not relation.args.get("catalog"):
+            with_clause = select.args.get("with_")
+            if with_clause is None or with_clause.args.get("recursive"):
+                return None
+            matching_ctes = [cte for cte in with_clause.expressions if cte.alias.casefold() == relation.name.casefold()]
+            if len(matching_ctes) != 1:
+                return None
+            cte = matching_ctes[0]
+            if cte.args["alias"].args.get("columns"):
+                return None
+            rhs = cte.this
+        else:
+            return None
+        # An unnamed expression, positional overwrite, or star requires a
+        # catalog/binder. Keep the legacy path when ownership isn't provable.
+        if not isinstance(rhs, exp.Select):
+            return None
+        if isinstance(relation, exp.Subquery) and any(
+            column.table.casefold() == source_alias.casefold() for column in rhs.find_all(exp.Column)
+        ):
+            # DuckDB implicitly treats a correlated right side as LATERAL.
+            # Don't move those joins through the visibility semijoin.
+            return None
+        outputs = set()
+        for projection in rhs.expressions:
+            if not isinstance(projection, (exp.Alias, exp.Column)) or projection.is_star or not projection.output_name:
+                return None
+            output = projection.output_name.casefold()
+            if output in outputs:
+                return None
+            outputs.add(output)
+        if not using <= outputs:
+            return None
+        return source_alias, outputs - using
+
+    def _yardstick_visible_join_sql(
+        self,
+        select: exp.Select,
+        source_alias: str,
+        outer_where: exp.Where,
+        placeholders: set[str],
+    ) -> str | None:
+        if self._expression_contains_yardstick_placeholder(outer_where, placeholders):
+            return None
+        join = select.args["joins"][0].copy()
+        if self._expression_contains_yardstick_placeholder(join, placeholders):
+            return None
+        # The current SELECT retains its original join. Only the visibility
+        # probe uses LEFT, because JOIN alone must not shrink the measure's
+        # row population. A WHERE on the right still rejects unmatched rows.
+        join.set("side", "LEFT")
+        join.set("kind", None)
+        source = exp.to_identifier(source_alias, quoted=True).sql(dialect=self.dialect)
+        probe = exp.Select(
+            expressions=[parse_fragment(f"ROW(*COLUMNS({source}.*))", self.dialect)],
+            from_=select.args["from_"].copy(),
+            joins=[join],
+            where=outer_where.copy(),
+        )
+        probe = self._rewrite_source_model_relations(probe)
+        # DuckDB compares ROW fields with nested NULL-safe equality. The
+        # composite is non-NULL and matches by position even for SELECT *;
+        # qualified COLUMNS avoids a column-vs-table alias name collision.
+        # IN is a semijoin, so RHS fanout cannot multiply measure input.
+        return f"ROW(*COLUMNS(_inner.*)) IN ({probe.sql(dialect=self.dialect)})"
 
     def _inline_yardstick_order_by_subquery_aliases(self, select_scope: exp.Select) -> exp.Select:
         """Inline subquery-backed SELECT aliases inside compound ORDER BY expressions.
@@ -4421,6 +4668,10 @@ class QueryRewriter:
 
         rewritten_projections: list[exp.Expression] = []
         for projection in rewritten.expressions:
+            if projection.is_star:
+                rewritten_projections.append(projection)
+                continue
+
             if isinstance(projection, exp.Alias):
                 projection.set("this", projection.this.transform(maybe_replace_column))
                 rewritten_projections.append(projection)
@@ -4506,6 +4757,63 @@ class QueryRewriter:
         )
         return expr, column.name
 
+    def _yardstick_view_has_wildcard(self, model: Model) -> bool:
+        view_sql = (model.metadata or {}).get("yardstick", {}).get("view_sql")
+        return bool(view_sql and any(item.is_star for item in parse_fragment(view_sql, self.dialect).expressions))
+
+    def _expand_yardstick_measure_exclusions(
+        self, select: exp.Select, source_models: dict[str, str], default_alias: str | None
+    ) -> exp.Select:
+        """Expand an explicitly declared view when its star excludes logical measures."""
+        if self.dialect != "duckdb" or not default_alias:
+            return select
+
+        model = self.graph.get_model(source_models[default_alias])
+        view_sql = (model.metadata or {}).get("yardstick", {}).get("view_sql")
+        if not view_sql:
+            return select
+
+        projections = []
+        metrics = {metric.name.lower() for metric in model.metrics}
+        dims = {dimension.name.lower() for dimension in model.dimensions}
+        explicit_view = None
+        for projection in select.expressions:
+            star = projection.this if isinstance(projection, exp.Column) else projection
+            if (
+                not isinstance(star, exp.Star)
+                or (isinstance(projection, exp.Column) and projection.table != default_alias)
+                or not star.args.get("except_")
+                or star.args.get("replace")
+                or star.args.get("rename")
+            ):
+                projections.append(projection)
+                continue
+
+            excludes = {item.name.lower() for item in star.args["except_"]}
+            if not metrics or metrics - excludes or len(excludes) != len(star.args["except_"]):
+                projections.append(projection)
+                continue
+
+            if explicit_view is None:
+                explicit_view = not self._yardstick_view_has_wildcard(model)
+            if not explicit_view:
+                projections.append(projection)
+                continue
+
+            unknown = excludes - (dims | metrics)
+            if unknown:
+                unknown_name = sorted(unknown)[0]
+                raise ValueError(f'Binder Error: Column "{unknown_name}" in EXCLUDE list not found in {default_alias}')
+
+            visible = [dimension for dimension in model.dimensions if dimension.name.lower() not in excludes]
+            if not visible:
+                projections.append(projection)
+                continue
+            projections.extend(exp.column(dimension.name, table=default_alias, quoted=True) for dimension in visible)
+
+        select.set("expressions", projections)
+        return select
+
     def _expand_yardstick_dimension_references(
         self,
         select_scope: exp.Select,
@@ -4531,6 +4839,10 @@ class QueryRewriter:
         rewritten = select_scope.copy()
         rewritten_projections: list[exp.Expression] = []
         for projection in rewritten.expressions:
+            if projection.is_star:
+                rewritten_projections.append(projection)
+                continue
+
             if isinstance(projection, exp.Alias):
                 projection.set("this", projection.this.transform(replace_columns))
                 rewritten_projections.append(projection)
@@ -4626,6 +4938,7 @@ class QueryRewriter:
         outer_where: exp.Where | None,
         default_alias: str | None,
         single_model_scope: bool,
+        joined_visibility: Callable[[exp.Expression], str | None] | None = None,
     ) -> str:
         model_alias, model_name, measure_name = self._resolve_yardstick_measure_call(call.argument_sql, source_models)
         return self._build_yardstick_measure_sql(
@@ -4641,6 +4954,7 @@ class QueryRewriter:
             default_alias=default_alias,
             single_model_scope=single_model_scope,
             visiting=set(),
+            joined_visibility=joined_visibility,
         )
 
     def _build_yardstick_measure_sql(
@@ -4657,6 +4971,7 @@ class QueryRewriter:
         default_alias: str | None,
         single_model_scope: bool,
         visiting: set[tuple[str, str]],
+        joined_visibility: Callable[[exp.Expression], str | None] | None = None,
     ) -> str:
         model = self.graph.get_model(model_name)
         measure = model.get_metric(measure_name)
@@ -4699,6 +5014,7 @@ class QueryRewriter:
                     default_alias=default_alias,
                     single_model_scope=single_model_scope,
                     visiting=visiting.copy(),
+                    joined_visibility=joined_visibility,
                 )
                 return parse_fragment(dep_sql, self.dialect)
 
@@ -4734,13 +5050,8 @@ class QueryRewriter:
             default_alias=default_alias,
             single_model=single_model_scope,
             include_visible_default=include_visible_default,
-            fixed_context_signatures=self._extract_fixed_context_signatures_from_where(
-                outer_where=outer_where,
-                default_alias=default_alias,
-                single_model=single_model_scope,
-                model_alias=model_alias,
-                model_name=model_name,
-            ),
+            outer_where=outer_where,
+            joined_visibility=joined_visibility,
         )
 
         self._warn_yardstick_dropped_filters(
@@ -4757,19 +5068,12 @@ class QueryRewriter:
 
         correlation_predicates: list[str] = []
         for dim in active_dimensions:
-            correlation_predicates.append(f"({dim['inner_sql']}) IS NOT DISTINCT FROM ({dim['outer_sql']})")
+            equality = f"({dim['inner_sql']}) IS NOT DISTINCT FROM ({dim['outer_sql']})"
+            if grouping_sql := dim.get("grouping_sql"):
+                equality = f"(GROUPING({grouping_sql}) = 1 OR ({equality}))"
+            correlation_predicates.append(equality)
 
         base_predicates = list(where_modifier_predicates)
-        if include_visible and outer_where is not None:
-            visible_expr = outer_where.this.copy()
-            if default_alias and single_model_scope:
-                visible_expr = self._qualify_unaliased_columns(visible_expr, default_alias)
-            visible_expr = self._rewrite_tables(
-                visible_expr,
-                table_mapping={model_alias: "_inner", model_name: "_inner"},
-                default_table="_inner" if single_model_scope else None,
-            )
-            base_predicates.append(visible_expr.sql(dialect=self.dialect))
 
         for measure_filter in measure.filters or []:
             # Replace {model} placeholder (used by LookML adapter) with inner alias
@@ -4879,11 +5183,12 @@ class QueryRewriter:
     ) -> list[dict[str, str]]:
         context_dimensions: list[dict[str, str]] = []
         model = self.graph.get_model(model_name)
-        seen_signatures: set[str] = set()
+        seen_signatures: set[tuple[str, str]] = set()
+        wildcard_source = single_model_scope and self.dialect == "duckdb" and self._yardstick_view_has_wildcard(model)
 
         for raw_group_expr in group_expressions:
             expanded_group_expressions = self._expand_group_expression_for_yardstick_context(raw_group_expr)
-            for group_expr in expanded_group_expressions:
+            for group_expr, optional in expanded_group_expressions:
                 outer_base_expr = group_expr.copy()
                 expr_obj = group_expr.copy()
                 if default_alias and single_model_scope:
@@ -4912,10 +5217,14 @@ class QueryRewriter:
                     default_table="_inner" if single_model_scope else None,
                 )
                 signature = self._expr_signature_without_tables(inner_base_expr)
-                if signature in seen_signatures:
-                    continue
-                seen_signatures.add(signature)
                 outer_sql = outer_expr.sql(dialect=self.dialect)
+                # GROUPING distinguishes a subtotal (dimension omitted) from
+                # a detail row with a real NULL grouping key.
+                grouping_sql = outer_sql if optional and self.dialect == "duckdb" else ""
+                context_key = (signature, grouping_sql)
+                if context_key in seen_signatures:
+                    continue
+                seen_signatures.add(context_key)
                 projection_alias = projection_aliases.get(signature)
                 unsafe_aliases: set[str] = set()
                 for dimension in model.dimensions:
@@ -4928,7 +5237,12 @@ class QueryRewriter:
                         if dim_expr.strip().lower() == dimension.name.lower():
                             unsafe_aliases.add(dimension.name.lower())
 
-                if projection_alias and projection_alias.lower() not in unsafe_aliases:
+                if wildcard_source:
+                    # An output alias can shadow a physical column, or appear after
+                    # the measure. Correlate on the qualified grouping key itself.
+                    if not isinstance(outer_expr, exp.Column):
+                        outer_sql = f"ANY_VALUE({outer_sql})"
+                elif projection_alias and projection_alias.lower() not in unsafe_aliases:
                     outer_sql = exp.to_identifier(projection_alias).sql(dialect=self.dialect)
 
                 context_dimensions.append(
@@ -4936,31 +5250,30 @@ class QueryRewriter:
                         "signature": signature,
                         "outer_sql": outer_sql,
                         "inner_sql": inner_expr.sql(dialect=self.dialect),
+                        "grouping_sql": grouping_sql,
                     }
                 )
 
         return context_dimensions
 
-    def _expand_group_expression_for_yardstick_context(self, group_expr: exp.Expression) -> list[exp.Expression]:
-        if isinstance(group_expr, (exp.Rollup, exp.Cube)):
-            expanded: list[exp.Expression] = []
-            for sub_expr in group_expr.expressions:
-                expanded.extend(self._expand_group_expression_for_yardstick_context(sub_expr))
-            return expanded
-
-        if isinstance(group_expr, exp.GroupingSets):
-            expanded: list[exp.Expression] = []
-            for sub_expr in group_expr.expressions:
-                expanded.extend(self._expand_group_expression_for_yardstick_context(sub_expr))
-            return expanded
-
+    def _expand_group_expression_for_yardstick_context(
+        self, group_expr: exp.Expression, optional: bool = False
+    ) -> list[tuple[exp.Expression, bool]]:
+        if isinstance(group_expr, (exp.Rollup, exp.Cube, exp.GroupingSets)):
+            return [
+                item
+                for child in group_expr.expressions
+                for item in self._expand_group_expression_for_yardstick_context(child, optional=True)
+            ]
         if isinstance(group_expr, exp.Tuple):
-            expanded: list[exp.Expression] = []
-            for sub_expr in group_expr.expressions:
-                expanded.extend(self._expand_group_expression_for_yardstick_context(sub_expr))
-            return expanded
-
-        return [group_expr]
+            return [
+                item
+                for child in group_expr.expressions
+                for item in self._expand_group_expression_for_yardstick_context(child, optional)
+            ]
+        if isinstance(group_expr, exp.Paren):
+            return self._expand_group_expression_for_yardstick_context(group_expr.this, optional)
+        return [(group_expr, optional)]
 
     def _split_set_modifier(self, modifier_sql: str) -> tuple[str, str]:
         tokens = sqlglot.tokenize(modifier_sql, read=self.dialect)
@@ -4990,7 +5303,7 @@ class QueryRewriter:
         if not tokens:
             return []
 
-        modifier_heads = {"ALL", "SET", "WHERE", "VISIBLE"}
+        modifier_heads = {TokenType.ALL, TokenType.SET, TokenType.WHERE}
         split_indexes = [0]
         depth = 0
 
@@ -5003,7 +5316,9 @@ class QueryRewriter:
             if idx == 0 or depth != 0:
                 continue
 
-            if token.text.upper() in modifier_heads:
+            if token.token_type in modifier_heads or (
+                token.token_type == TokenType.VAR and token.text.upper() == "VISIBLE"
+            ):
                 split_indexes.append(idx)
 
         parts: list[str] = []
@@ -5082,60 +5397,77 @@ class QueryRewriter:
 
         return targets or [raw_targets]
 
-    def _extract_fixed_context_signatures_from_where(
-        self,
-        outer_where: exp.Where | None,
-        default_alias: str | None,
-        single_model: bool,
-        model_alias: str,
-        model_name: str,
-    ) -> set[str]:
-        """Extract dimensions fixed to a literal by conjunctive outer WHERE predicates."""
-        if outer_where is None:
-            return set()
+    def _yardstick_conjuncts(self, expression: exp.Expression) -> list[exp.Expression]:
+        while isinstance(expression, exp.Paren):
+            expression = expression.this
+        if isinstance(expression, exp.And):
+            return self._yardstick_conjuncts(expression.this) + self._yardstick_conjuncts(expression.expression)
+        return [expression]
 
-        where_expr = outer_where.this.copy()
-        if default_alias and single_model:
-            where_expr = self._qualify_unaliased_columns(where_expr, default_alias)
-        where_expr = self._rewrite_tables(where_expr, table_mapping={model_name: model_alias})
+    def _is_repeatable_yardstick_filter(self, expression: exp.Expression) -> bool:
+        # The semantic graph cannot prove stability for SQL functions or subqueries.
+        if isinstance(expression, (exp.Column, exp.Literal, exp.Null, exp.Boolean)):
+            return True
+        if isinstance(expression, (exp.Paren, exp.Not)):
+            return self._is_repeatable_yardstick_filter(expression.this)
+        if isinstance(
+            expression,
+            (
+                exp.And,
+                exp.Or,
+                exp.EQ,
+                exp.NEQ,
+                exp.LT,
+                exp.LTE,
+                exp.GT,
+                exp.GTE,
+                exp.NullSafeEQ,
+                exp.NullSafeNEQ,
+                exp.Is,
+            ),
+        ):
+            return self._is_repeatable_yardstick_filter(expression.this) and self._is_repeatable_yardstick_filter(
+                expression.expression
+            )
+        return False
 
-        signatures: set[str] = set()
-        stack: list[exp.Expression] = [where_expr]
-        while stack:
-            condition = stack.pop()
-            if isinstance(condition, exp.And):
-                stack.append(condition.this)
-                stack.append(condition.expression)
-                continue
-            if not isinstance(condition, exp.EQ):
-                continue
-            left = condition.this
-            right = condition.expression
-            if isinstance(right, exp.Literal):
-                signatures.add(self._expr_signature_without_tables(left))
-            elif isinstance(left, exp.Literal):
-                signatures.add(self._expr_signature_without_tables(right))
+    def _factor_yardstick_filter(self, expression: exp.Expression, negated: bool = False) -> exp.Expression:
+        """Push NOT through known predicates and factor shared OR conjuncts without distributing."""
+        expression = expression.unnest()
+        if isinstance(expression, exp.Not):
+            return self._factor_yardstick_filter(expression.this, not negated)
+        if not isinstance(expression, (exp.And, exp.Or)):
+            return exp.not_(expression) if negated else expression
 
-        return signatures
+        left = self._factor_yardstick_filter(expression.this, negated)
+        right = self._factor_yardstick_filter(expression.expression, negated)
+        if isinstance(expression, exp.And) != negated:
+            return exp.and_(left, right)
+
+        left_terms = self._yardstick_conjuncts(left)
+        right_terms = self._yardstick_conjuncts(right)
+        shared = set(left_terms).intersection(right_terms)
+        if not shared:
+            return exp.or_(left, right)
+        common = exp.and_(*(term for term in left_terms if term in shared))
+        left_terms = [term for term in left_terms if term not in shared]
+        right_terms = [term for term in right_terms if term not in shared]
+        if not left_terms or not right_terms:
+            # C OR (C AND P) = C, including when C or P is UNKNOWN.
+            return common
+        return exp.and_(common, exp.or_(exp.and_(*left_terms), exp.and_(*right_terms)))
 
     def _rewrite_current_keyword(
         self,
         sql_expr: str,
-        context_dimensions: list[dict[str, str]],
-        fixed_context_signatures: set[str] | None = None,
+        context_values: dict[str, str],
+        source_aliases: set[str] | None = None,
     ) -> str:
-        """Rewrite CURRENT references to context-aware expressions.
-
-        CURRENT <dim> resolves to <dim> only when that dimension is present in the
-        current context. Otherwise it resolves to NULL (ambiguous context).
-        """
+        """Replace CURRENT references with their effective context values."""
         tokens = sqlglot.tokenize(sql_expr, read=self.dialect)
         if not tokens:
             return sql_expr
 
-        context_signatures = {dim["signature"] for dim in context_dimensions}
-        if fixed_context_signatures:
-            context_signatures |= fixed_context_signatures
         parts: list[str] = []
         i = 0
         while i < len(tokens):
@@ -5180,8 +5512,11 @@ class QueryRewriter:
             try:
                 target_expr = parse_fragment(target_sql, self.dialect)
                 signature = self._expr_signature_without_tables(target_expr)
-                if signature in context_signatures:
-                    replacement = target_sql
+                if signature in context_values and (
+                    source_aliases is None
+                    or all(not c.table or c.table.lower() in source_aliases for c in target_expr.find_all(exp.Column))
+                ):
+                    replacement = f"({context_values[signature]})"
             except SqlglotError:
                 replacement = "NULL"
 
@@ -5200,183 +5535,309 @@ class QueryRewriter:
         default_alias: str | None,
         single_model: bool,
         include_visible_default: bool,
-        fixed_context_signatures: set[str] | None = None,
+        outer_where: exp.Where | None,
+        joined_visibility: Callable[[exp.Expression], str | None] | None = None,
     ) -> tuple[list[dict[str, str]], list[str], list[str], bool]:
-        expanded_modifiers: list[str] = []
-        for modifier in modifiers:
-            expanded_modifiers.extend(self._split_compound_yardstick_modifier(modifier))
+        # Compound modifiers run in written order; a later AT wraps the
+        # preceding clause and transforms its input context first.
+        expanded_modifiers = [
+            part for clause in reversed(modifiers) for part in self._split_compound_yardstick_modifier(clause)
+        ]
+        if not expanded_modifiers and include_visible_default:
+            expanded_modifiers = ["VISIBLE"]
 
         active_dimensions = list(context_dimensions)
-        where_predicates: list[str] = []
-        set_predicates: dict[str, str] = {}
-        include_visible = include_visible_default and not expanded_modifiers
-        has_set = False
-        has_all_global = False
-        removed_signatures: set[str] = set()
-        single_where_modifier = False
+        filters: list[_YardstickContextFilter] = []
+        # (modifier position, predicate, value if it determines CURRENT).
+        set_predicates: dict[str, tuple[int, exp.Expression, str | None]] = {}
+        set_errors: dict[str, str] = {}
+        source_aliases = {model_alias.lower(), model_name.lower(), "_inner"}
 
-        for modifier in expanded_modifiers:
+        def signature_for_source(expression: exp.Expression) -> str | None:
+            columns = self._columns_without_nested_scopes(expression)
+            if columns and all(not c.table or c.table.lower() in source_aliases for c in columns):
+                return self._expr_signature_without_tables(expression)
+            return None
+
+        def fixed_values(
+            predicate: exp.Expression,
+            bindings: dict[str, str] | None = None,
+        ) -> dict[str, str]:
+            def fixed(expression: exp.Expression) -> bool:
+                if isinstance(expression, (exp.Literal, exp.Null, exp.Boolean)):
+                    return True
+                if isinstance(expression, (exp.Neg, exp.Paren)):
+                    return fixed(expression.this)
+                if isinstance(expression, (exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Mod)):
+                    return fixed(expression.this) and fixed(expression.expression)
+                return bool(bindings and isinstance(expression, exp.Column) and expression.name in bindings)
+
+            values: dict[str, str] = {}
+            for term in self._yardstick_conjuncts(predicate):
+                if not isinstance(term, (exp.EQ, exp.NullSafeEQ)):
+                    continue
+                for target, value in (
+                    (term.this, term.expression),
+                    (term.expression, term.this),
+                ):
+                    signature = signature_for_source(target)
+                    if signature and fixed(value):
+                        value_sql = (
+                            restore_current(value, bindings).sql(dialect=self.dialect)
+                            if bindings
+                            else value.sql(dialect=self.dialect)
+                        )
+                        values.setdefault(signature, value_sql)
+            return values
+
+        original_values = fixed_values(outer_where.this) if outer_where is not None else {}
+
+        def context_values() -> dict[str, str]:
+            values = dict(original_values)
+            values.update({dim["signature"]: dim["outer_sql"] for dim in active_dimensions})
+            candidates = [(position, {key: value}) for key, (position, _, value) in set_predicates.items()]
+            for term in filters:
+                fixed = fixed_values(term.predicate, term.bindings)
+                candidates.append(
+                    (
+                        term.position,
+                        {key: value for key, value in fixed.items() if key not in term.excluded_dimensions},
+                    )
+                )
+            for _, found in sorted(candidates, key=lambda item: item[0]):
+                for key, value in found.items():
+                    if value is None:
+                        values.pop(key, None)
+                    else:
+                        values[key] = value
+            return values
+
+        next_current = 0
+
+        def parse_with_current(sql: str) -> tuple[exp.Expression, dict[str, str]]:
+            nonlocal next_current
+            if "CURRENT" not in sql.upper():
+                return parse_fragment(sql, self.dialect), {}
+            bindings = {}
+            markers = {}
+            for signature, value in context_values().items():
+                marker = f"__yardstick_at_current_{next_current}"
+                next_current += 1
+                while marker.lower() in sql.lower():
+                    marker = f"__yardstick_at_current_{next_current}"
+                    next_current += 1
+                markers[signature] = marker
+                bindings[marker] = value
+            return parse_fragment(
+                self._rewrite_current_keyword(sql, markers, source_aliases),
+                self.dialect,
+            ), bindings
+
+        def restore_current(expression: exp.Expression, bindings: dict[str, str]) -> exp.Expression:
+            def restore(node: exp.Expression) -> exp.Expression:
+                if isinstance(node, exp.Column) and node.name in bindings:
+                    return exp.Paren(this=parse_fragment(bindings[node.name], self.dialect))
+                return node
+
+            return expression.transform(restore)
+
+        def clear_context() -> None:
+            active_dimensions.clear()
+            filters.clear()
+            set_predicates.clear()
+            set_errors.clear()
+            original_values.clear()
+
+        def remove_dimension(target: str) -> None:
+            active_dimensions[:] = [dim for dim in active_dimensions if dim["signature"] != target]
+            set_predicates.pop(target, None)
+            set_errors.pop(target, None)
+            original_values.pop(target, None)
+            for term in filters:
+                term.excluded_dimensions.add(target)
+
+        def project_filter(term: _YardstickContextFilter) -> list[exp.Expression]:
+            if not term.excluded_dimensions:
+                return [term.predicate]
+
+            def dependencies(expression: exp.Expression) -> tuple[bool, bool]:
+                removed, other = False, False
+
+                def prune(node: exp.Expression) -> bool:
+                    nonlocal removed, other
+                    if isinstance(node, (exp.Select, exp.Subquery)):
+                        other = True
+                        return True
+                    if signature_for_source(node) in term.excluded_dimensions:
+                        removed = True
+                        return True
+                    if isinstance(node, exp.Column) and node.name not in term.bindings:
+                        other = True
+                    return False
+
+                for _ in expression.walk(prune=prune):
+                    pass
+                return removed, other
+
+            retained = []
+            for conjunct in self._yardstick_conjuncts(term.predicate):
+                removed, _ = dependencies(conjunct)
+                if not removed:
+                    retained.append(conjunct)
+                    continue
+                if conjunct.find(exp.And, exp.Or):
+                    if not self._is_repeatable_yardstick_filter(conjunct):
+                        raise YardstickBindingError(
+                            "AT dimension replacement cannot safely normalize a volatile or unproven predicate; "
+                            "use an explicit AT WHERE predicate"
+                        )
+                    conjunct = self._factor_yardstick_filter(conjunct)
+
+                for part in self._yardstick_conjuncts(conjunct):
+                    removed, other = dependencies(part)
+                    if removed and other:
+                        raise YardstickBindingError(
+                            "AT dimension replacement cannot separate a mixed "
+                            f"{'VISIBLE' if term.visible else 'WHERE'} predicate; use an explicit AT WHERE predicate"
+                        )
+                    if not removed:
+                        retained.append(part)
+            return retained
+
+        for position, modifier in enumerate(expanded_modifiers):
             tokens = sqlglot.tokenize(modifier, read=self.dialect)
             if not tokens:
                 continue
-            if tokens[0].text.upper() == "SET":
-                has_set = True
-        if has_set:
-            include_visible = False
-        if len(expanded_modifiers) == 1:
-            tokens = sqlglot.tokenize(expanded_modifiers[0], read=self.dialect)
-            single_where_modifier = bool(tokens and tokens[0].text.upper() == "WHERE")
-
-        for modifier in reversed(expanded_modifiers):
-            tokens = sqlglot.tokenize(modifier, read=self.dialect)
-            if not tokens:
-                continue
-
             modifier_type = tokens[0].text.upper()
-
             if modifier_type == "ALL":
                 if len(tokens) == 1:
-                    active_dimensions = []
-                    set_predicates.clear()
-                    where_predicates.clear()
-                    include_visible = False
-                    has_all_global = True
-                    continue
-
-                if has_all_global:
-                    continue
-
-                for target_sql in self._split_all_modifier_targets(modifier):
-                    target_expr = parse_fragment(target_sql, self.dialect)
-                    if default_alias and single_model:
-                        target_expr = self._qualify_unaliased_columns(target_expr, default_alias)
-                    target_signature = self._expr_signature_without_tables(target_expr)
-                    active_dimensions = [d for d in active_dimensions if d["signature"] != target_signature]
-                    removed_signatures.add(target_signature)
-                continue
-
-            if modifier_type == "WHERE":
-                if has_all_global:
-                    continue
-                where_sql = modifier[tokens[0].end + 1 :].strip()
-                where_expr = parse_fragment(where_sql, self.dialect)
-                # In AT(WHERE ...), unqualified columns belong to the inner evaluation context.
-                # Keep explicitly-qualified outer aliases untouched so predicates can correlate
-                # (e.g. `prod_name = o.prod_name` from paper listing-style queries).
-                where_expr = self._rewrite_tables(
-                    where_expr,
-                    table_mapping={model_name: "_inner"},
-                    default_table="_inner" if single_model else None,
-                )
-                where_predicates = [where_expr.sql(dialect=self.dialect)]
-                include_visible = False
-                # Single WHERE modifier evaluates in a non-correlated context.
-                if single_where_modifier:
-                    active_dimensions = []
-                continue
-
-            if modifier_type == "SET":
-                if has_all_global:
-                    continue
-                try:
-                    left_sql, right_sql = self._split_set_modifier(modifier)
-                except ValueError:
-                    # Support Yardstick predicate-style SET forms like:
-                    # AT (SET region IN ('North', 'South'))
-                    set_predicate_sql = modifier[tokens[0].end + 1 :].strip()
-                    set_predicate_expr = parse_fragment(set_predicate_sql, self.dialect)
-
-                    if default_alias and single_model:
-                        set_predicate_expr = self._qualify_unaliased_columns(set_predicate_expr, default_alias)
-
-                    target_signatures: list[str] = []
-                    if isinstance(set_predicate_expr, exp.In):
-                        target_signatures.append(self._expr_signature_without_tables(set_predicate_expr.this))
-                    else:
-                        raise ValueError(f"Unsupported SET modifier: {modifier}")
-
-                    if any(signature in removed_signatures for signature in target_signatures):
-                        continue
-
-                    for signature in target_signatures:
-                        active_dimensions = [d for d in active_dimensions if d["signature"] != signature]
-                        set_predicates.pop(signature, None)
-
-                    set_inner_predicate = self._rewrite_tables(
-                        set_predicate_expr,
-                        table_mapping={model_name: "_inner"},
-                        default_table="_inner" if single_model else None,
-                    )
-                    set_predicates[target_signatures[0]] = set_inner_predicate.sql(dialect=self.dialect)
-                    continue
-
-                left_expr = parse_fragment(left_sql, self.dialect)
-                left_signature = self._expr_signature_without_tables(left_expr)
-                if left_signature in removed_signatures:
-                    continue
-                if isinstance(left_expr, exp.Column):
-                    # CURRENT has its own missing-context semantics. Only direct
-                    # self-references require the dimension in SELECT/GROUP BY.
-                    direct_value = parse_fragment(self._rewrite_current_keyword(right_sql, []), self.dialect)
-                    target_signature = self._expr_signature_without_tables(left_expr)
-                    if any(
-                        self._expr_signature_without_tables(column) == target_signature
-                        for column in self._columns_without_nested_scopes(direct_value)
-                    ) and not any(dim["signature"] == target_signature for dim in context_dimensions):
-                        raise YardstickBindingError(
-                            f"AT (SET {left_sql} = {right_sql}) references {left_expr.name}, "
-                            f"but the query does not group by {left_expr.name}. "
-                            f"Add {left_expr.name} to SELECT/GROUP BY or use a constant SET value."
-                        )
-                right_expr = parse_fragment(
-                    self._rewrite_current_keyword(
-                        right_sql,
-                        context_dimensions,
-                        fixed_context_signatures=fixed_context_signatures,
-                    ),
-                    self.dialect,
-                )
-                for column in self._columns_without_nested_scopes(right_expr):
-                    resolved = self._resolve_yardstick_dimension_expression(
-                        column, source_models, default_alias, placeholder_names=set()
-                    )
-                    if resolved:
-                        if column is right_expr:
-                            right_expr = resolved[0]
-                        else:
-                            column.replace(resolved[0])
-
-                if default_alias and single_model:
-                    left_expr = self._qualify_unaliased_columns(left_expr, default_alias)
-                    right_expr = self._qualify_unaliased_columns(right_expr, default_alias)
-
-                active_dimensions = [d for d in active_dimensions if d["signature"] != left_signature]
-
-                left_inner = self._rewrite_tables(
-                    left_expr,
-                    table_mapping={model_alias: "_inner", model_name: "_inner"},
-                    default_table="_inner" if single_model else None,
-                )
-                right_outer = self._rewrite_tables(
-                    right_expr,
-                    table_mapping={model_name: model_alias},
-                )
-                set_predicates[left_signature] = (
-                    f"({left_inner.sql(dialect=self.dialect)}) IS NOT DISTINCT FROM "
-                    f"({right_outer.sql(dialect=self.dialect)})"
-                )
+                    clear_context()
+                else:
+                    for target_sql in self._split_all_modifier_targets(modifier):
+                        target = parse_fragment(target_sql, self.dialect)
+                        remove_dimension(self._expr_signature_without_tables(target))
                 continue
 
             if modifier_type == "VISIBLE":
-                if has_all_global or has_set:
-                    continue
-                include_visible = True
-                where_predicates.clear()
+                if outer_where is not None:
+                    filters.append(_YardstickContextFilter(outer_where.this, visible=True, position=position))
                 continue
 
-            raise ValueError(f"Unsupported AT modifier: {modifier}")
+            if modifier_type == "WHERE":
+                condition, bindings = parse_with_current(modifier[tokens[0].end + 1 :].strip())
+                clear_context()
+                filters.append(_YardstickContextFilter(condition, visible=False, position=position, bindings=bindings))
+                continue
 
-        return active_dimensions, where_predicates, list(set_predicates.values()), include_visible
+            if modifier_type != "SET":
+                raise ValueError(f"Unsupported AT modifier: {modifier}")
+
+            try:
+                left_sql, right_sql = self._split_set_modifier(modifier)
+            except ValueError:
+                # Predicate-style SET replaces the target with a set, not
+                # a single value from which CURRENT can be read.
+                predicate = parse_fragment(modifier[tokens[0].end + 1 :].strip(), self.dialect)
+                if not isinstance(predicate, exp.In):
+                    raise ValueError(f"Unsupported SET modifier: {modifier}") from None
+                target = self._expr_signature_without_tables(predicate.this)
+                remove_dimension(target)
+                if default_alias and single_model:
+                    predicate = self._qualify_unaliased_columns(predicate, default_alias)
+                predicate = self._rewrite_tables(
+                    predicate,
+                    table_mapping={model_alias: "_inner", model_name: "_inner"},
+                    default_table="_inner" if single_model else None,
+                )
+                set_predicates[target] = (position, predicate, None)
+                continue
+
+            left_expr = parse_fragment(left_sql, self.dialect)
+            target = self._expr_signature_without_tables(left_expr)
+            error = None
+            if isinstance(left_expr, exp.Column):
+                # Plain SET self-references use the outer grouping, even
+                # after ALL removed that dimension from the measure context.
+                direct_value = parse_fragment(self._rewrite_current_keyword(right_sql, {}), self.dialect)
+                if any(
+                    self._expr_signature_without_tables(column) == target
+                    for column in self._columns_without_nested_scopes(direct_value)
+                ) and not any(dim["signature"] == target for dim in context_dimensions):
+                    error = (
+                        f"AT (SET {left_sql} = {right_sql}) references {left_expr.name}, "
+                        f"but the query does not group by {left_expr.name}. "
+                        f"Add {left_expr.name} to SELECT/GROUP BY or use a constant SET value."
+                    )
+            right_expr, bindings = parse_with_current(right_sql)
+            for column in self._columns_without_nested_scopes(right_expr):
+                if column.name in bindings:
+                    continue
+                resolved = self._resolve_yardstick_dimension_expression(
+                    column, source_models, default_alias, placeholder_names=set()
+                )
+                if resolved:
+                    if column is right_expr:
+                        right_expr = resolved[0]
+                    else:
+                        column.replace(resolved[0])
+
+            if default_alias and single_model:
+                left_expr = self._qualify_unaliased_columns(left_expr, default_alias)
+                right_expr = self._qualify_unaliased_columns(right_expr, default_alias)
+            elif joined_visibility is not None:
+                left_expr = self._qualify_unaliased_columns(left_expr, model_alias)
+                for column in self._columns_without_nested_scopes(right_expr):
+                    if not column.table and signature_for_source(column) == target:
+                        column.set("table", exp.to_identifier(model_alias))
+
+            left_inner = self._rewrite_tables(
+                left_expr,
+                table_mapping={model_alias: "_inner", model_name: "_inner"},
+                default_table="_inner" if single_model else None,
+            )
+            right_outer = self._rewrite_tables(right_expr, table_mapping={model_name: model_alias})
+            right_outer = restore_current(right_outer, bindings)
+            remove_dimension(target)
+            if error is not None:
+                set_errors[target] = error
+            set_predicates[target] = (
+                position,
+                exp.NullSafeEQ(this=left_inner, expression=right_outer),
+                right_outer.sql(dialect=self.dialect),
+            )
+
+        if set_errors:
+            raise YardstickBindingError(next(iter(set_errors.values())))
+
+        where_predicates = []
+        include_visible = False
+        for term in filters:
+            retained = project_filter(term)
+            if term.visible and (not term.excluded_dimensions or retained == self._yardstick_conjuncts(term.predicate)):
+                include_visible = True
+            if term.visible and retained and joined_visibility is not None:
+                projected = exp.and_(*(predicate.copy() for predicate in retained))
+                if membership := joined_visibility(projected):
+                    where_predicates.append(membership)
+                    continue
+            names = {model_name: "_inner"}
+            if term.visible:
+                names[model_alias] = "_inner"
+            for predicate in retained:
+                predicate = self._rewrite_tables(
+                    predicate,
+                    table_mapping=names,
+                    default_table="_inner" if single_model else None,
+                )
+                predicate = restore_current(predicate, term.bindings)
+                where_predicates.append(exp.Paren(this=predicate).sql(dialect=self.dialect))
+
+        return (
+            active_dimensions,
+            where_predicates,
+            [predicate.sql(dialect=self.dialect) for _, predicate, _ in set_predicates.values()],
+            include_visible,
+        )
 
     def _warn_yardstick_dropped_filters(
         self,
@@ -5397,14 +5858,16 @@ class QueryRewriter:
         its input columns when that expression occurs in the outer predicate;
         SET MONTH(date)=2 does not preserve an arbitrary filter on date.
         """
-        expanded = [part for modifier in modifiers for part in self._split_compound_yardstick_modifier(modifier)]
-        if (
-            outer_where is None
-            or include_visible
-            or not any(
-                sqlglot.tokenize(part, read=self.dialect)[0].text.upper() == "ALL" for part in expanded if part.strip()
-            )
-        ):
+        if outer_where is None or include_visible:
+            return
+        tokens = [
+            sqlglot.tokenize(part, read=self.dialect)
+            for modifier in modifiers
+            for part in self._split_compound_yardstick_modifier(modifier)
+        ]
+        has_all = any(part[0].token_type == TokenType.ALL for part in tokens)
+        has_all_global = any(len(part) == 1 and part[0].token_type == TokenType.ALL for part in tokens)
+        if not has_all and not any(part[0].token_type == TokenType.SET for part in tokens):
             return
 
         model = self.graph.get_model(model_name)
@@ -5430,14 +5893,14 @@ class QueryRewriter:
             expression = parse_fragment(dimension["inner_sql"], self.dialect)
             if isinstance(expression, exp.Column):
                 encoded.update(source_columns(expression))
-        for predicate in where_predicates:
+        for predicate in where_predicates if not has_all_global else []:
             encoded.update(source_columns(parse_fragment(predicate, self.dialect)))
 
         outer_expressions = {
             self._expr_signature_without_tables(node)
             for node in outer_where.this.walk(prune=lambda node: isinstance(node, (exp.Select, exp.Subquery)))
         }
-        for predicate in set_predicates:
+        for predicate in set_predicates if not has_all_global else []:
             expression = parse_fragment(predicate, self.dialect)
             target = expression.this
             while isinstance(target, exp.Paren):
@@ -5447,10 +5910,20 @@ class QueryRewriter:
 
         dropped = sorted(outer_columns - encoded)
         if dropped:
+            modifier, advice = (
+                (
+                    "ALL",
+                    "Add the filter dimension(s) to SELECT/GROUP BY or use an explicit AT modifier that encodes the intended denominator.",
+                )
+                if has_all
+                else (
+                    "SET",
+                    "Use AT (VISIBLE SET ...) to keep them, or add the filter dimension(s) to SELECT/GROUP BY.",
+                )
+            )
             warnings.warn(
-                f"AT (ALL ...) on AGGREGATE({measure_name}) does not preserve outer WHERE filter(s) "
-                f"on ungrouped dimension(s): {', '.join(dropped)}. Add the filter dimension(s) to "
-                "SELECT/GROUP BY or use an explicit AT modifier that encodes the intended denominator.",
+                f"AT ({modifier} ...) on AGGREGATE({measure_name}) does not preserve outer WHERE filter(s) "
+                f"on ungrouped dimension(s): {', '.join(dropped)}. {advice}",
                 YardstickWarning,
                 stacklevel=4,
             )
@@ -6077,6 +6550,29 @@ class QueryRewriter:
         plan = self._plan_simple_query(parsed, include_candidate_details=False)
         return self._generate_from_plan(plan, parsed)
 
+    def _validate_subquery_correlations(self, expression: exp.Expression, semantic_sources: dict[str, str]) -> None:
+        """Reject dangling semantic qualifiers without rebinding nested SQL scopes."""
+
+        def visit(node: exp.Expression, local_sources: set[str], nested: bool) -> None:
+            if isinstance(node, exp.Select):
+                local_sources = local_sources.copy()
+                from_clause = node.args.get("from_")
+                sources = ([from_clause.this] if from_clause else []) + [
+                    join.this for join in node.args.get("joins") or []
+                ]
+                local_sources.update(source.alias_or_name for source in sources if source.alias_or_name)
+                nested = True
+            if isinstance(node, exp.Column) and nested:
+                if node.table in semantic_sources and node.table not in local_sources:
+                    raise ValueError(
+                        f"Correlated subquery references semantic source '{node.table}'; "
+                        "correlated semantic subqueries are not supported"
+                    )
+            for child in node.iter_expressions():
+                visit(child, local_sources, nested)
+
+        visit(expression, set(), False)
+
     def _validate_explicit_semantic_joins(self, select: exp.Select) -> list[str]:
         """Allow explicit joins only when they point at modeled semantic relationships."""
         from_clause = select.args.get("from_")
@@ -6333,6 +6829,10 @@ class QueryRewriter:
             rewritten = expression.copy()
 
             def replace_node(node: exp.Expression) -> exp.Expression:
+                if isinstance(node, (exp.Select, exp.Subquery)):
+                    # A replacement copy stops SQLGlot's transform from entering
+                    # the nested scope, whose physical bindings must survive.
+                    return node.copy()
                 if isinstance(node, exp.AggFunc):
                     return exp.column(add_adhoc_metric(node))
                 if isinstance(node, exp.Column):
@@ -6646,6 +7146,17 @@ class QueryRewriter:
 
         return filters
 
+    @staticmethod
+    def _semantic_order_field(name: str, order: exp.Ordered) -> str:
+        descending = bool(order.args.get("desc"))
+        suffix = "DESC" if descending else "ASC"
+        # SQLGlot resolves the source dialect's default. Structured queries
+        # sort NULL low, so preserve SQL ordering when those defaults differ.
+        nulls_first = order.args.get("nulls_first")
+        if nulls_first is not None and nulls_first == descending:
+            suffix += " NULLS FIRST" if nulls_first else " NULLS LAST"
+        return f"{name} {suffix}"
+
     def _extract_order_by(self, select: exp.Select) -> list[str] | None:
         """Extract ORDER BY clause.
 
@@ -6663,9 +7174,8 @@ class QueryRewriter:
             # Get column (might have ASC/DESC)
             if isinstance(order_expr, exp.Ordered):
                 column = self._normalize_source_aliases(order_expr.this)
-                desc = order_expr.args.get("desc", False)
                 col_name = self._get_column_name(column)
-                order_expressions.append(f"{col_name} {'DESC' if desc else 'ASC'}")
+                order_expressions.append(self._semantic_order_field(col_name, order_expr))
             else:
                 col_name = self._get_column_name(self._normalize_source_aliases(order_expr))
                 order_expressions.append(col_name)

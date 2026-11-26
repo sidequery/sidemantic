@@ -655,6 +655,8 @@ class TestConversionMetricDimensions:
 
     def test_conversion_with_time_granularity(self):
         """Conversion sliced by event_date__month should apply DATE_TRUNC."""
+        from datetime import date
+
         events = Model(
             name="events",
             sql="""
@@ -692,16 +694,16 @@ class TestConversionMetricDimensions:
         # Should use DATE_TRUNC to compute the alias, not treat "event_date__month" as a raw column
         upper = sql.upper()
         assert "DATE_TRUNC" in upper
-        # The alias event_date__month should appear, derived from DATE_TRUNC
-        assert "AS event_date__month" in sql
-
         conn = duckdb.connect(":memory:")
         rows = fetch_dicts(conn.execute(sql))
         conn.close()
 
         # Jan: user 1 signed up and purchased -> 1.0
         # Feb: user 2 signed up, no purchase -> 0.0
-        assert len(rows) == 2
+        assert sorted(rows, key=lambda row: row["event_date__month"]) == [
+            {"event_date__month": date(2024, 1, 1), "conv": 1.0},
+            {"event_date__month": date(2024, 2, 1), "conv": 0.0},
+        ]
 
     def test_conversion_with_derived_dimension_sql(self):
         """Conversion dimension should use dim.sql_expr, not just dim.name."""

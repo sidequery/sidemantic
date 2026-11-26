@@ -593,14 +593,43 @@ class SQLGenerator:
 
         return plan
 
-    @staticmethod
-    def _agg_sql_name(agg: str) -> str:
+    def _agg_sql_name(self, agg: str) -> str:
         """Return the SQL function name for a normalized metric aggregation."""
+        if agg == "approx_count_distinct":
+            self._check_approximate_dialect()
         return {
             "variance_pop": "VAR_POP",
             "var_pop": "VAR_POP",
             "approx_count_distinct": "APPROX_COUNT_DISTINCT",
         }.get(agg, agg.upper())
+
+    def _check_approximate_dialect(self) -> None:
+        if self.dialect in {"postgres", "mysql", "sqlite"}:
+            raise QueryValidationError(
+                f"{self.dialect} has no built-in approximate distinct aggregate "
+                "(metric.approx_count_distinct_output_dialect)"
+            )
+
+    def _render_metric_expression(self, expression: exp.Expression) -> str:
+        if expression.find(exp.ApproxDistinct) is None:
+            return expression.sql(dialect=self.dialect)
+        self._check_approximate_dialect()
+        if self.dialect == "redshift":
+            # Express FILTER as a nullable input to APPROXIMATE COUNT(DISTINCT ...).
+            def lower_filter(node):
+                if isinstance(node, exp.Filter) and isinstance(node.this, exp.ApproxDistinct):
+                    aggregate = node.this.copy()
+                    aggregate.set("this", exp.case().when(node.expression.this, aggregate.this))
+                    return aggregate
+                return node
+
+            expression = expression.transform(lower_filter)
+            if any(isinstance(window.this, exp.ApproxDistinct) for window in expression.find_all(exp.Window)):
+                raise QueryValidationError(
+                    "Redshift does not support approximate distinct window functions "
+                    "(metric.approx_count_distinct_window_redshift)"
+                )
+        return expression.sql(dialect=self.dialect)
 
     def _safe_divide_sql(self, numerator: str, denominator: str) -> str:
         """Build fractional division without PostgreSQL integer truncation."""
@@ -834,7 +863,7 @@ class SQLGenerator:
         for f in filters:
             # Resolve {model} placeholders to the actual model name before
             # parsing, so sqlglot can handle the expression as valid SQL.
-            f_resolved = f.replace("{model}.", f"{model_name}.")
+            f_resolved = replace_outside_sql_protected(f, "{model}", self._quote_identifier(model_name))
             try:
                 parsed = _parse_fragment(f_resolved, self.dialect)
                 for column in parsed.find_all(exp.Column):
@@ -878,7 +907,10 @@ class SQLGenerator:
                 parsed = _parse_fragment(f, self.dialect)
                 for column in parsed.find_all(exp.Column):
                     if not column.table and column.name in dim_map:
-                        replacement = _parse_fragment(dim_map[column.name], self.dialect)
+                        source = replace_outside_sql_protected(
+                            dim_map[column.name], "{model}", self._quote_identifier(model.name)
+                        )
+                        replacement = _parse_fragment(source, self.dialect)
                         # Strip model-qualified refs from the replacement so
                         # expressions like events.region don't leak into
                         # subquery contexts where the alias is t/s.
@@ -1027,6 +1059,22 @@ class SQLGenerator:
     def _cte_ref(self, model_name: str, column_name: str) -> str:
         """Build a quoted reference to a CTE column."""
         return f"{self._quote_identifier(self._cte_name(model_name))}.{self._quote_identifier(column_name)}"
+
+    def _key_projection_name(self, model_name: str, column: str) -> str:
+        """Keep time identity separate from its default display bucket."""
+        model = self.graph.get_model(model_name)
+        dimension = model.get_dimension(column)
+        if dimension is None or dimension.type != "time" or not dimension.granularity:
+            return column
+        occupied = {field.name.lower() for field in [*model.dimensions, *model.metrics]}
+        occupied.update(key.lower() for key in model.primary_key_columns)
+        name = f"__sqlctx_identity_{column}"
+        while name.lower() in occupied:
+            name = "_" + name
+        return name
+
+    def _key_cte_ref(self, model_name: str, column: str) -> str:
+        return self._cte_ref(model_name, self._key_projection_name(model_name, column))
 
     def _custom_join_condition(self, join_path) -> str:
         """Render a relationship custom SQL join condition for generated CTE names."""
@@ -2647,23 +2695,53 @@ class SQLGenerator:
                 return sql_expr.replace("{model}", model_table_alias)
             return sql_expr.replace("{model}.", "")
 
-        def add_passthrough_column(column: str) -> None:
-            if column not in columns_added:
-                dimension = model.get_dimension(column) if (model.metadata or {}).get("ossie_source_kind") else None
-                if dimension is not None:
-                    self._ensure_sql_dimension(model_name, dimension)
-                    expression = replace_model_placeholder(self._dimension_base_expr(dimension))
-                else:
-                    expression = self._quote_identifier(column)
-                select_cols.append(f"{expression} AS {self._quote_alias(column)}")
-                columns_added.add(column)
+        def key_source(column: str) -> str:
+            dimension = model.get_dimension(column)
+            if dimension is None:
+                return self._quote_identifier(column)
+            self._ensure_sql_dimension(model_name, dimension)
+            if dimension.sql_expr == column and not dimension.window:
+                return self._quote_identifier(column)
+            source = replace_outside_sql_protected(dimension.sql_expr, "{model}", self._quote_identifier(model.name))
+            try:
+                tree = _parse_fragment(source, self.dialect)
+            except SqlglotError:
+                # Imported declarations can retain source-dialect syntax (for
+                # example BigQuery raw strings), even when this query does not
+                # project the key. Validate their structure before rendering.
+                tree = parse_sql_fragment(source)
+                if tree is None:
+                    raise QueryValidationError(
+                        f"Invalid row identity for {model_name}.{column} (dimension.computed_key_expression)"
+                    ) from None
+            inputs = list(tree.find_all(exp.Column))
+            if (
+                dimension.window
+                or not inputs
+                or tree.find(exp.AggFunc, exp.Window, exp.Query, exp.Rand)
+                or any(col.table not in ("", model.name, model_name) or col.db or col.catalog for col in inputs)
+            ):
+                raise QueryValidationError(
+                    f"Invalid row identity for {model_name}.{column} (dimension.computed_key_expression)"
+                )
+            for col in inputs:
+                col.set("table", None)
+            return tree.sql(dialect=self.dialect)
+
+        def add_key_column(column: str) -> None:
+            alias = self._key_projection_name(model_name, column)
+            if alias not in columns_added:
+                select_cols.append(f"{key_source(column)} AS {self._quote_alias(alias)}")
+                columns_added.add(alias)
 
         # Cross joins do not need keys for the join predicate, but exact fan-out aggregation
         # still de-duplicates metric rows by their entity key after the Cartesian product.
         include_primary_keys = needs_keyed_joins or needs_cross_fanout_key or ungrouped or bool(model.sql)
-        if include_primary_keys:
-            for pk_col in model.primary_key_columns:
-                add_passthrough_column(pk_col)
+        for pk_col in model.primary_key_columns:
+            if include_primary_keys:
+                add_key_column(pk_col)
+            elif model.get_dimension(pk_col) is not None:
+                key_source(pk_col)  # Validate a declared identity even when this projection omits it.
 
         # Include local relationship keys if we're joining OR if they're explicitly requested as dimensions
         for relationship in model.relationships:
@@ -2679,9 +2757,10 @@ class SQLGenerator:
                     # Add FK if: (1) we're joining to this related model, OR (2) FK is requested as dimension
                     should_include = (needs_keyed_joins and target_instance in all_models) or fk in needed_dimensions
                     if should_include and fk not in columns_added:
-                        add_passthrough_column(fk)
+                        add_key_column(fk)
                         # Mark FK as "needed" so it's not duplicated as a dimension
-                        needed_dimensions.discard(fk)
+                        if self._key_projection_name(model_name, fk) == fk:
+                            needed_dimensions.discard(fk)
             elif (
                 needs_keyed_joins
                 and target_instance in all_models
@@ -2692,7 +2771,7 @@ class SQLGenerator:
                 # model's declared primary key, so projecting the model PK alone would omit it.
                 local_keys = _relationship_local_key_columns(model, relationship)
                 for pk in local_keys:
-                    add_passthrough_column(pk)
+                    add_key_column(pk)
             elif (
                 needs_keyed_joins
                 and target_instance in all_models
@@ -2705,7 +2784,7 @@ class SQLGenerator:
                 # be its declared primary key), so that exact column must be projected. The legacy
                 # shape (no target key) joins on the model primary key, already projected above.
                 for fk in relationship.foreign_key_columns:
-                    add_passthrough_column(fk)
+                    add_key_column(fk)
 
         # Check if other models have has_many/has_one pointing to this model
         if needs_keyed_joins:
@@ -2726,13 +2805,13 @@ class SQLGenerator:
                         # Other model expects this model to have a foreign key
                         # For has_many/has_one, foreign_key is the FK column in THIS model
                         for fk in other_join.foreign_key_columns:
-                            add_passthrough_column(fk)
+                            add_key_column(fk)
                     elif target_instance == model_name and other_join.type == "many_to_one":
                         target_keys = (
                             other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
                         )
                         for pk in target_keys:
-                            add_passthrough_column(pk)
+                            add_key_column(pk)
                     elif (
                         target_instance == model_name
                         and other_join.type == "many_to_many"
@@ -2745,7 +2824,7 @@ class SQLGenerator:
                             other_join.primary_key_columns if other_join.primary_key else model.primary_key_columns
                         )
                         for pk in related_keys:
-                            add_passthrough_column(pk)
+                            add_key_column(pk)
 
             for other_model_name, other_model in self.graph.models.items():
                 if other_model_name not in all_models:
@@ -2755,9 +2834,8 @@ class SQLGenerator:
                         continue
                     junction_self_fks, junction_related_fks = other_join.junction_key_columns()
                     for fk in (*junction_self_fks, *junction_related_fks):
-                        if fk and fk not in columns_added:
-                            select_cols.append(f"{self._quote_identifier(fk)} AS {self._quote_alias(fk)}")
-                            columns_added.add(fk)
+                        if fk:
+                            add_key_column(fk)
 
         # Add only needed dimension columns
         for dimension in model.dimensions:
@@ -2974,13 +3052,11 @@ class SQLGenerator:
                     pk_cols = model.primary_key_columns
                     self._require_primary_key(model.name, pk_cols, "for a primary-key count-distinct")
                     if len(pk_cols) == 1:
-                        base_sql = self._quote_identifier(pk_cols[0])
+                        base_sql = key_source(pk_cols[0])
                     else:
                         # For composite keys, concatenate columns for uniqueness
                         base_sql = (
-                            "CONCAT("
-                            + ", '|', ".join(f"CAST({self._quote_identifier(c)} AS VARCHAR)" for c in pk_cols)
-                            + ")"
+                            "CONCAT(" + ", '|', ".join(f"CAST({key_source(c)} AS VARCHAR)" for c in pk_cols) + ")"
                         )
                 else:
                     base_sql = replace_model_placeholder(measure.sql_expr)
@@ -3807,7 +3883,7 @@ class SQLGenerator:
                     )
 
                 join_conditions = [
-                    self._cte_ref(jp.from_model, fk) + " = " + self._cte_ref(jp.to_model, pk)
+                    self._key_cte_ref(jp.from_model, fk) + " = " + self._key_cte_ref(jp.to_model, pk)
                     for fk, pk in zip(jp.from_columns, jp.to_columns)
                 ]
                 join_cond = " AND ".join(join_conditions)
@@ -4055,7 +4131,7 @@ class SQLGenerator:
             )
         for pk_col, internal_name in zip(model.primary_key_columns, pk_internal_names, strict=True):
             inner_select_exprs.append(
-                f"{self._cte_ref(metric_model_name, pk_col)} AS {self._quote_alias(internal_name)}"
+                f"{self._key_cte_ref(metric_model_name, pk_col)} AS {self._quote_alias(internal_name)}"
             )
         for (_metric_ref, measure), internal_name in zip(leaf_metrics, metric_internal_names, strict=True):
             if getattr(measure, "sql_is_complete", False):
@@ -4111,6 +4187,7 @@ class SQLGenerator:
             elif agg == "count_distinct":
                 aggregate = f"COUNT({raw_ref})" if not measure.sql else f"COUNT(DISTINCT {raw_ref})"
             elif agg == "approx_count_distinct":
+                self._check_approximate_dialect()
                 aggregate = f"COUNT({raw_ref})" if not measure.sql else f"APPROX_COUNT_DISTINCT({raw_ref})"
             else:
                 aggregate = f"{self._agg_sql_name(agg)}({raw_ref})"
@@ -4131,7 +4208,7 @@ class SQLGenerator:
                     "this", exp.to_identifier(internal_name, quoted=not self._is_simple_identifier(internal_name))
                 )
                 column.set("table", exp.to_identifier(dedup_alias, quoted=not self._is_simple_identifier(dedup_alias)))
-            entity_formula = parsed.sql(dialect=self.dialect)
+            entity_formula = self._render_metric_expression(parsed)
             if parsed_dims and not sql_has_aggregate(measure.sql or "", self.dialect):
                 entity_formula = f"ANY_VALUE({entity_formula})"
             return entity_formula
@@ -4217,7 +4294,7 @@ class SQLGenerator:
         if with_totals and parsed_dims:
             outer_select_exprs.append("0 AS _is_total")
 
-        outer_query = select(*outer_select_exprs).from_(inner_query.subquery(dedup_alias))
+        outer_query = select(*outer_select_exprs, dialect=self.dialect).from_(inner_query.subquery(dedup_alias))
         if parsed_dims:
             outer_query = outer_query.group_by(*range(1, len(parsed_dims) + 1))
         for filter_expr in having_filters:
@@ -4235,9 +4312,9 @@ class SQLGenerator:
             for dim_ref, gran in parsed_dims:
                 reference = f"{dim_ref}__{gran}" if gran else dim_ref
                 total_dimensions.append(f"NULL AS {self._quote_alias(output_aliases[reference])}")
-            total_query = select(*total_dimensions, *outer_select_exprs[len(parsed_dims) : -1], "1 AS _is_total").from_(
-                total_rows.subquery(dedup_alias)
-            )
+            total_query = select(
+                *total_dimensions, *outer_select_exprs[len(parsed_dims) : -1], "1 AS _is_total", dialect=self.dialect
+            ).from_(total_rows.subquery(dedup_alias))
             for filter_expr in having_filters:
                 total_query = total_query.having(
                     _parse_fragment(self._rewrite_having_filter(filter_expr, having_metric_expressions), self.dialect)
@@ -4405,7 +4482,9 @@ class SQLGenerator:
             if metric.agg == "count_distinct":
                 aggregate = f"COUNT(DISTINCT {raw_ref})"
             elif metric.agg == "approx_count_distinct":
-                aggregate = f"APPROX_COUNT_DISTINCT({raw_ref})"
+                aggregate = self._render_metric_expression(
+                    exp.ApproxDistinct(this=_parse_fragment(raw_ref, self.dialect))
+                )
             else:
                 aggregate = f"{self._agg_sql_name(metric.agg)}({raw_ref})"
             leaf_aggregates[id(metric)] = self._wrap_with_fill_nulls(aggregate, metric)
@@ -4735,12 +4814,12 @@ class SQLGenerator:
                             )
                             # For composite keys, concatenate columns for hashing
                             if len(pk_cols) == 1:
-                                pk = self._cte_ref(model_name, pk_cols[0])
+                                pk = self._key_cte_ref(model_name, pk_cols[0])
                             else:
                                 pk = (
                                     "CONCAT("
                                     + ", '|', ".join(
-                                        f"CAST({self._cte_ref(model_name, c)} AS VARCHAR)" for c in pk_cols
+                                        f"CAST({self._key_cte_ref(model_name, c)} AS VARCHAR)" for c in pk_cols
                                     )
                                     + ")"
                                 )
@@ -5075,7 +5154,7 @@ class SQLGenerator:
                         self._cte_name(model_name), quoted=not self._is_simple_identifier(self._cte_name(model_name))
                     ),
                 )
-            expr = parsed.sql(dialect=self.dialect)
+            expr = self._render_metric_expression(parsed)
         except SqlglotError:
             logging.debug("Failed to rewrite complete-sql measure expr: %s", expr, exc_info=True)
             expr = self._rewrite_model_refs_to_ctes(expr)
@@ -5551,6 +5630,18 @@ class SQLGenerator:
 
         raise NotImplementedError(f"Metric type {metric.type} not yet implemented")
 
+    def _population_row_sql(self, sql: str, model, metric_type: str, source_alias: str = "") -> str:
+        """Bind a population metric's row expression to its single source."""
+        source = replace_outside_sql_protected(sql, "{model}", self._quote_identifier(model.name))
+        tree = _parse_fragment(source, self.dialect)
+        if tree.find(exp.AggFunc, exp.Window, exp.Query, exp.Subquery):
+            raise QueryValidationError(f"Expected a source-row expression (metric.{metric_type}_non_row_expression)")
+        for column in tree.find_all(exp.Column):
+            if column.table not in ("", model.name, source_alias) or column.db or column.catalog:
+                raise QueryValidationError(f"Unknown source '{column.table}' (metric.{metric_type}_joined_expression)")
+            column.set("table", exp.to_identifier(source_alias) if source_alias else None)
+        return tree.sql(dialect=self.dialect)
+
     def _generate_cohort_metric_query(
         self,
         metric_name: str,
@@ -5671,12 +5762,10 @@ class SQLGenerator:
             entity_sql = entity_dim.sql_expr
             entity_alias = entity_dim.name
 
-        def _replace_model_placeholder(expr: str) -> str:
-            if model.sql:
-                return expr.replace("{model}", "t")
-            return expr.replace("{model}.", "")
+        def source_row(sql):
+            return self._population_row_sql(sql, model, "cohort", "t" if model.sql else "")
 
-        entity_sql = _replace_model_placeholder(entity_sql)
+        entity_sql = source_row(entity_sql)
 
         # Process segments from filters
         all_filters = [*(filters or []), *(metric.filters or [])]
@@ -5688,7 +5777,7 @@ class SQLGenerator:
             for seg in model.segments or []:
                 qualified = f"{model_name}.{seg.name}" if model_name else seg.name
                 if f.strip() == qualified or f.strip() == seg.name:
-                    seg_sql = _replace_model_placeholder(seg.sql)
+                    seg_sql = source_row(seg.sql)
                     segment_clause += f" AND ({seg_sql})"
                     segment_resolved = True
                     break
@@ -5700,7 +5789,7 @@ class SQLGenerator:
         for f in remaining_filters:
             stripped = self._strip_model_prefixes([f], model_name or "")[0] if model_name else f
             stripped = self._resolve_filter_dimensions([stripped], model)[0]
-            stripped = _replace_model_placeholder(stripped)
+            stripped = source_row(stripped)
             filter_parts.append(stripped)
 
         where_clause = "1=1" + segment_clause
@@ -5712,24 +5801,45 @@ class SQLGenerator:
         entity_select = f"{entity_sql} AS {quoted_entity}" if entity_sql != entity_alias else quoted_entity
         inner_group_cols = [entity_sql]
         inner_select_cols = [entity_select]
+        # Each name has exactly one meaning in the inner grouped result.
+        inner_fields = {entity_alias.lower(): entity_alias}
+
+        def add_inner_field(name: str, expression: str) -> None:
+            if name.lower() in inner_fields:
+                raise QueryValidationError(f"Duplicate cohort field '{name}' (metric.cohort_inner_alias_collision)")
+            inner_fields[name.lower()] = name
+            inner_select_cols.append(f"{expression} AS {quote_alias(name)}")
+
+        def bind_result(expression: str) -> str:
+            source = replace_outside_sql_protected(expression, "{model}", "cohort_sub")
+            tree = _parse_fragment(source, self.dialect)
+            if tree.find(exp.AggFunc, exp.Window, exp.Query, exp.Subquery):
+                raise QueryValidationError(
+                    "Expected a scalar cohort result expression (metric.cohort_result_non_row_expression)"
+                )
+
+            def bind_column(node):
+                if not isinstance(node, exp.Column):
+                    return node
+                binding = inner_fields.get(node.name.lower())
+                if binding is None or node.table not in ("", model.name, "cohort_sub") or node.db or node.catalog:
+                    raise QueryValidationError(f"Unknown cohort field '{node.sql()}' (metric.cohort_result_reference)")
+                return exp.column(binding, table="cohort_sub", quoted=True)
+
+            return tree.transform(bind_column).sql(dialect=self.dialect)
 
         # Entity dimensions (carried through to outer query)
         entity_dim_aliases = []
         for ed_name in metric.entity_dimensions or []:
             dim = model.get_dimension(ed_name)
             quoted_name = quote_alias(ed_name)
-            if dim:
-                dim_sql = _replace_model_placeholder(dim.sql_expr)
-                inner_select_cols.append(f"{dim_sql} AS {quoted_name}")
+            dim_sql = source_row(dim.sql_expr) if dim else quoted_name
+            if ed_name != entity_alias:
+                add_inner_field(ed_name, dim_sql)
                 inner_group_cols.append(dim_sql)
-                entity_dim_aliases.append(ed_name)
-            else:
-                inner_select_cols.append(quoted_name)
-                inner_group_cols.append(quoted_name)
-                entity_dim_aliases.append(ed_name)
+            entity_dim_aliases.append(ed_name)
 
         # Inner metrics
-        inner_metric_selects = []
         for im in metric.inner_metrics:
             im_name = im["name"]
             im_agg = self._agg_sql_name(im.get("agg", "count"))
@@ -5738,7 +5848,7 @@ class SQLGenerator:
             if im_sql:
                 im_sql = self._strip_model_prefixes([im_sql], model.name)[0]
                 im_sql = self._resolve_filter_dimensions([im_sql], model)[0]
-                im_sql = _replace_model_placeholder(im_sql)
+                im_sql = source_row(im_sql)
 
             if not im_sql and im_agg != "COUNT":
                 raise ValueError(
@@ -5753,27 +5863,7 @@ class SQLGenerator:
             else:
                 expr = f"{im_agg}({im_sql})"
 
-            inner_metric_selects.append(f"{expr} AS {quote_alias(im_name)}")
-
-        having_clause = _replace_model_placeholder(metric.having)
-
-        # Build outer query
-        outer_agg = self._agg_sql_name(metric.agg)
-        outer_sql = metric.sql
-        if outer_sql:
-            # Outer SQL references columns from the inner subquery (aliased as
-            # cohort_sub), not the raw table alias used inside the subquery.
-            outer_sql = outer_sql.replace("{model}.", "cohort_sub.").replace("{model}", "cohort_sub")
-
-        if not outer_sql and outer_agg not in ("COUNT", "COUNT_DISTINCT"):
-            raise ValueError(f"Cohort metric '{metric.name}' uses agg '{outer_agg}' which requires a 'sql' field")
-
-        if outer_agg == "COUNT_DISTINCT":
-            outer_expr = f"COUNT(DISTINCT {outer_sql or quoted_entity})"
-        elif outer_agg == "COUNT":
-            outer_expr = f"COUNT({outer_sql or '*'})"
-        else:
-            outer_expr = f"{outer_agg}({outer_sql})"
+            add_inner_field(im_name, expr)
 
         outer_select_cols = []
         outer_group_cols = []
@@ -5796,31 +5886,45 @@ class SQLGenerator:
                 dim_name = dim_ref_str
             alias = f"{dim_name}__{granularity}" if granularity else dim_name
 
-            if alias in entity_dim_aliases:
-                continue  # Already included
-
             if dim_model_name != model_name:
                 raise ValueError(
                     f"Cohort metric '{metric.name}' does not support dimensions "
                     f"from model '{dim_model_name}' (expected '{model_name}')"
                 )
+            if alias in entity_dim_aliases:
+                continue  # Already included
             dim = model.get_dimension(dim_name)
             if not dim:
                 raise ValueError(f"Dimension '{dim_name}' not found on model '{model_name}'")
-            dim_sql = _replace_model_placeholder(dim.sql_expr)
+            dim_sql = source_row(dim.sql_expr)
             if granularity:
                 dim_sql = self._date_trunc(granularity, dim_sql)
             quoted_alias = quote_alias(alias)
             # Add to inner query so it's available in the outer subquery
-            inner_select_cols.append(f"{dim_sql} AS {quoted_alias}")
-            inner_group_cols.append(dim_sql)
+            if alias != entity_alias or granularity:
+                add_inner_field(alias, dim_sql)
+                inner_group_cols.append(dim_sql)
             outer_select_cols.append(quoted_alias)
             outer_group_cols.append(quoted_alias)
             output_names.append(alias)
 
         # Join inner select/group after dimensions are added
-        inner_select = ",\n    ".join(inner_select_cols + inner_metric_selects)
+        if len({name.lower() for name in output_names}) != len(output_names):
+            raise QueryValidationError("Duplicate cohort result name (metric.cohort_output_alias_collision)")
+        inner_select = ",\n    ".join(inner_select_cols)
         inner_group = ", ".join(inner_group_cols)
+        # Filter completed entity groups before the outer aggregation.
+        having_clause = bind_result(metric.having)
+        outer_agg = self._agg_sql_name(metric.agg)
+        outer_sql = bind_result(metric.sql) if metric.sql else None
+        if outer_agg == "COUNT_DISTINCT":
+            outer_expr = f"COUNT(DISTINCT {outer_sql or quoted_entity})"
+        elif outer_agg == "COUNT":
+            outer_expr = f"COUNT({outer_sql or '*'})"
+        elif outer_sql:
+            outer_expr = f"{outer_agg}({outer_sql})"
+        else:
+            raise ValueError(f"Cohort metric '{metric.name}' uses agg '{outer_agg}' which requires a 'sql' field")
 
         outer_select_cols.append(f"{self._wrap_with_fill_nulls(outer_expr, metric)} AS {quote_alias(metric.name)}")
 
@@ -5848,8 +5952,8 @@ FROM (
   FROM {from_clause}
   WHERE {where_clause}
   GROUP BY {inner_group}
-  HAVING {having_clause}
-) cohort_sub{group_by}{order_clause}{limit_clause}{offset_clause}"""
+) cohort_sub
+WHERE {having_clause}{group_by}{order_clause}{limit_clause}{offset_clause}"""
 
         return sql.strip()
 
@@ -5944,21 +6048,19 @@ FROM (
         granularity = metric.retention_granularity if metric.retention_granularity is not None else "day"
         activity_event = metric.activity_event or "TRUE"
 
-        # Replace {model} placeholders in event predicates with actual table alias
-        table_alias = "t" if model.sql else ""
+        def source_row(expression: str) -> str:
+            if "{model}" not in expression:
+                return expression
+            if model.sql:
+                return replace_outside_sql_protected(expression, "{model}", "t")
+            return self._strip_model_prefixes([expression], model.name)[0]
 
-        def _replace_model_placeholder(expr: str) -> str:
-            if table_alias:
-                return expr.replace("{model}", table_alias)
-            else:
-                return expr.replace("{model}.", "")
-
-        cohort_event = _replace_model_placeholder(metric.cohort_event)
-        activity_event = _replace_model_placeholder(activity_event)
+        cohort_event = source_row(metric.cohort_event)
+        activity_event = source_row(activity_event)
 
         # Resolve entity dimension: use sql_expr for physical column, name for alias
         entity_dim = model.get_dimension(metric.entity)
-        entity_sql = _replace_model_placeholder(entity_dim.sql_expr) if entity_dim else metric.entity
+        entity_sql = source_row(entity_dim.sql_expr) if entity_dim else metric.entity
         entity_alias = metric.entity
 
         # Validate entity alias identifier
@@ -5981,7 +6083,7 @@ FROM (
             raise ValueError("Retention metrics require a time dimension on the model")
 
         # Use sql_expr for actual SQL, name for alias; expand {model} placeholder
-        ts_sql = _replace_model_placeholder(timestamp_dim.sql_expr)
+        ts_sql = source_row(timestamp_dim.sql_expr)
 
         # Build FROM clause
         from_clause = self._model_from_clause(model)
@@ -6013,7 +6115,9 @@ FROM (
         # These predicates scope source rows, not an aggregate result. Previously
         # metric references leaked into WHERE as nonexistent physical columns.
         for filter_sql in all_filters:
-            parsed_filter = _parse_fragment(filter_sql.replace("{model}", model.name), self.dialect)
+            parsed_filter = _parse_fragment(
+                replace_outside_sql_protected(filter_sql, "{model}", self._quote_identifier(model.name)), self.dialect
+            )
             references_metric = any(
                 (not column.table or column.table == model.name)
                 and not model.get_dimension(column.name)
@@ -6029,7 +6133,7 @@ FROM (
         # Normalize filters: strip model name prefixes and resolve dimension names
         normalized_filters = self._strip_model_prefixes(all_filters, model.name)
         normalized_filters = self._resolve_filter_dimensions(normalized_filters, model)
-        normalized_filters = [_replace_model_placeholder(f) for f in normalized_filters]
+        normalized_filters = [source_row(f) for f in normalized_filters]
 
         # Build optional WHERE filters for the source data
         filter_clause = ""
@@ -6089,6 +6193,30 @@ FROM retention r
 JOIN cohort_sizes c USING (cohort_date){order_clause}{limit_clause}{offset_clause}"""
 
         return sql.strip()
+
+    def _conversion_groups(
+        self, model, dimensions: list[str], fixed_outputs: list[str], source_expression: Callable[[str], str]
+    ) -> list[tuple[str, str, str]]:
+        """Bind grouping expressions once and keep public names out of the step CTEs."""
+        names = {name.lower() for name in fixed_outputs}
+        if len(names) != len(fixed_outputs):
+            raise QueryValidationError("Duplicate funnel output (metric.conversion_output_alias)")
+        groups = []
+        for dim_ref, grain in self._parse_dimension_refs(dimensions):
+            owner, _, name = dim_ref.rpartition(".")
+            dim = model.get_dimension(name)
+            if (owner and owner != model.name) or dim is None:
+                raise QueryValidationError(f"Invalid funnel dimension '{dim_ref}' (metric.conversion_joined_dimension)")
+            expression = source_expression(dim.sql_expr)
+            alias = dim.name
+            if grain and dim.type == "time":
+                expression = self._date_trunc(grain, expression)
+                alias = f"{alias}__{grain}"
+            if alias.lower() in names:
+                raise QueryValidationError(f"Duplicate funnel field '{alias}' (metric.conversion_output_alias)")
+            names.add(alias.lower())
+            groups.append((alias, f"__funnel_group_{len(groups)}", expression))
+        return groups
 
     def _generate_conversion_query(
         self,
@@ -6206,8 +6334,7 @@ JOIN cohort_sizes c USING (cohort_date){order_clause}{limit_clause}{offset_claus
         from_clause = self._model_from_clause(model)
 
         def source_expression(expression: str) -> str:
-            expression = expression.replace("{model}.", "")
-            return self._strip_model_prefixes([expression], model.name)[0]
+            return self._population_row_sql(expression, model, "conversion", "t" if model.sql else "")
 
         entity_dim = model.get_dimension(metric.entity.rsplit(".", 1)[-1])
         entity_sql = source_expression(entity_dim.sql_expr if entity_dim else metric.entity)
@@ -6219,54 +6346,34 @@ JOIN cohort_sizes c USING (cohort_date){order_clause}{limit_clause}{offset_claus
         normalized_filters = self._resolve_filter_dimensions(normalized_filters, model)
         filter_clause = ""
         if normalized_filters:
-            filter_clause = "\n    AND " + " AND ".join(f"({f})" for f in normalized_filters)
+            filter_clause = "\n    AND " + " AND ".join(f"({source_expression(f)})" for f in normalized_filters)
 
-        # Resolve dimension columns for GROUP BY support.
-        # Each entry is (alias, sql_expr) where sql_expr uses the dimension's
-        # actual SQL expression and applies DATE_TRUNC for time granularity.
-        dim_entries: list[tuple[str, str]] = []
-        for dim_ref in dimensions:
-            dim_name = dim_ref.split(".", 1)[1] if "." in dim_ref else dim_ref
-            # Parse granularity suffix (e.g., "event_date__month")
-            if "__" in dim_name:
-                base_dim, gran = dim_name.rsplit("__", 1)
-            else:
-                base_dim, gran = dim_name, None
-            dim_obj = model.get_dimension(base_dim)
-            if not dim_obj:
-                continue
-            sql_col = source_expression(dim_obj.sql_expr)
-            if gran and dim_obj.type == "time":
-                sql_col = self._date_trunc(gran, sql_col)
-                alias = f"{base_dim}__{gran}"
-            else:
-                alias = base_dim
-            dim_entries.append((alias, sql_col))
-
-        dim_aliases = [alias for alias, _ in dim_entries]
+        groups = self._conversion_groups(model, dimensions, [metric.name], source_expression)
+        dim_aliases = [alias for alias, _, _ in groups]
 
         # Build extra SELECT columns for dimensions
         extra_base_cols = ""
-        extra_conv_cols = ""
         extra_conversions_cols = ""
-        if dim_entries:
-            base_col_list = ",\n    ".join(f"{sql_col} AS {alias}" for alias, sql_col in dim_entries)
+        if groups:
+            base_col_list = ",\n    ".join(f"{sql_col} AS {internal}" for _, internal, sql_col in groups)
             extra_base_cols = f",\n    {base_col_list}"
-            extra_conv_cols = extra_base_cols
-            conv_col_list = ",\n    ".join(f"base.{alias}" for alias in dim_aliases)
+            conv_col_list = ",\n    ".join(f"base.{internal}" for _, internal, _ in groups)
             extra_conversions_cols = f",\n    {conv_col_list}"
 
         # Build LEFT JOIN condition (entity + dimensions)
         join_on_parts = ["base_events.entity = conversions.entity"]
-        for alias in dim_aliases:
-            join_on_parts.append(f"base_events.{alias} IS NOT DISTINCT FROM conversions.{alias}")
+        for _, internal, _ in groups:
+            join_on_parts.append(f"base_events.{internal} IS NOT DISTINCT FROM conversions.{internal}")
         join_condition = "\n  AND ".join(join_on_parts)
 
         # Build final SELECT, GROUP BY, ORDER BY, LIMIT
         dim_select = ""
         group_by = ""
         if dim_aliases:
-            dim_select_list = ",\n  ".join(f"base_events.{alias} AS {alias}" for alias in dim_aliases)
+            dim_select_list = ",\n  ".join(
+                f"base_events.{internal} AS {exp.to_identifier(alias, quoted=True).sql(dialect=self.dialect)}"
+                for alias, internal, _ in groups
+            )
             dim_select = f"  {dim_select_list},\n"
             group_by = "\nGROUP BY\n  " + ",\n  ".join(str(i + 1) for i in range(len(dim_aliases)))
 
@@ -6288,7 +6395,7 @@ WITH base_events AS (
 conversion_events AS (
   SELECT
     {entity_sql} AS entity,
-    {timestamp_sql} AS event_time{extra_conv_cols}
+    {timestamp_sql} AS event_time
   FROM {from_clause}
   WHERE {event_type_sql} = '{metric.conversion_event.replace("'", "''")}'{filter_clause}
 ),
@@ -6390,55 +6497,24 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}{
         # Build FROM clause
         from_clause = self._model_from_clause(model)
 
-        # Normalize SQL expressions for use inside subqueries.
-        # Expressions may contain {model} placeholders (e.g. "{model}.created_at")
-        # or model-name prefixes (e.g. "events.created_at") that are invalid
-        # inside the step subqueries which use different aliases.
-        def _normalize_expr_for_subquery(sql_expr: str, table_alias: str, qualify_bare: bool = False) -> str:
-            """Rewrite {model} placeholders and model-name prefixes for a subquery.
+        def first_step_sql(expression: str) -> str:
+            return self._population_row_sql(expression, model, "conversion", "t" if model.sql else "")
 
-            For SQL-backed models the table_alias (e.g. "t" or "_src") replaces
-            the placeholder.  For table-backed models the prefix is stripped.
-
-            When qualify_bare=True and table_alias is set, unqualified column
-            references are prefixed with the alias (e.g. ``event`` -> ``s.event``).
-            This prevents ambiguous-column errors in JOINed CTEs.
-            """
-            result = sql_expr
-            if table_alias:
-                result = result.replace("{model}", table_alias)
-            else:
-                result = result.replace("{model}.", "")
-            # Rewrite column references via sqlglot to avoid corrupting string
-            # literals (e.g. "events.signup" inside a quoted value).
-            try:
-                parsed = _parse_fragment(result, self.dialect)
-                for col in parsed.find_all(exp.Column):
-                    if col.table == model.name:
-                        # Strip model-name qualifier (e.g. events.col -> col)
-                        # or replace with alias when qualify_bare is set
-                        col.set("table", table_alias if qualify_bare and table_alias else None)
-                    elif not col.table and qualify_bare and table_alias:
-                        col.set("table", table_alias)
-                result = parsed.sql(dialect=self.dialect)
-            except SqlglotError:
-                pass
-            return result
+        def later_step_sql(expression: str) -> str:
+            return self._population_row_sql(expression, model, "conversion", "s")
 
         # ts_sql for step 1 (from_clause aliases SQL models as "t", table models have no alias)
-        ts_sql = _normalize_expr_for_subquery(ts_sql_raw, "t" if model.sql else "")
-
-        # ts_sql for from_clause_s subquery (SQL models aliased as "_src", table models no alias)
-        ts_sql_src = _normalize_expr_for_subquery(ts_sql_raw, "_src" if model.sql else "")
+        ts_sql = first_step_sql(ts_sql_raw)
+        ts_sql_s = later_step_sql(ts_sql_raw)
 
         # Resolve entity: use dimension sql_expr if available (handles aliased dims
         # and qualified names like events.user_id -> user_id)
         entity_dim = model.get_dimension(metric.entity)
         entity_sql_raw = entity_dim.sql_expr if entity_dim else metric.entity
         # Normalize for step 1 context (alias "t" for SQL models, bare for table models)
-        entity_sql = _normalize_expr_for_subquery(entity_sql_raw, "t" if model.sql else "")
+        entity_sql = first_step_sql(entity_sql_raw)
         # Normalize for step N context (always alias "s")
-        entity_sql_s = _normalize_expr_for_subquery(entity_sql_raw, "s", qualify_bare=True)
+        entity_sql_s = later_step_sql(entity_sql_raw)
 
         # Normalize filters: strip model name prefixes and resolve dimension names
         normalized_filters = self._strip_model_prefixes([*(filters or []), *(metric.filters or [])], model.name)
@@ -6449,58 +6525,32 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}{
         filter_clause = ""
         filter_clause_s = ""
         if normalized_filters:
-            filter_clause = " AND " + " AND ".join(f"({f})" for f in normalized_filters)
-            qualified = [_normalize_expr_for_subquery(f, "s", qualify_bare=True) for f in normalized_filters]
-            filter_clause_s = " AND " + " AND ".join(f"({q})" for q in qualified)
+            filter_clause = " AND " + " AND ".join(f"({first_step_sql(f)})" for f in normalized_filters)
+            filter_clause_s = " AND " + " AND ".join(f"({later_step_sql(f)})" for f in normalized_filters)
 
-        # Resolve dimension columns for GROUP BY support
-        dim_entries: list[tuple[str, str]] = []
-        for dim_ref in dimensions:
-            dim_name = dim_ref.split(".", 1)[1] if "." in dim_ref else dim_ref
-            if "__" in dim_name:
-                base_dim, gran = dim_name.rsplit("__", 1)
-            else:
-                base_dim, gran = dim_name, None
-            dim_obj = model.get_dimension(base_dim)
-            if not dim_obj:
-                continue
-            sql_col = _normalize_expr_for_subquery(dim_obj.sql_expr, "t" if model.sql else "")
-            if gran and dim_obj.type == "time":
-                sql_col = self._date_trunc(gran, sql_col)
-                alias = f"{base_dim}__{gran}"
-            else:
-                alias = base_dim
-            dim_entries.append((alias, sql_col))
-
-        dim_aliases = [alias for alias, _ in dim_entries]
-
-        # Build from_clause variant for non-first steps (aliased as 's' for joining).
-        # Project the timestamp expression as __ts so later CTEs can reference
-        # s.__ts regardless of whether ts_sql is a simple column or an expression
-        # like CAST(created_at AS DATE).
-        if model.sql:
-            from_clause_s = f"(SELECT *, {ts_sql_src} AS __ts FROM ({model.sql}) AS _src) AS s"
-        else:
-            from_clause_s = f"(SELECT *, {ts_sql_src} AS __ts FROM {model.table}) AS s"
+        num_steps = len(metric.steps)
+        fixed_outputs = ["total_entities", *(f"step_{i}_count" for i in range(1, num_steps + 1)), metric.name]
+        groups = self._conversion_groups(model, dimensions, fixed_outputs, first_step_sql)
+        dim_aliases = [alias for alias, _, _ in groups]
+        from_clause_s = f"({model.sql}) AS s" if model.sql else f"{model.table} AS s"
 
         # Build sequential CTE chain: each step derives its timestamp from the
         # prior step's completion, ensuring correct chronological ordering.
         cte_parts = []
-        num_steps = len(metric.steps)
 
         for i, step_expr in enumerate(metric.steps, 1):
             if i == 1:
                 # Normalize step predicate: rewrite {model} / model-name prefixes
                 # for step 1 scope (SQL models alias as "t", table models have no alias)
-                norm_step = _normalize_expr_for_subquery(step_expr, "t" if model.sql else "")
+                norm_step = first_step_sql(step_expr)
 
                 # Step 1: find the earliest matching event per entity and selected group.
                 select_parts = [f"{entity_sql} AS entity", f"MIN({ts_sql}) AS step_1_ts"]
-                for alias, sql_col in dim_entries:
-                    select_parts.append(f"{sql_col} AS {alias}")
+                for _, internal, sql_col in groups:
+                    select_parts.append(f"{sql_col} AS {internal}")
                 select_str = ",\n    ".join(select_parts)
                 group_parts = [entity_sql]
-                for _alias, sql_col in dim_entries:
+                for _, _, sql_col in groups:
                     group_parts.append(sql_col)
                 group_str = ",\n    ".join(group_parts)
                 cte_parts.append(
@@ -6517,17 +6567,17 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}{
                 # Normalize step predicate: rewrite {model} / model-name prefixes
                 # for step N scope. Source is always aliased as "s" (both SQL and
                 # table-backed models), so qualify_bare with "s" unconditionally.
-                norm_step = _normalize_expr_for_subquery(step_expr, "s", qualify_bare=True)
+                norm_step = later_step_sql(step_expr)
 
                 # Step N: join source to step N-1, only consider events at or after prior step
                 prev = f"step_{i - 1}"
-                select_parts = [f"{entity_sql_s} AS entity", f"MIN(s.__ts) AS step_{i}_ts"]
-                for alias, _sql_col in dim_entries:
-                    select_parts.append(f"{prev}.{alias}")
+                select_parts = [f"{entity_sql_s} AS entity", f"MIN({ts_sql_s}) AS step_{i}_ts"]
+                for _, internal, _ in groups:
+                    select_parts.append(f"{prev}.{internal}")
                 select_str = ",\n    ".join(select_parts)
                 group_parts = [entity_sql_s]
-                for alias, _sql_col in dim_entries:
-                    group_parts.append(f"{prev}.{alias}")
+                for _, internal, _ in groups:
+                    group_parts.append(f"{prev}.{internal}")
                 group_str = ",\n    ".join(group_parts)
                 cte_parts.append(
                     f"step_{i} AS (\n"
@@ -6535,7 +6585,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}{
                     f"    {select_str}\n"
                     f"  FROM {from_clause_s}\n"
                     f"  JOIN {prev} ON {entity_sql_s} = {prev}.entity\n"
-                    f"    AND s.__ts >= {prev}.step_{i - 1}_ts\n"
+                    f"    AND ({ts_sql_s}) >= {prev}.step_{i - 1}_ts\n"
                     f"  WHERE ({norm_step}){filter_clause_s}\n"
                     f"  GROUP BY\n"
                     f"    {group_str}\n"
@@ -6546,8 +6596,9 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}{
         # Also alias the last step count to the metric name for ORDER BY compatibility
         metric_name_only = metric.name
         final_select_parts = []
-        for alias in dim_aliases:
-            final_select_parts.append(f"step_1.{alias} AS {alias}")
+        for alias, internal, _ in groups:
+            quoted_alias = exp.to_identifier(alias, quoted=True).sql(dialect=self.dialect)
+            final_select_parts.append(f"step_1.{internal} AS {quoted_alias}")
         final_select_parts.append("COUNT(DISTINCT step_1.entity) AS total_entities")
         for i in range(1, num_steps + 1):
             final_select_parts.append(f"COUNT(DISTINCT step_{i}.entity) AS step_{i}_count")
@@ -6559,8 +6610,8 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}{
         join_parts = []
         for i in range(2, num_steps + 1):
             join_on = f"step_{i - 1}.entity = step_{i}.entity"
-            for alias in dim_aliases:
-                join_on += f"\n    AND step_{i - 1}.{alias} IS NOT DISTINCT FROM step_{i}.{alias}"
+            for _, internal, _ in groups:
+                join_on += f"\n    AND step_{i - 1}.{internal} IS NOT DISTINCT FROM step_{i}.{internal}"
             join_parts.append(f"LEFT JOIN step_{i} ON {join_on}")
         join_str = "\n".join(join_parts)
 
@@ -6571,7 +6622,7 @@ LEFT JOIN conversions ON {join_condition}{group_by}{order_clause}{limit_clause}{
 
         order_clause = self._specialized_order_clause(
             order_by,
-            [*dim_aliases, "total_entities", *(f"step_{i}_count" for i in range(1, num_steps + 1)), metric_name_only],
+            [*dim_aliases, *fixed_outputs],
         )
 
         limit_clause = ""
@@ -6914,14 +6965,19 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
             # Classify metric by type
             if metric and metric.type == "cumulative":
                 add_unique(cumulative_metrics, m)
-                if self.dialect == "redshift" and metric.agg == "approx_count_distinct":
+                if (
+                    self.dialect == "redshift"
+                    and metric.agg == "approx_count_distinct"
+                    and not metric.window_expression
+                ):
                     raise QueryValidationError(
                         "Redshift does not support approximate distinct window functions "
                         "(metric.approx_count_distinct_window_redshift)"
                     )
                 if metric.window_expression:
                     expression = sqlglot.parse_one(metric.window_expression, read=self.dialect)
-                    if self.dialect == "redshift" and expression.find(exp.ApproxDistinct):
+                    window_function = expression.this if isinstance(expression, exp.Filter) else expression
+                    if self.dialect == "redshift" and isinstance(window_function, exp.ApproxDistinct):
                         raise QueryValidationError(
                             "Redshift does not support approximate distinct window functions "
                             "(metric.approx_count_distinct_window_redshift)"
@@ -7448,11 +7504,11 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                             return exp.column(alias, table="base", quoted=True)
                     return node
 
-                window_expression = window_expression.transform(bind_window_input).sql(dialect=self.dialect)
+                window_expression = self._render_metric_expression(window_expression.transform(bind_window_input))
                 window_value = f"{window_expression} OVER ({partition_clause}ORDER BY {order_col} {frame})"
                 window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
                 select_exprs.append(window_expr)
-                cumulative_window_entries.append((window_expr, metric_alias))
+                cumulative_window_entries.append((window_expr, metric.name))
                 continue
 
             # Option A: Use agg + sql (supports AVG, COUNT, etc.)
@@ -7494,7 +7550,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
 
             window_expr = f"{self._wrap_with_fill_nulls(window_value, metric)} AS {metric_alias}"
             select_exprs.append(window_expr)
-            cumulative_window_entries.append((window_expr, metric_alias))
+            cumulative_window_entries.append((window_expr, metric.name))
 
         # Add time comparison metrics with LAG window functions
         # Note: We'll handle these with a CTE approach similar to offset_ratio_metrics
@@ -7532,6 +7588,20 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
             for cum_expr, cum_alias in cumulative_window_entries:
                 lag_selects.append(cum_expr)
                 lag_cte_columns.append(cum_alias)
+
+            # A private LAG column must not shadow a grouping or metric output.
+            used_names = {name.casefold() for name in lag_cte_columns}
+            used_names.update(
+                metric_ref_alias(plan["base_ref"]).casefold() for plan in time_comparison_base_plans.values()
+            )
+            previous_columns = {}
+            for references, suffix in ((time_comparison_metrics, "prev_value"), (offset_ratio_metrics, "prev_denom")):
+                for reference in references:
+                    name = f"{reference}_{suffix}"
+                    while name.casefold() in used_names:
+                        name += "_"
+                    used_names.add(name.casefold())
+                    previous_columns[reference] = self._quote_alias(name)
 
             # Add LAG expressions for each time comparison metric
             for m in time_comparison_metrics:
@@ -7597,7 +7667,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     lag_offset = self._calculate_lag_offset(metric.comparison_type, time_dim_gran)
                     exact_lookup = f"LAG({lag_input_expr}, {lag_offset}) OVER ({partition_clause}ORDER BY {time_dim})"
 
-                prev_value_alias = self._quote_alias(f"{m}_prev_value")
+                prev_value_alias = previous_columns[m]
                 lag_selects.append(f"{exact_lookup} AS {prev_value_alias}")
 
             # Add LAG expressions for each offset ratio metric
@@ -7655,7 +7725,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                     prior_denominator = (
                         f"LAG({denominator_expr}, {lag_rows}) OVER ({partition_clause}ORDER BY {time_dim})"
                     )
-                prev_denom_alias = self._quote_alias(f"{m}_prev_denom")
+                prev_denom_alias = previous_columns[m]
                 lag_selects.append(f"{prior_denominator} AS {prev_denom_alias}")
 
             # Build intermediate CTE - inner_query already has all the columns we need
@@ -7682,7 +7752,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 base_alias = sql_identifier(metric_ref_alias(base_ref))
 
                 # Quote aliases to handle dotted metric names
-                prev_value_col = self._quote_alias(f"{m}_prev_value")
+                prev_value_col = previous_columns[m]
                 final_alias = self._quote_alias(m)
 
                 # Build calculation based on calculation type
@@ -7709,7 +7779,7 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
                 num_alias = sql_identifier(metric_ref_alias(canonical_ref(metric.numerator, resolved_context)))
 
                 # Quote aliases to handle dotted metric names
-                prev_denom_col = self._quote_alias(f"{m}_prev_denom")
+                prev_denom_col = previous_columns[m]
                 final_alias = self._quote_alias(m)
 
                 # Calculate ratio using the lagged value
@@ -8161,23 +8231,18 @@ FROM step_1{join_section}{final_group_by}{order_clause}{limit_clause}{offset_cla
         if order_by:
             order_clauses = []
             for field in order_by:
-                parts = field.rsplit(" ", 1)
-                direction = ""
-                field_ref = field
-                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
-                    field_ref = parts[0]
-                    direction = f" {parts[1].upper()}"
+                field_ref, suffix = split_order_field(field, [*output_names, *output_names.values()])
                 field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
                 output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
                 # Unmatched join keys add a NULL dimension group; order it as
                 # raw planning does instead of by the database default. The
                 # target dialect renders or emulates the NULL placement.
-                descending = direction == " DESC"
+                descending = suffix.startswith("DESC")
                 order_clauses.append(
                     exp.Ordered(
                         this=exp.column(output_name, quoted=True),
                         desc=descending,
-                        nulls_first=not descending,
+                        nulls_first=suffix.endswith("NULLS FIRST") if "NULLS" in suffix else not descending,
                     )
                 )
             order_by_clause = "\n" + exp.Order(expressions=order_clauses).sql(dialect=self.dialect)
@@ -8555,17 +8620,19 @@ LEFT JOIN (
         if order_by:
             order_clauses = []
             for field in order_by:
-                parts = field.rsplit(" ", 1)
-                direction = ""
-                field_ref = field
-                if len(parts) == 2 and parts[1].upper() in {"ASC", "DESC"}:
-                    field_ref = parts[0]
-                    direction = f" {parts[1].upper()}"
-
+                field_ref, suffix = split_order_field(field, [*output_names, *output_names.values()])
                 field_name = field_ref.split(".", 1)[1] if "." in field_ref else field_ref
                 output_name = output_names.get(field_ref) or output_names.get(field_name) or field_ref
-                order_clauses.append(f"{self._quote_alias(output_name)}{direction}")
-            order_by_clause = f"\nORDER BY {', '.join(order_clauses)}"
+                order_clauses.append(
+                    exp.Ordered(
+                        this=exp.column(output_name, quoted=True),
+                        desc=suffix.startswith("DESC"),
+                        nulls_first=suffix.endswith("NULLS FIRST")
+                        if "NULLS" in suffix
+                        else not suffix.startswith("DESC"),
+                    )
+                )
+            order_by_clause = "\n" + exp.Order(expressions=order_clauses).sql(dialect=self.dialect)
 
         # Build LIMIT/OFFSET clause
         limit_clause = ""

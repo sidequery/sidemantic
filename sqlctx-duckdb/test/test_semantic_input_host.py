@@ -59,6 +59,155 @@ def call(query=None, source=None, sql=None, context=None, error=False):
     return result if error else result[0]["sql"]
 
 
+@pytest.mark.parametrize("expression", [False, True])
+def test_graph_window_identity_shadows_same_named_local_aggregate(expression):
+    source = {
+        "version": 1,
+        "input_dialect": "duckdb",
+        "models": [
+            {
+                "name": "events",
+                "sql": """
+                    select * from (values
+                        (1, date '2024-01-01', 10, 900), (2, date '2024-01-02', 20, 800)
+                    ) events(id, day, amount, shadow)
+                """,
+                "primary_key": "id",
+                "dimensions": [{"name": "day", "type": "time", "granularity": "day"}],
+                "metrics": [
+                    {"name": "total", "agg": "sum", "sql": "amount"},
+                    {"name": "running", "agg": "sum", "sql": "shadow"},
+                ],
+            }
+        ],
+        "metrics": [
+            {
+                "name": "events.running",
+                "type": "cumulative",
+                **({"window_expression": "SUM(base.total)"} if expression else {"sql": "total"}),
+            }
+        ],
+        "metric_owners": {"events.running": "events"},
+    }
+    compiled = call(
+        source=source,
+        query={"metrics": ["events.running"], "dimensions": ["events.day"], "order_by": ["events.day"]},
+    )
+    assert execute(compiled) == [
+        {"day": "2024-01-01", "total": "10", "events.running": "10"},
+        {"day": "2024-01-02", "total": "20", "events.running": "30"},
+    ]
+
+
+def test_computed_time_identity_stays_unbucketed_for_join_and_fanout():
+    source = {
+        "version": 1,
+        "input_dialect": "duckdb",
+        "models": [
+            {
+                "name": "events",
+                "sql": """
+                    select * from (values
+                        ('2026-01-01 01:00:00', 3), ('2026-01-01 02:00:00', 4),
+                        ('2026-01-02 01:00:00', 8)
+                    ) events(raw_time, amount)
+                """,
+                "primary_key": "event_time",
+                "dimensions": [
+                    {
+                        "name": "event_time",
+                        "type": "time",
+                        "granularity": "day",
+                        "sql": "cast(raw_time as timestamp)",
+                    }
+                ],
+                "metrics": [
+                    {"name": "amount", "agg": "sum", "sql": "amount"},
+                    {"name": "people", "agg": "count_distinct"},
+                ],
+            },
+            {
+                "name": "logs",
+                "sql": """
+                    select * from (values
+                        (1, '2026-01-01 01:00:00', 'x'), (2, '2026-01-01 01:00:00', 'x'),
+                        (3, '2026-01-01 02:00:00', 'x'), (4, '2026-01-02 01:00:00', 'y')
+                    ) logs(id, raw_time, category)
+                """,
+                "primary_key": "id",
+                "dimensions": [
+                    {
+                        "name": "event_ref",
+                        "type": "time",
+                        "granularity": "day",
+                        "sql": "cast(raw_time as timestamp)",
+                    },
+                    {"name": "category", "type": "categorical"},
+                ],
+                "relationships": [{"name": "events", "type": "many_to_one", "foreign_key": "event_ref"}],
+            },
+        ],
+    }
+    compiled = call(
+        source=source,
+        query={
+            "metrics": ["events.amount", "events.people"],
+            "dimensions": ["events.event_time__day", "logs.category"],
+            "order_by": ["events.event_time__day", "logs.category"],
+        },
+    )
+    assert execute(compiled) == [
+        {"event_time__day": "2026-01-01", "category": "x", "amount": "7", "people": 2},
+        {"event_time__day": "2026-01-02", "category": "y", "amount": "8", "people": 1},
+    ]
+
+
+@pytest.mark.parametrize("rewrite", [False, True])
+@pytest.mark.parametrize("suffix", ["", " ASC NULLS LAST", " DESC NULLS FIRST"])
+def test_fanout_null_ordering_precedes_pagination(rewrite, suffix):
+    source = {
+        "version": 1,
+        "input_dialect": "duckdb",
+        "models": [
+            {
+                "name": "facts",
+                "sql": "select * from (values (1, 10), (2, 20), (3, 30)) facts(id, amount)",
+                "primary_key": "id",
+                "metrics": [{"name": "total", "agg": "sum", "sql": "amount"}],
+                "relationships": [{"name": "items", "type": "one_to_many", "foreign_key": "fact_id"}],
+            },
+            {
+                "name": "items",
+                "sql": """
+                    select * from (values (1, 1, NULL), (2, 1, NULL), (3, 2, 'a'), (4, 3, 'b'))
+                    items(id, fact_id, label)
+                """,
+                "primary_key": "id",
+                "dimensions": [{"name": "label", "type": "categorical"}],
+            },
+        ],
+    }
+    if rewrite:
+        compiled = call(
+            source=source,
+            sql=f"select items.label, facts.total from metrics order by label{suffix} limit 1",
+            context={},
+        )
+    else:
+        compiled = call(
+            source=source,
+            query={
+                "metrics": ["facts.total"],
+                "dimensions": ["items.label"],
+                "order_by": ["items.label" + suffix],
+                "limit": 1,
+            },
+        )
+    # Structured queries default to NULLS FIRST; semantic SQL keeps DuckDB's NULLS LAST.
+    nulls_first = suffix.endswith("FIRST") or (not rewrite and not suffix)
+    assert execute(compiled) == [{"label": None, "total": "10"} if nulls_first else {"label": "a", "total": "20"}]
+
+
 def test_retention_table_keeps_inactive_cohort_members_in_denominator():
     source = {
         "version": 1,

@@ -4,6 +4,15 @@
 `SemanticLayer(engine="python", fallback=False)` and
 `SemanticLayer(engine="rust", fallback=False)`, executes both SQL statements in
 the same one-thread DuckDB database, and checks their public columns and rows.
+Cases with an equivalent explicit SQL projection also run through the production
+Python and Rust SQL rewriters. The SQL selects the structured dimensions and
+metrics from `metrics`, applies row predicates in WHERE and aggregate predicates
+in HAVING, and orders/pages either the direct query or an outer query over a CTE
+whose alias shadows a model name. SQL spells out NULL placement to match the
+structured request, including when the two interfaces have different defaults.
+Cases with structured segments, implicit default-time grouping, or additional
+cumulative dependency outputs keep their two structured routes. Version 1
+fixtures without `rewrite_shape` keep their original structured replay.
 The Rust layer also has a Python compiler tripwire, and both engine selections
 must report the requested engine without a fallback reason. These tests require
 the installed Rust extension built from the checkout being evaluated.
@@ -63,10 +72,10 @@ model definitions, graph metrics, query, and typed table schemas. Every actual
 compile checks strict engine selection; reused SQL executes again against the
 new population. Successful immutable definition validation is also reused for
 that exact key; every population still checks row shape, non-null unique primary
-keys, and actual DuckDB insertion/type validity. Only the latest key per engine
+keys, and actual DuckDB insertion/type validity. Only the latest key per route
 and latest validated definition are retained. Default
 `DATA_VARIANTS=1`, replay, and minimization always compile fresh. Reports expose
-`unique_compiler_inputs`, per-engine `actual_compile_attempts`,
+`unique_compiler_inputs`, per-route `actual_compile_attempts`,
 `actual_successful_compilations`, `compilation_cache_hits`, and
 `checked_populations`; engine-selection counts refer to actual compilations,
 while successful-execution counts include all populations. Cache reuse measures
@@ -75,7 +84,7 @@ input coverage.
 
 The campaign continues after failures and records counts by failure class,
 fingerprint, family and feature. It records compile/execution wall time per
-engine, successful execution and actual engine-selection counts, reduction time,
+route, successful execution and actual engine-selection counts, reduction time,
 total elapsed time and checked/passed counts in
 `report.json`, checkpointed every 100 cases and at exit. Counts describe generated
 features, not proof that every defined feature was selected. The report path is

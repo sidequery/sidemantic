@@ -7,6 +7,7 @@ import json
 import math
 import re
 import sys
+from collections import Counter
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
@@ -21,7 +22,9 @@ from sqlglot import exp
 
 from sqlctx import Metric, Model, SemanticLayer
 from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.transport_security import rewrite_transport_sql
 from sqlctx.db.duckdb import DuckDBAdapter
+from sqlctx.sql.order_by import split_order_field
 from sqlctx.validation import validate_model, validate_query
 
 
@@ -37,6 +40,7 @@ class Case:
     features: list[str] = field(default_factory=list)
     version: int = 1
     data_variant: int = 0
+    rewrite_shape: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -47,6 +51,49 @@ class Case:
     @classmethod
     def read(cls, path: Path) -> "Case":
         return cls(**json.loads(path.read_text()))
+
+    def semantic_sql(self) -> str:
+        """Render the same explicit projection and grouping as the structured query."""
+        query = self.query
+        metrics = query.get("metrics", [])
+        selected = query.get("dimensions", []) + metrics
+        leaves = [name.split(".")[-1] for name in selected]
+        counts = Counter(leaves)
+        outputs = {
+            ref: leaf if counts[leaf] == 1 else ref.replace(".", "_")
+            for ref, leaf in zip(selected, leaves, strict=True)
+        }
+        projection = ", ".join(f'{ref} as "{outputs[ref]}"' for ref in selected)
+        inner = f"select {projection} from metrics"
+        where, having = [], []
+        for predicate in query.get("filters", []):
+            # Generated predicates start with one semantic field.
+            target = having if predicate.split()[0] in metrics else where
+            target.append(f"({predicate})")
+        if where:
+            inner += " where " + " and ".join(where)
+        if having:
+            inner += " having " + " and ".join(having)
+        if self.rewrite_shape == "cte":
+            # The outer alias shadows a semantic model; only grouped outputs are in scope.
+            columns = ", ".join(f'facts."{name}"' for name in outputs.values())
+            sql = f"with groups_cte as ({inner}) select {columns} from groups_cte as facts"
+        elif self.rewrite_shape == "direct":
+            sql = inner
+        else:
+            raise ValueError(f"Unknown differential SQL shape: {self.rewrite_shape}")
+        if order := query.get("order_by"):
+            keys = []
+            for item in order:
+                field, suffix = split_order_field(item, selected)
+                if "NULLS" not in suffix:
+                    suffix = "DESC NULLS LAST" if suffix == "DESC" else "ASC NULLS FIRST"
+                keys.append(f'"{outputs[field]}" {suffix}')
+            sql += " order by " + ", ".join(keys)
+        for clause in ("limit", "offset"):
+            if query.get(clause) is not None:
+                sql += f" {clause} {query[clause]}"
+        return sql
 
     @property
     def ordered(self) -> bool:
@@ -189,8 +236,8 @@ def validate_case(case: Case) -> SemanticGraph:
             owner, name = segment.split(".")
             if owner not in graph.models or name not in {s.name for s in graph.models[owner].segments}:
                 raise ValueError("Unknown query segment")
-        order = [re.sub(r"\s+(ASC|DESC)$", "", item, flags=re.I) for item in case.query.get("order_by", [])]
         selected = case.query.get("metrics", []) + case.query.get("dimensions", [])
+        order = [split_order_field(item, selected)[0] for item in case.query.get("order_by", [])]
         if any(item not in selected for item in order):
             raise ValueError("Order expression must be selected")
         if order and not set(case.query.get("dimensions", [])) <= set(order):
@@ -301,6 +348,7 @@ class EngineResult:
     compile_seconds: float = 0
     execute_seconds: float = 0
     compilation_reused: bool = False
+    semantic_sql: str | None = None
 
 
 @dataclass
@@ -310,6 +358,12 @@ class Outcome:
     rust: EngineResult | None = None
     detail: str | None = None
 
+    rewrites: dict[str, EngineResult] = field(default_factory=dict)
+    comparison_route: str = "rust"
+
+    def routes(self):
+        return {"python": self.python, "rust": self.rust, **self.rewrites}
+
     def failure_identity(self) -> tuple:
         """Preserve the diagnostic or public-result discrepancy being reduced.
 
@@ -318,10 +372,11 @@ class Outcome:
         a missing group for an unrelated ordering/metric discrepancy.
         """
         if self.failure_class in {"rows", "columns"} and self.python and self.rust:
-            columns = tuple(self.python.columns), tuple(self.rust.columns)
+            other = self.routes()[self.comparison_route]
+            columns = self.comparison_route, tuple(self.python.columns), tuple(other.columns)
             if self.failure_class == "columns":
                 return "columns", columns
-            left, right = self.python.rows, self.rust.rows
+            left, right = self.python.rows, other.rows
             if len(left) == len(right) and rows_equal(left, right, ordered=False):
                 witness = next(
                     (_canonical_row(a), _canonical_row(b)) for a, b in zip(left, right) if not _row_equal(a, b)
@@ -341,7 +396,7 @@ class Outcome:
                 return "rows", "cardinality", columns, len(left) > len(right), witness
             return "rows", "values", columns, witness
         diagnostics = []
-        for result in [self.python, self.rust]:
+        for result in self.routes().values():
             if result and result.error:
                 # Retain referenced owner/column names and multi-line semantic
                 # validation detail; remove SQL excerpts and variable locations.
@@ -402,6 +457,7 @@ class DifferentialRunner:
                 "models": case.models,
                 "metrics": case.metrics,
                 "query": case.query,
+                "rewrite_shape": case.rewrite_shape,
                 "schemas": [{"name": t["name"], "columns": t["columns"]} for t in case.tables],
             },
             sort_keys=True,
@@ -412,6 +468,7 @@ class DifferentialRunner:
         result = EngineResult()
         started = perf_counter()
         try:
+            engine, _, rewrite = engine.partition("_")
             layer = SemanticLayer(connection=self.adapter, engine=engine, fallback=False, auto_register=False)
             layer.graph = make_graph(case)
             if engine == "rust":
@@ -422,7 +479,13 @@ class DifferentialRunner:
                 layer._compile_with_python = forbidden_python
             # Some compiler planning paths expand mutable selection lists. Give
             # each engine an independent request, preserving the replay fixture.
-            result.sql = layer.compile(**deepcopy(case.query))
+            if rewrite:
+                result.semantic_sql = case.semantic_sql()
+                result.sql = rewrite_transport_sql(
+                    layer, result.semantic_sql, user_attributes=None, transport="differential"
+                )
+            else:
+                result.sql = layer.compile(**deepcopy(case.query))
             result.compile_seconds = perf_counter() - started
             result.selection = layer.last_engine_selection
             result.stage = "selection"
@@ -474,24 +537,31 @@ class DifferentialRunner:
             self._load(case)
         except Exception as exc:
             return Outcome("invalid_case", detail=f"{type(exc).__name__}: {exc}")
-        if reuse_compilation:
-            python = self._engine(case, "python", reuse_compilation=True)
-            rust = self._engine(case, "rust", reuse_compilation=True)
-        else:
-            python = self._engine(case, "python")
-            rust = self._engine(case, "rust")
+        routes = ["python", "rust"]
+        if case.rewrite_shape is not None:
+            routes += ["python_rewrite", "rust_rewrite"]
+        options = {"reuse_compilation": True} if reuse_compilation else {}
+        results = {route: self._engine(case, route, **options) for route in routes}
+        outcome = Outcome(None, results.pop("python"), results.pop("rust"), rewrites=results)
         errors = [
-            f"{engine}:{result.stage}:{result.error_type}"
-            for engine, result in [("python", python), ("rust", rust)]
+            f"{route}:{result.stage}:{result.error_type}"
+            for route, result in outcome.routes().items()
             if result.error is not None
         ]
         if errors:
-            return Outcome("|".join(errors), python, rust)
-        if python.columns != rust.columns:
-            return Outcome("columns", python, rust)
-        if not rows_equal(python.rows, rust.rows, ordered=case.ordered):
-            return Outcome("rows", python, rust)
-        return Outcome(None, python, rust)
+            outcome.failure_class = "|".join(errors)
+            return outcome
+        for route, result in outcome.routes().items():
+            if route == "python":
+                continue
+            if outcome.python.columns != result.columns:
+                outcome.failure_class = "columns"
+            elif not rows_equal(outcome.python.rows, result.rows, ordered=case.ordered):
+                outcome.failure_class = "rows"
+            if outcome.failure_class:
+                outcome.comparison_route = route
+                break
+        return outcome
 
 
 def outcome_dict(outcome: Outcome) -> dict:

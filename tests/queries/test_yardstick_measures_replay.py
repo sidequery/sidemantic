@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -800,11 +801,35 @@ def _apply_statement(layer: SemanticLayer, adapter: YardstickAdapter, statement:
             )
 
 
-def _replay_yardstick_sql_test(path: Path) -> None:
+# Yardstick #72 added a mixed fixture to the legacy (non-PEG) corpus. Its
+# attached-store metadata, session/transaction behavior, and implicit measures
+# are native extension integration checks, not sqlctx query capabilities.
+# Require review of any changed fixture so no new assertions disappear silently.
+_DEFINITION_STORE_FIXTURE_SHA256 = "8301ba931eee4043223d37efb30e819a2b957a4d1e9e93f92cf984fd33da6e82"
+_DEFINITION_STORE_PORTABLE_STATEMENTS = {13, 16, 28, 72}
+_DEFINITION_STORE_PORTABLE_QUERIES = {23, 42, 54, 75}
+
+
+def _portable_definition_store_records(path: Path) -> tuple[list[_StatementBlock], list[_QueryBlock]]:
+    digest = hashlib.sha256(path.read_text().rstrip("\n").encode()).hexdigest()
+    assert digest == _DEFINITION_STORE_FIXTURE_SHA256, (
+        f"{path}: upstream definition-store fixture changed; review the native/portable replay boundary"
+    )
+    statements, queries = _parse_measures_test(path)
+    portable_statements = [record for record in statements if record.line in _DEFINITION_STORE_PORTABLE_STATEMENTS]
+    portable_queries = [record for record in queries if record.line in _DEFINITION_STORE_PORTABLE_QUERIES]
+    assert {record.line for record in portable_statements} == _DEFINITION_STORE_PORTABLE_STATEMENTS
+    assert {record.line for record in portable_queries} == _DEFINITION_STORE_PORTABLE_QUERIES
+    return portable_statements, portable_queries
+
+
+def _replay_yardstick_sql_test(
+    path: Path, records: tuple[list[_StatementBlock], list[_QueryBlock]] | None = None
+) -> None:
     if not path.exists():
         pytest.skip(f"Yardstick SQL test file not found: {path}")
 
-    statements, queries = _parse_measures_test(path)
+    statements, queries = _parse_measures_test(path) if records is None else records
     assert queries, f"No query blocks parsed from Yardstick SQL test: {path}"
 
     layer = SemanticLayer(connection="duckdb:///:memory:")
@@ -856,7 +881,85 @@ def test_yardstick_upstream_create_view_definitions():
 @pytest.mark.yardstick_upstream
 def test_yardstick_upstream_sql_replay():
     for path in _yardstick_upstream_sql_test_paths():
-        _replay_yardstick_sql_test(path)
+        if path.name == "definition_store.test":
+            _replay_yardstick_sql_test(path, _portable_definition_store_records(path))
+        else:
+            _replay_yardstick_sql_test(path)
+
+
+def test_changed_definition_store_fixture_requires_review(tmp_path):
+    path = tmp_path / "definition_store.test"
+    path.write_text("query I\nSELECT 123;\n----\n456\n")
+
+    with pytest.raises(AssertionError, match="review the native/portable replay boundary"):
+        _portable_definition_store_records(path)
+
+
+def test_replay_binds_measure_and_grouping_projection_aliases(tmp_path):
+    path = tmp_path / "aliases.test"
+    path.write_text(
+        """statement ok
+CREATE TABLE sales(region VARCHAR, amount INT);
+
+statement ok
+INSERT INTO sales VALUES ('N', 10), ('N', 20), ('S', 50);
+
+statement ok
+CREATE VIEW sales_v AS SELECT region, SUM(amount) AS MEASURE revenue,
+    COUNT(*) AS MEASURE orders FROM sales;
+
+query TIIR rowsort
+SELECT LOWER(region) AS area, AGGREGATE(revenue) AS r, AGGREGATE(orders) AS n, r/n AS mean
+FROM sales_v GROUP BY area;
+----
+n\t30\t2\t15.0
+s\t50\t1\t50.0
+"""
+    )
+    _replay_yardstick_sql_test(path)
+
+
+def test_wildcard_source_column_precedes_measure_projection_alias(tmp_path):
+    path = tmp_path / "wildcard-alias.test"
+    path.write_text(
+        """statement ok
+CREATE TABLE sales(year INTEGER);
+
+statement ok
+INSERT INTO sales VALUES (2022), (2022), (2023);
+
+statement ok
+CREATE VIEW sales_v AS SELECT *, COUNT(*) AS MEASURE tally FROM sales;
+
+query II rowsort
+SELECT AGGREGATE(tally) AS year, year + 1 AS next_year FROM sales_v;
+----
+2\t2023
+1\t2024
+"""
+    )
+    _replay_yardstick_sql_test(path)
+
+
+def test_connected_wildcard_alias_checks_current_physical_columns():
+    layer = SemanticLayer(connection="duckdb:///:memory:", engine="python")
+    try:
+        layer.adapter.execute("CREATE TABLE sales(amount INTEGER)")
+        layer.adapter.execute("INSERT INTO sales VALUES (10), (20), (30)")
+        _execute_statement_sql(
+            layer, YardstickAdapter(), "CREATE VIEW sales_v AS SELECT *, COUNT(*) AS MEASURE tally FROM sales"
+        )
+        query = "SELECT AGGREGATE(tally) AS year, year + 1 AS next_year FROM sales_v ORDER BY next_year"
+        assert layer.sql(query).fetchall() == [(3, 4)]
+
+        layer.adapter.execute("ALTER TABLE sales ADD COLUMN year INTEGER DEFAULT 2022")
+        layer.adapter.execute("UPDATE sales SET year = 2023 WHERE amount = 30")
+        assert layer.sql(query).fetchall() == [(2, 2023), (1, 2024)]
+        assert layer.sql(
+            "SELECT AGGREGATE(tally) AS year, year + 1 AS next_year FROM sales_v GROUP BY year ORDER BY next_year"
+        ).fetchall() == [(2, 2023), (1, 2024)]
+    finally:
+        layer.adapter.close()
 
 
 def test_parse_statement_record_preserves_batch_and_unterminated_error(tmp_path):
@@ -1107,3 +1210,80 @@ def test_definition_coverage_is_corpus_wide_without_dropping_plain_sql(tmp_path)
     _replay_yardstick_sql_test(ordinary)
     with pytest.raises(AssertionError, match="eligible upstream corpus"):
         _assert_definition_corpus_matches([ordinary])
+
+
+@pytest.mark.parametrize("keyword", ["ALL", "SET", "WHERE", "VISIBLE"])
+def test_at_where_quoted_modifier_word(keyword):
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute(
+        f"CREATE TABLE lexical(k VARCHAR, amount INTEGER); INSERT INTO lexical VALUES ('{keyword}', 1), ('other', 150)"
+    )
+    runtime.execute("CREATE VIEW lexical_v AS SELECT k, SUM(amount) AS MEASURE revenue FROM lexical")
+    assert runtime.execute(f"SELECT AGGREGATE(revenue) AT (WHERE k = '{keyword}') FROM lexical_v") == [(1,)]
+
+
+@pytest.mark.parametrize("star", ["*", "v.*"])
+def test_explicit_yardstick_star_can_exclude_logical_measures(star):
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute(
+        "CREATE TABLE named(year INTEGER, region VARCHAR, amount INTEGER, revenue INTEGER); "
+        "INSERT INTO named VALUES (2023,'N',1,100), (2024,'S',3,200)"
+    )
+    runtime.execute(
+        "CREATE VIEW named_v AS SELECT year, region, amount, SUM(amount) AS MEASURE revenue, "
+        "COUNT(*) AS MEASURE tally FROM named"
+    )
+    query = (
+        f"SELECT {star} EXCLUDE(amount, revenue, tally), AGGREGATE(revenue) AT (ALL) "
+        "FROM named_v v GROUP BY ALL ORDER BY year"
+    )
+    assert runtime.execute(query) == [(2023, "N", 4), (2024, "S", 4)]
+    with pytest.raises(Exception, match="missing_column"):
+        runtime.execute(query.replace("amount,", "missing_column,"))
+
+
+@pytest.mark.parametrize("grouping", ["ROLLUP(region)", "CUBE(region)", "GROUPING SETS ((region), ())"])
+def test_yardstick_subtotal_preserves_filter_mode_and_real_null(grouping):
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute(
+        "CREATE TABLE subtotal(region VARCHAR, amount INTEGER, included BOOLEAN); "
+        "INSERT INTO subtotal VALUES (NULL,2,true), (NULL,7,false), ('N',3,true), ('S',5,true)"
+    )
+    runtime.execute("CREATE VIEW subtotal_v AS SELECT region, included, SUM(amount) AS MEASURE revenue FROM subtotal")
+    assert runtime.execute(
+        "SELECT region, GROUPING(region) AS subtotal_flag, AGGREGATE(revenue), "
+        "revenue AT (VISIBLE), revenue FROM subtotal_v WHERE included "
+        f"GROUP BY {grouping} ORDER BY subtotal_flag, region NULLS FIRST"
+    ) == [(None, 0, 2, 2, 9), ("N", 0, 3, 3, 3), ("S", 0, 5, 5, 5), (None, 1, 10, 10, 17)]
+
+
+def test_yardstick_grouping_set_keeps_other_dimensions_and_ctas():
+    from tests.queries.yardstick_replay_runtime import replay_runtime
+
+    layer = SemanticLayer(connection="duckdb:///:memory:")
+    runtime = replay_runtime(layer, YardstickAdapter())
+    runtime.execute(
+        "CREATE TABLE mixed(year INTEGER, region VARCHAR, amount INTEGER); "
+        "INSERT INTO mixed VALUES (2023,NULL,2), (2023,'N',3), (2024,'N',5)"
+    )
+    runtime.execute(
+        "CREATE VIEW mixed_v AS SELECT year, region, COUNT(*) AS MEASURE tally FROM mixed; "
+        "CREATE TABLE subtotals AS SELECT year, region, GROUPING(region) AS subtotal_flag, "
+        "AGGREGATE(tally) AS n FROM mixed_v GROUP BY year, GROUPING SETS ((region), ())"
+    )
+    assert runtime.execute("SELECT * FROM subtotals ORDER BY year, subtotal_flag, region NULLS FIRST") == [
+        (2023, None, 0, 1),
+        (2023, "N", 0, 1),
+        (2023, None, 1, 2),
+        (2024, "N", 0, 1),
+        (2024, None, 1, 1),
+    ]

@@ -259,6 +259,18 @@ def generate_case(seed: int, index: int) -> Case:
             if rng.randrange(3) == 0:
                 query["offset"] = rng.randint(1, 3)
                 features.append("offset")
+    # SQL has an explicit projection. Structured defaults/window dependency
+    # outputs and segment controls have separate result contracts.
+    rewrite_shape = None
+    if family != "default_time" and "facts.running" not in metrics and not query.get("segments"):
+        rewrite_shape = rng.choice(["direct", "cte"])
+        features.append(f"rewrite:{rewrite_shape}")
+        if query.get("order_by") and rng.choice([False, True]):
+            query["order_by"] = [
+                f"{key} NULLS FIRST" if key.endswith(" DESC") else f"{key} ASC NULLS LAST" for key in query["order_by"]
+            ]
+            features.append("explicit_null_order")
+
     return Case(
         seed=seed,
         index=index,
@@ -268,6 +280,7 @@ def generate_case(seed: int, index: int) -> Case:
         query=query,
         tables=tables,
         features=features,
+        rewrite_shape=rewrite_shape,
     )
 
 

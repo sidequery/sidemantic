@@ -122,6 +122,8 @@ fn semantic_input_error(py: Python<'_>, error: SqlctxError) -> PyErr {
         }
         SqlctxError::Validation(_)
         | SqlctxError::ValidationIssue { .. }
+        | SqlctxError::AmbiguousReference { .. }
+        | SqlctxError::AmbiguousJoinPath { .. }
         | SqlctxError::NoJoinPath { .. }
         | SqlctxError::SqlParse(_) => QueryValidationError::new_err(error.to_string()),
         SqlctxError::InvalidConfig(_) => PyValueError::new_err(error.to_string()),

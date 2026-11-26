@@ -97,8 +97,7 @@ def test_seeded_differential_campaign(runner, tmp_path, record_property):
             checked += 1
             families[case.family] += 1
             features.update(case.features)
-            for engine in ["python", "rust"]:
-                result = getattr(outcome, engine)
+            for engine, result in outcome.routes().items():
                 if result:
                     timing[f"{engine}_compile"] += result.compile_seconds
                     timing[f"{engine}_execute"] += result.execute_seconds

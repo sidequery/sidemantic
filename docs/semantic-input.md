@@ -416,7 +416,8 @@ invariants, and caller policies constrain both event populations.
 Entity, event and time dimensions may map to source expressions, and output
 identifiers retain quoting. The two-event path follows Python's last-declared
 time-dimension selection; the multi-step path uses its default/first time
-dimension. Joined populations, graph-scoped conversion metrics and calculated
+dimension. A graph-scoped conversion metric can declare its owner or use an
+entity dimension unique to one model. Joined populations and calculated
 wrappers retain route-specific restrictions.
 
 ### Multi-step conversion
@@ -442,10 +443,12 @@ Entity and time dimensions can map to row-local source expressions. Step predica
 refer to physical source columns; query and metric filters resolve declared dimensions.
 All steps read the same policy-, invariant-, query-, and metric-filtered population.
 The strict wrapper validates expressions and projects internal source columns before
-calling the existing sequential generator. Graph-scoped metrics, mixed metrics,
-joined populations, aggregate/window/subquery source expressions, colliding output
-names (including dimensions named `entity` or `step_N_ts`) and rollup routing
-remain gated. Null-default metadata retains Python's inert behavior.
+calling the existing sequential generator. Query filters may use `{model}` for
+the funnel's source, including the resolved owner of a graph-scoped funnel.
+Mixed metrics, joined populations, aggregate/window/subquery source expressions
+and rollup routing remain gated. Public output names must be unique ignoring case. Grouping dimensions
+can be named `entity` or `step_N_ts` because each step carries their values in
+separate internal columns. Null-default metadata retains Python's inert behavior.
 
 ## PostgreSQL policy output
 
@@ -498,8 +501,8 @@ junction declaration. Measures retain their source-key grain across duplicate
 junction rows. Inactive relationships remain excluded.
 ### Source-local cohorts
 
-Direct model cohort metrics and graph metrics with an explicit `metric_owners`
-entry can aggregate source rows per entity, apply `having`
+Direct model cohort metrics and graph metrics with a resolved owner
+can aggregate source rows per entity, apply `having`
 to declared inner result columns, and aggregate the surviving groups. Query and
 entity dimensions are carried through both levels, including explicit time
 buckets. Outer `count` counts inner groups (including a qualifying null-entity
@@ -509,11 +512,12 @@ apply before the inner aggregation, with each predicate parenthesized.
 
 This subset requires row-local scalar source expressions. Subqueries, windows,
 and aggregates hidden in source dimensions, inner SQL or row filters are
-rejected. Graph cohorts require their declared source owner; entity or output
-column names do not infer ownership. The declared owner also determines the
-mandatory restrictions applied to the source population. Joined populations,
-unowned graph cohorts and calculated wrappers remain gated. HAVING and outer expressions must reference
-available inner columns; other aggregate contexts are not silently inferred.
+rejected. Graph cohorts use the declared owner or the unique model containing
+their entity dimension. The owner determines the mandatory restrictions on
+the source population. Joined populations and calculated wrappers remain gated.
+Both `having` and the outer aggregate read named columns from the grouped
+result. Applying `having` at this boundary lets a computed dimension share
+a name with its physical source column.
 
 The WASM SQL parser has a host-specific admission limit of 16 nested
 parenthesis/bracket/brace/CASE constructs, 32 operators per expression chain,

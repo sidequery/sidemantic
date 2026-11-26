@@ -172,10 +172,10 @@ and temporary measure views, and applies warning policy when prepared statements
 execute. Query expansion uses sqlctx's production rewriter. This test setup
 does not enable multi-statement execution on the public query API.
 
-sqlctx emits `YardstickWarning` when `AT (ALL ...)` drops an outer filter that
+sqlctx emits `YardstickWarning` when `AT (ALL ...)` or `AT (SET ...)` drops an outer filter that
 the remaining evaluation context does not preserve. Python callers can treat
 that warning as an error using the standard `warnings` module. Repeated queries
-observe the current warning policy. The literal `yardstick('SELECT ...')` table
+observe the current warning policy. The literal `yardstick('SELECT ...')` or `yardstick($$SELECT ...$$)` table
 wrapper uses the same read-only query rewriting and warning behavior.
 
 Optional environment variables:
@@ -199,11 +199,11 @@ AT modifiers control the evaluation context of a measure, enabling semi-additive
 | `AT (WHERE condition)` | Supported (filters the measure's evaluation context independently of the outer WHERE) |
 | `AT (SET dim = value)` | Supported (pins a dimension to a constant value) |
 | `AT (SET dim = dim - 1)` | Supported (pins a dimension to a computed expression, e.g., prior period) |
-| `AT (SET dim = CURRENT dim - 1)` | Supported (`CURRENT` resolves to the outer query's current value of the dimension) |
+| `AT (SET dim = CURRENT dim - 1)` | Supported (`CURRENT` reads the effective context before this modifier) |
 | `AT (SET dim IN (values))` | Supported (predicate-form SET, filters the dimension to a set of values) |
 | `AT (VISIBLE)` | Supported (evaluates the measure considering the outer WHERE clause) |
-| `AT (SET ... VISIBLE)` | Supported (compound modifier combining SET with VISIBLE) |
-| Chained AT: `AT (...) AT (...)` | Supported (modifiers applied left to right) |
+| Compound AT: `AT (VISIBLE SET ...)` | Supported (parts apply left to right; SET keeps independently visible predicates) |
+| Chained AT: `AT (...) AT (...)` | Supported (rightmost clause transforms the context first, then each clause to its left) |
 | `AT (ALL expression)` with ad-hoc expressions (e.g., `AT (ALL MONTH(order_date))`) | Supported |
 | `AT (SET expression = value)` with ad-hoc expressions | Supported |
 
@@ -223,6 +223,7 @@ Bare measure names in non-SEMANTIC queries default to evaluating at the full tab
 |---------|--------|
 | `FROM view_a JOIN view_b ON ...` in SEMANTIC queries | Supported (measures from different views evaluated against their own base tables) |
 | AT modifiers on joined measures | Supported |
+| One leading Yardstick source joined to a projection-known non-semantic relation | The Python DuckDB rewriter evaluates visible row membership without multiplying measure inputs. The join itself does not remove rows from the measure's input. |
 
 ### GROUP BY Variants
 
@@ -231,7 +232,7 @@ Bare measure names in non-SEMANTIC queries default to evaluating at the full tab
 | Explicit `GROUP BY col1, col2` | Supported |
 | Positional `GROUP BY 1, 2` | Supported (ordinals resolved to SELECT dimensions) |
 | `GROUP BY` with extra whitespace | Supported |
-| `GROUP BY ROLLUP(...)` | Supported |
+| `GROUP BY ROLLUP(...)`, `CUBE(...)`, or `GROUPING SETS (...)` | Supported on DuckDB. Measures evaluate at each grouping set’s grain; a subtotal is distinct from a grouped NULL value. |
 | Omitted `GROUP BY` (grouping inferred from SELECT dimensions) | Supported |
 
 ---

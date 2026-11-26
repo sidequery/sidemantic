@@ -164,6 +164,7 @@ APPROXIMATE_DIALECTS = [
         "simple",
         "implicit",
         "fanout_implicit",
+        "fanout_complete_filtered",
         "filtered",
         "wrapper",
         "fanout",
@@ -178,12 +179,6 @@ APPROXIMATE_DIALECTS = [
 def test_approximate_dialect_rendering_and_population_results(layer, dialect, function, shape):
     import sqlglot
 
-    if (
-        layer.engine == "python"
-        and shape in {"complete", "complete_filtered", "nested_complete"}
-        and dialect == "redshift"
-    ):
-        pytest.skip("Python reparses completed Redshift aggregates with its generic SQL parser")
     model = layer.graph.get_model("events")
     metric = "events.users"
     dimensions = ["events.category"]
@@ -201,7 +196,7 @@ def test_approximate_dialect_rendering_and_population_results(layer, dialect, fu
         expected_sql = (
             "select approx_count_distinct(user_id) + 1 from approx_events group by category order by category"
         )
-    elif shape in {"fanout", "fanout_implicit"}:
+    elif shape in {"fanout", "fanout_implicit", "fanout_complete_filtered"}:
         layer.adapter.execute(
             "create table children as select id as event_id, 'joined' as label from approx_events cross join range(2)"
         )
@@ -220,6 +215,12 @@ def test_approximate_dialect_rendering_and_population_results(layer, dialect, fu
             model.metrics.append(Metric(name="implicit", agg="approx_count_distinct"))
             metric = "events.implicit"
             expected_sql = "select count(*) from approx_events"
+        elif shape == "fanout_complete_filtered":
+            model.metrics.append(
+                Metric(name="complete", sql="APPROX_COUNT_DISTINCT(user_id) FILTER (WHERE paid)", sql_is_complete=True)
+            )
+            metric = "events.complete"
+            expected_sql = "select approx_count_distinct(user_id) from approx_events where paid"
     elif shape in {"complete", "complete_filtered", "nested_complete"}:
         expression = "APPROX_COUNT_DISTINCT(user_id)"
         if shape == "nested_complete":
@@ -250,8 +251,8 @@ def test_approximate_dialect_rendering_and_population_results(layer, dialect, fu
             metric = "events.running"
             dimensions = ["events.created_at__day"]
             expected_sql = "with daily as (select created_at, approx_count_distinct(user_id) as users from approx_events group by created_at) select approx_count_distinct(users) over (order by created_at rows between unbounded preceding and current row) from daily order by created_at"
-    if layer.engine == "rust" and dialect in {"postgres", "mysql", "sqlite"}:
-        with pytest.raises(Exception, match="metric.approx_count_distinct_output_dialect"):
+    if dialect in {"postgres", "mysql", "sqlite"}:
+        with pytest.raises(ValueError, match="metric.approx_count_distinct_output_dialect"):
             layer.compile(metrics=[metric], dimensions=dimensions, order_by=dimensions, dialect=dialect)
         return
     if dialect == "redshift" and shape in {"cumulative", "window"}:
@@ -260,11 +261,8 @@ def test_approximate_dialect_rendering_and_population_results(layer, dialect, fu
         return
     sql = layer.compile(metrics=[metric], dimensions=dimensions, order_by=dimensions, dialect=dialect)
     parsed = sqlglot.parse_one(sql, read=dialect)
-    # Python's snapshot route leaves the aggregate name canonical until SQL
-    # normalization; Rust must render the target name at construction time.
-    emitted = sql if layer.engine == "rust" else parsed.sql(dialect=dialect)
     if shape != "fanout_implicit":
-        assert function in emitted.upper(), sql
+        assert function in sql.upper(), sql
     # Execute target SQL translated to DuckDB to verify the population and SQL
     # expression. This does not qualify native warehouse function availability.
     actual = [row[-1] for row in layer.adapter.execute(parsed.sql(dialect="duckdb")).fetchall()]
@@ -284,8 +282,6 @@ def test_redshift_nested_approximate_expressions_use_independent_parser(layer, e
     import sqlglot
     from sqlglot import exp
 
-    if layer.engine != "rust":
-        pytest.skip("Rust target emission; Python reparses Redshift using its generic parser")
     layer.graph.get_model("events").metrics.append(
         Metric(name="nested_users", type="derived", sql=expression, sql_is_complete=True)
     )
@@ -305,3 +301,26 @@ def test_redshift_nested_approximate_expressions_use_independent_parser(layer, e
         ).fetchall()
     ]
     assert actual == expected
+
+
+def test_redshift_explicit_running_sum_of_period_estimates(layer):
+    import sqlglot
+
+    layer.adapter.execute("alter table approx_events add column day date default date '2026-01-01'")
+    model = layer.graph.get_model("events")
+    model.dimensions.append(Dimension(name="day", type="time", granularity="day"))
+    model.metrics.append(
+        Metric(
+            name="running",
+            type="cumulative",
+            agg="approx_count_distinct",
+            sql="users",
+            window_expression="SUM(base.users)",
+        )
+    )
+    sql = layer.compile(metrics=["events.running"], dimensions=["events.day__day"], dialect="redshift")
+    cursor = layer.adapter.execute(sqlglot.transpile(sql, read="redshift", write="duckdb")[0])
+    columns = [column[0] for column in cursor.description]
+    assert [row[columns.index("running")] for row in cursor.fetchall()] == [
+        layer.adapter.execute("select approx_count_distinct(user_id) from approx_events").fetchone()[0]
+    ]

@@ -73,48 +73,48 @@ def test_group_by_accepts_exact_selected_dimensions_and_aliases(layer, group):
 
 
 @pytest.mark.parametrize(
-    "sql,python_error,python_message",
+    "sql",
     [
-        (
-            "select orders.status, (select count(*) from labels l where l.status = orders.status) as n from orders",
-            KeyError,
-            "Model l not found",
-        ),
-        (
-            "select o.status, (select count(*) from labels l where l.status = o.status) as n from orders o",
-            KeyError,
-            "Model l not found",
-        ),
-        (
-            "select orders.status from orders where exists (select 1 from labels l where l.status = orders.status)",
-            ValueError,
-            "Query expressions cannot introduce physical data sources",
-        ),
-        (
-            "select orders.status, (select (select count(*) from labels l where l.status = orders.status)) as n from orders",
-            KeyError,
-            "Model l not found",
-        ),
+        "select orders.status, (select count(*) from labels l where l.status = orders.status) as n from orders",
+        "select o.status, (select count(*) from labels l where l.status = o.status) as n from orders o",
+        "select orders.status from orders where exists (select 1 from labels l where l.status = orders.status)",
+        "select orders.status, (select (select count(*) from labels l where l.status = orders.status)) as n from orders",
+        "select o.status, (with counts as (select count(*) as n from labels l where l.status = o.status) "
+        "select n from counts) as n from orders o",
+        "with result as (select o.status, (select count(*) from labels l where l.status = o.status) as n "
+        "from orders o) select * from result",
+        # A sibling's local alias cannot hide a true reference in another scope.
+        "select o.status, (select count(*) from labels o), "
+        "(select count(*) from labels l where l.status = o.status) from orders o",
     ],
 )
-def test_correlated_semantic_sources_fail_before_execution(layer, sql, python_error, python_message):
+def test_correlated_semantic_sources_fail_before_execution(layer, sql, monkeypatch):
     # The physical table really exists: these are unsupported semantic shapes,
     # not failures caused by an absent subquery source.
     layer.adapter.execute("create table labels(status varchar); insert into labels values ('done'), ('done')")
-    error, message = (
-        (ValueError, "Correlated subquery references semantic source")
-        if layer.engine == "rust"
-        else (python_error, python_message)
-    )
-    with pytest.raises(error, match=message):
+
+    def unexpected_execution(*args, **kwargs):
+        pytest.fail("A correlated semantic query reached database execution")
+
+    monkeypatch.setattr(layer.adapter, "execute", unexpected_execution)
+    with pytest.raises(ValueError, match="Correlated subquery references semantic source"):
         layer.sql(sql)
 
 
-def test_subquery_local_alias_can_shadow_outer_semantic_source(layer):
-    if layer.engine != "rust":
-        pytest.skip("Native subquery scope regression")
-    layer.adapter.execute("create table labels(status varchar); insert into labels values ('done'), ('done')")
-    assert layer.sql(
+@pytest.mark.parametrize(
+    "sql",
+    [
         "select orders.status, (select count(*) from labels orders where orders.status = 'done') as n "
-        "from orders order by orders.status"
-    ).fetchall() == [("done", 2), ("pending", 2)]
+        "from orders order by orders.status",
+        "select o.status, (select count(*) from labels o where o.status = 'done') as n from orders o order by o.status",
+        "select o.status, (select (select count(*) from labels o where o.status = 'done')) as n "
+        "from orders o order by o.status",
+        "select o.status, (with counts as (select count(*) as n from labels o where o.status = 'done') "
+        "select n from counts) as n from orders o order by o.status",
+        "select o.status, (select count(*) from labels o where exists "
+        "(select 1 where o.status = 'done')) as n from orders o order by o.status",
+    ],
+)
+def test_subquery_local_alias_can_shadow_outer_semantic_source(layer, sql):
+    layer.adapter.execute("create table labels(status varchar); insert into labels values ('done'), ('done')")
+    assert layer.sql(sql).fetchall() == [("done", 2), ("pending", 2)]

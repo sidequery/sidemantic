@@ -65,8 +65,6 @@ def test_numeric_computed_identity_keeps_unbucketed_projection(layer):
 
 
 def test_time_identity_stays_unbucketed_for_join_and_fanout(layer):
-    if layer.engine != "rust":
-        pytest.skip("Python joins physical keys; native computed-key identity has its own independent oracle")
     layer.add_model(
         Model(
             name="logs",

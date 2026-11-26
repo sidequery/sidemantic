@@ -8,37 +8,37 @@ This is an auditable source inventory, not a passing-test claim. The JSON contai
 
 ```json
 {
-  "source_records": 740,
+  "source_records": 866,
   "by_kind": {
-    "engine-control": 244,
-    "engine-matrix": 94,
-    "implementation-import": 83,
-    "importorskip": 202,
-    "integration-marker": 13,
+    "engine-control": 306,
+    "engine-matrix": 100,
+    "implementation-import": 96,
+    "importorskip": 243,
+    "integration-marker": 14,
     "legacy-adapter-import": 6,
     "public-layer-import": 20,
     "skip": 65,
-    "skipif": 13
+    "skipif": 16
   },
-  "exception_records": 366,
-  "observation_records": 374,
+  "exception_records": 444,
+  "observation_records": 422,
   "exceptions_by_category": {
-    "external-service": 42,
-    "intentional-Python-only": 35,
-    "optional-host": 235,
-    "real-gap": 54
+    "external-service": 45,
+    "intentional-Python-only": 33,
+    "optional-host": 276,
+    "real-gap": 90
   },
   "exceptions_by_direction": {
-    "both-engines": 279,
-    "python-only-exclusion": 14,
-    "rust-coverage-exclusion": 73
+    "both-engines": 329,
+    "python-only-exclusion": 9,
+    "rust-coverage-exclusion": 106
   },
-  "declared_test_functions": 6511,
-  "collected_nodeids": 11876,
+  "declared_test_functions": 7165,
+  "collected_nodeids": 14597,
   "direct_helper_tests": {
     "native_counterpart_or_route": 84,
-    "intentional_python_implementation": 126,
-    "unresolved_native_coverage": 129
+    "intentional_python_implementation": 129,
+    "unresolved_native_coverage": 158
   }
 }
 ```
@@ -66,14 +66,37 @@ This is an auditable source inventory, not a passing-test claim. The JSON contai
 | `tests/adapters/osi/test_query_execution.py::<module>` | legacy-adapter-import | Explicit LegacyOSIAdapter alias bypasses canonical native OSI adapter; legacy compatibility coverage needs separate Rust evidence. |
 | `tests/adapters/test_added_fixture_coverage.py::<module>` | legacy-adapter-import | Explicit LegacyOSIAdapter alias bypasses canonical native OSI adapter; legacy compatibility coverage needs separate Rust evidence. |
 | `tests/adapters/test_fixture_functionality_contracts.py::<module>` | legacy-adapter-import | Explicit LegacyOSIAdapter alias bypasses canonical native OSI adapter; legacy compatibility coverage needs separate Rust evidence. |
+| `tests/core/test_required_filters.py::required_layer` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
 | `tests/db/test_bigquery_integration.py::test_semantic_layer_date_functions` | skip | Behavioral or emulator limitation; do not count the omitted contract as parity. |
 | `tests/db/test_clickhouse_integration.py::test_semantic_layer_date_functions` | skip | Behavioral or emulator limitation; do not count the omitted contract as parity. |
+| `tests/db/test_ossie_integration.py::<module>` | skipif | Unconditional or conditional behavioral omission requiring explicit review. |
+| `tests/db/test_ossie_integration.py::test_semantic_view_on_database` | engine-matrix | Python-only parameter selection: adjudicate behavioral coverage separately from private implementation contracts. |
+| `tests/db/test_ossie_integration.py::test_semantic_view_on_database` | skipif | Unconditional or conditional behavioral omission requiring explicit review. |
+| `tests/db/test_ossie_integration.py::test_ossie_cli_on_core_database` | skipif | Unconditional or conditional behavioral omission requiring explicit review. |
+| `tests/db/test_ossie_integration.py::test_wide_structured_ordering_keeps_backend_semantics_on_database` | engine-matrix | Python-only parameter selection: adjudicate behavioral coverage separately from private implementation contracts. |
 | `tests/db/test_snowflake_integration.py::test_semantic_layer_date_functions` | skip | Behavioral or emulator limitation; do not count the omitted contract as parity. |
 | `tests/db/test_spark_integration.py::test_semantic_layer_date_functions` | skip | Behavioral or emulator limitation; do not count the omitted contract as parity. |
-| `tests/semantic_conformance/test_approximate_distinct.py::test_approximate_dialect_rendering_and_population_results` | skip | Behavioral or emulator limitation; do not count the omitted contract as parity. |
-| `tests/semantic_conformance/test_approximate_distinct.py::test_redshift_nested_approximate_expressions_use_independent_parser` | skip | Behavioral or emulator limitation; do not count the omitted contract as parity. |
+| `tests/interchange/ossie/test_latest_logical.py::test_latest_dataset_metrics_preserve_fields_source_columns_and_count_rows` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/interchange/ossie/test_latest_logical.py::test_dataset_metric_names_are_local_and_can_repeat_across_datasets` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/interchange/ossie/test_latest_portable.py::_layer` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/interchange/ossie/test_latest_synthesis.py::test_latest_export_expands_derived_dependencies_and_preserves_native_inputs` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/interchange/ossie/test_latest_synthesis.py::test_latest_imported_dataset_metric_scopes_survive_graph_synthesis` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/interchange/ossie/test_latest_synthesis.py::test_latest_export_preserves_quoted_physical_inputs_in_declared_fields` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/interchange/ossie/test_latest_wide_edge_cases.py::test_cross_output_dialect_preserves_stored_array_index_and_metric_inputs` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/interchange/ossie/test_layer3_api_contract.py::test_native_binding_error_does_not_fall_back_to_python` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/interchange/ossie/test_layer3_api_contract.py::test_strict_wide_rejects_unhandled_security_context` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/interchange/ossie/test_layer3_api_contract.py::test_strict_wide_rejects_visibility_enforcement_even_without_policy_models` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/interchange/ossie/test_layer3_api_contract.py::test_wide_compile_preserves_graph_input_dialect_when_output_changes` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/interchange/ossie/test_portable_filtered_count.py::test_layer2_filtered_count_window_reaches_target_emitter` | engine-matrix | Python-only parameter selection: adjudicate behavioral coverage separately from private implementation contracts. |
+| `tests/interchange/ossie/test_review_distinct_anchor.py::test_distinct_constant_counts_keep_source_population` | engine-matrix | Python-only parameter selection: adjudicate behavioral coverage separately from private implementation contracts. |
+| `tests/queries/test_query_correctness_regressions.py::python_layer` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
 | `tests/semantic_conformance/test_complete_filters.py::test_tsql_complete_row_count_retains_existing_path` | engine-matrix | Python-only parameter selection: adjudicate behavioral coverage separately from private implementation contracts. |
-| `tests/semantic_conformance/test_time_key_projection.py::test_time_identity_stays_unbucketed_for_join_and_fanout` | skip | Behavioral or emulator limitation; do not count the omitted contract as parity. |
+| `tests/server/test_pg_wire.py::<module>` | skip | Unconditional or conditional behavioral omission requiring explicit review. |
+| `tests/test_manpage.py::test_checked_in_manpage_matches_live_cli` | skip | Unconditional or conditional behavioral omission requiring explicit review. |
+| `tests/test_mcp_server.py::test_registered_query_tools_leave_event_loop_responsive` | skip | Unconditional or conditional behavioral omission requiring explicit review. |
+| `tests/test_preaggregation_correctness.py::rollup_layer` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/test_preaggregation_correctness.py::test_rollup_grain_is_bound_to_its_own_time_dimension` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
+| `tests/test_preaggregation_correctness.py::test_finalized_rollup_cannot_regroup_secondary_time_dimension` | engine-control | Behavioral test explicitly pins Python; remove pin or establish equivalent Rust coverage. |
 
 ## Direct implementation coverage
 
@@ -87,17 +110,28 @@ Each count below is a unique declared function, not parametrized cases. Native c
 | --- | ---: | ---: | ---: |
 | `tests/adapters/bsl/test_parsing.py` | 0 | 0 | 6 |
 | `tests/adapters/cube/test_fixtures.py` | 0 | 0 | 5 |
+| `tests/adapters/gooddata/test_key_fidelity.py` | 0 | 0 | 1 |
 | `tests/adapters/metricflow/test_parsing.py` | 0 | 0 | 7 |
 | `tests/adapters/sqlctx_adapter/test_parsing.py` | 0 | 0 | 1 |
 | `tests/adapters/tableau/test_real_world.py` | 0 | 0 | 2 |
 | `tests/adapters/test_added_fixture_coverage.py` | 0 | 0 | 2 |
 | `tests/adapters/test_fixture_functionality_contracts.py` | 0 | 0 | 4 |
+| `tests/adapters/tmdl/test_aggregation_semantics.py` | 0 | 0 | 3 |
+| `tests/adapters/tmdl/test_export_fidelity.py` | 0 | 0 | 2 |
 | `tests/adapters/tmdl/test_parsing.py` | 0 | 0 | 2 |
+| `tests/core/test_directed_relationships.py` | 0 | 0 | 6 |
 | `tests/core/test_invariant_filters.py` | 1 | 0 | 0 |
 | `tests/core/test_relationship_role_aliases.py` | 1 | 1 | 2 |
+| `tests/core/test_required_filters.py` | 0 | 0 | 4 |
 | `tests/core/test_security_advisor_regressions.py` | 0 | 0 | 1 |
 | `tests/dates/test_query_timezone.py` | 2 | 1 | 0 |
 | `tests/dates/test_time_comparison.py` | 2 | 0 | 1 |
+| `tests/interchange/ossie/test_latest_query_interface.py` | 0 | 0 | 1 |
+| `tests/interchange/ossie/test_latest_relational_array_dialects.py` | 0 | 0 | 1 |
+| `tests/interchange/ossie/test_latest_relational_edges.py` | 0 | 0 | 3 |
+| `tests/interchange/ossie/test_layer2_conformance.py` | 0 | 0 | 5 |
+| `tests/interchange/ossie/test_portable_filtered_count.py` | 0 | 0 | 1 |
+| `tests/interchange/ossie/test_review_relational_boundaries.py` | 0 | 0 | 2 |
 | `tests/metrics/test_advanced.py` | 8 | 0 | 29 |
 | `tests/metrics/test_cohort.py` | 5 | 0 | 6 |
 | `tests/metrics/test_conversion_source_parity.py` | 3 | 0 | 0 |
@@ -111,7 +145,7 @@ Each count below is a unique declared function, not parametrized cases. Native c
 | `tests/queries/test_deterministic_join_anchor.py` | 0 | 0 | 1 |
 | `tests/queries/test_rust_query_rewriter_route.py` | 12 | 1 | 0 |
 | `tests/queries/test_rust_rewrite_preaggregation_options.py` | 1 | 0 | 0 |
-| `tests/queries/test_semantic_sql_planner.py` | 0 | 102 | 0 |
+| `tests/queries/test_semantic_sql_planner.py` | 0 | 105 | 0 |
 | `tests/queries/test_sql_fallback_policy.py` | 2 | 1 | 0 |
 | `tests/queries/test_sql_rewriter.py` | 12 | 0 | 0 |
 | `tests/queries/test_temporal_sql_projection.py` | 0 | 0 | 2 |

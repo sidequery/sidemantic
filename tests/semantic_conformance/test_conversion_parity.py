@@ -86,8 +86,9 @@ def test_source_anchored_explore_preserves_conversion_population(layer):
     assert result(layer, explore="conversion")[0][0] == pytest.approx(2 / 6)
 
 
-def test_row_filter_scopes_both_event_populations(layer):
-    assert result(layer, filters=["events.user_id != 'u2'"])[0][0] == pytest.approx(2 / 5)
+@pytest.mark.parametrize("owner", ["events", "{model}"])
+def test_row_filter_scopes_both_event_populations(layer, owner):
+    assert result(layer, filters=[f"{owner}.user_id != 'u2'"])[0][0] == pytest.approx(2 / 5)
 
 
 def test_policy_scopes_target_and_denominator(layer):
@@ -118,16 +119,14 @@ def test_metric_filter_scopes_base_and_target_events(layer):
     assert result(layer)[0][0] == pytest.approx(2 / 5)
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
 @pytest.mark.parametrize("source", ["(select count(*) from events)", "sum(tenant) over ()", "other.tenant"])
-def test_rust_selected_dimension_cannot_change_source_scope(layer, source):
+def test_selected_dimension_cannot_change_source_scope(layer, source):
     layer.graph.models["events"].dimensions.append(Dimension(name="hidden", sql=source, type="numeric"))
     with pytest.raises(ValueError):
         layer.compile(metrics=["events.converted"], dimensions=["events.hidden"], user_attributes={"tenant": 1})
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
-def test_rust_filter_dimension_cannot_hide_a_subquery(layer):
+def test_filter_dimension_cannot_hide_a_subquery(layer):
     layer.graph.models["events"].dimensions.append(
         Dimension(name="hidden", sql="(select count(*) from events)", type="numeric")
     )
@@ -143,8 +142,7 @@ def test_filter_literals_are_not_rewritten_as_dimension_expressions(layer):
     assert result(layer, filters=["events.event_type = 'channel'"]) == [(0.0,)]
 
 
-@pytest.mark.parametrize("layer", ["rust"], indirect=True)
-def test_rust_output_alias_collision_ignores_case(layer):
+def test_output_alias_collision_ignores_case(layer):
     layer.graph.models["events"].dimensions.append(Dimension(name="CONVERTED", sql="channel", type="categorical"))
     with pytest.raises(ValueError, match="output_alias"):
         layer.compile(metrics=["events.converted"], dimensions=["events.CONVERTED"], user_attributes={"tenant": 1})

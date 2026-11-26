@@ -18,16 +18,14 @@ on stdout.
 
 ## CLI
 
-Build the optional Rust backend in the repository environment:
+Install the CLI with the Rust extra from PyPI:
 
 ```bash
-git clone https://github.com/sidequery/sqlctx.git
-cd sqlctx
-uv sync --extra rust
+uv tool install "sqlctx[rust]"
 ```
 
-Run the examples below with `uv run` from that checkout. The default engine is
-Python. Select Rust explicitly for each command.
+For a project environment, use `uv add "sqlctx[rust]"` and run the commands below
+with `uv run`. Python is the default engine. Select Rust explicitly for each command.
 
 Validation:
 

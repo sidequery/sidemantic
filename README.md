@@ -7,7 +7,7 @@ sqlctx is an open-source semantic runtime. Define governed metrics once—or imp
 - **Run on your warehouse:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL, and ADBC sources
 - **Consume metrics anywhere:** semantic SQL, CLI, Python, HTTP/Arrow, PostgreSQL wire protocol, MCP, notebooks, TypeScript/WASM, and embedded analytics
 
-[Documentation](docs/cli.md) | [GitHub](https://github.com/sidequery/sqlctx) | [Docker](#docker) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
+[Documentation](https://sidequery.dev/sqlctx) | [GitHub](https://github.com/sidequery/sqlctx) | [Docker](#docker) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidequery.dev/sqlctx/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
 
 ![Jupyter Widget Preview](preview.png)
 
@@ -17,25 +17,25 @@ Contributors working on browser surfaces should read the [UI architecture and ca
 
 ## 60-second quickstart
 
-Install from GitHub while PyPI serves the earlier sqlctx tool.
+Run the published [sqlctx package](https://pypi.org/project/sqlctx/) with `uvx`.
 
 See it working before writing anything — one command creates a complete demo
 project (models, sample DuckDB data, golden tests) and runs a first query:
 
 ```bash
-uvx --from git+https://github.com/sidequery/sqlctx sqlctx demo
+uvx sqlctx demo
 ```
 
 Start from your own data — sqlctx introspects it and generates models with
 inferred dimensions, metrics, and relationships:
 
 ```bash
-uvx --from git+https://github.com/sidequery/sqlctx sqlctx init analytics --from 'data/*.csv'   # also Parquet, JSON, DuckDB
+uvx sqlctx init analytics --from 'data/*.csv'   # also Parquet, JSON, DuckDB
 cd analytics
-uvx --from git+https://github.com/sidequery/sqlctx sqlctx query "SELECT orders.record_count FROM orders"
-uvx --from git+https://github.com/sidequery/sqlctx sqlctx test              # golden-query assertions
-uvx --from git+https://github.com/sidequery/sqlctx sqlctx validate --live   # models vs. actual database schema
-uvx --from "sqlctx[api,mcp] @ git+https://github.com/sidequery/sqlctx" sqlctx serve   # web UI + HTTP API + MCP on one port
+uvx sqlctx query "SELECT orders.record_count FROM orders"
+uvx sqlctx test              # golden-query assertions
+uvx sqlctx validate --live   # models vs. actual database schema
+uvx --from "sqlctx[api,mcp]" sqlctx serve   # web UI + HTTP API + MCP on one port
 ```
 
 Or write a model by hand. Create `models/orders.yml`:
@@ -65,7 +65,7 @@ models:
 Query it directly—no database setup or package installation required:
 
 ```bash
-uvx --from git+https://github.com/sidequery/sqlctx sqlctx query \
+uvx sqlctx query \
   "SELECT orders.status, orders.revenue, orders.order_count
    FROM orders
    ORDER BY orders.status" \
@@ -82,23 +82,23 @@ From here, inspect generated warehouse SQL or open an interactive explorer:
 
 ```bash
 # Compile without executing
-uvx --from git+https://github.com/sidequery/sqlctx sqlctx query \
+uvx sqlctx query \
   "SELECT orders.status, orders.revenue FROM orders" \
   --models ./models --dry-run
 
 # Explore in the terminal
-uvx --from "sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx" sqlctx workbench ./models
+uvx --from "sqlctx[workbench]" sqlctx workbench ./models
 ```
 
 ## Choose your path
 
-- **Import existing semantic models:** point sqlctx at a Cube, MetricFlow, LookML, Power BI, Malloy, Rill, or other supported project. Start with the [adapter guide](https://sidequery.dev/sidemantic/adapters).
-- **Model tables or SQL:** continue with [models](https://sidequery.dev/sidemantic/models), [dimensions](https://sidequery.dev/sidemantic/dimensions), [metrics](https://sidequery.dev/sidemantic/metrics), and [relationships](https://sidequery.dev/sidemantic/relationships).
-- **Query governed metrics:** use the [CLI](https://github.com/sidequery/sqlctx/blob/main/docs/cli.md), [semantic SQL](https://sidequery.dev/sidemantic/query), or [Python API](https://sidequery.dev/sidemantic/python-api).
+- **Import existing semantic models:** point sqlctx at a Cube, MetricFlow, LookML, Power BI, Malloy, Rill, or other supported project. Start with the [adapter guide](https://sidequery.dev/sqlctx/adapters).
+- **Model tables or SQL:** continue with [models](https://sidequery.dev/sqlctx/models), [dimensions](https://sidequery.dev/sqlctx/dimensions), [metrics](https://sidequery.dev/sqlctx/metrics), and [relationships](https://sidequery.dev/sqlctx/relationships).
+- **Query governed metrics:** use the [CLI](https://github.com/sidequery/sqlctx/blob/main/docs/cli.md), [semantic SQL](https://sidequery.dev/sqlctx/query), or [Python API](https://sidequery.dev/sqlctx/python-api).
 - **Explore data:** launch the terminal workbench, notebook widget, or browser UI.
 - **Serve other tools:** expose models over the HTTP API, PostgreSQL wire protocol, or MCP server.
 
-Install sqlctx in a project with `uv add git+https://github.com/sidequery/sqlctx`. Optional features are packaged as extras:
+Install sqlctx in a project with `uv add sqlctx`. Optional features are packaged as extras:
 
 - **Interfaces:** `api` (HTTP API and `sqlctx serve`), `mcp` (MCP server), `apps` (MCP apps with charts), `serve` (PostgreSQL wire protocol server), `workbench` (terminal UI), `widget` (Jupyter widget), `charts` (Altair charts for MCP chart tools), and `lsp` (language server)
 - **Model formats:** `lookml`, `metricflow`, `malloy`, `dax` (Power BI TMDL/DAX), and `ossie` (Apache Ossie schema validation)
@@ -106,16 +106,14 @@ Install sqlctx in a project with `uv add git+https://github.com/sidequery/sqlctx
 - **Engine:** `rust` (Rust engine) and `fast` (compiled SQLGlot)
 - **Bundle:** `full` (every interface, format, and engine extra except `serve`, `fast`, and the databases)
 
-Python is the default engine. To build the optional Rust engine from source and select it with `--engine rust`, follow [Rust engine mode](docs/rust-engine-mode.md).
+Python is the default engine. Install the optional Rust engine with `uv add "sqlctx[rust]"` and select it with `--engine rust`. See [Rust engine mode](docs/rust-engine-mode.md).
 
 ## DAX And TMDL
 
 DAX/TMDL support lives behind the `dax` extra because it includes a native Rust parser:
 
 ```bash
-git clone https://github.com/sidequery/sqlctx.git
-cd sqlctx
-uv sync --extra dax
+uv add "sqlctx[dax]"
 ```
 
 Native sqlctx YAML can preserve DAX expression source text next to the SQL definition sqlctx queries, for Power BI interoperability:
@@ -177,16 +175,16 @@ sqlctx query "SELECT orders.revenue FROM orders" --db data/orders.csv
 sqlctx test
 
 # Serve teammates and tools on one port: web UI, HTTP API, and MCP
-uvx --from "sqlctx[api,mcp] @ git+https://github.com/sidequery/sqlctx" sqlctx serve models/ --db data.duckdb
+uvx --from "sqlctx[api,mcp]" sqlctx serve models/ --db data.duckdb
 
 # Interactive workbench (TUI with SQL editor + charts)
-uvx --from "sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx" sqlctx workbench models/ --db data.duckdb
+uvx --from "sqlctx[workbench]" sqlctx workbench models/ --db data.duckdb
 
 # PostgreSQL server (connect Tableau, DBeaver, etc.)
-uvx --from "sqlctx[serve] @ git+https://github.com/sidequery/sqlctx" sqlctx server postgres models/ --port 5433
+uvx --from "sqlctx[serve]" sqlctx server postgres models/ --port 5433
 
 # HTTP API server (JSON or Arrow)
-uvx --from "sqlctx[api] @ git+https://github.com/sidequery/sqlctx" sqlctx server api models/ --port 4400 --auth-token-file .secrets/api-token
+uvx --from "sqlctx[api]" sqlctx server api models/ --port 4400 --auth-token-file .secrets/api-token
 
 # Validate definitions (--live also checks tables/columns against the database)
 sqlctx validate models/
@@ -211,17 +209,17 @@ stdin/stdout, exit codes, debugging, and secure credential input.
 
 **Workbench** (TUI with SQL editor + charts):
 ```bash
-uvx --from "sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx" sqlctx workbench --demo
+uvx --from "sqlctx[workbench]" sqlctx workbench --demo
 ```
 
 **PostgreSQL server** (connect Tableau, DBeaver, etc.):
 ```bash
-uvx --from "sqlctx[serve] @ git+https://github.com/sidequery/sqlctx" sqlctx server postgres --demo --port 5433
+uvx --from "sqlctx[serve]" sqlctx server postgres --demo --port 5433
 ```
 
 **HTTP API server** (JSON or Arrow):
 ```bash
-uvx --from "sqlctx[api] @ git+https://github.com/sidequery/sqlctx" sqlctx server api --demo --port 4400
+uvx --from "sqlctx[api]" sqlctx server api --demo --port 4400
 ```
 
 **Colab notebooks:**
@@ -329,12 +327,12 @@ pinned schema profiles, validation policies, scope rules, and round-trip limits.
 |----------|:------:|--------------|
 | DuckDB | ✅ | built-in |
 | MotherDuck | ✅ | built-in |
-| PostgreSQL | ✅ | `uv add "sqlctx[postgres] @ git+https://github.com/sidequery/sqlctx"` |
-| BigQuery | ✅ | `uv add "sqlctx[bigquery] @ git+https://github.com/sidequery/sqlctx"` |
-| Snowflake | ✅ | `uv add "sqlctx[snowflake] @ git+https://github.com/sidequery/sqlctx"` |
-| ClickHouse | ✅ | `uv add "sqlctx[clickhouse] @ git+https://github.com/sidequery/sqlctx"` |
-| Databricks | ✅ | `uv add "sqlctx[databricks] @ git+https://github.com/sidequery/sqlctx"` |
-| Spark SQL | ✅ | `uv add "sqlctx[spark] @ git+https://github.com/sidequery/sqlctx"` |
+| PostgreSQL | ✅ | `uv add "sqlctx[postgres]"` |
+| BigQuery | ✅ | `uv add "sqlctx[bigquery]"` |
+| Snowflake | ✅ | `uv add "sqlctx[snowflake]"` |
+| ClickHouse | ✅ | `uv add "sqlctx[clickhouse]"` |
+| Databricks | ✅ | `uv add "sqlctx[databricks]"` |
+| Spark SQL | ✅ | `uv add "sqlctx[spark]"` |
 
 ## Docker
 
@@ -360,13 +358,13 @@ For Cloudflare Worker + Container deployment, see [`examples/cloudflare_containe
 
 ## HTTP API
 
-These examples use the project created by `uvx --from git+https://github.com/sidequery/sqlctx sqlctx demo`. Create a
+These examples use the project created by `uvx sqlctx demo`. Create a
 bearer token file, then start the API server:
 
 ```bash
 cd sqlctx-demo
 mkdir -p .secrets && openssl rand -hex 32 > .secrets/api-token
-uvx --from "sqlctx[api] @ git+https://github.com/sidequery/sqlctx" sqlctx server api models/ --db data/demo.duckdb --port 4400 --auth-token-file .secrets/api-token
+uvx --from "sqlctx[api]" sqlctx server api models/ --db data/demo.duckdb --port 4400 --auth-token-file .secrets/api-token
 ```
 
 In another terminal in `sqlctx-demo`, compile a structured semantic query:

@@ -38,6 +38,49 @@ fn fixture_root() -> PathBuf {
 }
 
 #[test]
+fn released_column_free_calculation_requires_one_dataset() {
+    for dataset_count in [1, 2] {
+        let datasets: Vec<_> = (0..dataset_count)
+            .map(|index| {
+                serde_json::json!({
+                    "name": format!("orders{index}"),
+                    "source": format!("raw_orders{index}"),
+                    "fields": [{"name": "id", "expression": {"dialects": [
+                        {"dialect": "ANSI_SQL", "expression": "id"}
+                    ]}}]
+                })
+            })
+            .collect();
+        let document = serde_json::json!({
+            "version": "0.1.1",
+            "semantic_model": [{
+                "name": "shop",
+                "datasets": datasets,
+                "metrics": [{"name": "adjusted_count", "expression": {"dialects": [
+                    {"dialect": "ANSI_SQL", "expression": "COUNT(*) + 1"}
+                ]}}]
+            }]
+        });
+        let graph = sqlctx::load_from_string(&document.to_string()).unwrap();
+        let metric = graph.get_metric("adjusted_count").unwrap();
+        assert_eq!(metric.r#type, sqlctx::MetricType::Derived);
+        assert!(!metric.sql_is_complete);
+        let result = sqlctx::SqlGenerator::new(&graph)
+            .generate(&sqlctx::SemanticQuery::new().with_metrics(vec!["adjusted_count".into()]));
+        if dataset_count == 1 {
+            let sql = result.unwrap();
+            assert!(sql.contains("COUNT(*)"), "{sql}");
+            assert!(sql.contains("raw_orders0"), "{sql}");
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("metric.graph_scope.adjusted_count"));
+        }
+    }
+}
+
+#[test]
 fn shared_ossie_fixture_manifest_matches_strict_rust_diagnostics() {
     let root = fixture_root();
     let manifest: Manifest =
@@ -206,6 +249,234 @@ fn current_metadata_and_dialects_validate_without_becoming_sql_targets() {
 
 const LATEST_REVISION: &str = "172a3e566f2fc9c0a733ebbb470e97c33d2bd8b1";
 const OCTOBER_REVISION: &str = "b6c702ed1c07e91382a69e870c875cbd19570828";
+const DRAFT_REVISION: &str = "d27a6beab519c8d3bf08ad5fc901c293205134eb";
+
+fn draft_document() -> serde_json::Value {
+    let mut document = latest_document();
+    document["version"] = "0.3.0.dev0".into();
+    document
+}
+
+fn draft_scope(document: &serde_json::Value) -> sqlctx::Result<sqlctx::OssieCompiledScope> {
+    OssieForwardAdapter.select_scope(
+        &document.to_string(),
+        OssieSerialization::Json,
+        OssieConsumerProfile::OssieCore,
+        OssieTarget::DuckDb,
+        None,
+    )
+}
+
+#[test]
+fn draft_profile_rejects_wrapped_and_ontology_document_families() {
+    let mut scope = draft_document();
+    scope.as_object_mut().unwrap().remove("version");
+    for document in [
+        serde_json::json!({"version":"0.3.0.dev0", "semantic_model":[scope]}),
+        serde_json::json!({"version":"0.3.0.dev0", "ontology":[]}),
+        serde_json::json!({"version":"0.3.0.dev0", "ontology_mappings":[]}),
+    ] {
+        for revision in [None, Some(DRAFT_REVISION), Some(LATEST_REVISION)] {
+            let status = OssieForwardAdapter.inspect_with_revision(
+                &document.to_string(),
+                OssieSerialization::Json,
+                OssieConsumerProfile::OssieCore,
+                revision,
+            );
+            assert!(
+                !status.valid && !status.executable,
+                "{document}: {status:?}"
+            );
+            assert!(status
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "ossie.schema.profile_unsupported"));
+        }
+    }
+}
+
+#[test]
+fn draft_profile_validates_structured_extensions_and_pinned_revision() {
+    let mut document = draft_document();
+    let extension = serde_json::json!([{"vendor_name":"example", "data": {
+        "expression":{"sql":"AGG(opaque.not_sql)"}, "array":[null, true, 42]
+    }}]);
+    document["nonportable_extensions"] = extension.clone();
+    document["datasets"][0]["nonportable_extensions"] = extension.clone();
+    document["datasets"][0]["fields"][0]["nonportable_extensions"] = extension.clone();
+    document["datasets"][0]["metrics"][0]["nonportable_extensions"] = extension;
+    let status = OssieForwardAdapter.inspect(
+        &document.to_string(),
+        OssieSerialization::Json,
+        OssieConsumerProfile::OssieCore,
+    );
+    assert!(status.valid, "{:?}", status.diagnostics);
+    assert_eq!(
+        status.profile.unwrap().schema_revision.as_deref(),
+        Some(DRAFT_REVISION)
+    );
+    let scope = draft_scope(&document).unwrap();
+    assert_eq!(
+        scope.models[0].metadata.as_ref().unwrap()["ossie_nonportable_extensions"],
+        document["datasets"][0]["nonportable_extensions"]
+    );
+    assert_eq!(
+        scope.models[0].metadata.as_ref().unwrap()["ossie_scope_nonportable_extensions"],
+        document["nonportable_extensions"]
+    );
+    assert_eq!(
+        scope.metrics[0].metadata.as_ref().unwrap()["ossie_nonportable_extensions"],
+        document["datasets"][0]["metrics"][0]["nonportable_extensions"]
+    );
+    assert!(OssieForwardAdapter
+        .select_scope_with_revision(
+            &document.to_string(),
+            OssieSerialization::Json,
+            OssieConsumerProfile::OssieCore,
+            OssieTarget::DuckDb,
+            None,
+            Some("d27a6be")
+        )
+        .is_ok());
+    assert!(OssieForwardAdapter
+        .select_scope_with_revision(
+            &document.to_string(),
+            OssieSerialization::Json,
+            OssieConsumerProfile::OssieCore,
+            OssieTarget::DuckDb,
+            None,
+            Some(LATEST_REVISION)
+        )
+        .is_err());
+    document["nonportable_extensions"][0]["data"] = "{}".into();
+    assert!(draft_scope(&document).is_err());
+    document
+        .as_object_mut()
+        .unwrap()
+        .remove("nonportable_extensions");
+    document["custom_extensions"] = serde_json::json!([]);
+    assert!(draft_scope(&document).is_err());
+}
+
+#[test]
+fn draft_model_agg_composes_dataset_metrics_and_keeps_their_inputs() {
+    let mut document = draft_document();
+    document["metrics"] = serde_json::json!([
+        {"name":"average", "expression":{"sql":"AGG(orders.total) / AGG(orders.rows)"}},
+        {"name":"physical_total", "expression":{"sql":"AGG(orders.physical)"}}
+    ]);
+    let scope = draft_scope(&document).unwrap();
+    let graph = scope.into_graph().unwrap();
+    let sql = sqlctx::SqlGenerator::new(&graph)
+        .generate(
+            &sqlctx::SemanticQuery::new()
+                .with_metrics(vec!["average".into(), "physical_total".into()]),
+        )
+        .unwrap();
+    assert!(sql.contains("amount * 2"), "{sql}");
+    assert!(!sql.contains("AGG("), "{sql}");
+    assert!(!sql.contains("source.amount"), "{sql}");
+    assert_eq!(graph.metric_owner("orders.rows"), Some("orders"));
+}
+
+#[test]
+fn draft_agg_rejects_invalid_references_and_unsupported_source_measures() {
+    for expression in [
+        "AGG(orders.amount)",
+        "AGG(orders.missing)",
+        "AGG(total)",
+        "AGG(orders.total + 1)",
+        "AGG(orders.total, orders.rows)",
+        "AGG(orders.total) FILTER (WHERE orders.amount > 0)",
+        "orders.total",
+        "SUM(orders.total)",
+    ] {
+        let mut document = draft_document();
+        document["metrics"] = serde_json::json!([{"name":"bad", "expression":{"sql":expression}}]);
+        assert!(draft_scope(&document).is_err(), "{expression}");
+    }
+    let mut document = draft_document();
+    document["datasets"][0]["fields"][0]["expression"]["sql"] = "AGG(amount)".into();
+    assert!(draft_scope(&document).is_err());
+    let mut document = draft_document();
+    document["datasets"][0]["metrics"][0]["expression"]["sql"] = "AGG(source.total)".into();
+    let status = OssieForwardAdapter.inspect(
+        &document.to_string(),
+        OssieSerialization::Json,
+        OssieConsumerProfile::OssieCore,
+    );
+    assert!(status.valid, "{:?}", status.diagnostics);
+    assert!(draft_scope(&document)
+        .unwrap_err()
+        .to_string()
+        .contains("source measure-relation metadata"));
+}
+
+#[test]
+fn draft_composition_keeps_quoted_and_regular_metric_names_distinct() {
+    let mut document = draft_document();
+    document["datasets"][0]["metrics"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "name":"\"total\"", "expression":{"sql":"SUM(source.amount)"}
+        }));
+    document["metrics"] = serde_json::json!([
+        {"name":"regular", "expression":{"sql":"AGG(orders.total)"}},
+        {"name":"quoted", "expression":{"sql":"AGG(orders.\"total\")"}}
+    ]);
+    let scope = draft_scope(&document).unwrap();
+    assert_eq!(scope.metrics[4].sql, scope.metrics[0].sql);
+    assert_eq!(scope.metrics[5].sql, scope.metrics[3].sql);
+    assert_ne!(scope.metrics[4].sql, scope.metrics[5].sql);
+}
+
+#[test]
+fn draft_keys_require_unique_items_in_the_pinned_schema() {
+    let mut document = draft_document();
+    document["datasets"][0]["primary_key"] = serde_json::json!(["amount", "amount"]);
+    let status = OssieForwardAdapter.inspect(
+        &document.to_string(),
+        OssieSerialization::Json,
+        OssieConsumerProfile::OssieCore,
+    );
+    assert!(status
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "ossie.schema.unique_items"
+            && diagnostic.instance_path == "/datasets/0/primary_key"));
+}
+
+#[test]
+fn current_upstream_tpcds_file_imports_without_source_edits() {
+    let content = fs::read_to_string(
+        fixture_root().join("upstream/d27a6be/examples/tpcds_semantic_model.yaml"),
+    )
+    .unwrap();
+    let scope = OssieForwardAdapter
+        .select_scope(
+            &content,
+            OssieSerialization::Yaml,
+            OssieConsumerProfile::OssieCore,
+            OssieTarget::DuckDb,
+            None,
+        )
+        .unwrap();
+    assert_eq!(scope.scope_id, "tpcds_retail_model");
+    assert_eq!(
+        scope.models[0].table.as_deref(),
+        Some("tpcds.public.store_sales")
+    );
+    assert_eq!(
+        scope.models[0].metadata.as_ref().unwrap()["ossie_schema_revision"],
+        DRAFT_REVISION
+    );
+    let graph = scope.into_graph().unwrap();
+    let sql = sqlctx::SqlGenerator::new(&graph)
+        .generate(&sqlctx::SemanticQuery::new().with_metrics(vec!["total_sales".into()]))
+        .unwrap();
+    assert!(sql.contains("store_sales"), "{sql}");
+}
 
 fn latest_document() -> serde_json::Value {
     serde_json::json!({"version": "0.2.0.dev0", "name": "commerce", "datasets": [{

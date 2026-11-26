@@ -24,6 +24,10 @@ for the complete invocation.
 `test_catalog_host.py` uses the same environment variables and verifies
 SHOW/DESCRIBE metadata, compatible dimensions, native SELECT, prepared reads,
 transaction rollback, and export/import across restart and read-only connections.
+It also imports unchanged, checksum-pinned upstream Ossie 0.1.1 and 0.3.0.dev0
+TPC-DS files, queries their metrics against seeded physical tables, and repeats
+the results after a read-only reopen. Provenance and licenses live beside the
+fixtures under `tests/ossie-fixtures/upstream/{faf5810,d27a6be}`; CI needs no network.
 
 `test_duckflight_host.py` runs the SQL through an authenticated DuckFlight
 PostgreSQL listener using psycopg. Set `DUCKFLIGHT_EXTENSION` as well as the two

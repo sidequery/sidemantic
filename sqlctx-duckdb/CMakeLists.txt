@@ -157,6 +157,7 @@ endif()
 
 file(GLOB_RECURSE SQLCTX_RUST_SOURCES
      "${SQLCTX_RS_DIR}/src/*.rs"
+     "${SQLCTX_RS_DIR}/schemas/ossie/*.json"
      "${SQLCTX_RS_DIR}/include/*.h")
 
 add_custom_command(

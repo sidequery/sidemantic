@@ -80,6 +80,11 @@ SELECT status, revenue FROM semantic.orders_model;
 SELECT sqlctx_rewrite_sql('SELECT orders_model.status, orders_model.revenue FROM orders_model');
 ```
 
+Released Ossie `0.1.1` and flat `0.3.0.dev0` logical models load through
+`sqlctx_load_file`. Query model metrics with ordinary SQL, for example
+`select total_sales from metrics` for the upstream TPC-DS model.
+[Ossie file examples and supported draft semantics](../docs/duckdb-extension.md#ossie-files)
+
 ## Discover and manage definitions
 
 ```sql

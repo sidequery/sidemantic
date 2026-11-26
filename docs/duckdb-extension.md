@@ -1,6 +1,6 @@
 # DuckDB Extension
 
-The sqlctx DuckDB extension embeds the Rust native runtime in DuckDB. It is a native-format deployment path, separate from the Python CLI and Python adapter ecosystem.
+The sqlctx DuckDB extension embeds the Rust native runtime in DuckDB. It reads native sqlctx definitions and Ossie logical model files directly.
 
 ## Status
 
@@ -81,6 +81,88 @@ Load native YAML from disk:
 ```sql
 SELECT * FROM sqlctx_load_file('/path/to/models.yml');
 ```
+
+### Ossie files
+
+The same loader accepts the released wrapped `0.1.1` format and the flat
+`0.3.0.dev0` logical draft pinned at Apache Ossie commit `d27a6be`.
+In a database containing the TPC-DS physical tables named in the model, run:
+
+```sql
+select * from sqlctx_load_file('/path/to/tpcds_semantic_model.yaml');
+select total_sales, total_profit from metrics;
+select item.i_brand, sales_by_brand from metrics order by item.i_brand;
+```
+
+The draft also declares a dataset-scoped measure:
+
+```sql
+select agg(s.total_quantity) as total_quantity from store_sales s;
+```
+
+The imported definitions persist in the database. A physical table, view, or
+CTE named `metrics` keeps its ordinary DuckDB meaning. The wrapped file uses
+the OSI reader. Flat files use the Rust Ossie importer and its offline schema.
+Draft dataset metrics that require source measure-relation metadata
+(`AGG(source.measure)`) are currently unsupported.
+
+#### Windowed metrics in plain SQL
+
+Selecting any of the TPC-DS draft's three windowed metrics by name from
+`metrics` returns `E_DEFERRED_WINDOWED_METRIC`, as required by the
+[pinned Ossie wide-table specification](https://github.com/apache/ossie/blob/d27a6beab519c8d3bf08ad5fc901c293205134eb/core-spec/wide_table_semantics.md#52-metric-components).
+To calculate them in plain SQL, select `total_sales` with the grouping
+dimensions in a CTE, then apply the DuckDB window function to those rows.
+
+**Running sales by day (`cumulative_sales`).** Each row adds that day's sales
+to the total through the previous day.
+
+```sql
+with daily as (
+    select date_dim.d_date as sale_date, total_sales
+    from metrics
+)
+select sale_date,
+       sum(total_sales) over (
+           order by sale_date rows between unbounded preceding and current row
+       ) as cumulative_sales
+from daily
+order by sale_date;
+```
+
+**Brand rank within each store (`brand_rank_in_store`).** Rank brands by
+descending sales within each store. Brands with equal sales share a rank.
+
+```sql
+with brand_sales as (
+    select store.s_store_sk as store_id, item.i_brand as brand, total_sales
+    from metrics
+)
+select store_id, brand,
+       rank() over (
+           partition by store_id order by total_sales desc
+       ) as brand_rank_in_store
+from brand_sales
+order by store_id, brand_rank_in_store, brand;
+```
+
+**Change in monthly sales (`monthly_sales_change`).** Subtract sales for the
+previous month present in the result. The first month has a `NULL` change.
+
+```sql
+with monthly as (
+    select date_dim.d_year as sale_year, date_dim.d_moy as sale_month, total_sales
+    from metrics
+)
+select sale_year, sale_month,
+       total_sales - lag(total_sales) over (
+           order by sale_year, sale_month
+       ) as monthly_sales_change
+from monthly
+order by sale_year, sale_month;
+```
+
+### Native SQL definitions
 
 Load native SQL definitions from disk:
 

@@ -92,8 +92,16 @@ fn entries(snapshot: &Snapshot, kind: &str, model: &str) -> CatalogResult<Vec<Ca
             entry.column_index = index + 1;
             entries.push(entry);
         }
-        for (index, metric) in model.metrics.iter().enumerate() {
-            let mut entry = CatalogEntry::new("metric", Some(&model.name), &metric.name, metric)?;
+        let local_metrics = model
+            .metrics
+            .iter()
+            .map(|metric| (metric.name.as_str(), metric));
+        let dataset_metrics = snapshot.metrics.iter().filter_map(|metric| {
+            let (owner, field) = crate::adapters::ossie::dataset_metric_field(metric)?;
+            (owner == model.name).then_some((field, metric))
+        });
+        for (index, (name, metric)) in local_metrics.chain(dataset_metrics).enumerate() {
+            let mut entry = CatalogEntry::new("metric", Some(&model.name), name, metric)?;
             entry.column_index = model.dimensions.len() + index + 1;
             entries.push(entry);
         }
@@ -118,6 +126,9 @@ fn entries(snapshot: &Snapshot, kind: &str, model: &str) -> CatalogResult<Vec<Ca
     }
     if selected.is_none() {
         for metric in &snapshot.metrics {
+            if crate::adapters::ossie::dataset_metric_field(metric).is_some() {
+                continue;
+            }
             entries.push(CatalogEntry::new("metric", None, &metric.name, metric)?);
         }
         for parameter in &snapshot.parameters {

@@ -176,11 +176,12 @@ fn prepare_with_dialects(
             .all(|policy| policy.security.is_none() && policy.invariant_filters.is_empty())
         && graph.models().next().is_some()
         && graph.models().all(|model| {
-            model
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata["ossie_schema_revision"].as_str())
-                == Some(crate::adapters::ossie::LATEST_SCHEMA_REVISION)
+            crate::adapters::ossie::supports_dataset_metrics(
+                model
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata["ossie_schema_revision"].as_str()),
+            )
         });
     if !independent_ossie_populations {
         for (index, from) in required.iter().enumerate() {

@@ -120,7 +120,12 @@ impl SemanticGraph {
     }
 
     pub fn metric_owner(&self, metric: &str) -> Option<&str> {
-        self.metric_owners.get(metric).map(String::as_str)
+        if self.strict_metric_scope {
+            return self.metric_owners.get(metric).map(String::as_str);
+        }
+        // File imports and persisted catalogs retain dataset ownership on the declaration.
+        crate::adapters::ossie::dataset_metric_field(self.metrics.get(metric)?)
+            .map(|(owner, _)| owner)
     }
 
     /// Resolve population ownership identically before policy preparation and SQL generation.

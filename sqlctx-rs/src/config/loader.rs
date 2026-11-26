@@ -7,6 +7,9 @@ use std::path::Path;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::adapters::ossie::{
+    OssieConsumerProfile, OssieForwardAdapter, OssieSerialization, OssieTarget,
+};
 use crate::adapters::{Adapter, CubeAdapter, OsiAdapter};
 use crate::core::{
     extract_dependencies, resolve_model_inheritance, Metric, Model, Parameter, Relationship,
@@ -58,6 +61,8 @@ pub enum ConfigFormat {
     Cube,
     /// OSI (Open Semantic Interchange) format (semantic_model: / ontology_mappings: key)
     Osi,
+    /// Flat Ossie logical model.
+    Ossie,
 }
 
 impl ConfigFormat {
@@ -66,6 +71,7 @@ impl ConfigFormat {
             ConfigFormat::Sqlctx => "sqlctx",
             ConfigFormat::Cube => "Cube",
             ConfigFormat::Osi => "OSI",
+            ConfigFormat::Ossie => "Ossie",
         }
     }
 }
@@ -677,18 +683,20 @@ fn deep_merge_json(target: &mut serde_json::Value, incoming: serde_json::Value) 
 
 /// Detect the config format from content
 fn detect_format(content: &str) -> ConfigFormat {
-    // Check for Cube.js format markers
-    if content.contains("cubes:") {
-        return ConfigFormat::Cube;
+    let Ok(serde_yaml::Value::Mapping(root)) = serde_yaml::from_str(content) else {
+        return ConfigFormat::Sqlctx;
+    };
+    if root.get("version").and_then(serde_yaml::Value::as_str) == Some("0.3.0.dev0") {
+        ConfigFormat::Ossie
+    } else if root.contains_key("cubes") {
+        ConfigFormat::Cube
+    } else if root.contains_key("semantic_model") || root.contains_key("ontology_mappings") {
+        ConfigFormat::Osi
+    } else if root.contains_key("datasets") {
+        ConfigFormat::Ossie
+    } else {
+        ConfigFormat::Sqlctx
     }
-
-    // Check for OSI format markers
-    if content.contains("semantic_model:") || content.contains("ontology_mappings:") {
-        return ConfigFormat::Osi;
-    }
-
-    // Default to sqlctx format
-    ConfigFormat::Sqlctx
 }
 
 /// Parse content based on detected format
@@ -829,6 +837,22 @@ fn parse_literal_content_with_extends(content: &str, format: ConfigFormat) -> Re
             // Cube.js doesn't support extends in the same way
             Ok(ParsedConfig {
                 models: CubeAdapter::new().parse_models(content)?,
+                ..Default::default()
+            })
+        }
+        ConfigFormat::Ossie => {
+            let scope = OssieForwardAdapter.select_scope(
+                content,
+                OssieSerialization::Yaml,
+                OssieConsumerProfile::OssieCore,
+                OssieTarget::DuckDb,
+                None,
+            )?;
+            scope.clone().into_graph()?;
+            Ok(ParsedConfig {
+                models: scope.models,
+                graph_metrics: scope.metrics,
+                explicit_relationships: true,
                 ..Default::default()
             })
         }

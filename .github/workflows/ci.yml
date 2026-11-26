@@ -542,6 +542,7 @@ jobs:
           filters: |
             rust:
               - 'sqlctx-rs/**'
+              - 'tests/ossie-fixtures/upstream/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
@@ -588,8 +589,7 @@ jobs:
             duckdb:
               - 'sqlctx-duckdb/**'
               - 'sqlctx-rs/**'
-              # The extension links the workspace crate; host tests and their
-              # shared SemanticInput fixture live under the two trees above.
+              - 'tests/ossie-fixtures/upstream/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'

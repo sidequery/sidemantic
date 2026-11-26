@@ -734,10 +734,11 @@ pub(super) fn normalize(
         .models
         .iter()
         .filter(|model| {
-            model
-                .pointer("/metadata/ossie_schema_revision")
-                .and_then(Value::as_str)
-                == Some(crate::adapters::ossie::LATEST_SCHEMA_REVISION)
+            crate::adapters::ossie::supports_dataset_metrics(
+                model
+                    .pointer("/metadata/ossie_schema_revision")
+                    .and_then(Value::as_str),
+            )
         })
         .filter_map(|model| model.get("name").and_then(Value::as_str).map(str::to_owned))
         .collect();

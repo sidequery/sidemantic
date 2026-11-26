@@ -2,9 +2,9 @@
 
 import warnings
 
-from sidemantic.adapters.cube import CubeAdapter, _access_policy_to_security
-from sidemantic.adapters.rill import RillAdapter
-from sidemantic.core.dimension import Dimension
+from sqlctx.adapters.cube import CubeAdapter, _access_policy_to_security
+from sqlctx.adapters.rill import RillAdapter
+from sqlctx.core.dimension import Dimension
 
 
 def test_cube_access_policy_row_filters_map_to_security():
@@ -100,7 +100,7 @@ def test_rill_security_block_maps_to_security():
     adapter = RillAdapter()
     security = adapter._parse_security({"access": "{{ .user.admin }}", "row_filter": "region = '{{ .user.region }}'"})
     assert security is not None
-    # Go-template .user.* refs become sidemantic's user.* Jinja namespace.
+    # Go-template .user.* refs become sqlctx's user.* Jinja namespace.
     assert security.access == "{{ user.admin }}"
     assert security.row_filters == ["region = '{{ user.region }}'"]
 
@@ -120,12 +120,12 @@ def test_uri_dimension_flag():
 
 def test_native_roundtrip_uri_and_non_additive_window(tmp_path):
     """uri and non_additive_window survive native YAML round-trip (PR review P2)."""
-    from sidemantic.adapters.sidemantic import SidemanticAdapter
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.adapters.sqlctx import SqlctxAdapter
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.model import Model
 
     graph.add_model(
         Model(
@@ -139,8 +139,8 @@ def test_native_roundtrip_uri_and_non_additive_window(tmp_path):
         )
     )
     out = tmp_path / "m.yml"
-    SidemanticAdapter().export(graph, out)
-    reloaded = SidemanticAdapter().parse(out)
+    SqlctxAdapter().export(graph, out)
+    reloaded = SqlctxAdapter().parse(out)
     model = reloaded.get_model("orders")
     assert model.get_dimension("homepage").uri is True
     assert model.get_metric("bal").non_additive_window == "min"
@@ -148,7 +148,7 @@ def test_native_roundtrip_uri_and_non_additive_window(tmp_path):
 
 def test_cube_or_policy_is_parenthesized():
     """OR-combined Cube row filters must be wrapped so later AND-ing keeps precedence."""
-    from sidemantic.adapters.cube import _access_policy_to_security
+    from sqlctx.adapters.cube import _access_policy_to_security
 
     policy, _ = _access_policy_to_security(
         [
@@ -168,7 +168,7 @@ def test_cube_or_policy_is_parenthesized():
 
 def test_cube_dynamic_values_are_unmapped():
     """A dynamic (non-list) Cube values reference must not be iterated char-by-char."""
-    from sidemantic.adapters.cube import _access_policy_to_security
+    from sqlctx.adapters.cube import _access_policy_to_security
 
     policy, unmapped = _access_policy_to_security(
         [{"row_level": {"filters": [{"member": "city", "operator": "in", "values": "security_context.x"}]}}]

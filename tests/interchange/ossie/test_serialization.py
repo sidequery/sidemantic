@@ -6,7 +6,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 import yaml
 
-from sidemantic.interchange.ossie import (
+from sqlctx.interchange.ossie import (
     DBT_1_12_0_1_0_ALIAS,
     OssieConsumerProfile,
     OssieDocumentSource,

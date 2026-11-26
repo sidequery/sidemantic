@@ -1,7 +1,7 @@
 """Tests for edge cases in coverage analyzer model generation."""
 
-from sidemantic import SemanticLayer
-from sidemantic.core.migrator import Migrator
+from sqlctx import SemanticLayer
+from sqlctx.core.migrator import Migrator
 
 
 def test_generate_models_with_case_when_aggregation():

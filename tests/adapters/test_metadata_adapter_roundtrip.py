@@ -3,13 +3,13 @@
 import tempfile
 from pathlib import Path
 
-from sidemantic import Dimension, Metric, Model, Segment
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx import Dimension, Metric, Model, Segment
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
-def test_metadata_roundtrip_sidemantic_adapter():
-    """Test metadata fields survive export/import through Sidemantic adapter."""
+def test_metadata_roundtrip_sqlctx_adapter():
+    """Test metadata fields survive export/import through sqlctx adapter."""
     # Create a model with all metadata fields populated
     original = Model(
         name="orders",
@@ -73,7 +73,7 @@ def test_metadata_roundtrip_sidemantic_adapter():
     graph = SemanticGraph()
     graph.add_model(original)
 
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
 
     # Export to YAML
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -173,7 +173,7 @@ def test_partial_metadata_roundtrip():
     graph = SemanticGraph()
     graph.add_model(minimal)
 
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
         temp_path = Path(f.name)
@@ -212,7 +212,7 @@ def test_empty_metadata_roundtrip():
     graph = SemanticGraph()
     graph.add_model(basic)
 
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
         temp_path = Path(f.name)

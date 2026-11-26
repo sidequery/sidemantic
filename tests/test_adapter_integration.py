@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sqlctx import Dimension, Metric, Model, SemanticLayer
 
 
 class TestSemanticLayerAdapterInterface:
@@ -79,7 +79,7 @@ class TestServerConnectionAdapterIntegration:
         pytest.importorskip("riffq")
         pytest.importorskip("pyarrow")
 
-        from sidemantic.server.connection import SemanticLayerConnection
+        from sqlctx.server.connection import SemanticLayerConnection
 
         adapter_calls = []
 
@@ -133,7 +133,7 @@ class TestServerConnectionAdapterIntegration:
         pytest.importorskip("riffq")
         pytest.importorskip("pyarrow")
 
-        from sidemantic.server.connection import SemanticLayerConnection
+        from sqlctx.server.connection import SemanticLayerConnection
 
         adapter_calls = []
 
@@ -189,7 +189,7 @@ class TestServerConnectionAdapterIntegration:
         pytest.importorskip("riffq")
         pytest.importorskip("pyarrow")
 
-        from sidemantic.server.connection import SemanticLayerConnection
+        from sqlctx.server.connection import SemanticLayerConnection
 
         adapter_calls = []
 
@@ -242,7 +242,7 @@ class TestServerCatalogAdapterIntegration:
         """Test that start_server uses layer.adapter.execute for catalog queries."""
         pytest.importorskip("riffq")
 
-        from sidemantic.server.server import start_server
+        from sqlctx.server.server import start_server
 
         adapter_calls = []
 
@@ -314,7 +314,7 @@ class TestMCPServerAdapterIntegration:
         import tempfile
         from pathlib import Path
 
-        from sidemantic.mcp_server import initialize_layer, run_query
+        from sqlctx.mcp_server import initialize_layer, run_query
 
         tmpdir = tempfile.mkdtemp()
         tmpdir_path = Path(tmpdir)
@@ -361,7 +361,7 @@ class TestCLIQueryUsesAdapter:
         """Test that CLI query command works with adapter."""
         from typer.testing import CliRunner
 
-        from sidemantic.cli import app
+        from sqlctx.cli import app
 
         # Create model file
         model_yaml = """
@@ -411,7 +411,7 @@ class TestWorkbenchAdapterIntegration:
         pytest.importorskip("textual")
         from typer.testing import CliRunner
 
-        from sidemantic.cli import app
+        from sqlctx.cli import app
 
         # Create model file
         model_yaml = """
@@ -434,7 +434,7 @@ models:
             called["directory"] = directory
             called["demo_mode"] = demo_mode
 
-        monkeypatch.setattr("sidemantic.workbench.run_workbench", fake_run_workbench)
+        monkeypatch.setattr("sqlctx.workbench.run_workbench", fake_run_workbench)
 
         runner = CliRunner()
         result = runner.invoke(app, ["workbench", str(tmp_path)])
@@ -474,7 +474,7 @@ class TestWidgetAdapterIntegration:
 
         import sqlglot
 
-        from sidemantic.widget import MetricsExplorer
+        from sqlctx.widget import MetricsExplorer
 
         # Use DuckDB backend but override dialect to ensure generator follows layer.dialect.
         layer = SemanticLayer(connection="duckdb:///:memory:", dialect="postgres")
@@ -520,7 +520,7 @@ class TestWidgetAdapterIntegration:
         pytest.importorskip("pyarrow")
         pytest.importorskip("anywidget")
 
-        from sidemantic.widget import MetricsExplorer
+        from sqlctx.widget import MetricsExplorer
 
         layer = SemanticLayer(connection="duckdb:///:memory:")
         layer.add_model(
@@ -556,7 +556,7 @@ class TestWidgetAdapterIntegration:
         pytest.importorskip("pyarrow")
         pytest.importorskip("anywidget")
 
-        from sidemantic.widget import MetricsExplorer
+        from sqlctx.widget import MetricsExplorer
 
         layer = SemanticLayer(connection="duckdb:///:memory:")
         layer.add_model(
@@ -589,7 +589,7 @@ class TestWidgetAdapterIntegration:
         pytest.importorskip("pyarrow")
         pytest.importorskip("anywidget")
 
-        from sidemantic.widget import MetricsExplorer
+        from sqlctx.widget import MetricsExplorer
 
         layer = SemanticLayer(connection="duckdb:///:memory:")
         layer.add_model(
@@ -626,7 +626,7 @@ class TestWidgetAdapterIntegration:
         pytest.importorskip("pyarrow")
         pytest.importorskip("anywidget")
 
-        from sidemantic.widget import MetricsExplorer
+        from sqlctx.widget import MetricsExplorer
 
         # Create layer with test data
         layer = SemanticLayer(connection="duckdb:///:memory:")
@@ -665,7 +665,7 @@ class TestWidgetAdapterIntegration:
         pytest.importorskip("pyarrow")
         pytest.importorskip("anywidget")
 
-        from sidemantic.widget import MetricsExplorer
+        from sqlctx.widget import MetricsExplorer
 
         adapter_calls = []
 
@@ -724,7 +724,7 @@ class TestWidgetAdapterIntegration:
 
         import polars as pl
 
-        from sidemantic.widget import MetricsExplorer
+        from sqlctx.widget import MetricsExplorer
 
         # Create a simple DataFrame
         df = pl.DataFrame(
@@ -755,7 +755,7 @@ class TestWidgetAdapterIntegration:
 
         import pyarrow as pa
 
-        from sidemantic.widget import MetricsExplorer
+        from sqlctx.widget import MetricsExplorer
 
         fetch_record_batch_called = []
 
@@ -829,7 +829,7 @@ def test_widget_dataframe_arrow_uses_supported_duckdb_reader():
     pytest.importorskip("anywidget")
     import duckdb
 
-    from sidemantic.widget import MetricsExplorer
+    from sqlctx.widget import MetricsExplorer
 
     with duckdb.connect() as connection:
         widget = SimpleNamespace(_layer=None, _conn=connection)

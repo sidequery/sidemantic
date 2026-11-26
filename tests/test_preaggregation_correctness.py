@@ -6,10 +6,10 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.cli import app
-from sidemantic.core.pre_aggregation import PreAggregation, RefreshKey
-from sidemantic.core.preagg_matcher import PreAggregationMatcher
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.cli import app
+from sqlctx.core.pre_aggregation import PreAggregation, RefreshKey
+from sqlctx.core.preagg_matcher import PreAggregationMatcher
 
 
 def rollup_layer(aggregation="sum", grain="day"):

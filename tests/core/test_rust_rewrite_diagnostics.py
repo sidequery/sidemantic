@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.rust_bridge import rewrite_semantic_input
-from sidemantic.sql.query_rewriter import YardstickBindingError, YardstickWarning
+from sqlctx import Dimension, Metric, Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.rust_bridge import rewrite_semantic_input
+from sqlctx.sql.query_rewriter import YardstickBindingError, YardstickWarning
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 # Contributing
 
-Sidemantic is primarily developed by Sidequery Corporation. We're not actively seeking external contributions at this time.
+sqlctx is primarily developed by Sidequery Corporation. We're not actively seeking external contributions at this time.
 
 If you find bugs, please open an issue with reproduction steps.
 

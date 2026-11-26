@@ -9,27 +9,27 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.cli import app
-from sidemantic.core.security import SecurityPolicy
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.core.transport_security import rewrite_transport_sql
-from sidemantic.sql.query_rewriter import QueryRewriter
-from sidemantic.validation import QueryValidationError
+from sqlctx import SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.cli import app
+from sqlctx.core.security import SecurityPolicy
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.core.transport_security import rewrite_transport_sql
+from sqlctx.sql.query_rewriter import QueryRewriter
+from sqlctx.validation import QueryValidationError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture(autouse=True)
 def installed_rust():
-    rust = pytest.importorskip("sidemantic_rs", reason="Policy CLI acceptance requires the real Rust extension")
+    rust = pytest.importorskip("sqlctx_rs", reason="Policy CLI acceptance requires the real Rust extension")
     assert callable(rust.rewrite_with_semantic_input_context)
 
 
 def make_layer(source, *, engine="rust", fallback=False):
     layer = SemanticLayer(engine=engine, fallback=fallback, auto_register=False, enforce_visibility=True)
-    layer.graph = SidemanticAdapter().parse(FIXTURES / f"{source}.yml")
+    layer.graph = SqlctxAdapter().parse(FIXTURES / f"{source}.yml")
     return layer
 
 

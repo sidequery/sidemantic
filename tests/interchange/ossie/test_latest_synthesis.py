@@ -11,15 +11,15 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.interchange.ossie import (
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.interchange.ossie import (
     OssieParseOptions,
     lower_ossie_document,
     parse_ossie_document,
     synthesize_ossie_document,
 )
-from sidemantic.interchange.ossie.profiles import CURRENT_OSSIE_SCHEMA_COMMIT, LATEST_OSSIE_SCHEMA_COMMIT
+from sqlctx.interchange.ossie.profiles import CURRENT_OSSIE_SCHEMA_COMMIT, LATEST_OSSIE_SCHEMA_COMMIT
 
 
 def _graph(*metrics: Metric) -> SemanticGraph:

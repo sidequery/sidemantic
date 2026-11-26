@@ -2,8 +2,8 @@
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.holistics import HolisticsAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.holistics import HolisticsAdapter
 
 
 @pytest.fixture

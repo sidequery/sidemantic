@@ -1,6 +1,6 @@
 """Test Jinja template integration with parameter system."""
 
-from sidemantic import Dimension, Metric, Model, Parameter
+from sqlctx import Dimension, Metric, Model, Parameter
 
 
 def test_simple_parameter_substitution(layer):
@@ -69,7 +69,7 @@ def test_jinja_conditional_with_parameters(layer):
 
 def test_jinja_loop_with_parameters():
     """Test Jinja loop template with parameters."""
-    from sidemantic.core.parameter import Parameter, ParameterSet
+    from sqlctx.core.parameter import Parameter, ParameterSet
 
     # Create parameter set
     params = {"status_list": Parameter(name="status_list", type="unquoted")}
@@ -89,7 +89,7 @@ def test_jinja_loop_with_parameters():
 
 def test_mixed_simple_and_complex_templates():
     """Test mix of simple and complex templates."""
-    from sidemantic.core.parameter import Parameter, ParameterSet
+    from sqlctx.core.parameter import Parameter, ParameterSet
 
     params = {
         "min_val": Parameter(name="min_val", type="number"),
@@ -110,7 +110,7 @@ def test_mixed_simple_and_complex_templates():
 
 def test_template_with_date_parameter():
     """Test template with date parameter."""
-    from sidemantic.core.parameter import Parameter, ParameterSet
+    from sqlctx.core.parameter import Parameter, ParameterSet
 
     params = {
         "start_date": Parameter(name="start_date", type="date"),

@@ -5,8 +5,8 @@ import json
 import duckdb
 import pytest
 
-from sidemantic import Metric, Model, SemanticLayer
-from sidemantic.rust_bridge import compile_semantic_input
+from sqlctx import Metric, Model, SemanticLayer
+from sqlctx.rust_bridge import compile_semantic_input
 
 
 @pytest.mark.parametrize(
@@ -29,7 +29,7 @@ from sidemantic.rust_bridge import compile_semantic_input
 )
 @pytest.mark.parametrize("mode", ["rewrite", "compile"])
 def test_snowflake_date_differences(expression, expected, mode):
-    native = pytest.importorskip("sidemantic_rs", reason="Requires matching native extension")
+    native = pytest.importorskip("sqlctx_rs", reason="Requires matching native extension")
     if mode == "rewrite":
         source = {"version": 1, "input_dialect": "snowflake", "models": []}
         sql = native.rewrite_with_semantic_input(json.dumps(source), f"SELECT {expression}")

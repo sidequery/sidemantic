@@ -12,14 +12,14 @@ let dashboardDatabaseDirectory = "";
 
 test.beforeAll(async () => {
   const repository = path.resolve("..");
-  dashboardDatabaseDirectory = mkdtempSync(path.join(tmpdir(), "sidemantic-dashboard-e2e-"));
+  dashboardDatabaseDirectory = mkdtempSync(path.join(tmpdir(), "sqlctx-dashboard-e2e-"));
   const dashboardDatabase = path.join(dashboardDatabaseDirectory, "ecommerce.db");
   copyFileSync(path.join(repository, "examples/ecommerce/data/ecommerce.db"), dashboardDatabase);
   server = spawn(
     "uv",
     [
       "run",
-      "sidemantic",
+      "sqlctx",
       "dashboard",
       "serve",
       "webapp/tests/fixtures/dashboard.yml",
@@ -103,5 +103,5 @@ test("drill, explore, local saved views, CSV, and share URL behavior are explici
   await page.getByRole("textbox", { name: "Saved view name" }).fill("My status slice");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("button", { name: "My status slice", exact: true })).toBeVisible();
-  expect(await page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith("sidemantic-dashboard-views:")))).toBe(true);
+  expect(await page.evaluate(() => Object.keys(localStorage).some((key) => key.startsWith("sqlctx-dashboard-views:")))).toBe(true);
 });

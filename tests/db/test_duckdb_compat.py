@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic.db.duckdb import DuckDBAdapter
+from sqlctx.db.duckdb import DuckDBAdapter
 
 
 @pytest.mark.parametrize("reader_method", ["fetch_record_batch", "to_arrow_reader"])
@@ -10,7 +10,7 @@ from sidemantic.db.duckdb import DuckDBAdapter
 def test_duckdb_arrow_reader_api_compatibility(reader_method, adapter_kind):
     """Both DuckDB adapters accept legacy and current driver result interfaces."""
     pa = pytest.importorskip("pyarrow")
-    from sidemantic.db.motherduck import MotherDuckAdapter
+    from sqlctx.db.motherduck import MotherDuckAdapter
 
     table = pa.table({"value": [1, None, 3]})
     result_type = type("DriverResult", (), {reader_method: lambda self: table.to_reader()})

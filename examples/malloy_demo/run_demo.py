@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic[lookml,malloy]", "duckdb"]
+# dependencies = ["sqlctx[lookml,malloy] @ git+https://github.com/sidequery/sqlctx", "duckdb"]
 # ///
 """Malloy Demo: Convert LookML to Malloy format.
 
 This demo:
 1. Loads LookML files from Looker's thelook e-commerce sample
-2. Converts to Malloy format using sidemantic
+2. Converts to Malloy format using sqlctx
 3. Generates sample Parquet data
 
 To explore the generated Malloy files:
@@ -14,7 +14,7 @@ To explore the generated Malloy files:
 - Open examples/malloy_demo/malloy_output/thelook.malloy
 
 Usage:
-    git clone https://github.com/sidequery/sidemantic && cd sidemantic
+    git clone https://github.com/sidequery/sqlctx && cd sqlctx
     uv run examples/malloy_demo/run_demo.py
 """
 
@@ -121,12 +121,12 @@ def main():
     malloy_output = demo_dir / "malloy_output"
 
     print("=" * 60)
-    print("  Sidemantic Malloy Demo: LookML to Malloy")
+    print("  sqlctx Malloy Demo: LookML to Malloy")
     print("=" * 60)
 
     # Step 1: Load LookML files
     print("\n[1/4] Loading LookML files...")
-    from sidemantic.adapters.lookml import LookMLAdapter
+    from sqlctx.adapters.lookml import LookMLAdapter
 
     adapter = LookMLAdapter()
     graph = adapter.parse(lookml_input)
@@ -144,7 +144,7 @@ def main():
 
     # Step 3: Export to Malloy
     print("\n[3/4] Exporting to Malloy format...")
-    from sidemantic.adapters.malloy import MalloyAdapter
+    from sqlctx.adapters.malloy import MalloyAdapter
 
     # Clean previous output
     if malloy_output.exists():

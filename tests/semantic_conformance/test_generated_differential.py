@@ -27,23 +27,23 @@ def positive_env(name, default, *, allow_zero=False):
 
 @pytest.fixture
 def runner():
-    if os.environ.get("SIDEMANTIC_DIFFERENTIAL_REQUIRE_RUST", "0") == "1":
-        __import__("sidemantic_rs")
+    if os.environ.get("SQLCTX_DIFFERENTIAL_REQUIRE_RUST", "0") == "1":
+        __import__("sqlctx_rs")
     else:
-        pytest.importorskip("sidemantic_rs", reason="Differential execution requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Differential execution requires the real Rust extension")
     instance = DifferentialRunner()
     yield instance
     instance.close()
 
 
 def test_seeded_differential_campaign(runner, tmp_path, record_property):
-    seed = int(os.environ.get("SIDEMANTIC_DIFFERENTIAL_SEED", "20261005"))
-    count = positive_env("SIDEMANTIC_DIFFERENTIAL_CASES", "52")
-    variants = positive_env("SIDEMANTIC_DIFFERENTIAL_DATA_VARIANTS", "1")
-    start = positive_env("SIDEMANTIC_DIFFERENTIAL_START", "0", allow_zero=True)
-    example_limit = positive_env("SIDEMANTIC_DIFFERENTIAL_EXAMPLES", "12", allow_zero=True)
-    reduction_budget = positive_env("SIDEMANTIC_DIFFERENTIAL_REDUCTIONS", "100", allow_zero=True)
-    output = Path(os.environ.get("SIDEMANTIC_DIFFERENTIAL_OUTPUT", str(tmp_path / "differential")))
+    seed = int(os.environ.get("SQLCTX_DIFFERENTIAL_SEED", "20261005"))
+    count = positive_env("SQLCTX_DIFFERENTIAL_CASES", "52")
+    variants = positive_env("SQLCTX_DIFFERENTIAL_DATA_VARIANTS", "1")
+    start = positive_env("SQLCTX_DIFFERENTIAL_START", "0", allow_zero=True)
+    example_limit = positive_env("SQLCTX_DIFFERENTIAL_EXAMPLES", "12", allow_zero=True)
+    reduction_budget = positive_env("SQLCTX_DIFFERENTIAL_REDUCTIONS", "100", allow_zero=True)
+    output = Path(os.environ.get("SQLCTX_DIFFERENTIAL_OUTPUT", str(tmp_path / "differential")))
     output.mkdir(parents=True, exist_ok=True)
     provenance = runtime_provenance()
     started = perf_counter()
@@ -157,7 +157,7 @@ def test_seeded_differential_campaign(runner, tmp_path, record_property):
 
 
 def replay_paths():
-    supplied = os.environ.get("SIDEMANTIC_DIFFERENTIAL_REPLAY")
+    supplied = os.environ.get("SQLCTX_DIFFERENTIAL_REPLAY")
     if supplied:
         path = Path(supplied)
         return sorted(path.glob("*.case.json")) if path.is_dir() else [path]
@@ -173,7 +173,7 @@ if REPLAY_PATHS:
         outcome = runner.evaluate(case)
         assert outcome.failure_class is None, json.dumps(outcome_dict(outcome), indent=2)
 
-elif os.environ.get("SIDEMANTIC_DIFFERENTIAL_REPLAY"):
+elif os.environ.get("SQLCTX_DIFFERENTIAL_REPLAY"):
 
     def test_replay_path_contains_fixtures():
-        pytest.fail("SIDEMANTIC_DIFFERENTIAL_REPLAY did not contain any *.case.json fixtures")
+        pytest.fail("SQLCTX_DIFFERENTIAL_REPLAY did not contain any *.case.json fixtures")

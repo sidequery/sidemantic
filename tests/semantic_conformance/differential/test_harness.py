@@ -233,7 +233,7 @@ def test_engine_planning_cannot_mutate_the_other_request_or_fixture(monkeypatch)
     case = small_case()
     original = deepcopy(case.to_dict())
     seen = []
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     def compile_mutating_request(self, **query):
         seen.append(deepcopy(query))

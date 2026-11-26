@@ -17,8 +17,8 @@ from functools import partial
 import pytest
 import sqlglot
 
-from sidemantic import SemanticLayer
-from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+from sqlctx import SemanticLayer
+from sqlctx.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
 from tests.interchange.ossie.test_layer2_conformance import LATEST, ROOT, ROUTES, assert_rows, model
 from tests.rust_layer_adapter import _rust_request
 
@@ -65,7 +65,7 @@ def database(tmp_path_factory):
         if BACKEND == "duckdb":
             url = f"duckdb:///{tmp_path_factory.mktemp('ossie') / 'integration.duckdb'}"
         elif BACKEND == "postgres":
-            url = os.getenv("POSTGRES_URL", "postgres://test:test@localhost:5433/sidemantic_test")
+            url = os.getenv("POSTGRES_URL", "postgres://test:test@localhost:5433/sqlctx_test")
         elif BACKEND == "bigquery":
             assert os.getenv("BIGQUERY_EMULATOR_HOST"), "Set BIGQUERY_EMULATOR_HOST for the emulator integration suite"
             url = f"bigquery://{os.getenv('BIGQUERY_PROJECT', 'test-project')}/{os.getenv('BIGQUERY_DATASET', 'test_dataset')}"
@@ -288,7 +288,7 @@ def test_semantic_view_on_database(database, route):
 def test_ossie_cli_on_core_database(database, engine, tmp_path):
     from typer.testing import CliRunner
 
-    from sidemantic.cli import app
+    from sqlctx.cli import app
 
     adapter, url = database
     document = tmp_path / "commerce.ossie.json"

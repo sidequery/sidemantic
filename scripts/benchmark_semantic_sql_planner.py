@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal
 
-from sidemantic import Dimension, Metric, Model, PreAggregation, Relationship, SemanticLayer
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx import Dimension, Metric, Model, PreAggregation, Relationship, SemanticLayer
+from sqlctx.sql.query_rewriter import QueryRewriter
 
 
 @dataclass(frozen=True)

@@ -3,13 +3,13 @@
 import pytest
 from pydantic import ValidationError
 
-from sidemantic import Deprecation, Explore, Metric, Model, SavedQuery, View
-from sidemantic.core.consumption import (
+from sqlctx import Deprecation, Explore, Metric, Model, SavedQuery, View
+from sqlctx.core.consumption import (
     expression_field_references,
     qualify_expression_fields,
     qualify_order_by_fields,
 )
-from sidemantic.core.governance import governance_dict
+from sqlctx.core.governance import governance_dict
 
 
 def test_governance_defaults_and_serialization():

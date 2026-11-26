@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.bsl import BSLAdapter
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.bsl import BSLAdapter
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
 
 
 def test_import_real_bsl_example():
@@ -37,8 +37,8 @@ def test_import_real_bsl_example():
     assert revenue.sql == "amount"
 
 
-def test_bsl_to_sidemantic_to_bsl_roundtrip():
-    """Test that BSL -> Sidemantic -> BSL preserves structure."""
+def test_bsl_to_sqlctx_to_bsl_roundtrip():
+    """Test that BSL -> sqlctx -> BSL preserves structure."""
     # Import from BSL
     bsl_adapter = BSLAdapter()
     graph = bsl_adapter.parse("tests/fixtures/bsl/orders.yml")
@@ -173,7 +173,7 @@ def test_bsl_to_metricflow_conversion():
 
 def test_query_imported_bsl_example():
     """Test that we can compile queries from imported BSL schema."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     adapter = BSLAdapter()
     graph = adapter.parse("tests/fixtures/bsl/orders.yml")
@@ -193,7 +193,7 @@ def test_query_imported_bsl_example():
 
 def test_query_with_time_dimension_bsl():
     """Test querying time dimensions from BSL import."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     adapter = BSLAdapter()
     graph = adapter.parse("tests/fixtures/bsl/orders.yml")

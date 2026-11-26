@@ -1,5 +1,5 @@
 -- Pure SQL semantic model definition
--- Sidemantic supports defining models entirely in SQL using
+-- sqlctx supports defining models entirely in SQL using
 -- MODEL(), DIMENSION(), RELATIONSHIP(), METRIC(), and SEGMENT() syntax
 
 MODEL (

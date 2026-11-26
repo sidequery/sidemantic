@@ -15,8 +15,8 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
-from sidemantic.core.semantic_layer import SecurityError
+from sqlctx import Dimension, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
+from sqlctx.core.semantic_layer import SecurityError
 
 
 @pytest.fixture
@@ -62,7 +62,7 @@ def db():
 
 
 def _layer(db, **kwargs):
-    from sidemantic.db.duckdb import DuckDBAdapter
+    from sqlctx.db.duckdb import DuckDBAdapter
 
     adapter = DuckDBAdapter()
     adapter.conn = db
@@ -193,7 +193,7 @@ def test_enforce_visibility_hides_and_rejects_non_public_fields(db):
     assert "margin" not in metric_names
 
     # Catalog listing omits it too.
-    from sidemantic.core.catalog import get_catalog_metadata
+    from sqlctx.core.catalog import get_catalog_metadata
 
     catalog = get_catalog_metadata(layer.graph, enforce_visibility=True)
     catalog_cols = {(c["table_name"], c["column_name"]) for c in catalog["columns"]}
@@ -242,7 +242,7 @@ def test_enforce_visibility_rejects_hidden_default_time_dimension(db):
 
 def test_row_filtered_query_bypasses_preaggregation(db):
     """When a participating model has active row filters, pre-agg routing is disabled."""
-    from sidemantic.core.pre_aggregation import PreAggregation
+    from sqlctx.core.pre_aggregation import PreAggregation
 
     model = Model(
         name="customers",

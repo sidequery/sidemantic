@@ -5,22 +5,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, PreAggregation, Relationship, SecurityPolicy
-from sidemantic.core.inheritance import merge_model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.rust_bridge import (
+from sqlctx import Dimension, Metric, Model, PreAggregation, Relationship, SecurityPolicy
+from sqlctx.core.inheritance import merge_model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.rust_bridge import (
     compile_semantic_input,
     generate_preaggregation_materialization_sql_with_rust,
     validate_semantic_input,
 )
-from sidemantic.semantic_handoff import (
+from sqlctx.semantic_handoff import (
     RustBackendUnavailableError,
     UnsupportedSemanticFeaturesError,
     graph_to_semantic_input,
     graph_to_semantic_json,
 )
-from sidemantic.validation import QueryValidationError
+from sqlctx.validation import QueryValidationError
 
 
 @pytest.mark.parametrize(
@@ -201,8 +201,8 @@ def test_serialization_does_not_reenter_authoring(source_graph, monkeypatch):
 
     for cls in (Model, Metric, Dimension, Relationship, SecurityPolicy):
         monkeypatch.setattr(cls, "__init__", forbidden)
-    monkeypatch.setattr("sidemantic.core.registry.auto_register_model", forbidden)
-    monkeypatch.setattr("sidemantic.core.registry.auto_register_metric", forbidden)
+    monkeypatch.setattr("sqlctx.core.registry.auto_register_model", forbidden)
+    monkeypatch.setattr("sqlctx.core.registry.auto_register_metric", forbidden)
     monkeypatch.setattr(SemanticGraph, "add_model", forbidden)
     monkeypatch.setattr(SemanticGraph, "add_metric", forbidden)
     assert json.loads(graph_to_semantic_json(source_graph))["models"][0]["name"] == "events"
@@ -303,7 +303,7 @@ def test_legacy_materializer_cannot_discard_invariant_filters():
 
 
 def test_rewrite_output_dialect_keeps_input_sql_and_graph_dialect(source_graph):
-    from sidemantic.rust_bridge import rewrite_semantic_input
+    from sqlctx.rust_bridge import rewrite_semantic_input
 
     calls = []
 
@@ -321,7 +321,7 @@ def test_rewrite_output_dialect_keeps_input_sql_and_graph_dialect(source_graph):
 
 
 def test_postgres_transport_sql_preserves_literals_identifiers_and_graph(source_graph):
-    from sidemantic.rust_bridge import rewrite_semantic_input
+    from sqlctx.rust_bridge import rewrite_semantic_input
 
     received = []
 
@@ -404,7 +404,7 @@ def test_postgres_fragment_normalization_rejects_extra_sql(source_graph, field, 
 
 
 def test_postgres_sql_normalization_rejects_multiple_statements(source_graph):
-    from sidemantic.rust_bridge import rewrite_semantic_input
+    from sqlctx.rust_bridge import rewrite_semantic_input
 
     with pytest.raises(ValueError, match="single statement"):
         rewrite_semantic_input(source_graph, "SELECT 1; SELECT 2", sql_dialect="postgres", rust_module=object())
@@ -416,14 +416,14 @@ def test_postgres_sql_normalization_rejects_multiple_statements(source_graph):
     [("x ASC", "x ASC NULLS LAST"), ("x DESC", "x DESC NULLS FIRST"), ("x DESC NULLS LAST", "x DESC NULLS LAST")],
 )
 def test_postgres_null_order_survives_intermediate_dialect(clause, ordering, expected):
-    from sidemantic.rust_bridge import _postgres_query_sql
+    from sqlctx.rust_bridge import _postgres_query_sql
 
     sql = f"SELECT x FROM events ORDER BY {ordering}" if clause is None else ordering
     assert expected in _postgres_query_sql(sql, clause=clause)
 
 
 def test_postgres_nested_window_null_order_survives_intermediate_dialect():
-    from sidemantic.rust_bridge import _postgres_query_sql
+    from sqlctx.rust_bridge import _postgres_query_sql
 
     sql = "SELECT x FROM events ORDER BY SUM(x) OVER (ORDER BY y DESC)"
     assert _postgres_query_sql(sql) == (
@@ -440,7 +440,7 @@ def test_postgres_escape_strings_preserve_values_as_ordinary_literals(literal, e
     import sqlglot
     from sqlglot import exp
 
-    from sidemantic.rust_bridge import _postgres_query_sql
+    from sqlctx.rust_bridge import _postgres_query_sql
 
     sql = _postgres_query_sql(f"SELECT {literal} AS value")
     assert not list(sqlglot.parse_one(sql, read="duckdb").find_all(exp.ByteString))

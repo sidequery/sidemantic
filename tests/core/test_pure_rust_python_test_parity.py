@@ -10,11 +10,11 @@ from types import ModuleType
 import duckdb
 import pytest
 
-import sidemantic
-import sidemantic.core.semantic_graph as semantic_graph_module
-import sidemantic.core.semantic_layer as semantic_layer_module
-import sidemantic.sql.generator as sql_generator_module
-import sidemantic.sql.query_rewriter as query_rewriter_module
+import sqlctx
+import sqlctx.core.semantic_graph as semantic_graph_module
+import sqlctx.core.semantic_layer as semantic_layer_module
+import sqlctx.sql.generator as sql_generator_module
+import sqlctx.sql.query_rewriter as query_rewriter_module
 import tests.core.test_auto_dimensions as auto_dimension_tests
 import tests.core.test_symmetric_aggregates as symmetric_aggregate_tests
 import tests.dates.test_integration as date_integration_tests
@@ -244,15 +244,15 @@ def _patch_semantic_layer_constructors(monkeypatch, case: PythonTestParityCase) 
         or _is_direct_rust_function_test(case.nodeid, case.fixture_names)
     )
     layer_class = RustSemanticLayerAdapter if direct_helper else RustRuntimeSemanticLayer
-    monkeypatch.setattr(sidemantic, "SemanticLayer", layer_class)
+    monkeypatch.setattr(sqlctx, "SemanticLayer", layer_class)
     monkeypatch.setattr(semantic_layer_module, "SemanticLayer", layer_class)
     if hasattr(module, "SemanticLayer"):
         monkeypatch.setattr(module, "SemanticLayer", layer_class)
     if not direct_helper:
         # Some shared bodies instantiate QueryRewriter directly from the layer
         # graph; keep those calls on Rust too, not its legacy Python default.
-        monkeypatch.setenv("SIDEMANTIC_RS_REWRITER", "1")
-        monkeypatch.setenv("SIDEMANTIC_RS_NO_FALLBACK", "1")
+        monkeypatch.setenv("SQLCTX_RS_REWRITER", "1")
+        monkeypatch.setenv("SQLCTX_RS_NO_FALLBACK", "1")
         return
 
     # Keep the direct probes on their original pure-Rust graph/compiler harness.

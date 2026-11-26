@@ -4,14 +4,14 @@ from copy import deepcopy
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.semantic_handoff import graph_to_semantic_input
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.semantic_handoff import graph_to_semantic_input
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires the built Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires the built Rust extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(

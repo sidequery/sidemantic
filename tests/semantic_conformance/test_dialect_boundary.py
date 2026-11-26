@@ -5,15 +5,15 @@ import json
 import pytest
 import sqlglot
 
-from sidemantic import Dimension, Metric, Model, Parameter, SecurityPolicy, SemanticLayer
-from sidemantic.rust_bridge import compile_semantic_input, rewrite_semantic_input
-from sidemantic.semantic_handoff import graph_to_semantic_input
+from sqlctx import Dimension, Metric, Model, Parameter, SecurityPolicy, SemanticLayer
+from sqlctx.rust_bridge import compile_semantic_input, rewrite_semantic_input
+from sqlctx.semantic_handoff import graph_to_semantic_input
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires matching native extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires matching native extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(
@@ -93,16 +93,16 @@ def test_native_rewrite_syntax_and_policy_context(layer, dialect, quoted):
 def test_native_fragment_framing_and_source_snapshot(layer):
     if layer.engine != "rust":
         pytest.skip("Native input validation contract")
-    import sidemantic_rs
+    import sqlctx_rs
 
     source = graph_to_semantic_input(layer.graph)
     for field, sql in [("filters", "1 = 1 LIMIT 1"), ("order_by", "orders.value DESC LIMIT 1")]:
         query = {"metrics": ["orders.value"], "query_dialect": "bigquery", field: [sql]}
         with pytest.raises(ValueError, match="extra clauses"):
-            sidemantic_rs.compile_with_semantic_input(json.dumps(source), json.dumps(query))
+            sqlctx_rs.compile_with_semantic_input(json.dumps(source), json.dumps(query))
     source["models"][0]["metrics"][0]["metadata"] = {"ossie_target_dialect": "bigquery"}
     source["models"][0]["metrics"][0]["sql"] = "IFNULL(`amount`, 0)"
-    sql = sidemantic_rs.compile_with_semantic_input(json.dumps(source), '{"metrics":["orders.value"]}')
+    sql = sqlctx_rs.compile_with_semantic_input(json.dumps(source), '{"metrics":["orders.value"]}')
     assert layer.adapter.execute(sql).fetchall() == [(115,)]
 
 

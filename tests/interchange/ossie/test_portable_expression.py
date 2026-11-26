@@ -9,7 +9,7 @@ import duckdb
 import pytest
 import sqlglot
 
-from sidemantic.interchange.ossie.portable import lower_ossie_sql
+from sqlctx.interchange.ossie.portable import lower_ossie_sql
 
 CORPUS = json.loads((Path(__file__).parent / "fixtures" / "portable_expressions.json").read_text())
 

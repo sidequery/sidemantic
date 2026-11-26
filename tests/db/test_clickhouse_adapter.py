@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.db.clickhouse import ClickHouseAdapter, ClickHouseResult
+from sqlctx.db.clickhouse import ClickHouseAdapter, ClickHouseResult
 
 
 def _block_import(monkeypatch, module_prefix: str) -> None:
@@ -181,7 +181,7 @@ def test_clickhouse_query_history_sql():
     captured = {}
 
     class FakeResult:
-        result_rows = [["select 1 -- sidemantic: x"], [None]]
+        result_rows = [["select 1 -- sqlctx: x"], [None]]
 
     class FakeClient:
         def query(self, sql):
@@ -196,10 +196,10 @@ def test_clickhouse_query_history_sql():
     assert "INTERVAL 3 DAY" in captured["sql"]
     assert "LIMIT 50" in captured["sql"]
     assert "lower(query) NOT LIKE '%system.query_log%'" in captured["sql"]
-    assert results == ["select 1 -- sidemantic: x"]
+    assert results == ["select 1 -- sqlctx: x"]
 
     adapter.get_query_history(days_back=3, limit=50, instrumented_only=False)
-    assert "query LIKE '%-- sidemantic:%'" not in captured["sql"]
+    assert "query LIKE '%-- sqlctx:%'" not in captured["sql"]
 
 
 def test_clickhouse_result_ordering_and_exhaustion():
@@ -472,7 +472,7 @@ def test_clickhouse_parquet_fallback(method, monkeypatch):
 def test_clickhouse_temporal_results_json():
     pytest.importorskip("pyarrow")
     pytest.importorskip("mcp")
-    from sidemantic.mcp_server import _convert_to_json_compatible
+    from sqlctx.mcp_server import _convert_to_json_compatible
 
     payload = (Path(__file__).parents[1] / "fixtures/clickhouse/temporal_results.parquet").read_bytes()
 
@@ -586,7 +586,7 @@ def test_clickhouse_server_requests_overlap_without_closing_client(monkeypatch, 
 
     import pyarrow as pa
 
-    from sidemantic.server.common import execute_bounded
+    from sqlctx.server.common import execute_bounded
 
     slow_started = Event()
     release_slow = Event()
@@ -643,7 +643,7 @@ def test_clickhouse_session_requests_remain_serialized(monkeypatch):
 
     import pyarrow as pa
 
-    from sidemantic.server.common import execute_bounded
+    from sqlctx.server.common import execute_bounded
 
     slow_started = Event()
     fast_submitted = Event()

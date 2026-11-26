@@ -6,17 +6,17 @@ Python remains the default engine; installing the Rust bindings does not promote
 
 | Artifact | Metadata | Release workflow | Qualification |
 |---|---|---|---|
-| Python `sidemantic` | Root `pyproject.toml` | `publish.yml` | Full suite, built wheel and DAX smoke; separate Pyodide CI |
-| Python `sidemantic-rs` (`sidemantic_rs` import) | `sidemantic-rs/pyproject.toml` | `sidemantic-rs-wheels.yml` | Install and smoke each actual native wheel, plus sdist creation |
-| Rust `sidemantic` crate and base CLI | `sidemantic-rs/Cargo.toml` | `rust-runtime-release.yml` | Crate package/dry-run, packaged CLI compilation smoke |
-| Rust CLI and companion binaries | `sidemantic-rs/Cargo.toml` | `release-rust-binaries.yml` | Explicit existing release tag, matching crate version, binary smoke |
-| Browser `sidemantic-wasm` | `sidemantic-wasm/package.json` | `wasm-package-release.yml` | WASM and consumer smoke tests |
-| DuckDB extension | `sidemantic-duckdb/Makefile` | `duckdb-extension-release.yml` | Pinned DuckDB build and sqllogictests |
+| Python `sqlctx` | Root `pyproject.toml` | `publish.yml` | Full suite, built wheel and DAX smoke; separate Pyodide CI |
+| Python `sqlctx-rs` (`sqlctx_rs` import) | `sqlctx-rs/pyproject.toml` | `sqlctx-rs-wheels.yml` | Install and smoke each actual native wheel, plus sdist creation |
+| Rust `sqlctx` crate and base CLI | `sqlctx-rs/Cargo.toml` | `rust-runtime-release.yml` | Crate package/dry-run, packaged CLI compilation smoke |
+| Rust CLI and companion binaries | `sqlctx-rs/Cargo.toml` | `release-rust-binaries.yml` | Explicit existing release tag, matching crate version, binary smoke |
+| Browser `sqlctx-wasm` | `sqlctx-wasm/package.json` | `wasm-package-release.yml` | WASM and consumer smoke tests |
+| DuckDB extension | `sqlctx-duckdb/Makefile` | `duckdb-extension-release.yml` | Pinned DuckDB build and sqllogictests |
 
 Workflow files live in `.github/workflows/`. Rust crate and wheel versions must
 match; package metadata tests enforce this. Root Python and WASM versions are
 separate. The DuckDB extension is tied to the DuckDB build version, currently
-`v1.5.6`. Do not use a release intended for a different DuckDB ABI.
+`v2.0.1` or `v1.5.6`. Select the artifact matching the host version and platform.
 
 ## Install from a checkout or downloaded artifact
 
@@ -24,31 +24,31 @@ The Python CLI remains the normal entry point:
 
 ```bash
 uv tool install .
-sidemantic validate ./models
+sqlctx validate ./models
 ```
 
 For the optional Rust binding, install a compatible downloaded wheel into the
-same environment as Sidemantic. Source installation requires a Rust toolchain:
+same environment as sqlctx. Source installation requires a Rust toolchain:
 
 ```bash
-uv add ./sidemantic-rs
-sidemantic validate ./models --engine rust --no-fallback
+uv add ./sqlctx-rs
+sqlctx validate ./models --engine rust --no-fallback
 ```
 
 The release wheel enables `python-adbc`. ADBC execution also requires an actual
 database driver; a successful compiler smoke does not establish driver availability.
 A compile-only binding can be built with
-`uvx maturin build --manifest-path sidemantic-rs/Cargo.toml --no-default-features --features python`.
+`uvx maturin build --manifest-path sqlctx-rs/Cargo.toml --no-default-features --features python`.
 Core Python imports and Pyodide do not require either Rust wheel.
 
 For the standalone base Rust CLI:
 
 ```bash
-cargo install --path sidemantic-rs --locked
-sidemantic compile --models ./models --metric orders.revenue
+cargo install --path sqlctx-rs --locked
+sqlctx compile --models ./models --metric orders.revenue
 ```
 
-The Rust and Python CLIs both use the executable name `sidemantic`; choose an
+The Rust and Python CLIs both use the executable name `sqlctx`; choose an
 isolated installation or invoke the desired binary by its full path. The base
 Rust release uses default features and is a compiler/rewriter. It does not include
 ADBC execution or the optional server, MCP, LSP, and workbench binaries. The
@@ -63,7 +63,7 @@ formats continue through the Python import and migration path. See
 For DuckDB build/load instructions, use [duckdb-extension.md](duckdb-extension.md).
 The release workflow currently produces Linux amd64 artifacts only. Community
 registry publication, signing, and additional platforms remain separate work;
-`INSTALL sidemantic FROM community` is not an established installation path here.
+`INSTALL sqlctx FROM community` is not an established installation path here.
 
 ## Release checks and publication boundaries
 

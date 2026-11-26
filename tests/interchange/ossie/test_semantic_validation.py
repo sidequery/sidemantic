@@ -5,15 +5,15 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from sidemantic.interchange.ossie import (
+from sqlctx.interchange.ossie import (
     OssieDocumentSource,
     OssieLogicalDocument,
     OssieOntologyDocument,
     SemanticValidationResult,
     validate_ossie_semantics,
 )
-from sidemantic.interchange.ossie.profiles import DBT_1_12_0_1_0_ALIAS
-from sidemantic.interchange.ossie.validation import validate_ossie_schema
+from sqlctx.interchange.ossie.profiles import DBT_1_12_0_1_0_ALIAS
+from sqlctx.interchange.ossie.validation import validate_ossie_schema
 
 
 def _expression(

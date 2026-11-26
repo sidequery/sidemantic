@@ -21,8 +21,8 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.lookml import LookMLAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.lookml import LookMLAdapter
 from tests.utils import fetch_dicts
 
 

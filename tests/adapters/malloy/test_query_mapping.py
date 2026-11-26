@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.adapters.malloy_queries import map_malloy_query, map_malloy_view
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.adapters.malloy_queries import map_malloy_query, map_malloy_view
 
 
 def _layer() -> SemanticLayer:

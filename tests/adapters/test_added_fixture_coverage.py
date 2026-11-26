@@ -10,23 +10,23 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
-from sidemantic.adapters.bsl import BSLAdapter
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.gooddata import GoodDataAdapter, GoodDataParseError
-from sidemantic.adapters.hex import HexAdapter
-from sidemantic.adapters.holistics import HolisticsAdapter
-from sidemantic.adapters.lookml import LookMLAdapter
-from sidemantic.adapters.malloy import MalloyAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic.adapters.omni import OmniAdapter
-from sidemantic.adapters.osi import LegacyOSIAdapter as OSIAdapter
-from sidemantic.adapters.rill import RillAdapter
-from sidemantic.adapters.snowflake import SnowflakeAdapter
-from sidemantic.adapters.superset import SupersetAdapter
-from sidemantic.adapters.tableau import TableauAdapter
-from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx.adapters.atscale_sml import AtScaleSMLAdapter
+from sqlctx.adapters.bsl import BSLAdapter
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.gooddata import GoodDataAdapter, GoodDataParseError
+from sqlctx.adapters.hex import HexAdapter
+from sqlctx.adapters.holistics import HolisticsAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.malloy import MalloyAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.omni import OmniAdapter
+from sqlctx.adapters.osi import LegacyOSIAdapter as OSIAdapter
+from sqlctx.adapters.rill import RillAdapter
+from sqlctx.adapters.snowflake import SnowflakeAdapter
+from sqlctx.adapters.superset import SupersetAdapter
+from sqlctx.adapters.tableau import TableauAdapter
+from sqlctx.adapters.thoughtspot import ThoughtSpotAdapter
+from sqlctx.sql.generator import SQLGenerator
 
 ALLOWED_RELATIONSHIP_TYPES = {"many_to_one", "one_to_many", "one_to_one", "many_to_many", "cross"}
 UNQUOTED_SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

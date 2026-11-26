@@ -1,6 +1,6 @@
 """Test relative date range helper."""
 
-from sidemantic.core.relative_date import RelativeDateRange
+from sqlctx.core.relative_date import RelativeDateRange
 
 
 def test_today_yesterday_tomorrow():

@@ -3,22 +3,22 @@
 import pytest
 import yaml
 
-from sidemantic import Dimension, Model, Relationship
-from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
-from sidemantic.adapters.bsl import BSLAdapter
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.gooddata import GoodDataAdapter
-from sidemantic.adapters.hex import HexAdapter
-from sidemantic.adapters.holistics import HolisticsAdapter
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic.adapters.omni import OmniAdapter
-from sidemantic.adapters.osi import OSIAdapter
-from sidemantic.adapters.ossie import OssieAdapter
-from sidemantic.adapters.snowflake import SnowflakeAdapter
-from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
-from sidemantic.adapters.tmdl import TMDLAdapter
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.interchange.ossie import OssieSynthesisError
+from sqlctx import Dimension, Model, Relationship
+from sqlctx.adapters.atscale_sml import AtScaleSMLAdapter
+from sqlctx.adapters.bsl import BSLAdapter
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.gooddata import GoodDataAdapter
+from sqlctx.adapters.hex import HexAdapter
+from sqlctx.adapters.holistics import HolisticsAdapter
+from sqlctx.adapters.metricflow import MetricFlowAdapter
+from sqlctx.adapters.omni import OmniAdapter
+from sqlctx.adapters.osi import OSIAdapter
+from sqlctx.adapters.ossie import OssieAdapter
+from sqlctx.adapters.snowflake import SnowflakeAdapter
+from sqlctx.adapters.thoughtspot import ThoughtSpotAdapter
+from sqlctx.adapters.tmdl import TMDLAdapter
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.interchange.ossie import OssieSynthesisError
 
 
 def _aliased_graph() -> SemanticGraph:
@@ -104,7 +104,7 @@ def test_ossie_export_preserves_role_name_and_uses_canonical_target(tmp_path, ad
     assert any(d.code == "ossie.synthesis.relationship_semantics_unsupported" for d in error.value.diagnostics)
     assert not output.exists()
 
-    with pytest.warns(UserWarning, match="requires Sidemantic runtime extension"):
+    with pytest.warns(UserWarning, match="requires sqlctx runtime extension"):
         adapter.export(graph, output)
     restored = adapter.parse(output)
     relationship = restored.models["orders"].relationships[0]

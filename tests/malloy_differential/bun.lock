@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "sidemantic-malloy-duckdb-differential",
+      "name": "sqlctx-malloy-duckdb-differential",
       "dependencies": {
         "@malloydata/db-duckdb": "0.0.332",
         "@malloydata/malloy": "0.0.332",

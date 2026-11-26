@@ -1,4 +1,4 @@
-# Minimal fixture to test grain_to_date: hour (unsupported in sidemantic Metric model).
+# Minimal fixture to test grain_to_date: hour (unsupported in sqlctx Metric model).
 # Used by test_subdaily_grain_to_date_xfail.
 
 semantic_models:

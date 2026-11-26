@@ -5,8 +5,8 @@ import tempfile
 
 import duckdb
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.adapters.cube import CubeAdapter
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.adapters.cube import CubeAdapter
 
 
 def _layer_with_events():
@@ -63,8 +63,8 @@ cubes:
 
 def test_approx_count_distinct_not_rollup_derivable():
     """Plain-table materialization stores an integer, so approx distinct cannot be re-aggregated."""
-    from sidemantic.core.pre_aggregation import PreAggregation
-    from sidemantic.core.preagg_matcher import PreAggregationMatcher
+    from sqlctx.core.pre_aggregation import PreAggregation
+    from sqlctx.core.preagg_matcher import PreAggregationMatcher
 
     model = Model(
         name="events",
@@ -80,7 +80,7 @@ def test_approx_count_distinct_not_rollup_derivable():
 
 def test_approx_count_distinct_cube_round_trip(tmp_path):
     """approx_count_distinct survives a full Cube export -> re-import round-trip."""
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(

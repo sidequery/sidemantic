@@ -16,10 +16,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.cube import CubeAdapter, CubeImportWarning, _model_placeholder_to_cube, _normalize_cube_sql
-from sidemantic.core.preagg_matcher import GRANULARITY_HIERARCHY
-from sidemantic.core.relationship import Relationship
+from sqlctx import SemanticLayer
+from sqlctx.adapters.cube import CubeAdapter, CubeImportWarning, _model_placeholder_to_cube, _normalize_cube_sql
+from sqlctx.core.preagg_matcher import GRANULARITY_HIERARCHY
+from sqlctx.core.relationship import Relationship
 
 
 def test_derived_export_only_rewrites_executable_semantic_member_references():
@@ -1008,9 +1008,9 @@ cubes:
 def test_export_does_not_wrap_non_member_dotted_sql():
     # Hand-authored derived SQL referencing non-member table.column must NOT be wrapped as a
     # Cube member reference (only known semantic members are wrapped).
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.model import Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -1052,9 +1052,9 @@ cubes:
 
 
 def test_derived_export_does_not_wrap_member_inside_string_literal():
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.model import Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -1254,11 +1254,11 @@ def test_complete_expression_measure_not_materialized_or_matched():
     # A complete-expression measure (agg=None, sql_is_complete) listed in a rollup must not
     # crash materialization, must not be stored as a re-aggregatable column, and must not be
     # routed to the rollup (it is computed from source at query time).
-    from sidemantic.core.dimension import Dimension
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
-    from sidemantic.core.pre_aggregation import PreAggregation
-    from sidemantic.core.preagg_matcher import PreAggregationMatcher
+    from sqlctx.core.dimension import Dimension
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.model import Model
+    from sqlctx.core.pre_aggregation import PreAggregation
+    from sqlctx.core.preagg_matcher import PreAggregationMatcher
 
     model = Model(
         name="orders",
@@ -1307,10 +1307,10 @@ cubes:
 def test_rollup_skips_derived_measure_in_materialization():
     # A derived (agg=None, not sql_is_complete) measure listed in a rollup must be skipped,
     # not emitted as raw metric references from the source table.
-    from sidemantic.core.dimension import Dimension
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
-    from sidemantic.core.pre_aggregation import PreAggregation
+    from sqlctx.core.dimension import Dimension
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.model import Model
+    from sqlctx.core.pre_aggregation import PreAggregation
 
     model = Model(
         name="orders",
@@ -1409,7 +1409,7 @@ cubes:
 
 
 def test_cross_cube_trailing_column_ref_translated_to_member():
-    # ${other}.col (cross-cube trailing form) references the joined cube's column. Sidemantic
+    # ${other}.col (cross-cube trailing form) references the joined cube's column. sqlctx
     # calculated measures reference members, not raw joined columns, and an un-resolved ${other}
     # placeholder compiles to invalid SQL (a struct literal). It is translated to the cross-cube
     # member form other.col -- the same as the ${other.col} in-brace form -- so it is executable.
@@ -1453,9 +1453,9 @@ def test_rollup_with_only_unmaterializable_measures_is_rejected():
     # A rollup that lists only agg=None measures and declares no dimensions/time dimension would
     # render "SELECT  FROM ... GROUP BY " (invalid SQL). generate_materialization_sql must reject
     # it with a clear error instead of emitting un-runnable SQL.
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
-    from sidemantic.core.pre_aggregation import PreAggregation
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.model import Model
+    from sqlctx.core.pre_aggregation import PreAggregation
 
     model = Model(
         name="orders",
@@ -1472,10 +1472,10 @@ def test_cross_cube_rollup_ref_round_trips():
     # rollupLambda/rollupJoin constituents: a self rollup is unqualified and gets the CUBE prefix
     # on export, but an already-qualified cross-cube ref must stay as-is (CUBE.other.x would be
     # read by Cube as a current-cube member, breaking the cross-cube join/lambda).
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
-    from sidemantic.core.pre_aggregation import PreAggregation
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.model import Model
+    from sqlctx.core.pre_aggregation import PreAggregation
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -1498,7 +1498,7 @@ def test_export_preserves_model_placeholder_inside_string_literal():
     # Codex P2: a literal "{model}" inside a single-quoted string must NOT be rewritten to
     # "${CUBE}" on export (import already skips quoted literals, so this is required for a
     # faithful round-trip). Real {model} self-refs outside quotes still convert.
-    from sidemantic.adapters.cube import _model_placeholder_to_cube
+    from sqlctx.adapters.cube import _model_placeholder_to_cube
 
     assert _model_placeholder_to_cube("CASE WHEN label = '{model}' THEN 1 END") == (
         "CASE WHEN label = '{model}' THEN 1 END"
@@ -1507,9 +1507,9 @@ def test_export_preserves_model_placeholder_inside_string_literal():
     assert _model_placeholder_to_cube("{model}.x = '{model}'") == "${CUBE}.x = '{model}'"
 
     # End-to-end: a dimension whose SQL compares against the literal '{model}' round-trips.
-    from sidemantic.core.dimension import Dimension
-    from sidemantic.core.model import Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.dimension import Dimension
+    from sqlctx.core.model import Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -1559,9 +1559,9 @@ def test_original_sql_preagg_on_sql_backed_model_materializes_executable():
     # Codex P2 follow-up: when the cube is defined with `sql:` (not sql_table), originalSql
     # materialization must expose the model SQL as an aliased CTE so {model}.col qualifiers stay
     # valid -- inlining "(SELECT ...).col" is invalid SQL. Verify it actually runs in DuckDB.
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.model import Model
-    from sidemantic.core.pre_aggregation import PreAggregation
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.model import Model
+    from sqlctx.core.pre_aggregation import PreAggregation
 
     model = Model(
         name="orders",
@@ -1591,8 +1591,8 @@ def test_inline_agg_measure_not_routed_to_preaggregation():
     # (e.g. COUNT(*)) is agg=None and skipped by the materializer. The matcher must NOT route a
     # query for it to a rollup that lists it -- doing so would recompute COUNT(*) over rollup rows
     # instead of source rows. Marking it sql_is_complete keeps it out of routing.
-    from sidemantic.core.pre_aggregation import PreAggregation
-    from sidemantic.core.preagg_matcher import PreAggregationMatcher
+    from sqlctx.core.pre_aggregation import PreAggregation
+    from sqlctx.core.preagg_matcher import PreAggregationMatcher
 
     graph = _parse(
         """

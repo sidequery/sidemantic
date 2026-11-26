@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic", "pandas"]
+# dependencies = ["sqlctx @ git+https://github.com/sidequery/sqlctx", "pandas"]
 # ///
 """Example demonstrating SQL query interface for the semantic layer.
 
@@ -8,11 +8,11 @@ This shows how users can write familiar SQL queries that get automatically
 rewritten to use the semantic layer's metrics and dimensions.
 """
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_layer import SemanticLayer
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_layer import SemanticLayer
 
 
 def setup_data(conn):

@@ -2,13 +2,13 @@
 
 import pytest
 
-from sidemantic import Dimension, Explore, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Explore, Metric, Model, Relationship, SemanticLayer
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires the real Rust extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.adapter.execute(
         "create table raw_orders as select * from (values (1, 10.0), (2, 20.0), (3, 60.0)) t(id, amount)"

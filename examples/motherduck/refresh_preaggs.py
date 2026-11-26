@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Refresh pre-aggregations for MotherDuck example.
 
-This is a workaround script since `sidemantic preagg refresh` expects separate model files.
-Use this script to refresh pre-aggregations defined in sidemantic.yaml.
+This is a workaround script since `sqlctx preagg refresh` expects separate model files.
+Use this script to refresh pre-aggregations defined in sqlctx.yaml.
 
 Prerequisites:
 - Set MOTHERDUCK_TOKEN environment variable
@@ -12,23 +12,23 @@ Usage:
     uv run python refresh_preaggs.py
 """
 
-from sidemantic import SemanticLayer
+from sqlctx import SemanticLayer
 
 print("=" * 80)
 print("MotherDuck Pre-Aggregation Refresh")
 print("=" * 80)
 
 # Load semantic layer from YAML config
-print("\nLoading semantic layer from sidemantic.yaml...")
-layer = SemanticLayer.from_yaml("sidemantic.yaml", connection="duckdb://md:sidemantic_demo")
+print("\nLoading semantic layer from sqlctx.yaml...")
+layer = SemanticLayer.from_yaml("sqlctx.yaml", connection="duckdb://md:sqlctx_demo")
 print("✓ Loaded semantic layer")
-print("  Connection: duckdb://md:sidemantic_demo")
+print("  Connection: duckdb://md:sqlctx_demo")
 print(f"  Pre-agg schema: {layer.preagg_schema}")
 print(f"  Models: {len(layer.list_models())}")
 
 # Create pre-aggregation schema
 print("\nCreating preagg schema...")
-layer.adapter.execute("CREATE SCHEMA IF NOT EXISTS sidemantic_demo.preagg")
+layer.adapter.execute("CREATE SCHEMA IF NOT EXISTS sqlctx_demo.preagg")
 print("✓ Schema created")
 
 # Get orders model
@@ -42,7 +42,7 @@ for preagg in orders.pre_aggregations:
 
     # Generate SQL for this pre-aggregation
     source_sql = preagg.generate_materialization_sql(orders)
-    table_name = preagg.get_table_name(model_name="orders", database="sidemantic_demo", schema="preagg")
+    table_name = preagg.get_table_name(model_name="orders", database="sqlctx_demo", schema="preagg")
 
     # Refresh
     result = preagg.refresh(
@@ -64,12 +64,12 @@ tables_result = layer.adapter.execute("""
     SELECT table_name
     FROM information_schema.tables
     WHERE table_schema = 'preagg'
-      AND table_catalog = 'sidemantic_demo'
+      AND table_catalog = 'sqlctx_demo'
     ORDER BY table_name
 """)
 for row in tables_result.fetchall():
     table_name = row[0]
-    count_result = layer.adapter.execute(f"SELECT COUNT(*) FROM sidemantic_demo.preagg.{table_name}")
+    count_result = layer.adapter.execute(f"SELECT COUNT(*) FROM sqlctx_demo.preagg.{table_name}")
     count = count_result.fetchone()[0]
     print(f"  {table_name}: {count:,} rows")
 

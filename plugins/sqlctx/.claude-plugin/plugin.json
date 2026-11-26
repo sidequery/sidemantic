@@ -1,0 +1,11 @@
+{
+  "name": "sqlctx",
+  "description": "Build, validate, and query sqlctx semantic models, answer business questions with trusted metrics, and generate analytics webapps. Ships modeler, semantic-analyst, and webapp-builder skills.",
+  "version": "1.0.0",
+  "author": {
+    "name": "sqlctx"
+  },
+  "homepage": "https://github.com/sidequery/sqlctx",
+  "repository": "https://github.com/sidequery/sqlctx",
+  "license": "Apache-2.0"
+}

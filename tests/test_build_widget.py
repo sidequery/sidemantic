@@ -8,7 +8,7 @@ from pathlib import Path
 
 def _module():
     path = Path(__file__).resolve().parents[1] / "scripts" / "build_widget.py"
-    spec = importlib.util.spec_from_file_location("sidemantic_build_widget", path)
+    spec = importlib.util.spec_from_file_location("sqlctx_build_widget", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -40,9 +40,9 @@ def test_widget_loading_and_brush_paths_use_canonical_mounts() -> None:
 
 def test_widget_css_contains_canonical_utilities_and_host_layout() -> None:
     root = Path(__file__).resolve().parents[1]
-    css = (root / "sidemantic/widget/static/widget.css").read_text()
+    css = (root / "sqlctx/widget/static/widget.css").read_text()
 
     assert ".flex{display:flex}" in css
     assert ".bg-surface{background-color:var(--surface)}" in css
-    assert ".sidemantic-widget" in css
+    assert ".sqlctx-widget" in css
     assert ".widget-layout" in css

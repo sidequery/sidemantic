@@ -1,8 +1,8 @@
-from sidemantic.config import build_connection_string, load_config
+from sqlctx.config import build_connection_string, load_config
 
 
 def test_load_config_builds_snowflake_connection(tmp_path):
-    config_path = tmp_path / "sidemantic.yaml"
+    config_path = tmp_path / "sqlctx.yaml"
     config_path.write_text(
         """
 models_dir: ./models

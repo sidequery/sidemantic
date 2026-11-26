@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { SidemanticBackend } from "../data/backend";
+import type { SqlctxBackend } from "../data/backend";
 import type { QueryResult, StructuredQuery } from "../data/types";
 import { beginQuery, endQuery } from "./queryActivity";
 
@@ -25,7 +25,7 @@ const DEBOUNCE_MS = 80;
  *
  * Pass `null` to skip (e.g. no metric selected) — yields an idle, non-loading state.
  */
-export function useQueryResult(backend: SidemanticBackend, query: StructuredQuery | null): QueryResultState {
+export function useQueryResult(backend: SqlctxBackend, query: StructuredQuery | null): QueryResultState {
   const [state, setState] = useState<QueryResultState>({ loading: false });
   const token = useRef(0);
   const key = query ? JSON.stringify(query) : null;

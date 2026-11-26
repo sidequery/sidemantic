@@ -2,8 +2,8 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.core.preagg_recommender import PreAggregationRecommender, QueryPattern
+from sqlctx import Dimension, Metric, Model
+from sqlctx.core.preagg_recommender import PreAggregationRecommender, QueryPattern
 
 
 def test_query_instrumentation(layer):
@@ -31,7 +31,7 @@ def test_query_instrumentation(layer):
     )
 
     # Check instrumentation is present
-    assert "-- sidemantic:" in sql
+    assert "-- sqlctx:" in sql
     assert "models=orders" in sql
     assert "metrics=orders.count,orders.revenue" in sql
     assert "dimensions=orders.created_at,orders.status" in sql
@@ -45,7 +45,7 @@ def test_extract_pattern_from_query():
     query = """
     SELECT status, revenue
     FROM orders_cte
-    -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status
+    -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status
     """
 
     pattern = recommender._extract_pattern(query)
@@ -64,7 +64,7 @@ def test_extract_pattern_with_granularity():
     query = """
     SELECT created_at, revenue
     FROM orders_cte
-    -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.created_at granularities=day
+    -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.created_at granularities=day
     """
 
     pattern = recommender._extract_pattern(query)
@@ -81,11 +81,11 @@ def test_parse_query_log():
     recommender = PreAggregationRecommender(min_query_count=2)
 
     queries = [
-        "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
-        "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
-        "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
-        "SELECT count FROM orders -- sidemantic: models=orders metrics=orders.count dimensions=orders.region",
-        "SELECT count FROM orders -- sidemantic: models=orders metrics=orders.count dimensions=orders.region",
+        "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status",
+        "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status",
+        "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status",
+        "SELECT count FROM orders -- sqlctx: models=orders metrics=orders.count dimensions=orders.region",
+        "SELECT count FROM orders -- sqlctx: models=orders metrics=orders.count dimensions=orders.region",
     ]
 
     recommender.parse_query_log(queries)
@@ -120,20 +120,18 @@ def test_get_recommendations():
     for i in range(100):
         recommender.parse_query_log(
             [
-                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day"
+                "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status granularities=day"
             ]
         )
 
     for i in range(50):
         recommender.parse_query_log(
-            ["SELECT count FROM orders -- sidemantic: models=orders metrics=orders.count dimensions=orders.region"]
+            ["SELECT count FROM orders -- sqlctx: models=orders metrics=orders.count dimensions=orders.region"]
         )
 
     for i in range(1):
         recommender.parse_query_log(
-            [
-                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.customer_id"
-            ]
+            ["SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.customer_id"]
         )
 
     recommendations = recommender.get_recommendations()
@@ -208,7 +206,7 @@ def test_generate_preagg_definition():
     # Add pattern
     recommender.parse_query_log(
         [
-            "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.created_at granularities=day"
+            "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.created_at granularities=day"
         ]
     )
 
@@ -254,11 +252,11 @@ def test_get_summary():
     recommender = PreAggregationRecommender(min_query_count=2)
 
     queries = [
-        "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
-        "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
-        "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
-        "SELECT count FROM customers -- sidemantic: models=customers metrics=customers.count dimensions=customers.region",
-        "SELECT count FROM customers -- sidemantic: models=customers metrics=customers.count dimensions=customers.region",
+        "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status",
+        "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status",
+        "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status",
+        "SELECT count FROM customers -- sqlctx: models=customers metrics=customers.count dimensions=customers.region",
+        "SELECT count FROM customers -- sqlctx: models=customers metrics=customers.count dimensions=customers.region",
     ]
 
     recommender.parse_query_log(queries)
@@ -279,7 +277,7 @@ def test_multi_model_queries_ignored():
     query = """
     SELECT orders.revenue, customers.name
     FROM orders_cte
-    -- sidemantic: models=customers,orders metrics=orders.revenue dimensions=customers.name
+    -- sqlctx: models=customers,orders metrics=orders.revenue dimensions=customers.name
     """
 
     pattern = recommender._extract_pattern(query)
@@ -341,11 +339,11 @@ def test_fetch_and_parse_query_history():
     class MockAdapter:
         def get_query_history(self, days_back=7, limit=1000):
             return [
-                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
-                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
-                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
-                "SELECT count FROM orders -- sidemantic: models=orders metrics=orders.count dimensions=orders.region",
-                "SELECT count FROM orders -- sidemantic: models=orders metrics=orders.count dimensions=orders.region",
+                "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status",
+                "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status",
+                "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status",
+                "SELECT count FROM orders -- sqlctx: models=orders metrics=orders.count dimensions=orders.region",
+                "SELECT count FROM orders -- sqlctx: models=orders metrics=orders.count dimensions=orders.region",
             ]
 
     adapter = MockAdapter()
@@ -397,10 +395,10 @@ def test_fetch_and_parse_query_history_filters_non_instrumented():
     class MockAdapter:
         def get_query_history(self, days_back=7, limit=1000):
             return [
-                "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status",
+                "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status",
                 "SELECT * FROM orders WHERE status = 'completed'",  # No instrumentation
                 "SELECT COUNT(*) FROM customers",  # No instrumentation
-                "SELECT count FROM orders -- sidemantic: models=orders metrics=orders.count dimensions=orders.region",
+                "SELECT count FROM orders -- sqlctx: models=orders metrics=orders.count dimensions=orders.region",
             ]
 
     adapter = MockAdapter()
@@ -420,8 +418,8 @@ def test_used_preagg_queries_do_not_feed_recommendations():
 
     recommender.parse_query_log(
         [
-            "SELECT revenue FROM orders_preagg -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status used_preagg=true",
-            "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.region",
+            "SELECT revenue FROM orders_preagg -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status used_preagg=true",
+            "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.region",
         ]
     )
 
@@ -432,7 +430,7 @@ def test_used_preagg_queries_do_not_feed_recommendations():
 
 def test_top_n_zero_returns_no_recommendations():
     recommender = PreAggregationRecommender(min_query_count=1)
-    recommender.parse_query_log(["SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue"])
+    recommender.parse_query_log(["SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue"])
 
     assert recommender.get_recommendations(top_n=0) == []
 
@@ -442,7 +440,7 @@ def test_summary_reports_skipped_queries_and_score_threshold():
     recommender.parse_query_log(
         [
             "SELECT 1",  # not instrumented
-            "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue",
+            "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue",
         ]
     )
 
@@ -460,7 +458,7 @@ def test_time_dimension_not_forced_onto_categorical_dimension():
     recommender = PreAggregationRecommender(min_query_count=1)
     recommender.parse_query_log(
         [
-            "SELECT revenue FROM orders -- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status granularities=day"
+            "SELECT revenue FROM orders -- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status granularities=day"
         ]
     )
 

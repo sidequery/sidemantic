@@ -1,0 +1,706 @@
+//! Query rewriter: rewrites SQL using semantic layer definitions
+
+use std::collections::{HashMap, HashSet};
+
+use crate::semantic_input::dialects::parse_many as polyglot_parse;
+use polyglot_sql::{
+    expressions::{Identifier, Join, JoinKind, Select, TableRef, With},
+    generate as polyglot_generate, DialectType, Expression,
+};
+
+use crate::core::SemanticGraph;
+use crate::error::{Result, SqlctxError};
+use crate::sql::SemanticQuery;
+
+type QueryPreparer<'a> = &'a dyn Fn(&SemanticGraph, &mut SemanticQuery) -> Result<()>;
+
+mod binding;
+mod ossie;
+mod ossie_discovery;
+mod ossie_relational;
+#[cfg(not(target_arch = "wasm32"))]
+mod parser_worker;
+mod policy;
+mod yardstick;
+
+/// SQL query rewriter using semantic definitions
+pub struct QueryRewriter<'a> {
+    graph: &'a SemanticGraph,
+    query_preparer: Option<QueryPreparer<'a>>,
+    policy_definitions: &'a str,
+    rename_only: bool,
+    security_controls: bool,
+    qualified_tables_physical: bool,
+    warnings: std::cell::RefCell<Vec<String>>,
+    used_preaggregation: std::cell::Cell<bool>,
+    /// Dialect of the statement being emitted, for its generated leaves.
+    emitted_dialect: std::cell::Cell<Option<DialectType>>,
+}
+
+impl<'a> QueryRewriter<'a> {
+    pub fn new(graph: &'a SemanticGraph) -> Self {
+        Self {
+            graph,
+            query_preparer: None,
+            policy_definitions: "",
+            rename_only: false,
+            security_controls: false,
+            qualified_tables_physical: false,
+            warnings: std::cell::RefCell::new(Vec::new()),
+            used_preaggregation: std::cell::Cell::new(false),
+            emitted_dialect: std::cell::Cell::new(None),
+        }
+    }
+
+    pub(crate) fn take_warnings(&self) -> Vec<String> {
+        self.warnings.take()
+    }
+
+    /// Apply request policies to each semantic leaf before retaining its
+    /// relational wrappers. Synthetic aggregate inputs remain visible to policy validation.
+    pub(crate) fn with_query_preparer(
+        mut self,
+        prepare: QueryPreparer<'a>,
+        policy_definitions: &'a str,
+        security_controls: bool,
+    ) -> Self {
+        self.query_preparer = Some(prepare);
+        self.policy_definitions = policy_definitions;
+        self.security_controls = security_controls;
+        self
+    }
+
+    /// Treat catalog- or schema-qualified relations as physical tables unless
+    /// the schema is `semantic`. Only for hosts that grant direct table access
+    /// and enforce no request policies; by default qualifiers never bypass
+    /// semantic compilation.
+    pub(crate) fn with_qualified_tables_physical(mut self) -> Self {
+        self.qualified_tables_physical = true;
+        self
+    }
+
+    fn names_model(&self, table: &TableRef) -> bool {
+        let qualified = table.schema.is_some() || table.catalog.is_some();
+        if qualified
+            && self.qualified_tables_physical
+            && !table
+                .schema
+                .as_ref()
+                .is_some_and(|schema| schema.name.eq_ignore_ascii_case("semantic"))
+        {
+            return false;
+        }
+        table.name.name.eq_ignore_ascii_case("metrics")
+            || self.graph.get_model(&table.name.name).is_some()
+    }
+
+    /// Rewrite a SQL query using semantic layer definitions
+    pub fn rewrite(&self, sql: &str) -> Result<String> {
+        self.rewrite_with_dialect(sql, DialectType::Generic)
+    }
+
+    pub fn rewrite_with_dialect(&self, sql: &str, dialect: DialectType) -> Result<String> {
+        self.rewrite_with_output_dialect(sql, dialect, dialect)
+    }
+
+    pub(crate) fn rewrite_with_output_dialect(
+        &self,
+        sql: &str,
+        input_dialect: DialectType,
+        output_dialect: DialectType,
+    ) -> Result<String> {
+        // A nested rewrite (a Yardstick leaf) returns DuckDB for a statement
+        // that is still emitted in the outermost caller's dialect.
+        let outermost = self.emitted_dialect.get().is_none();
+        if outermost {
+            self.emitted_dialect.set(Some(output_dialect));
+        }
+        let rewritten = self.rewrite_statements(sql, input_dialect, output_dialect);
+        if outermost {
+            self.emitted_dialect.set(None);
+        }
+        rewritten
+    }
+
+    fn rewrite_statements(
+        &self,
+        sql: &str,
+        input_dialect: DialectType,
+        output_dialect: DialectType,
+    ) -> Result<String> {
+        self.used_preaggregation.set(false);
+        if let Some(rewritten) = self.rewrite_ossie_discovery(sql, input_dialect, output_dialect)? {
+            return Ok(rewritten);
+        }
+        if let Some(rewritten) =
+            self.rewrite_ossie_relational(sql, input_dialect, output_dialect)?
+        {
+            return Ok(rewritten);
+        }
+        if let Some(rewritten) = self.rewrite_yardstick(sql, input_dialect, output_dialect)? {
+            return Ok(rewritten);
+        }
+        // Yardstick must remove its extension syntax before the ordinary SQL
+        // normalizer runs. Semantic binding and graph SQL share DuckDB syntax.
+        let statements = parse_rewrite_input(sql, input_dialect)?;
+
+        if statements.is_empty() {
+            return Err(SqlctxError::SqlParse("Empty SQL".into()));
+        }
+        if self.query_preparer.is_some() && statements.len() != 1 {
+            return Err(policy::unsupported());
+        }
+
+        let mut rewritten_statements = Vec::new();
+        let statement_count = statements.len();
+        for statement in statements {
+            let statement = self.bind_ossie_aggregate_query(statement, statement_count)?;
+            let rewritten = self.rewrite_statement(statement)?;
+            rewritten_statements.push(crate::semantic_input::dialects::emit(
+                rewritten,
+                DialectType::DuckDB,
+                output_dialect,
+            )?);
+        }
+
+        let mut sql = rewritten_statements.join(";\n");
+        // Parsing semantic leaves into relational wrappers drops their trailing
+        // comments. Preserve routing independently so missing-rollup fallback
+        // and strict mode observe the compiler's actual selection.
+        if self.used_preaggregation.get() {
+            sql.push_str("\n-- used_preagg=true");
+        }
+        Ok(sql)
+    }
+
+    fn rewrite_statement(&self, statement: Expression) -> Result<Expression> {
+        self.rewrite_policy_statement(statement)
+    }
+}
+
+pub(super) fn parse_sql_with_large_stack(sql: &str) -> Result<Vec<Expression>> {
+    parse_sql_with_dialect(sql, DialectType::Generic)
+}
+
+fn parse_sql_with_dialect(sql: &str, dialect: DialectType) -> Result<Vec<Expression>> {
+    let sql = sql.to_owned();
+    run_parser(move || {
+        #[cfg(target_arch = "wasm32")]
+        crate::wasm_sql_guard::check(&sql, dialect)?;
+        polyglot_parse(&sql, dialect)
+    })
+}
+
+fn parse_rewrite_input(sql: &str, input_dialect: DialectType) -> Result<Vec<Expression>> {
+    let sql = sql.to_owned();
+    run_parser(move || {
+        // Transpilation invokes the same recursive parser as the final parse.
+        // Keep both stages on the established parser worker; running source
+        // normalization on the caller bypassed its stack protection.
+        let sql = crate::semantic_input::dialects::query_batch(&sql, input_dialect)?;
+        #[cfg(target_arch = "wasm32")]
+        crate::wasm_sql_guard::check(&sql, DialectType::DuckDB)?;
+        polyglot_parse(&sql, DialectType::DuckDB)
+    })
+}
+
+fn run_parser(
+    parse: impl FnOnce() -> Result<Vec<Expression>> + Send + 'static,
+) -> Result<Vec<Expression>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        parse()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        parser_worker::run(parse)
+    }
+}
+
+fn resolve_model_ref<'a>(
+    table_or_alias: &str,
+    model_refs: &'a [(String, String)],
+) -> Option<(&'a str, &'a str)> {
+    model_refs
+        .iter()
+        .find(|(model, alias)| model == table_or_alias || alias == table_or_alias)
+        .map(|(model, alias)| (model.as_str(), alias.as_str()))
+}
+
+fn split_granularity(field: &str) -> (&str, Option<&str>) {
+    const VALID_GRANULARITIES: [&str; 8] = [
+        "year", "quarter", "month", "week", "day", "hour", "minute", "second",
+    ];
+
+    if let Some((base, gran)) = field.rsplit_once("__") {
+        if VALID_GRANULARITIES.contains(&gran) {
+            return (base, Some(gran));
+        }
+    }
+
+    (field, None)
+}
+
+fn has_star_projection(projection: &[Expression]) -> bool {
+    projection
+        .iter()
+        .any(|expr| matches!(expr, Expression::Star(_)))
+}
+
+fn table_name_and_alias(source: &Expression) -> Option<(String, Option<String>)> {
+    match source {
+        Expression::Table(table) => Some((
+            table.name.name.clone(),
+            table.alias.as_ref().map(|a| a.name.clone()),
+        )),
+        Expression::Alias(alias) => {
+            if let Expression::Table(table) = &alias.this {
+                Some((table.name.name.clone(), Some(alias.alias.name.clone())))
+            } else {
+                None
+            }
+        }
+        Expression::Paren(paren) => table_name_and_alias(&paren.this),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Dimension, Metric, Model, Relationship};
+
+    fn create_test_graph() -> SemanticGraph {
+        let mut graph = SemanticGraph::new();
+
+        let orders = Model::new("orders", "order_id")
+            .with_table("public.orders")
+            .with_dimension(Dimension::categorical("status"))
+            .with_dimension(Dimension::time("order_date").with_sql("created_at"))
+            .with_metric(Metric::sum("revenue", "amount"))
+            .with_metric(Metric::count("order_count"))
+            .with_relationship(Relationship::many_to_one("customers"));
+
+        let customers = Model::new("customers", "id")
+            .with_table("public.customers")
+            .with_dimension(Dimension::categorical("name"))
+            .with_dimension(Dimension::categorical("country"));
+
+        graph.add_model(orders).unwrap();
+        graph.add_model(customers).unwrap();
+
+        graph
+    }
+
+    #[test]
+    fn retention_table_cannot_be_bound_as_a_scalar_metric() {
+        let retention: Metric = serde_json::from_value(serde_json::json!({
+            "name": "retention", "type": "retention", "entity": "user_id",
+            "cohort_event": "event_type = 'signup'", "activity_event": "event_type = 'active'",
+            "periods": 7, "retention_granularity": "day"
+        }))
+        .unwrap();
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("events", "id")
+                    .with_table("raw_events")
+                    .with_dimension(Dimension::time("event_date"))
+                    .with_metric(retention),
+            )
+            .unwrap();
+        for sql in [
+            "SELECT events.retention FROM events",
+            "SELECT e.retention AS retained FROM events e",
+            "SELECT * FROM events",
+        ] {
+            let error = QueryRewriter::new(&graph).rewrite(sql).unwrap_err();
+            assert!(error.to_string().contains("returns a table"), "{error}");
+        }
+        let query = SemanticQuery::new().with_metrics(vec!["events.retention".into()]);
+        let sql = crate::sql::SqlGenerator::new(&graph)
+            .generate(&query)
+            .unwrap();
+        assert!(sql.contains("retention_pct"));
+    }
+
+    fn multi_fact_graph() -> SemanticGraph {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("customers", "id")
+                    .with_table("customers")
+                    .with_dimension(Dimension::categorical("tags"))
+                    .with_metric(Metric::count("customer_count")),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("orders")
+                    .with_metric(Metric::sum("revenue", "amount"))
+                    .with_relationship(Relationship::many_to_one("customers")),
+            )
+            .unwrap();
+        graph
+    }
+
+    #[test]
+    fn postgres_lowers_only_generated_combine_keys() {
+        let graph = multi_fact_graph();
+        let rewriter = QueryRewriter::new(&graph);
+        let authored = "s.tags IS NOT DISTINCT FROM labels.tags";
+        let sql = format!(
+            "SELECT s.tags, s.revenue, s.customer_count, labels.name \
+             FROM (SELECT customers.tags, orders.revenue, customers.customer_count FROM orders) AS s \
+             FULL OUTER JOIN labels ON s.revenue = labels.revenue AND {authored}"
+        );
+
+        let postgres = rewriter
+            .rewrite_with_dialect(&sql, DialectType::PostgreSQL)
+            .unwrap();
+        // PostgreSQL cannot plan the generated combine's NULL-safe keys as written.
+        assert!(
+            postgres.contains(
+                "FULL OUTER JOIN customers_preagg ON ARRAY[orders_preagg.tags] = \
+                 ARRAY[customers_preagg.tags] \
+                 AND (orders_preagg.tags IS NULL) = (customers_preagg.tags IS NULL)"
+            ),
+            "{postgres}"
+        );
+        // The authored join is the query's own: wrapping an array-valued
+        // operand would make NULL and the empty array compare as equal.
+        assert!(
+            postgres.contains(&format!("ON s.revenue = labels.revenue AND {authored}")),
+            "{postgres}"
+        );
+        assert_eq!(postgres.matches("ARRAY[").count(), 2, "{postgres}");
+
+        let duckdb = rewriter
+            .rewrite_with_dialect(&sql, DialectType::DuckDB)
+            .unwrap();
+        assert!(!duckdb.contains("ARRAY["), "{duckdb}");
+        assert_eq!(
+            duckdb.matches("IS NOT DISTINCT FROM").count(),
+            2,
+            "{duckdb}"
+        );
+    }
+
+    #[test]
+    fn postgres_passes_authored_full_join_without_semantic_sources_through() {
+        let graph = multi_fact_graph();
+        let sql = "SELECT a.id, b.id FROM a FULL OUTER JOIN b \
+                   ON a.id = b.id AND a.tags IS NOT DISTINCT FROM b.tags";
+        let rewritten = QueryRewriter::new(&graph)
+            .rewrite_with_dialect(sql, DialectType::PostgreSQL)
+            .unwrap();
+        assert!(
+            rewritten.contains("ON a.id = b.id AND a.tags IS NOT DISTINCT FROM b.tags"),
+            "{rewritten}"
+        );
+    }
+
+    #[test]
+    fn test_simple_rewrite() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        let sql = "SELECT orders.revenue, orders.status FROM orders";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        assert!(rewritten.contains("public.orders"));
+        assert!(rewritten.contains("SUM("));
+        assert!(rewritten.contains("GROUP BY"));
+    }
+
+    #[test]
+    fn default_time_dimension_is_not_a_hidden_group_key() {
+        let mut graph = SemanticGraph::new();
+        let mut orders = Model::new("orders", "order_id")
+            .with_table("public.orders")
+            .with_dimension(Dimension::categorical("status"))
+            .with_dimension(Dimension::time("order_date").with_sql("created_at"))
+            .with_metric(Metric::sum("revenue", "amount"));
+        orders.default_time_dimension = Some("order_date".into());
+        graph.add_model(orders).unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+
+        // The SELECT list is the whole projection, so neither query may be
+        // grouped by a default time dimension that it does not return.
+        let scalar = rewriter
+            .rewrite("SELECT orders.revenue FROM orders")
+            .unwrap();
+        assert!(!scalar.contains("GROUP BY"), "{scalar}");
+        assert!(!scalar.contains("created_at"), "{scalar}");
+
+        let grouped = rewriter
+            .rewrite("SELECT orders.status, orders.revenue FROM orders")
+            .unwrap();
+        assert!(grouped.contains("GROUP BY"), "{grouped}");
+        assert!(!grouped.contains("created_at"), "{grouped}");
+    }
+
+    #[test]
+    fn source_normalization_and_rewrite_work_on_standard_test_stack() {
+        // This test deliberately uses the ordinary harness thread. The input
+        // normalization stage must use the production parser worker too.
+        let graph = create_test_graph();
+        for dialect in [
+            DialectType::Generic,
+            DialectType::DuckDB,
+            DialectType::PostgreSQL,
+        ] {
+            let sql =
+                "SELECT orders.revenue, orders.status FROM orders ORDER BY orders.revenue DESC";
+            let statements = parse_rewrite_input(sql, dialect).unwrap();
+            assert_eq!(statements.len(), 1);
+            let Expression::Select(select) = &statements[0] else {
+                panic!("expected select")
+            };
+            assert_eq!(select.expressions.len(), 2);
+            assert!(select.order_by.is_some());
+            let rewritten = QueryRewriter::new(&graph)
+                .rewrite_with_dialect(sql, dialect)
+                .unwrap();
+            assert!(rewritten.contains("GROUP BY"), "{rewritten}");
+            assert!(rewritten.contains("ORDER BY revenue DESC"), "{rewritten}");
+        }
+    }
+
+    #[test]
+    fn scoped_graph_metric_select_preserves_alias_order_and_pagination() {
+        let mut graph = create_test_graph();
+        graph
+            .add_metric_unvalidated(Metric::derived("total", "orders.revenue"))
+            .unwrap();
+        graph.set_metric_scopes(HashMap::new()).unwrap();
+        let sql = QueryRewriter::new(&graph)
+            .rewrite_with_dialect(
+                "SELECT total AS amount FROM metrics ORDER BY amount DESC LIMIT 2 OFFSET 1",
+                DialectType::DuckDB,
+            )
+            .unwrap();
+        let parsed = parse_sql_with_dialect(&sql, DialectType::DuckDB).unwrap();
+        let Expression::Select(select) = &parsed[0] else {
+            panic!("expected select")
+        };
+        assert_eq!(select.expressions.len(), 1);
+        assert!(
+            matches!(&select.expressions[0], Expression::Alias(alias) if alias.alias.name == "amount")
+        );
+        assert!(select.limit.is_some());
+        assert!(select.offset.is_some());
+        assert!(sql.contains("ORDER BY amount DESC"));
+    }
+
+    #[test]
+    fn scoped_metrics_rejects_unhandled_clauses_and_invalid_fields_separately() {
+        let mut graph = create_test_graph();
+        graph.set_metric_scopes(HashMap::new()).unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+        assert!(matches!(
+            rewriter.rewrite("SELECT orders.revenue FROM metrics QUALIFY 1 = 1"),
+            Err(SqlctxError::UnsupportedSemanticFeatures { .. })
+        ));
+        assert!(matches!(
+            rewriter.rewrite("SELECT orders.missing FROM metrics"),
+            Err(SqlctxError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn test_rewrite_with_alias() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        let sql = "SELECT o.revenue, o.status FROM orders AS o";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        assert!(rewritten.contains("public.orders"));
+    }
+
+    #[test]
+    fn test_rewrite_with_filter() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        let sql = "SELECT orders.revenue FROM orders WHERE orders.status = 'completed'";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        assert!(rewritten.contains("WHERE"));
+        assert!(rewritten.contains("status"));
+    }
+
+    #[test]
+    fn test_cross_model_join() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        // Query orders metric with customers dimension - should auto-join
+        let sql = "SELECT orders.revenue, customers.country FROM orders";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        // Should have JOIN clause
+        assert!(
+            rewritten.to_uppercase().contains("JOIN"),
+            "Expected JOIN in: {rewritten}"
+        );
+        assert!(
+            rewritten.contains("customers"),
+            "Expected customers table in: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn test_cross_model_composite_join() {
+        let mut graph = SemanticGraph::new();
+
+        let shipments = Model::new("shipments", "shipment_id")
+            .with_table("public.shipments")
+            .with_metric(Metric::count("shipment_count"))
+            .with_relationship(Relationship::many_to_one("order_items").with_key_columns(
+                vec!["order_id".to_string(), "item_id".to_string()],
+                vec!["order_id".to_string(), "item_id".to_string()],
+            ));
+        let order_items = Model::new("order_items", "order_id")
+            .with_primary_key_columns(vec!["order_id".to_string(), "item_id".to_string()])
+            .with_table("public.order_items")
+            .with_dimension(Dimension::categorical("sku"));
+
+        graph.add_model(shipments).unwrap();
+        graph.add_model(order_items).unwrap();
+
+        let rewriter = QueryRewriter::new(&graph);
+        let sql = "SELECT shipments.shipment_count, order_items.sku FROM shipments";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        assert!(rewritten.contains(".order_id = "));
+        assert!(rewritten.contains(".item_id = "));
+        assert!(rewritten.to_uppercase().contains(" AND "));
+    }
+
+    #[test]
+    fn test_cross_model_join_in_where() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        // Model referenced only in WHERE should still trigger JOIN
+        let sql = "SELECT orders.revenue FROM orders WHERE customers.country = 'US'";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        // Should have JOIN clause even though customers only in WHERE
+        assert!(
+            rewritten.to_uppercase().contains("JOIN"),
+            "Expected JOIN in: {rewritten}"
+        );
+        assert!(
+            rewritten.contains("customers"),
+            "Expected customers table in: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn test_source_uri_only_model_rejects_rewrite() {
+        let mut graph = SemanticGraph::new();
+        let mut events = Model::new("events", "event_id")
+            .with_dimension(Dimension::categorical("event_type"))
+            .with_metric(Metric::count("event_count"));
+        events.source_uri = Some("s3://warehouse/events.parquet".to_string());
+        graph.add_model(events).unwrap();
+
+        let rewriter = QueryRewriter::new(&graph);
+        let err = rewriter
+            .rewrite("SELECT events.event_count FROM events")
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            SqlctxError::ValidationIssue { ref code, .. }
+                if code == "unsupported_source_uri_query"
+        ));
+        assert!(err.to_string().contains("source_uri"));
+    }
+
+    #[test]
+    fn test_order_by_projected_semantic_refs_rewrite_to_output_aliases() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        let sql = "SELECT orders.revenue AS total, orders.status FROM orders ORDER BY orders.revenue DESC, orders.status ASC";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        assert!(
+            rewritten.contains("ORDER BY total DESC, status ASC"),
+            "expected ORDER BY aliases, got: {rewritten}"
+        );
+        assert!(
+            !rewritten.contains("ORDER BY orders.revenue"),
+            "semantic metric reference leaked into ORDER BY: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn test_order_by_projected_alias_is_preserved() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        let sql = "SELECT orders.revenue AS total, orders.status FROM orders ORDER BY total DESC";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        assert!(
+            rewritten.contains("ORDER BY total DESC"),
+            "expected projected alias ORDER BY, got: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn qualified_tables_stay_physical_only_when_enabled() {
+        let graph = create_test_graph();
+        let physical = QueryRewriter::new(&graph).with_qualified_tables_physical();
+
+        let rewritten = physical
+            .rewrite("SELECT status, count(*) FROM main.orders GROUP BY 1")
+            .unwrap();
+        assert!(
+            rewritten.contains("main.orders") && !rewritten.contains("public.orders"),
+            "expected the physical table to remain, got: {rewritten}"
+        );
+
+        let rewritten = physical
+            .rewrite("SELECT orders.revenue FROM semantic.orders")
+            .unwrap();
+        assert!(
+            rewritten.contains("SUM("),
+            "expected semantic.orders to compile, got: {rewritten}"
+        );
+
+        // Policy hosts rely on qualifiers never bypassing semantic compilation.
+        let rewritten = QueryRewriter::new(&graph)
+            .rewrite("SELECT orders.revenue FROM main.orders")
+            .unwrap();
+        assert!(
+            rewritten.contains("SUM("),
+            "expected the default to compile the model, got: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn test_order_by_order_only_semantic_metric_rewrites_to_aggregate() {
+        let graph = create_test_graph();
+        let rewriter = QueryRewriter::new(&graph);
+
+        let sql = "SELECT orders.status FROM orders ORDER BY orders.revenue DESC";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+
+        assert!(
+            rewritten.contains("ORDER BY __semantic_query.__sd_field_1 DESC"),
+            "expected ordering over the compiled measure, got: {rewritten}"
+        );
+        assert!(
+            !rewritten.contains("ORDER BY orders.revenue"),
+            "semantic metric reference leaked into ORDER BY: {rewritten}"
+        );
+    }
+}

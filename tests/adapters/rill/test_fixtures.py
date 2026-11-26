@@ -10,7 +10,7 @@ Tests are permissive: parse without errors, check counts, verify key names.
 
 import pytest
 
-from sidemantic.adapters.rill import RillAdapter
+from sqlctx.adapters.rill import RillAdapter
 
 # =============================================================================
 # FIXTURES

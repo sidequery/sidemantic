@@ -1,0 +1,1404 @@
+"""GoodData LDM adapter for importing/exporting logical data models."""
+
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from sqlctx.adapters.base import BaseAdapter, reject_unsupported_export
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.fidelity import record_export_feature
+from sqlctx.paths import output_child
+
+GOODDATA_METADATA_KEY = "gooddata"
+
+
+class GoodDataParseError(ValueError):
+    """Raised when GoodData LDM payloads are invalid or unsupported."""
+
+
+class GoodDataAdapter(BaseAdapter):
+    """Adapter for GoodData LDM JSON definitions (cloud + legacy).
+
+    Transforms GoodData LDM definitions into sqlctx format:
+    - Datasets -> Models
+    - Attributes -> Dimensions
+    - Facts -> Metrics (default aggregation: sum for numeric facts)
+    - References -> Relationships
+    - Date instances/dimensions -> Date models with time dimensions
+    """
+
+    def parse(self, source: str | Path) -> SemanticGraph:
+        """Parse GoodData LDM JSON into semantic graph.
+
+        Args:
+            source: Path to a .json file or directory of JSON files
+
+        Returns:
+            Semantic graph with imported models
+        """
+        graph = SemanticGraph()
+        source_path = Path(source)
+
+        json_files = list(source_path.rglob("*.json")) if source_path.is_dir() else [source_path]
+
+        for json_file in json_files:
+            with open(json_file) as f:
+                data = json.load(f)
+
+            ldm_kind, ldm_payload = self._detect_payload(data)
+            if not ldm_kind or not ldm_payload:
+                raise GoodDataParseError(f"{json_file} does not look like GoodData LDM JSON")
+
+            if ldm_kind == "cloud":
+                models, date_models = self._parse_cloud_ldm(ldm_payload)
+            else:
+                models, date_models = self._parse_legacy_ldm(ldm_payload)
+
+            for model in models + date_models:
+                if model.name not in graph.models:
+                    graph.add_model(model)
+
+        self._apply_reference_primary_keys(graph)
+        return graph
+
+    def export(self, graph: SemanticGraph, output_path: str | Path) -> None:
+        """Export semantic graph to GoodData LDM JSON format (cloud style)."""
+        owned_metrics = [metric for model in graph.models.values() for metric in model.metrics]
+        if any(not any(metric is owned for owned in owned_metrics) for metric in graph.metrics.values()):
+            unplaced = ", ".join(
+                name for name, metric in graph.metrics.items() if not any(metric is owned for owned in owned_metrics)
+            )
+            record_export_feature(
+                "graph_metrics", "rejected", detail=f"GoodData LDM cannot represent analytical metrics: {unplaced}"
+            )
+            raise ValueError("GoodData LDM export cannot represent graph-level metrics; MAQL metrics are unsupported")
+        output_path = Path(output_path)
+
+        from sqlctx.core.inheritance import resolve_model_inheritance
+
+        resolved_models = resolve_model_inheritance(graph.models)
+        reject_unsupported_export("gooddata", self._unsupported_constructs(resolved_models))
+
+        datasets = []
+        date_instances = []
+        for model in resolved_models.values():
+            gd_meta = (model.metadata or {}).get(GOODDATA_METADATA_KEY, {})
+            if gd_meta.get("kind") in ("date_instance", "date_dimension"):
+                date_instances.append(self._export_date_instance(model, gd_meta))
+            else:
+                datasets.append(self._export_dataset(model))
+
+        payload = {"ldm": {"datasets": datasets}}
+        if date_instances:
+            payload["ldm"]["dateInstances"] = date_instances
+
+        if output_path.is_dir() or not output_path.suffix:
+            output_path.mkdir(parents=True, exist_ok=True)
+            file_path = output_child(output_path, "ldm.json")
+        else:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path = output_path
+
+        with open(file_path, "w") as f:
+            json.dump(payload, f, indent=2)
+
+    def _detect_payload(self, data: Any) -> tuple[str | None, dict[str, Any] | None]:
+        if not isinstance(data, dict):
+            return None, None
+
+        if "ldm" in data and isinstance(data["ldm"], dict):
+            return "cloud", data["ldm"]
+        if "data" in data and isinstance(data["data"], dict) and isinstance(data["data"].get("ldm"), dict):
+            return "cloud", data["data"]["ldm"]
+        if "projectModel" in data and isinstance(data["projectModel"], dict):
+            return "legacy", data["projectModel"]
+        if "model" in data and isinstance(data["model"], dict) and isinstance(data["model"].get("projectModel"), dict):
+            return "legacy", data["model"]["projectModel"]
+
+        if "dateDimensions" in data:
+            return "legacy", data
+
+        if "datasets" in data or "dateInstances" in data or "date_instances" in data:
+            datasets = data.get("datasets")
+            if isinstance(datasets, list) and datasets and isinstance(datasets[0], dict):
+                if "dataset" in datasets[0] or "anchor" in datasets[0]:
+                    return "legacy", data
+            return "cloud", data
+
+        return None, None
+
+    def _parse_cloud_ldm(self, ldm: dict[str, Any]) -> tuple[list[Model], list[Model]]:
+        datasets = self._as_list(ldm.get("datasets") or ldm.get("dataSets") or ldm.get("data_sets"))
+        date_instances = self._as_list(ldm.get("dateInstances") or ldm.get("date_instances"))
+
+        models = []
+        for dataset_def in datasets:
+            model = self._parse_cloud_dataset(dataset_def)
+            if model:
+                models.append(model)
+
+        date_models = []
+        for date_def in date_instances:
+            date_model = self._parse_date_instance(date_def, kind="date_instance")
+            if date_model:
+                date_models.append(date_model)
+
+        return models, date_models
+
+    def _parse_cloud_dataset(self, dataset_def: dict[str, Any]) -> Model | None:
+        if "dataset" in dataset_def and isinstance(dataset_def["dataset"], dict):
+            dataset_def = dataset_def["dataset"]
+
+        dataset_id = self._extract_identifier(dataset_def, keys=("id", "identifier", "name"))
+        if not dataset_id:
+            raise GoodDataParseError("Dataset is missing an id/identifier")
+
+        table = self._coerce_table_path(
+            self._get_first(
+                dataset_def,
+                "dataSourceTableId",
+                "data_source_table_id",
+                "tablePath",
+                "table_path",
+                "table",
+            )
+        )
+        raw_sql = dataset_def.get("sql")
+        sql, sql_data_source_id = self._coerce_sql(raw_sql)
+        # Track object-form SQL so an export round-trip can re-emit the SDK
+        # shape ``{"dataSourceId": ..., "statement": ...}`` instead of a bare string.
+        sql_is_object = isinstance(raw_sql, dict)
+        if sql:
+            table = None
+
+        grain_ids = self._parse_grain_ids(dataset_def)
+
+        attributes = self._as_list(dataset_def.get("attributes"))
+        facts = self._as_list(dataset_def.get("facts"))
+        aggregated_facts = self._as_list(dataset_def.get("aggregatedFacts") or dataset_def.get("aggregated_facts"))
+
+        fields = dataset_def.get("fields")
+        if fields:
+            for field in self._normalize_fields(fields):
+                field_type = (field.get("type") or "").lower()
+                if field_type == "attribute":
+                    attributes.append(field)
+                elif field_type == "fact":
+                    facts.append(field)
+
+        dimensions = []
+        for attr_def in attributes:
+            dim = self._parse_cloud_attribute(attr_def)
+            if dim:
+                dimensions.append(dim)
+
+        metrics = []
+        for fact_def in facts:
+            metric = self._parse_cloud_fact(fact_def)
+            if metric:
+                metrics.append(metric)
+
+        for agg_fact_def in aggregated_facts:
+            metric = self._parse_cloud_aggregated_fact(agg_fact_def)
+            if metric:
+                metrics.append(metric)
+
+        for key in grain_ids or ["id"]:
+            if not any(dim.name == key for dim in dimensions):
+                dimensions.append(
+                    Dimension(
+                        name=key,
+                        type="categorical",
+                        sql=key,
+                        metadata={GOODDATA_METADATA_KEY: {"generated": True}},
+                    )
+                )
+
+        # Planner keys name physical source columns. Display labels can use a
+        # different source column, so use the attribute's own sourceColumn.
+        key_columns = []
+        for key in grain_ids or ["id"]:
+            dimension = next(dim for dim in dimensions if dim.name == key)
+            native = (dimension.metadata or {}).get(GOODDATA_METADATA_KEY, {})
+            key_columns.append(native.get("key_source_column") or dimension.sql or key)
+        primary_key = key_columns if len(key_columns) > 1 else key_columns[0]
+
+        relationships = []
+        for ref_def in self._as_list(dataset_def.get("references")):
+            rel = self._parse_cloud_reference(ref_def)
+            if rel:
+                relationships.append(rel)
+
+        data_source_table_id = dataset_def.get("dataSourceTableId") or dataset_def.get("data_source_table_id")
+        data_source_id = dataset_def.get("dataSourceId") or dataset_def.get("data_source_id")
+        # SQL-backed datasets carry the data source on the sql object; object-form
+        # dataSourceTableId carries it on the table descriptor.
+        if not data_source_id:
+            data_source_id = sql_data_source_id
+        if not data_source_id and isinstance(data_source_table_id, dict):
+            data_source_id = data_source_table_id.get("dataSourceId") or data_source_table_id.get("data_source_id")
+
+        metadata = {
+            GOODDATA_METADATA_KEY: {
+                "id": dataset_id,
+                "title": dataset_def.get("title"),
+                "description": dataset_def.get("description"),
+                "tags": dataset_def.get("tags"),
+                "data_source_id": data_source_id,
+                "sql_is_object": sql_is_object,
+                "sql_data_source_id": sql_data_source_id if sql_is_object else None,
+                "data_source_table_id": data_source_table_id,
+                "table_path": dataset_def.get("tablePath") or dataset_def.get("table_path"),
+                "grain": grain_ids,
+                "workspace_data_filter_columns": dataset_def.get("workspaceDataFilterColumns")
+                or dataset_def.get("workspace_data_filter_columns"),
+                "extra": self._extract_extra(dataset_def, self._cloud_dataset_keys()),
+            }
+        }
+
+        return Model(
+            name=dataset_id,
+            table=table,
+            sql=sql,
+            description=dataset_def.get("description") or dataset_def.get("title"),
+            primary_key=primary_key,
+            dimensions=dimensions,
+            metrics=metrics,
+            relationships=relationships,
+            metadata=metadata,
+        )
+
+    def _parse_cloud_attribute(self, attr_def: dict[str, Any]) -> Dimension | None:
+        if "attribute" in attr_def and isinstance(attr_def["attribute"], dict):
+            attr_def = attr_def["attribute"]
+
+        attr_id = self._extract_identifier(attr_def, keys=("id", "identifier", "name"))
+        if not attr_id:
+            raise GoodDataParseError("Attribute is missing an id/identifier")
+
+        labels = self._normalize_labels(attr_def.get("labels"))
+        default_view = attr_def.get("defaultView") or attr_def.get("default_view")
+        default_view_id = self._extract_identifier(default_view, keys=("id", "identifier", "name"))
+        label_def = self._select_label(labels, default_view_id)
+
+        source_column = self._get_first(label_def or {}, "sourceColumn", "source_column") or self._get_first(
+            attr_def, "sourceColumn", "source_column"
+        )
+        # sourceColumnDataType is the newer name for dataType; read both.
+        data_type = self._get_first(
+            label_def or {}, "sourceColumnDataType", "source_column_data_type", "dataType", "data_type"
+        ) or self._get_first(attr_def, "sourceColumnDataType", "source_column_data_type", "dataType", "data_type")
+
+        dim_type, granularity = self._map_dimension_type(data_type)
+
+        metadata = {
+            GOODDATA_METADATA_KEY: {
+                "id": attr_id,
+                "title": attr_def.get("title"),
+                "description": attr_def.get("description"),
+                "tags": attr_def.get("tags"),
+                "source_column": source_column,
+                "key_source_column": self._get_first(attr_def, "sourceColumn", "source_column"),
+                "data_type": data_type,
+                "labels": labels,
+                "default_view": default_view_id,
+                "extra": self._extract_extra(attr_def, self._cloud_attribute_keys()),
+            }
+        }
+
+        return Dimension(
+            name=attr_id,
+            type=dim_type,
+            sql=source_column or attr_id,
+            label=attr_def.get("title") or (label_def or {}).get("title"),
+            description=attr_def.get("description"),
+            granularity=granularity,
+            metadata=metadata,
+        )
+
+    def _parse_cloud_fact(self, fact_def: dict[str, Any]) -> Metric | None:
+        if "fact" in fact_def and isinstance(fact_def["fact"], dict):
+            fact_def = fact_def["fact"]
+
+        fact_id = self._extract_identifier(fact_def, keys=("id", "identifier", "name"))
+        if not fact_id:
+            raise GoodDataParseError("Fact is missing an id/identifier")
+
+        source_column = self._get_first(fact_def, "sourceColumn", "source_column")
+        # sourceColumnDataType is the newer name for dataType; read both.
+        data_type = self._get_first(
+            fact_def, "sourceColumnDataType", "source_column_data_type", "dataType", "data_type"
+        )
+        agg = self._map_fact_aggregation(fact_def, data_type)
+
+        metadata = {
+            GOODDATA_METADATA_KEY: {
+                "id": fact_id,
+                "title": fact_def.get("title"),
+                "description": fact_def.get("description"),
+                "tags": fact_def.get("tags"),
+                "source_column": source_column,
+                "data_type": data_type,
+                "aggregation": fact_def.get("aggregation"),
+                "extra": self._extract_extra(fact_def, self._cloud_fact_keys()),
+            }
+        }
+
+        return Metric(
+            name=fact_id,
+            agg=agg,
+            sql=source_column or fact_id,
+            label=fact_def.get("title"),
+            description=fact_def.get("description"),
+            metadata=metadata,
+        )
+
+    def _parse_cloud_aggregated_fact(self, agg_def: dict[str, Any]) -> Metric | None:
+        if "aggregatedFact" in agg_def and isinstance(agg_def["aggregatedFact"], dict):
+            agg_def = agg_def["aggregatedFact"]
+
+        agg_id = self._extract_identifier(agg_def, keys=("id", "identifier", "name"))
+        if not agg_id:
+            raise GoodDataParseError("Aggregated fact is missing an id/identifier")
+
+        source_column = self._get_first(agg_def, "sourceColumn", "source_column")
+        data_type = self._get_first(agg_def, "sourceColumnDataType", "source_column_data_type", "dataType", "data_type")
+
+        # Aggregate awareness: source fact + SUM/MIN/MAX operation.
+        source_fact_ref = self._get_first(agg_def, "sourceFactReference", "source_fact_reference") or {}
+        operation = None
+        source_fact_id = None
+        if isinstance(source_fact_ref, dict):
+            operation = source_fact_ref.get("operation")
+            reference = source_fact_ref.get("reference")
+            if isinstance(reference, dict):
+                source_fact_id = self._extract_identifier(reference, keys=("id", "identifier", "name"))
+            elif isinstance(reference, str):
+                source_fact_id = reference
+
+        agg = self._map_fact_aggregation({"aggregation": operation} if operation else {}, data_type)
+
+        metadata = {
+            GOODDATA_METADATA_KEY: {
+                "id": agg_id,
+                "title": agg_def.get("title"),
+                "description": agg_def.get("description"),
+                "tags": agg_def.get("tags"),
+                "source_column": source_column,
+                "data_type": data_type,
+                "aggregated_fact": True,
+                "operation": operation,
+                "source_fact": source_fact_id,
+                "extra": self._extract_extra(agg_def, self._cloud_aggregated_fact_keys()),
+            }
+        }
+
+        return Metric(
+            name=agg_id,
+            agg=agg,
+            sql=source_column or agg_id,
+            label=agg_def.get("title"),
+            description=agg_def.get("description"),
+            metadata=metadata,
+        )
+
+    def _parse_cloud_reference(self, ref_def: Any) -> Relationship | None:
+        if isinstance(ref_def, str):
+            target_id = ref_def
+            ref_def = {}
+        else:
+            identifier = self._get_first(ref_def, "identifier", "dataset", "reference")
+            if isinstance(identifier, dict):
+                target_id = self._extract_identifier(identifier, keys=("id", "identifier", "name"))
+            else:
+                target_id = identifier
+
+        if not target_id:
+            return None
+
+        multivalue = self._get_first(ref_def, "multivalue", "multiValue") is True
+        rel_type = "many_to_many" if multivalue else "many_to_one"
+
+        # Newer exports replace flat sourceColumns with a sources array of
+        # {column, target: {id, type}, dataType}. Keep flat support for older exports.
+        sources = self._get_first(ref_def, "sources")
+        source_objects = None
+        if isinstance(sources, list) and sources:
+            if any(not isinstance(item, dict) or not item.get("column") for item in sources):
+                raise GoodDataParseError(f"Reference to {target_id!r} has a source without a column")
+            source_objects = sources
+            source_columns = [s.get("column") for s in sources if isinstance(s, dict) and s.get("column")]
+        else:
+            source_columns = self._get_first(
+                ref_def, "sourceColumns", "source_columns", "sourceColumn", "source_column"
+            )
+
+        foreign_key = None
+        if isinstance(source_columns, list) and source_columns:
+            # Composite keys keep the full column list (Relationship.foreign_key
+            # accepts list[str]); single-column refs unwrap to a plain string.
+            foreign_key = source_columns[0] if len(source_columns) == 1 else list(source_columns)
+        elif isinstance(source_columns, str):
+            foreign_key = source_columns
+
+        metadata = {
+            GOODDATA_METADATA_KEY: {
+                "identifier": target_id,
+                "source_columns": source_columns,
+                "sources": source_objects,
+                "multivalue": multivalue,
+                "extra": self._extract_extra(ref_def, self._cloud_reference_keys()),
+            }
+        }
+
+        return Relationship(name=target_id, type=rel_type, foreign_key=foreign_key, metadata=metadata)
+
+    def _parse_date_instance(self, date_def: dict[str, Any], kind: str) -> Model | None:
+        if "dateInstance" in date_def and isinstance(date_def["dateInstance"], dict):
+            date_def = date_def["dateInstance"]
+        if "dateDimension" in date_def and isinstance(date_def["dateDimension"], dict):
+            date_def = date_def["dateDimension"]
+
+        date_id = self._extract_identifier(date_def, keys=("id", "identifier", "name"))
+        if not date_id:
+            raise GoodDataParseError("Date instance/dimension is missing an id/identifier")
+
+        granularity_values = self._as_list(date_def.get("granularities") or date_def.get("granularity"))
+        granularities = [str(g).lower() for g in granularity_values if g]
+        primary_granularity = "day" if "day" in granularities else (granularities[0] if granularities else "day")
+
+        time_dim_name = "date" if "day" in granularities else primary_granularity
+
+        dimension = Dimension(
+            name=time_dim_name,
+            type="time",
+            sql=time_dim_name,
+            granularity=primary_granularity,
+            supported_granularities=granularities or None,
+            label=date_def.get("title"),
+            description=date_def.get("description"),
+            metadata={
+                GOODDATA_METADATA_KEY: {
+                    "id": date_id,
+                    "granularities": granularities,
+                }
+            },
+        )
+
+        metadata = {
+            GOODDATA_METADATA_KEY: {
+                "id": date_id,
+                "title": date_def.get("title"),
+                "description": date_def.get("description"),
+                "tags": date_def.get("tags"),
+                "data_source_id": date_def.get("dataSourceId") or date_def.get("data_source_id"),
+                "data_source_table_id": date_def.get("dataSourceTableId") or date_def.get("data_source_table_id"),
+                "table_path": date_def.get("tablePath") or date_def.get("table_path"),
+                "granularities": granularities,
+                "granularitiesFormatting": date_def.get("granularitiesFormatting")
+                or date_def.get("granularities_formatting"),
+                "kind": kind,
+                "extra": self._extract_extra(date_def, self._cloud_date_instance_keys()),
+            }
+        }
+
+        table = self._coerce_table_path(
+            self._get_first(
+                date_def,
+                "dataSourceTableId",
+                "data_source_table_id",
+                "tablePath",
+                "table_path",
+                "table",
+            )
+        )
+
+        return Model(
+            name=date_id,
+            table=table or date_id,
+            description=date_def.get("description") or date_def.get("title"),
+            primary_key=dimension.name,
+            dimensions=[dimension],
+            metadata=metadata,
+        )
+
+    def _parse_legacy_ldm(self, project_model: dict[str, Any]) -> tuple[list[Model], list[Model]]:
+        datasets = self._as_list(project_model.get("datasets") or project_model.get("dataSets"))
+        date_dimensions = self._as_list(project_model.get("dateDimensions") or project_model.get("date_dimensions"))
+
+        date_models = []
+        for date_def in date_dimensions:
+            date_model = self._parse_date_instance(date_def, kind="date_dimension")
+            if date_model:
+                date_models.append(date_model)
+
+        models = []
+        for dataset_def in datasets:
+            model = self._parse_legacy_dataset(dataset_def)
+            if model:
+                models.append(model)
+
+        return models, date_models
+
+    def _parse_legacy_dataset(self, dataset_def: dict[str, Any]) -> Model | None:
+        if "dataset" in dataset_def and isinstance(dataset_def["dataset"], dict):
+            dataset_def = dataset_def["dataset"]
+
+        dataset_id = self._extract_identifier(dataset_def, keys=("identifier", "id", "name"))
+        if not dataset_id:
+            raise GoodDataParseError("Legacy dataset is missing an identifier")
+
+        label_map = self._build_legacy_label_map(dataset_def.get("labels"))
+
+        dimensions = []
+        primary_key = "id"
+
+        anchor_def = dataset_def.get("anchor")
+        if isinstance(anchor_def, dict):
+            anchor_attr = anchor_def.get("attribute") if isinstance(anchor_def.get("attribute"), dict) else anchor_def
+            anchor_dim = self._parse_legacy_attribute(anchor_attr, label_map)
+            if anchor_dim:
+                dimensions.append(anchor_dim)
+                primary_key = anchor_dim.sql or anchor_dim.name
+
+        for attr_def in self._as_list(dataset_def.get("attributes")):
+            attr = attr_def.get("attribute") if isinstance(attr_def, dict) and "attribute" in attr_def else attr_def
+            dim = self._parse_legacy_attribute(attr, label_map)
+            if dim and dim.name not in {d.name for d in dimensions}:
+                dimensions.append(dim)
+
+        metrics = []
+        for fact_def in self._as_list(dataset_def.get("facts")):
+            fact = fact_def.get("fact") if isinstance(fact_def, dict) and "fact" in fact_def else fact_def
+            metric = self._parse_legacy_fact(fact)
+            if metric:
+                metrics.append(metric)
+
+        references = []
+        for ref_def in self._as_list(dataset_def.get("references")):
+            rel = self._parse_legacy_reference(ref_def)
+            if rel:
+                references.append(rel)
+
+        metadata = {
+            GOODDATA_METADATA_KEY: {
+                "identifier": dataset_id,
+                "title": dataset_def.get("title"),
+                "description": dataset_def.get("description"),
+                "tags": dataset_def.get("tags"),
+                "extra": self._extract_extra(dataset_def, self._legacy_dataset_keys()),
+            }
+        }
+
+        table = dataset_def.get("table") or dataset_id
+        return Model(
+            name=dataset_id,
+            table=table,
+            sql=dataset_def.get("sql"),
+            description=dataset_def.get("description") or dataset_def.get("title"),
+            primary_key=primary_key,
+            dimensions=dimensions,
+            metrics=metrics,
+            relationships=references,
+            metadata=metadata,
+        )
+
+    def _parse_legacy_attribute(self, attr_def: dict[str, Any] | None, label_map: dict[str, dict]) -> Dimension | None:
+        if not isinstance(attr_def, dict):
+            return None
+
+        attr_id = self._extract_identifier(attr_def, keys=("identifier", "id", "name"))
+        if not attr_id:
+            raise GoodDataParseError("Legacy attribute is missing an identifier")
+
+        label_ids = self._as_list(attr_def.get("labels"))
+        label_def = label_map.get(label_ids[0]) if label_ids else None
+
+        source_column = self._get_first(label_def or {}, "sourceColumn", "source_column") or self._get_first(
+            attr_def, "sourceColumn", "source_column"
+        )
+        data_type = self._get_first(
+            label_def or {}, "sourceColumnDataType", "source_column_data_type", "dataType", "data_type"
+        ) or self._get_first(attr_def, "sourceColumnDataType", "source_column_data_type", "dataType", "data_type")
+
+        dim_type, granularity = self._map_dimension_type(data_type)
+
+        metadata = {
+            GOODDATA_METADATA_KEY: {
+                "identifier": attr_id,
+                "title": attr_def.get("title"),
+                "description": attr_def.get("description"),
+                "labels": label_ids,
+                "label_details": label_def,
+                "source_column": source_column,
+                "data_type": data_type,
+                "extra": self._extract_extra(attr_def, self._legacy_attribute_keys()),
+            }
+        }
+
+        return Dimension(
+            name=attr_id,
+            type=dim_type,
+            sql=source_column or attr_id,
+            label=attr_def.get("title") or (label_def or {}).get("title"),
+            description=attr_def.get("description"),
+            granularity=granularity,
+            metadata=metadata,
+        )
+
+    def _parse_legacy_fact(self, fact_def: dict[str, Any] | None) -> Metric | None:
+        if not isinstance(fact_def, dict):
+            return None
+
+        fact_id = self._extract_identifier(fact_def, keys=("identifier", "id", "name"))
+        if not fact_id:
+            raise GoodDataParseError("Legacy fact is missing an identifier")
+
+        source_column = self._get_first(fact_def, "sourceColumn", "source_column")
+        data_type = self._get_first(
+            fact_def, "sourceColumnDataType", "source_column_data_type", "dataType", "data_type"
+        )
+        agg = self._map_fact_aggregation(fact_def, data_type)
+
+        metadata = {
+            GOODDATA_METADATA_KEY: {
+                "identifier": fact_id,
+                "title": fact_def.get("title"),
+                "description": fact_def.get("description"),
+                "source_column": source_column,
+                "data_type": data_type,
+                "extra": self._extract_extra(fact_def, self._legacy_fact_keys()),
+            }
+        }
+
+        return Metric(
+            name=fact_id,
+            agg=agg,
+            sql=source_column or fact_id,
+            label=fact_def.get("title"),
+            description=fact_def.get("description"),
+            metadata=metadata,
+        )
+
+    def _parse_legacy_reference(self, ref_def: Any) -> Relationship | None:
+        if isinstance(ref_def, str):
+            target_id = ref_def
+            ref_def = {}
+        elif isinstance(ref_def, dict):
+            target_id = self._extract_identifier(ref_def, keys=("identifier", "id", "name"))
+            if not target_id:
+                target_id = ref_def.get("dataset") or ref_def.get("reference")
+        else:
+            return None
+
+        if not target_id:
+            return None
+
+        metadata = {
+            GOODDATA_METADATA_KEY: {
+                "identifier": target_id,
+                "extra": ref_def if isinstance(ref_def, dict) else {},
+            }
+        }
+
+        return Relationship(name=target_id, type="many_to_one", metadata=metadata)
+
+    def _build_legacy_label_map(self, labels_def: Any) -> dict[str, dict]:
+        label_map: dict[str, dict] = {}
+        for label_def in self._as_list(labels_def):
+            label = label_def.get("label") if isinstance(label_def, dict) and "label" in label_def else label_def
+            if not isinstance(label, dict):
+                continue
+            label_id = self._extract_identifier(label, keys=("identifier", "id", "name"))
+            if label_id:
+                label_map[label_id] = label
+        return label_map
+
+    def _unsupported_constructs(self, models: dict[str, Model]) -> list[tuple[str, str, str]]:
+        """Constructs an LDM cannot carry, as ``(feature, location, detail)``.
+
+        An LDM fact binds one physical column and has no aggregation, filter or
+        expression; those live in MAQL metrics, which this adapter does not
+        write. Import reads a numeric fact back as SUM, so only an unfiltered
+        SUM over a plain column survives a round trip.
+        """
+        problems: list[tuple[str, str, str]] = []
+        for model in models.values():
+            if (model.metadata or {}).get(GOODDATA_METADATA_KEY, {}).get("kind") in ("date_instance", "date_dimension"):
+                continue
+            for metric in model.metrics:
+                location = f"{model.name}.{metric.name}"
+                fact_meta = (metric.metadata or {}).get(GOODDATA_METADATA_KEY, {})
+                if fact_meta.get("aggregated_fact"):
+                    continue
+                imported_agg = self._map_fact_aggregation(
+                    {"aggregation": fact_meta["aggregation"]} if fact_meta.get("aggregation") else {},
+                    fact_meta.get("data_type") or "NUMERIC",
+                )
+                if metric.filters:
+                    problems.append(
+                        (
+                            "metric_filter",
+                            location,
+                            f"Filter on '{location}' needs a MAQL metric; an LDM fact has no filter",
+                        )
+                    )
+                elif metric.type or metric.agg != imported_agg:
+                    kind = metric.type or metric.agg
+                    problems.append(
+                        (
+                            "metric_aggregation",
+                            location,
+                            f"'{location}' ({kind}) needs a MAQL metric; an LDM fact is a column that imports as "
+                            f"{imported_agg or 'an unaggregated value'}",
+                        )
+                    )
+                elif not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_$]*", metric.sql or metric.name):
+                    problems.append(
+                        (
+                            "metric_expression",
+                            location,
+                            f"'{location}' aggregates an expression; an LDM fact binds one physical column",
+                        )
+                    )
+            for rel in model.relationships:
+                if rel.type != "one_to_many":
+                    continue
+                target = models.get(rel.related_model)
+                if target is None or not any(back.related_model == model.name for back in target.relationships):
+                    problems.append(
+                        (
+                            "relationship",
+                            f"{model.name}.{rel.name}",
+                            f"Relationship '{model.name}.{rel.name}' (one_to_many) has no LDM reference; "
+                            f"declare it as many_to_one on '{rel.related_model}'",
+                        )
+                    )
+        return problems
+
+    def _export_dataset(self, model: Model) -> dict[str, Any]:
+        gd_meta = (model.metadata or {}).get(GOODDATA_METADATA_KEY, {})
+        dataset_id = gd_meta.get("id") or gd_meta.get("identifier") or model.name
+
+        dataset: dict[str, Any] = {
+            "id": dataset_id,
+            "title": gd_meta.get("title") or model.name,
+        }
+
+        if model.description:
+            dataset["description"] = model.description
+
+        if gd_meta.get("tags"):
+            dataset["tags"] = gd_meta["tags"]
+
+        original_table_id = gd_meta.get("data_source_table_id")
+        if isinstance(original_table_id, dict):
+            # Preserve the newer object form (dataSourceId/id/type/path) verbatim.
+            dataset["dataSourceTableId"] = original_table_id
+        elif model.table:
+            dataset["dataSourceTableId"] = model.table
+        elif original_table_id:
+            dataset["dataSourceTableId"] = original_table_id
+        elif gd_meta.get("table_path"):
+            dataset["tablePath"] = gd_meta["table_path"]
+
+        # SQL-backed datasets parsed from the SDK object form keep the data
+        # source nested inside the ``sql`` object, so skip the top-level field.
+        sql_is_object = bool(model.sql) and gd_meta.get("sql_is_object")
+
+        if gd_meta.get("data_source_id") and not sql_is_object:
+            dataset["dataSourceId"] = gd_meta["data_source_id"]
+
+        if model.sql:
+            sql_data_source_id = gd_meta.get("sql_data_source_id") or gd_meta.get("data_source_id")
+            if sql_is_object and sql_data_source_id:
+                # Re-emit the SDK object shape {dataSourceId, statement}.
+                dataset["sql"] = {"dataSourceId": sql_data_source_id, "statement": model.sql}
+            else:
+                dataset["sql"] = model.sql
+
+        wdf_columns = gd_meta.get("workspace_data_filter_columns")
+        if wdf_columns:
+            dataset["workspaceDataFilterColumns"] = wdf_columns
+
+        grain_ids = gd_meta.get("grain") or model.primary_key_columns
+        dataset["grain"] = [{"id": grain_id, "type": "attribute"} for grain_id in grain_ids if grain_id]
+
+        attributes = []
+        for dim in model.dimensions:
+            attr_meta = (dim.metadata or {}).get(GOODDATA_METADATA_KEY, {})
+            labels = attr_meta.get("labels")
+            source_column = attr_meta.get("key_source_column") or dim.sql or dim.name
+            if not labels:
+                # Without native labels there was only one physical binding.
+                # Honor edits to it rather than inventing a separate display
+                # column backed by the old attribute key.
+                original_column = attr_meta.get("source_column")
+                source_column = dim.sql or dim.name
+                if original_column:
+                    bindings = [source_column, attr_meta.get("key_source_column")]
+                    attribute_id = attr_meta.get("id") or dim.name
+                    if attribute_id in grain_ids and len(grain_ids) == len(model.primary_key_columns):
+                        bindings.append(model.primary_key_columns[grain_ids.index(attribute_id)])
+                    edited_columns = {binding for binding in bindings if binding and binding != original_column}
+                    if len(edited_columns) > 1:
+                        record_export_feature("attribute_binding", "rejected", location=f"{model.name}.{dim.name}")
+                        raise ValueError(
+                            f"GoodData attribute '{model.name}.{dim.name}' has conflicting SQL and key source edits"
+                        )
+                    if edited_columns:
+                        source_column = edited_columns.pop()
+                label_id = f"{dim.name}_label"
+                labels = [
+                    {
+                        "id": label_id,
+                        "title": dim.label or dim.name,
+                        "sourceColumn": source_column,
+                        "dataType": self._map_dimension_to_data_type(dim),
+                    }
+                ]
+                default_view_id = label_id
+            else:
+                default_view_id = attr_meta.get("default_view") or self._extract_identifier(
+                    labels[0], keys=("id", "identifier", "name")
+                )
+
+            attr_def: dict[str, Any] = {
+                "id": attr_meta.get("id") or dim.name,
+                "title": dim.label or dim.name,
+                "sourceColumn": source_column,
+                "labels": labels,
+                "defaultView": {"id": default_view_id, "type": "label"},
+            }
+
+            if dim.description:
+                attr_def["description"] = dim.description
+
+            if attr_meta.get("tags"):
+                attr_def["tags"] = attr_meta["tags"]
+
+            attributes.append(attr_def)
+
+        if attributes:
+            dataset["attributes"] = attributes
+
+        facts = []
+        aggregated_facts = []
+        for metric in model.metrics:
+            fact_meta = (metric.metadata or {}).get(GOODDATA_METADATA_KEY, {})
+
+            if fact_meta.get("aggregated_fact"):
+                agg_def: dict[str, Any] = {
+                    "id": fact_meta.get("id") or metric.name,
+                    "title": metric.label or metric.name,
+                    "sourceColumn": metric.sql or metric.name,
+                    "sourceColumnDataType": fact_meta.get("data_type") or "NUMERIC",
+                }
+                if metric.description:
+                    agg_def["description"] = metric.description
+                if fact_meta.get("tags"):
+                    agg_def["tags"] = fact_meta["tags"]
+                operation = fact_meta.get("operation") or (metric.agg.upper() if metric.agg else None)
+                source_fact = fact_meta.get("source_fact")
+                if operation and source_fact:
+                    agg_def["sourceFactReference"] = {
+                        "operation": operation,
+                        "reference": {"id": source_fact, "type": "fact"},
+                    }
+                aggregated_facts.append(agg_def)
+                continue
+
+            fact_def: dict[str, Any] = {
+                "id": fact_meta.get("id") or metric.name,
+                "title": metric.label or metric.name,
+                "sourceColumn": metric.sql or metric.name,
+                "dataType": fact_meta.get("data_type") or "NUMERIC",
+            }
+
+            if metric.description:
+                fact_def["description"] = metric.description
+
+            if fact_meta.get("tags"):
+                fact_def["tags"] = fact_meta["tags"]
+
+            if fact_meta.get("aggregation"):
+                fact_def["aggregation"] = fact_meta["aggregation"]
+
+            facts.append(fact_def)
+
+        if facts:
+            dataset["facts"] = facts
+
+        if aggregated_facts:
+            dataset["aggregatedFacts"] = aggregated_facts
+
+        references = []
+        for rel in model.relationships:
+            if rel.type not in ("many_to_one", "many_to_many", "one_to_one"):
+                continue
+            if rel.name != rel.related_model:
+                raise ValueError(
+                    "GoodData export cannot represent relationship role "
+                    f"'{rel.name}' independently of target dataset '{rel.related_model}'"
+                )
+
+            rel_meta = (rel.metadata or {}).get(GOODDATA_METADATA_KEY, {})
+            ref: dict[str, Any] = {
+                "identifier": {"id": rel.name, "type": "dataset"},
+                "multivalue": rel.type == "many_to_many" or rel_meta.get("multivalue") is True,
+            }
+
+            sources = rel_meta.get("sources")
+            if isinstance(sources, list) and sources:
+                # Preserve the newer sources array form verbatim.
+                ref["sources"] = sources
+            else:
+                source_columns = rel_meta.get("source_columns")
+                if not source_columns and rel.foreign_key:
+                    # foreign_key may be a single string or a composite list.
+                    source_columns = list(rel.foreign_key) if isinstance(rel.foreign_key, list) else [rel.foreign_key]
+                if source_columns:
+                    ref["sourceColumns"] = source_columns
+
+            references.append(ref)
+
+        if references:
+            dataset["references"] = references
+
+        extra = gd_meta.get("extra")
+        if isinstance(extra, dict):
+            for key, value in extra.items():
+                if key not in dataset:
+                    dataset[key] = value
+
+        return dataset
+
+    def _export_date_instance(self, model: Model, gd_meta: dict[str, Any]) -> dict[str, Any]:
+        date_id = gd_meta.get("id") or model.name
+        date_instance: dict[str, Any] = {"id": date_id, "title": gd_meta.get("title") or model.name}
+
+        if model.description:
+            date_instance["description"] = model.description
+
+        if gd_meta.get("tags"):
+            date_instance["tags"] = gd_meta["tags"]
+
+        if model.table:
+            date_instance["dataSourceTableId"] = model.table
+        elif gd_meta.get("data_source_table_id"):
+            date_instance["dataSourceTableId"] = gd_meta["data_source_table_id"]
+        elif gd_meta.get("table_path"):
+            date_instance["tablePath"] = gd_meta["table_path"]
+
+        if gd_meta.get("data_source_id"):
+            date_instance["dataSourceId"] = gd_meta["data_source_id"]
+
+        granularities = gd_meta.get("granularities")
+        if not granularities and model.dimensions:
+            dim = model.dimensions[0]
+            if dim.supported_granularities:
+                granularities = dim.supported_granularities
+            elif dim.granularity:
+                granularities = [dim.granularity]
+
+        if granularities:
+            date_instance["granularities"] = [str(g).upper() for g in granularities]
+
+        if gd_meta.get("granularitiesFormatting"):
+            date_instance["granularitiesFormatting"] = gd_meta["granularitiesFormatting"]
+
+        extra = gd_meta.get("extra")
+        if isinstance(extra, dict):
+            for key, value in extra.items():
+                if key not in date_instance:
+                    date_instance[key] = value
+
+        return date_instance
+
+    def _apply_reference_primary_keys(self, graph: SemanticGraph) -> None:
+        for model in graph.models.values():
+            for relationship in model.relationships:
+                if relationship.primary_key:
+                    continue
+                target = graph.models.get(relationship.related_model)
+                sources = (relationship.metadata or {}).get(GOODDATA_METADATA_KEY, {}).get("sources")
+                if sources:
+                    target_keys = []
+                    for source in sources:
+                        reference = source.get("target") or {}
+                        if not isinstance(reference, dict):
+                            raise GoodDataParseError(f"Invalid GoodData reference target {reference!r}")
+                        target_id = reference.get("id")
+                        if reference.get("type") == "attribute":
+                            if target is None or target.get_dimension(target_id) is None:
+                                raise GoodDataParseError(
+                                    f"Reference {model.name} -> {relationship.related_model}: "
+                                    f"target attribute {target_id!r} does not exist"
+                                )
+                            dimension = target.get_dimension(target_id)
+                            native = (dimension.metadata or {}).get(GOODDATA_METADATA_KEY, {})
+                            # Preserve each explicit target, in source order, using
+                            # its physical key rather than its display label column.
+                            target_keys.append(native.get("key_source_column") or dimension.sql or target_id)
+                        elif reference.get("type") == "date":
+                            if target is None or not target.primary_key:
+                                raise GoodDataParseError(
+                                    f"Unknown date reference target {relationship.related_model!r}"
+                                )
+                            target_keys.extend(target.primary_key_columns)
+                        else:
+                            raise GoodDataParseError(f"Unsupported GoodData reference target {reference!r}")
+                    relationship.primary_key = target_keys[0] if len(target_keys) == 1 else target_keys
+                    continue
+                if target and target.primary_key:
+                    relationship.primary_key = target.primary_key
+
+    def _parse_grain_ids(self, dataset_def: dict[str, Any]) -> list[str]:
+        grain = dataset_def.get("grain") or dataset_def.get("primary_key") or dataset_def.get("primaryKey")
+        if not grain:
+            return []
+        grain_items = self._as_list(grain)
+
+        ids = []
+        for item in grain_items:
+            if isinstance(item, dict):
+                grain_id = self._extract_identifier(item, keys=("id", "identifier", "name"))
+            else:
+                grain_id = item
+            if isinstance(grain_id, str):
+                ids.append(grain_id)
+        return ids
+
+    def _normalize_fields(self, fields: Any) -> list[dict[str, Any]]:
+        if isinstance(fields, dict):
+            normalized = []
+            for field_id, field_def in fields.items():
+                if isinstance(field_def, dict):
+                    if "id" not in field_def:
+                        field_def = {**field_def, "id": field_id}
+                    normalized.append(field_def)
+            return normalized
+        if isinstance(fields, list):
+            return [f for f in fields if isinstance(f, dict)]
+        return []
+
+    def _normalize_labels(self, labels: Any) -> list[dict[str, Any]]:
+        if isinstance(labels, dict):
+            normalized = []
+            for label_id, label_def in labels.items():
+                if isinstance(label_def, dict):
+                    if "id" not in label_def:
+                        label_def = {**label_def, "id": label_id}
+                    normalized.append(label_def)
+            return normalized
+        if isinstance(labels, list):
+            return [label for label in labels if isinstance(label, dict)]
+        return []
+
+    def _select_label(self, labels: list[dict[str, Any]], default_label_id: str | None) -> dict[str, Any] | None:
+        if default_label_id:
+            for label in labels:
+                label_id = self._extract_identifier(label, keys=("id", "identifier", "name"))
+                if label_id == default_label_id:
+                    return label
+        return labels[0] if labels else None
+
+    def _coerce_sql(self, value: Any) -> tuple[str | None, str | None]:
+        """Return (sql_statement, data_source_id) for legacy string or object SQL.
+
+        SQL-backed datasets use ``{"dataSourceId": ..., "statement": ...}``;
+        older exports use a plain string. Both forms are supported.
+        """
+        if isinstance(value, dict):
+            statement = value.get("statement") or value.get("sql")
+            data_source_id = value.get("dataSourceId") or value.get("data_source_id")
+            return (statement if isinstance(statement, str) else None), (
+                data_source_id if isinstance(data_source_id, str) else None
+            )
+        if isinstance(value, str):
+            return value, None
+        return None, None
+
+    def _coerce_table_path(self, value: Any) -> str | None:
+        if isinstance(value, list):
+            parts = [str(part) for part in value if part]
+            return ".".join(parts) if parts else None
+        if isinstance(value, dict):
+            # Newer object form: {dataSourceId, id, type, path: [schema, table]}
+            path = value.get("path")
+            if isinstance(path, list):
+                parts = [str(part) for part in path if part]
+                if parts:
+                    return ".".join(parts)
+            schema = value.get("schema")
+            table = value.get("table")
+            if schema and table:
+                return f"{schema}.{table}"
+            # Fall back to a bare id when no path/schema is available.
+            table_id = value.get("id")
+            if isinstance(table_id, str):
+                return table_id
+        if isinstance(value, str):
+            return value
+        return None
+
+    def _extract_identifier(self, data: Any, keys: tuple[str, ...]) -> str | None:
+        if isinstance(data, dict):
+            for key in keys:
+                if key in data and isinstance(data[key], str):
+                    return data[key]
+            return None
+        if isinstance(data, str):
+            return data
+        return None
+
+    def _get_first(self, data: dict[str, Any], *keys: str) -> Any:
+        for key in keys:
+            if key in data and data[key] is not None:
+                return data[key]
+        return None
+
+    def _as_list(self, value: Any) -> list[Any]:
+        if not value:
+            return []
+        if isinstance(value, list):
+            return value
+        return [value]
+
+    def _map_dimension_type(self, data_type: str | None) -> tuple[str, str | None]:
+        if not data_type:
+            return "categorical", None
+
+        dt = str(data_type).upper()
+        if dt in {"BOOLEAN", "BOOL"}:
+            return "boolean", None
+        if dt in {
+            "INT",
+            "INTEGER",
+            "BIGINT",
+            "SMALLINT",
+            "TINYINT",
+            "DECIMAL",
+            "NUMERIC",
+            "FLOAT",
+            "DOUBLE",
+            "REAL",
+        }:
+            return "numeric", None
+        if dt == "DATE":
+            return "time", "day"
+        if dt in {
+            "DATETIME",
+            "TIMESTAMP",
+            "TIMESTAMP_TZ",
+            "TIMESTAMP WITH TIME ZONE",
+            "TIME",
+        }:
+            return "time", "hour"
+        return "categorical", None
+
+    def _map_dimension_to_data_type(self, dim: Dimension) -> str:
+        if dim.type == "boolean":
+            return "BOOLEAN"
+        if dim.type == "numeric":
+            return "NUMERIC"
+        if dim.type == "time":
+            return "DATE" if dim.granularity == "day" else "TIMESTAMP"
+        return "TEXT"
+
+    def _map_fact_aggregation(self, fact_def: dict[str, Any], data_type: str | None) -> str | None:
+        agg = self._get_first(fact_def, "aggregation", "agg", "aggregate")
+        if isinstance(agg, str):
+            normalized = agg.lower()
+            mapping = {
+                "sum": "sum",
+                "avg": "avg",
+                "average": "avg",
+                "count": "count",
+                "count_distinct": "count_distinct",
+                "count distinct": "count_distinct",
+                "min": "min",
+                "max": "max",
+                "median": "median",
+            }
+            return mapping.get(normalized, normalized)
+
+        dim_type, _ = self._map_dimension_type(data_type)
+        if dim_type == "numeric":
+            return "sum"
+        return None
+
+    def _extract_extra(self, data: dict[str, Any], known_keys: set[str]) -> dict[str, Any]:
+        return {key: value for key, value in data.items() if key not in known_keys}
+
+    def _cloud_dataset_keys(self) -> set[str]:
+        return {
+            "id",
+            "identifier",
+            "name",
+            "title",
+            "description",
+            "tags",
+            "dataSourceId",
+            "data_source_id",
+            "dataSourceTableId",
+            "data_source_table_id",
+            "tablePath",
+            "table_path",
+            "table",
+            "sql",
+            "grain",
+            "primary_key",
+            "primaryKey",
+            "attributes",
+            "facts",
+            "aggregatedFacts",
+            "aggregated_facts",
+            "references",
+            "fields",
+            "workspaceDataFilterColumns",
+            "workspace_data_filter_columns",
+        }
+
+    def _cloud_attribute_keys(self) -> set[str]:
+        return {
+            "id",
+            "identifier",
+            "name",
+            "title",
+            "description",
+            "tags",
+            "sourceColumn",
+            "source_column",
+            "dataType",
+            "data_type",
+            "sourceColumnDataType",
+            "source_column_data_type",
+            "labels",
+            "defaultView",
+            "default_view",
+            "type",
+        }
+
+    def _cloud_fact_keys(self) -> set[str]:
+        return {
+            "id",
+            "identifier",
+            "name",
+            "title",
+            "description",
+            "tags",
+            "sourceColumn",
+            "source_column",
+            "dataType",
+            "data_type",
+            "sourceColumnDataType",
+            "source_column_data_type",
+            "aggregation",
+            "type",
+        }
+
+    def _cloud_aggregated_fact_keys(self) -> set[str]:
+        return {
+            "id",
+            "identifier",
+            "name",
+            "title",
+            "description",
+            "tags",
+            "sourceColumn",
+            "source_column",
+            "dataType",
+            "data_type",
+            "sourceColumnDataType",
+            "source_column_data_type",
+            "sourceFactReference",
+            "source_fact_reference",
+            "aggregation",
+            "type",
+        }
+
+    def _cloud_reference_keys(self) -> set[str]:
+        return {
+            "identifier",
+            "dataset",
+            "reference",
+            "sources",
+            "sourceColumns",
+            "source_columns",
+            "sourceColumn",
+            "source_column",
+            "sourceColumnDataTypes",
+            "source_column_data_types",
+            "multivalue",
+            "multiValue",
+        }
+
+    def _cloud_date_instance_keys(self) -> set[str]:
+        return {
+            "id",
+            "identifier",
+            "name",
+            "title",
+            "description",
+            "tags",
+            "dataSourceId",
+            "data_source_id",
+            "dataSourceTableId",
+            "data_source_table_id",
+            "tablePath",
+            "table_path",
+            "granularities",
+            "granularity",
+            "granularitiesFormatting",
+            "granularities_formatting",
+        }
+
+    def _legacy_dataset_keys(self) -> set[str]:
+        return {
+            "identifier",
+            "id",
+            "name",
+            "title",
+            "description",
+            "tags",
+            "anchor",
+            "attributes",
+            "facts",
+            "labels",
+            "references",
+            "table",
+            "sql",
+        }
+
+    def _legacy_attribute_keys(self) -> set[str]:
+        return {
+            "identifier",
+            "id",
+            "name",
+            "title",
+            "description",
+            "labels",
+            "sourceColumn",
+            "source_column",
+            "dataType",
+            "data_type",
+        }
+
+    def _legacy_fact_keys(self) -> set[str]:
+        return {
+            "identifier",
+            "id",
+            "name",
+            "title",
+            "description",
+            "sourceColumn",
+            "source_column",
+            "dataType",
+            "data_type",
+        }

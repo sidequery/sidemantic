@@ -1,25 +1,25 @@
-// Example Vite config: regenerate Sidemantic types automatically.
+// Example Vite config: regenerate sqlctx types automatically.
 //
-// With this plugin the "build step" is invisible — `sidemantic.client.generated.ts` and
-// `sidemantic.queries.generated.ts` are rewritten on dev-server start and whenever
+// With this plugin the "build step" is invisible — `sqlctx.client.generated.ts` and
+// `sqlctx.queries.generated.ts` are rewritten on dev-server start and whenever
 // `models.yml` (or a scanned source) changes. You import the real generated files, so the
 // editor / `tsc` get full `as const` autocomplete with no manual `gen types` command.
 //
-//   import { schema } from "./sidemantic.client.generated";
-//   import type { GeneratedQueries } from "./sidemantic.queries.generated";
-//   import { createClient, createSqlClient } from "sidemantic-wasm/client";
+//   import { schema } from "./sqlctx.client.generated";
+//   import type { GeneratedQueries } from "./sqlctx.queries.generated";
+//   import { createClient, createSqlClient } from "sqlctx-wasm/client";
 
 import { defineConfig } from "vite";
-import { sidemantic } from "sidemantic-wasm/vite";
+import { sqlctx } from "sqlctx-wasm/vite";
 
 export default defineConfig({
   plugins: [
-    sidemantic({
+    sqlctx({
       models: "models.yml",
-      output: "sidemantic.client.generated.ts",
+      output: "sqlctx.client.generated.ts",
       sql: {
         sources: ["queries.ts"],
-        output: "sidemantic.queries.generated.ts",
+        output: "sqlctx.queries.generated.ts",
       },
     }),
   ],

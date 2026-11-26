@@ -5,8 +5,8 @@ from copy import deepcopy
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.interchange.ossie import (
+from sqlctx import SemanticLayer
+from sqlctx.interchange.ossie import (
     CURRENT_OSSIE_SCHEMA_COMMIT,
     LATEST_OSSIE_SCHEMA_COMMIT,
     OssieParseOptions,
@@ -158,7 +158,7 @@ def test_latest_model_count_star_preserves_source_but_refuses_ambiguous_wide_exe
     assert lowered.parse_result.valid
     assert lowered.semantic_validation.valid
     assert lowered.executable
-    from sidemantic.sql.ossie_wide import OssieWideQueryError, compile_ossie_wide_query
+    from sqlctx.sql.ossie_wide import OssieWideQueryError, compile_ossie_wide_query
 
     graph = next(iter(lowered.catalog.scopes.values())).graph
     with pytest.raises(OssieWideQueryError, match="E_AMBIGUOUS_MEASURE_GRAIN"):

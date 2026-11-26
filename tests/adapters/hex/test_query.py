@@ -2,12 +2,12 @@
 
 import pytest
 
-from sidemantic.adapters.hex import HexAdapter
+from sqlctx.adapters.hex import HexAdapter
 
 
 def test_query_imported_hex_example():
     """Test that we can compile queries from imported Hex schema."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     adapter = HexAdapter()
     graph = adapter.parse("tests/fixtures/hex/orders.yml")

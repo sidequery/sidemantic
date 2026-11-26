@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from sidemantic.db.snowflake import SnowflakeAdapter, SnowflakeResult
+from sqlctx.db.snowflake import SnowflakeAdapter, SnowflakeResult
 
 
 def _block_import(monkeypatch, module_prefix: str) -> None:
@@ -150,7 +150,7 @@ def test_snowflake_query_history_sql():
 
     class FakeResult:
         def fetchall(self):
-            return [["select 1 -- sidemantic: y"], [None]]
+            return [["select 1 -- sqlctx: y"], [None]]
 
     def fake_execute(sql):
         captured["sql"] = sql
@@ -164,10 +164,10 @@ def test_snowflake_query_history_sql():
     assert "-5" in captured["sql"]
     assert "LIMIT 10" in captured["sql"]
     assert "query_text NOT ILIKE '%INFORMATION_SCHEMA.QUERY_HISTORY%'" in captured["sql"]
-    assert results == ["select 1 -- sidemantic: y"]
+    assert results == ["select 1 -- sqlctx: y"]
 
     adapter.get_query_history(days_back=5, limit=10, instrumented_only=False)
-    assert "query_text LIKE '%-- sidemantic:%'" not in captured["sql"]
+    assert "query_text LIKE '%-- sqlctx:%'" not in captured["sql"]
 
 
 def test_snowflake_result_ordering_and_exhaustion():

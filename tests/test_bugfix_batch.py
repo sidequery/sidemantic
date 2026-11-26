@@ -6,13 +6,13 @@ Each test targets a specific fix to ensure it works correctly and doesn't regres
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Segment
-from sidemantic.core.inheritance import merge_metric, merge_model
-from sidemantic.core.pre_aggregation import PreAggregation
-from sidemantic.core.preagg_matcher import PreAggregationMatcher
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx import Dimension, Metric, Model, Segment
+from sqlctx.core.inheritance import merge_metric, merge_model
+from sqlctx.core.pre_aggregation import PreAggregation
+from sqlctx.core.preagg_matcher import PreAggregationMatcher
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.generator import SQLGenerator
 from tests.utils import fetch_dicts
 
 # ==========================================================================

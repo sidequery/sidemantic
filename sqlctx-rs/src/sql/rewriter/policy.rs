@@ -1,0 +1,587 @@
+//! Bind SQL scopes, then secure and compile semantic leaves independently.
+
+use super::*;
+
+pub(super) fn unsupported() -> SqlctxError {
+    SqlctxError::UnsupportedSemanticFeatures {
+        capabilities: vec!["rewrite.policy_select_shape".into()],
+    }
+}
+
+fn validate_generated_cte_names(select: &Select, user_names: &HashSet<String>) -> Result<()> {
+    if user_names.is_empty() {
+        return Ok(());
+    }
+
+    fn check_select(value: &serde_json::Value, user_names: &HashSet<String>) -> Result<()> {
+        if let Some(ctes) = value
+            .get("with")
+            .and_then(|with| with.get("ctes"))
+            .and_then(serde_json::Value::as_array)
+        {
+            for cte in ctes {
+                if let Some(name) = cte
+                    .get("alias")
+                    .and_then(|alias| alias.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|name| user_names.contains(&name.to_ascii_lowercase()))
+                {
+                    return Err(SqlctxError::Validation(format!(
+                        "CTE name '{name}' conflicts with an internally generated name"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // This check does not rewrite anything. In particular, do not deserialize
+    // every generated subtree through Expression's large recursive serde
+    // visitor, or reconstruct an AST that the caller immediately discards.
+    let value = serde_json::to_value(select)
+        .map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+    check_select(&value, user_names)?;
+    let mut pending = vec![&value];
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if let Some(select) = fields.get("select").filter(|_| fields.len() == 1) {
+                    check_select(select, user_names)?;
+                }
+                pending.extend(fields.values());
+            }
+            serde_json::Value::Array(values) => pending.extend(values),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// User CTE names must not capture physical reads introduced by the compiler.
+/// Allocate names outside both the input namespace and model source namespace.
+struct CteNames {
+    reserved: HashSet<String>,
+    next: usize,
+}
+
+impl CteNames {
+    fn new(
+        statement: &Expression,
+        graph: &SemanticGraph,
+        policy_definitions: &str,
+    ) -> Result<Self> {
+        let mut reserved = HashSet::new();
+        for definition in graph
+            .models()
+            .map(serde_json::to_string)
+            .chain(graph.metrics().map(serde_json::to_string))
+            .chain(std::iter::once(serde_json::to_string(statement)))
+            .chain(std::iter::once(Ok(policy_definitions.to_owned())))
+        {
+            // Source reads can occur inside trusted SQL definitions as well as
+            // model.table. Reserve those tokens and the complete input AST,
+            // including children omitted by polyglot's public traversal.
+            let definition =
+                definition.map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+            reserved.extend(
+                definition
+                    .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+                    .filter(|token| !token.is_empty())
+                    .map(str::to_ascii_lowercase),
+            );
+        }
+        Ok(Self { reserved, next: 0 })
+    }
+
+    fn allocate(&mut self) -> Identifier {
+        loop {
+            let name = format!("__sqlctx_input_cte_{}", self.next);
+            self.next += 1;
+            if self.reserved.insert(name.clone()) {
+                return Identifier::new(name);
+            }
+        }
+    }
+}
+
+impl QueryRewriter<'_> {
+    /// Reserve trusted source names before a syntax extension lowers its own
+    /// semantics. The empty graph makes the shared scope walker rename only.
+    pub(super) fn rename_user_ctes(&self, statement: Expression) -> Result<Expression> {
+        let definitions = self
+            .graph
+            .models()
+            .map(serde_json::to_string)
+            .chain(self.graph.metrics().map(serde_json::to_string))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+        let reserved = format!("{} {}", self.policy_definitions, definitions.join(" "));
+        let graph = SemanticGraph::new();
+        let rewriter = QueryRewriter {
+            graph: &graph,
+            query_preparer: None,
+            policy_definitions: &reserved,
+            rename_only: true,
+            security_controls: false,
+            qualified_tables_physical: false,
+            warnings: std::cell::RefCell::new(Vec::new()),
+            used_preaggregation: std::cell::Cell::new(false),
+            emitted_dialect: std::cell::Cell::new(None),
+        };
+        rewriter.rewrite_policy_statement(statement)
+    }
+
+    pub(super) fn rewrite_policy_statement(&self, statement: Expression) -> Result<Expression> {
+        let mut names = CteNames::new(&statement, self.graph, self.policy_definitions)?;
+        self.rewrite_policy_query(statement, &HashMap::new(), &mut names, false)
+    }
+
+    fn rewrite_policy_query(
+        &self,
+        statement: Expression,
+        inherited_ctes: &HashMap<String, Identifier>,
+        names: &mut CteNames,
+        nested: bool,
+    ) -> Result<Expression> {
+        // Set operations own their WITH/ORDER/LIMIT clauses. Rewrite their
+        // operands without moving those clauses onto an individual SELECT.
+        match statement {
+            Expression::Union(mut set) => {
+                let ctes = self.rewrite_ctes(&mut set.with, inherited_ctes, names)?;
+                set.left = self.rewrite_policy_query(set.left.clone(), &ctes, names, nested)?;
+                set.right = self.rewrite_policy_query(set.right.clone(), &ctes, names, nested)?;
+                return self.rewrite_set_clauses(Expression::Union(set), &ctes, names);
+            }
+            Expression::Intersect(mut set) => {
+                let ctes = self.rewrite_ctes(&mut set.with, inherited_ctes, names)?;
+                set.left = self.rewrite_policy_query(set.left.clone(), &ctes, names, nested)?;
+                set.right = self.rewrite_policy_query(set.right.clone(), &ctes, names, nested)?;
+                return self.rewrite_set_clauses(Expression::Intersect(set), &ctes, names);
+            }
+            Expression::Except(mut set) => {
+                let ctes = self.rewrite_ctes(&mut set.with, inherited_ctes, names)?;
+                set.left = self.rewrite_policy_query(set.left.clone(), &ctes, names, nested)?;
+                set.right = self.rewrite_policy_query(set.right.clone(), &ctes, names, nested)?;
+                return self.rewrite_set_clauses(Expression::Except(set), &ctes, names);
+            }
+            Expression::Subquery(mut query) => {
+                query.this = self.rewrite_policy_query(query.this, inherited_ctes, names, true)?;
+                return Ok(Expression::Subquery(query));
+            }
+            Expression::Paren(mut paren) => {
+                paren.this =
+                    self.rewrite_policy_query(paren.this, inherited_ctes, names, nested)?;
+                return Ok(Expression::Paren(paren));
+            }
+            Expression::Select(_) => {}
+            other if self.query_preparer.is_none() => return Ok(other),
+            Expression::Values(values) => {
+                return self.rewrite_scalar_scopes(
+                    Expression::Values(values),
+                    inherited_ctes,
+                    names,
+                )
+            }
+            _ => return Err(unsupported()),
+        }
+        let Expression::Select(mut select) = statement else {
+            unreachable!()
+        };
+        let mut with = select.with.take();
+        let user_cte_names: HashSet<String> = with
+            .as_ref()
+            .into_iter()
+            .flat_map(|with| &with.ctes)
+            .map(|cte| cte.alias.name.to_ascii_lowercase())
+            .collect();
+        let ctes = self.rewrite_ctes(&mut with, inherited_ctes, names)?;
+        if select.into.is_some() || !select.locks.is_empty() {
+            return Err(unsupported());
+        }
+        let semantic_leaf = !self.rename_only
+            && select.from.as_ref().is_some_and(|from| {
+                from.expressions.first().is_some_and(|source| {
+                    matches!(source, Expression::Table(table)
+                    if (table.schema.is_some() || table.catalog.is_some()
+                        || !ctes.contains_key(&table.name.name.to_ascii_lowercase()))
+                        && self.names_model(table))
+                })
+            });
+        // Scalar subqueries form independent scopes, including when hidden in
+        // typed function arguments. Do not revisit already compiled sources.
+        let from = select.from.take();
+        let joins = std::mem::take(&mut select.joins);
+        let mut scalars = serde_json::to_value(&select)
+            .map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+        self.rewrite_scalar_values(&mut scalars, &ctes, names)?;
+        select = serde_json::from_value(scalars)
+            .map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+        select.from = from;
+        select.joins = joins;
+        if semantic_leaf {
+            if let Some(from) = &select.from {
+                if let Some(Expression::Table(table)) = from.expressions.first() {
+                    // `metrics` is a virtual relation, not a physical table in
+                    // an arbitrary catalog/schema. Qualified model names still
+                    // resolve through the policy preparer below.
+                    if self.query_preparer.is_some()
+                        && table.name.name.eq_ignore_ascii_case("metrics")
+                        && (table.schema.is_some() || table.catalog.is_some())
+                    {
+                        return Err(unsupported());
+                    }
+                    validate_table(table)?;
+                    if !table.column_aliases.is_empty() {
+                        return Err(unsupported());
+                    }
+                }
+            }
+            let mut compiled = self.compile_semantic_select(*select, nested)?;
+            // Keep the existing semantic-root error contract even though the
+            // renamed input CTE would no longer capture the generated source.
+            // Only names actually emitted for this query are conflicts.
+            validate_generated_cte_names(&compiled, &user_cte_names)?;
+            compiled.with = with;
+            return Ok(Expression::Select(Box::new(compiled)));
+        }
+        if select.from.is_none() && has_star_projection(&select.expressions) {
+            return Err(SqlctxError::Validation(
+                "SELECT * requires a FROM clause with a single table".into(),
+            ));
+        }
+        if let Some(from) = &mut select.from {
+            for source in &mut from.expressions {
+                *source = self.rewrite_policy_source(source.clone(), &ctes, names)?;
+            }
+        }
+        for join in &mut select.joins {
+            join.this = self.rewrite_policy_source(join.this.clone(), &ctes, names)?;
+            if let Some(on) = join.on.take() {
+                join.on = Some(self.rewrite_scalar_scopes(on, &ctes, names)?);
+            }
+        }
+        select.with = with;
+        Ok(Expression::Select(select))
+    }
+
+    fn rewrite_ctes(
+        &self,
+        with: &mut Option<With>,
+        inherited: &HashMap<String, Identifier>,
+        names: &mut CteNames,
+    ) -> Result<HashMap<String, Identifier>> {
+        let mut ctes = inherited.clone();
+        if let Some(with) = with {
+            let mut local = HashSet::new();
+            for cte in &mut with.ctes {
+                let original = cte.alias.name.to_ascii_lowercase();
+                if !local.insert(original.clone()) {
+                    return Err(unsupported());
+                }
+                let alias = names.allocate();
+                // Recursive bodies see their own new binding; ordinary bodies
+                // see the preceding/inherited binding until the body finishes.
+                if with.recursive {
+                    ctes.insert(original.clone(), alias.clone());
+                }
+                cte.this = self.rewrite_policy_query(cte.this.clone(), &ctes, names, true)?;
+                cte.alias = alias.clone();
+                ctes.insert(original, alias);
+            }
+        }
+        Ok(ctes)
+    }
+
+    fn rewrite_scalar_scopes(
+        &self,
+        expression: Expression,
+        ctes: &HashMap<String, Identifier>,
+        names: &mut CteNames,
+    ) -> Result<Expression> {
+        binding::transform_nodes(expression, &mut |node| {
+            if matches!(
+                node,
+                Expression::Select(_)
+                    | Expression::Subquery(_)
+                    | Expression::Union(_)
+                    | Expression::Intersect(_)
+                    | Expression::Except(_)
+            ) {
+                return self
+                    .rewrite_policy_query(node.clone(), ctes, names, true)
+                    .map(Some);
+            }
+            if self.query_preparer.is_some()
+                && matches!(
+                    node,
+                    Expression::Table(_) | Expression::Raw(_) | Expression::Command(_)
+                )
+            {
+                return Err(unsupported());
+            }
+            Ok(None)
+        })
+    }
+
+    fn rewrite_scalar_values(
+        &self,
+        value: &mut serde_json::Value,
+        ctes: &HashMap<String, Identifier>,
+        names: &mut CteNames,
+    ) -> Result<()> {
+        if value.as_object().is_some_and(|fields| fields.len() == 1) {
+            if let Ok(expression) = serde_json::from_value::<Expression>(value.clone()) {
+                *value = serde_json::to_value(self.rewrite_scalar_scopes(expression, ctes, names)?)
+                    .map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+                return Ok(());
+            }
+        }
+        match value {
+            serde_json::Value::Object(fields) => {
+                for child in fields.values_mut() {
+                    self.rewrite_scalar_values(child, ctes, names)?;
+                }
+            }
+            serde_json::Value::Array(children) => {
+                for child in children {
+                    self.rewrite_scalar_values(child, ctes, names)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn rewrite_set_clauses(
+        &self,
+        expression: Expression,
+        ctes: &HashMap<String, Identifier>,
+        names: &mut CteNames,
+    ) -> Result<Expression> {
+        let mut value = serde_json::to_value(expression)
+            .map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+        let fields = value
+            .as_object_mut()
+            .expect("expression node")
+            .values_mut()
+            .next()
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("set node");
+        for (name, child) in fields {
+            if !matches!(name.as_str(), "left" | "right" | "with") {
+                self.rewrite_scalar_values(child, ctes, names)?;
+            }
+        }
+        serde_json::from_value(value).map_err(|error| SqlctxError::SqlGeneration(error.to_string()))
+    }
+
+    fn rewrite_policy_source(
+        &self,
+        source: Expression,
+        ctes: &HashMap<String, Identifier>,
+        names: &mut CteNames,
+    ) -> Result<Expression> {
+        match source {
+            Expression::Table(mut table) => {
+                let binding = (table.schema.is_none() && table.catalog.is_none())
+                    .then(|| ctes.get(&table.name.name.to_ascii_lowercase()))
+                    .flatten();
+                let Some(binding) = binding else {
+                    if self.query_preparer.is_some() {
+                        return Err(unsupported());
+                    }
+                    return Ok(Expression::Table(table));
+                };
+                validate_table(&table)?;
+                // Retain the user's qualifier, including quoted aliases.
+                if table.alias.is_none() {
+                    table.alias = Some(table.name.clone());
+                }
+                table.name = binding.clone();
+                Ok(Expression::Table(table))
+            }
+            Expression::Subquery(mut subquery) => {
+                subquery.this = self.rewrite_policy_query(subquery.this, ctes, names, true)?;
+                Ok(Expression::Subquery(subquery))
+            }
+            Expression::Alias(mut alias) => {
+                alias.this = self.rewrite_policy_source(alias.this, ctes, names)?;
+                if let Expression::Table(table) = &mut alias.this {
+                    table.alias = None;
+                }
+                Ok(Expression::Alias(alias))
+            }
+            Expression::Paren(mut paren) => {
+                paren.this = self.rewrite_policy_source(paren.this, ctes, names)?;
+                Ok(Expression::Paren(paren))
+            }
+            Expression::JoinedTable(mut joined) => {
+                joined.left = self.rewrite_policy_source(joined.left, ctes, names)?;
+                for join in &mut joined.joins {
+                    join.this = self.rewrite_policy_source(join.this.clone(), ctes, names)?;
+                    if let Some(on) = join.on.take() {
+                        join.on = Some(self.rewrite_scalar_scopes(on, ctes, names)?);
+                    }
+                }
+                Ok(Expression::JoinedTable(joined))
+            }
+            other if self.query_preparer.is_none() => {
+                self.rewrite_scalar_scopes(other, ctes, names)
+            }
+            _ => Err(unsupported()),
+        }
+    }
+}
+
+fn validate_table(table: &TableRef) -> Result<()> {
+    let mut remainder = table.clone();
+    remainder.name = Identifier::new("");
+    // Semantic model lookup uses the terminal relation name, including the
+    // schemas advertised by the PostgreSQL server. Qualifiers do not bypass
+    // semantic compilation or its policy preparer.
+    remainder.schema = None;
+    remainder.catalog = None;
+    remainder.alias = None;
+    remainder.alias_explicit_as = false;
+    remainder.column_aliases.clear();
+    remainder.trailing_comments.clear();
+    remainder.span = None;
+    if remainder != TableRef::new("") {
+        return Err(unsupported());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Dimension, Metric, Model};
+
+    #[test]
+    fn undeclared_nested_fields_are_security_errors_only_with_controls() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("physical_orders")
+                    .with_metric(Metric::sum("revenue", "amount")),
+            )
+            .unwrap();
+        let prepare = |_: &SemanticGraph, _: &mut SemanticQuery| Ok(());
+        for controls in [false, true] {
+            let rewriter = QueryRewriter::new(&graph).with_query_preparer(&prepare, "", controls);
+            let nested = rewriter
+                .rewrite("SELECT * FROM (SELECT amount FROM orders) AS scoped")
+                .unwrap_err();
+            if controls {
+                assert!(matches!(nested, SqlctxError::Security(ref message)
+                    if message.contains("semantic subquery")));
+            } else {
+                assert!(matches!(nested, SqlctxError::Validation(_)));
+            }
+            let root = rewriter.rewrite("SELECT amount FROM orders").unwrap_err();
+            assert!(matches!(root, SqlctxError::Validation(_)));
+        }
+    }
+
+    #[test]
+    fn qualified_semantic_sources_still_prepare_policy() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("private_orders")
+                    .with_dimension(Dimension::new("tenant"))
+                    .with_metric(Metric::sum("revenue", "amount")),
+            )
+            .unwrap();
+        let prepared = std::cell::Cell::new(0);
+        let prepare = |_: &SemanticGraph, query: &mut SemanticQuery| {
+            prepared.set(prepared.get() + 1);
+            assert_eq!(query.metrics, vec!["orders.revenue"]);
+            query.filters.push("orders.tenant = 1".into());
+            Ok(())
+        };
+        let rewriter = QueryRewriter::new(&graph).with_query_preparer(&prepare, "", true);
+        for source in [
+            "main.orders",
+            "\"main\".\"orders\"",
+            "semantic_layer.orders",
+        ] {
+            // A same-named CTE only shadows unqualified relations.
+            let sql =
+                format!("WITH orders AS (SELECT 0 AS revenue) SELECT o.revenue FROM {source} AS o");
+            let rewritten = rewriter.rewrite(&sql).unwrap();
+            assert!(rewritten.contains("private_orders"), "{rewritten}");
+            assert!(rewritten.contains("tenant = 1"), "{rewritten}");
+            assert!(!rewritten.contains(source), "{rewritten}");
+        }
+        assert_eq!(prepared.get(), 3);
+        for source in [
+            "main.metrics",
+            "\"main\".\"metrics\"",
+            "catalog.main.metrics",
+        ] {
+            for sql in [
+                format!("SELECT orders.revenue FROM {source}"),
+                format!("SELECT * FROM (SELECT orders.revenue FROM {source}) AS q"),
+            ] {
+                assert!(
+                    matches!(
+                        rewriter.rewrite(&sql),
+                        Err(SqlctxError::UnsupportedSemanticFeatures { .. })
+                    ),
+                    "{sql}"
+                );
+            }
+        }
+        assert_eq!(prepared.get(), 3);
+
+        let deny = |_: &SemanticGraph, _: &mut SemanticQuery| {
+            Err(SqlctxError::Validation("access denied".into()))
+        };
+        let rewriter = QueryRewriter::new(&graph).with_query_preparer(&deny, "", true);
+        assert!(rewriter
+            .rewrite("SELECT revenue FROM main.orders")
+            .unwrap_err()
+            .to_string()
+            .contains("access denied"));
+        assert!(rewriter
+            .rewrite("SELECT * FROM main.private_orders")
+            .unwrap_err()
+            .to_string()
+            .contains("rewrite.policy_select_shape"));
+    }
+
+    #[test]
+    fn generated_cte_conflicts_preserve_semantic_root_contract() {
+        let mut graph = SemanticGraph::new();
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("physical_orders")
+                    .with_dimension(Dimension::categorical("status"))
+                    .with_metric(Metric::sum("revenue", "amount")),
+            )
+            .unwrap();
+        let rewriter = QueryRewriter::new(&graph);
+        for name in ["orders_cte", "ORDERS_CTE"] {
+            let sql = format!(
+                "WITH {name} AS (SELECT 'paid' AS status) \
+                 SELECT orders.revenue FROM orders \
+                 WHERE orders.status IN (SELECT status FROM {name})"
+            );
+            assert!(rewriter
+                .rewrite(&sql)
+                .unwrap_err()
+                .to_string()
+                .contains("conflicts with an internally generated name"));
+        }
+        let sql = "WITH customers_cte AS (SELECT 'paid' AS status) \
+                   SELECT orders.revenue FROM orders \
+                   WHERE orders.status IN (SELECT status FROM customers_cte)";
+        let rewritten = rewriter.rewrite(sql).unwrap();
+        assert!(rewritten.contains("SUM("), "{rewritten}");
+        assert!(rewritten.contains("physical_orders"), "{rewritten}");
+    }
+}

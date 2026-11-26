@@ -4,22 +4,22 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import SecurityPolicy, SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.core.transport_security import rewrite_transport_sql
-from sidemantic.rust_bridge import rewrite_semantic_input
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+from sqlctx import SecurityPolicy, SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.core.transport_security import rewrite_transport_sql
+from sqlctx.rust_bridge import rewrite_semantic_input
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture
 def layer():
-    rust = pytest.importorskip("sidemantic_rs", reason="Nested policy SQL requires the installed Rust extension")
+    rust = pytest.importorskip("sqlctx_rs", reason="Nested policy SQL requires the installed Rust extension")
     assert callable(rust.rewrite_with_semantic_input_context)
     layer = SemanticLayer(engine="rust", fallback=False, auto_register=False, enforce_visibility=True)
-    layer.graph = SidemanticAdapter().parse(FIXTURES / "policy_aggregate.yml")
+    layer.graph = SqlctxAdapter().parse(FIXTURES / "policy_aggregate.yml")
     # A purchases-only query does not participate in the accounts model. Give
     # this fixture its own tenant policy: an accounts policy alone would leave
     # all 1,980 non-deleted purchases visible, making these isolation assertions
@@ -117,10 +117,10 @@ def test_cte_named_like_physical_source_cannot_capture_compiler_read(layer):
 
 
 def test_internal_cte_names_do_not_collide_with_trusted_sql_sources(layer):
-    layer.adapter.execute("alter table aggregate_purchases rename to __sidemantic_input_cte_0")
+    layer.adapter.execute("alter table aggregate_purchases rename to __sqlctx_input_cte_0")
     purchases = layer.graph.models["purchases"]
     purchases.table = None
-    purchases.sql = "select * from __sidemantic_input_cte_0"
+    purchases.sql = "select * from __sqlctx_input_cte_0"
     assert rows(
         layer,
         """
@@ -134,10 +134,10 @@ def test_internal_cte_names_do_not_collide_with_trusted_sql_sources(layer):
 def test_user_cte_cannot_capture_private_policy_entitlement_source(layer, policy_kind):
     # The first candidate is reserved by the input alias. The next candidate
     # names a real entitlement source declared only in the private policy map.
-    layer.adapter.execute("create table __sidemantic_input_cte_1(tenant integer)")
-    layer.adapter.execute("insert into __sidemantic_input_cte_1 values (1)")
+    layer.adapter.execute("create table __sqlctx_input_cte_1(tenant integer)")
+    layer.adapter.execute("insert into __sqlctx_input_cte_1 values (1)")
     accounts = layer.graph.models["accounts"]
-    predicate = "tenant in (select tenant from __sidemantic_input_cte_1)"
+    predicate = "tenant in (select tenant from __sqlctx_input_cte_1)"
     accounts.security = SecurityPolicy(row_filters=[predicate]) if policy_kind == "security" else None
     if policy_kind == "invariant":
         accounts.invariant_filters.append(predicate)
@@ -152,7 +152,7 @@ def test_user_cte_cannot_capture_private_policy_entitlement_source(layer, policy
         with hostile as (
             select purchases.id as tenant from metrics
         )
-        select purchases.revenue as __sidemantic_input_cte_0 from metrics
+        select purchases.revenue as __sqlctx_input_cte_0 from metrics
     """
     # The hostile CTE includes purchase ID 2, which would authorize tenant 2
     # if it captured the entitlement table. Its real policy permits only 1.

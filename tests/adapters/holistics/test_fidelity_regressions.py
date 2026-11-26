@@ -2,10 +2,10 @@
 
 import pytest
 
-from sidemantic.adapters.holistics import HolisticsAdapter
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.fidelity import capture_import_report
+from sqlctx.adapters.holistics import HolisticsAdapter
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.fidelity import capture_import_report
 
 
 @pytest.mark.parametrize(
@@ -45,10 +45,10 @@ def test_single_file_export_rejects_multiple_models(tmp_path):
 
 @pytest.mark.parametrize("format_name", ["hex", "holistics", "omni"])
 def test_unplaced_graph_metrics_cannot_disappear(tmp_path, format_name):
-    from sidemantic.adapters.hex import HexAdapter
-    from sidemantic.adapters.omni import OmniAdapter
-    from sidemantic.core.metric import Metric
-    from sidemantic.fidelity import capture_export_report
+    from sqlctx.adapters.hex import HexAdapter
+    from sqlctx.adapters.omni import OmniAdapter
+    from sqlctx.core.metric import Metric
+    from sqlctx.fidelity import capture_export_report
 
     adapter = {"hex": HexAdapter, "holistics": HolisticsAdapter, "omni": OmniAdapter}[format_name]()
     graph = SemanticGraph()
@@ -66,15 +66,15 @@ def test_unplaced_graph_metrics_cannot_disappear(tmp_path, format_name):
     "expression", ["'filter(example)'", 'concat("filter(example)", "x")', "'it''s running_total()'"]
 )
 def test_aql_strings_are_not_function_calls(expression):
-    from sidemantic.adapters.holistics import _translate_aql_to_sql
+    from sqlctx.adapters.holistics import _translate_aql_to_sql
 
     assert _translate_aql_to_sql(expression) == expression
 
 
 def test_directory_load_keeps_valid_models_beside_a_malformed_file(tmp_path, caplog):
     """A directory is parsed as one AML project; a broken file must not hide its siblings."""
-    from sidemantic import SemanticLayer
-    from sidemantic.loaders import load_from_directory
+    from sqlctx import SemanticLayer
+    from sqlctx.loaders import load_from_directory
 
     (tmp_path / "orders.model.aml").write_text(
         "Model orders {\n  type: 'table'\n  table_name: 'orders'\n"

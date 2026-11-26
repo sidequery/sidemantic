@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import Metric, Model
-from sidemantic.adapters.metricflow import MetricFlowAdapter
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx import Metric, Model
+from sqlctx.adapters.metricflow import MetricFlowAdapter
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.generator import SQLGenerator
 
 # =============================================================================
 # PARSING TESTS
@@ -661,7 +661,7 @@ def test_metricflow_conversion_metrics():
     assert buys is not None
 
     # MetricFlow conversion metrics reference base/conversion *measures*, which
-    # have no faithful mapping to Sidemantic's event-filter conversion funnel.
+    # have no faithful mapping to sqlctx's event-filter conversion funnel.
     # They are retained as non-queryable metadata rather than registered as
     # broken queryable metrics, so they never appear in graph.metrics.
     assert "visit_to_buy_conversion_rate" not in graph.metrics
@@ -957,7 +957,7 @@ def test_metricflow_latest_spec_models():
     assert mtd.grain_to_date == "month"
 
     # Conversion with promoted base_metric/conversion_metric/entity is retained
-    # as non-queryable metadata (no faithful mapping to Sidemantic's funnel).
+    # as non-queryable metadata (no faithful mapping to sqlctx's funnel).
     assert "order_to_repeat_conversion" not in graph.metrics
     conv = graph.metadata["metricflow_conversion_metrics"]["order_to_repeat_conversion"]
     assert conv["entity"] == "customer"
@@ -1166,7 +1166,7 @@ def test_metricflow_conversion_metrics_not_queryable_metadata_only():
     """Conversion metrics are retained as metadata, never registered as metrics.
 
     MetricFlow conversion metrics reference base/conversion *measures*, which do
-    not map to Sidemantic's event-filter conversion funnel. Registering one
+    not map to sqlctx's event-filter conversion funnel. Registering one
     would generate wrong SQL (filtering an event_type dimension by a measure
     name), so the spec is captured in graph metadata instead.
     """
@@ -1290,9 +1290,9 @@ def test_metricflow_disabled_model_skips_inline_metrics():
 
 
 def test_metricflow_unrepresentable_agg_is_skipped():
-    """An ``agg`` Sidemantic cannot represent is skipped, not coerced to sum.
+    """An ``agg`` sqlctx cannot represent is skipped, not coerced to sum.
 
-    MetricFlow allows ``agg: percentile`` (with ``agg_params``). Sidemantic has no
+    MetricFlow allows ``agg: percentile`` (with ``agg_params``). sqlctx has no
     percentile aggregation, and the agg mapper previously defaulted unknown aggs
     to ``sum``, so ``revenue_p95`` parsed as ``SUM(amount)`` and silently returned
     the wrong value. Such metrics/measures must be dropped while representable

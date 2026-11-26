@@ -1,7 +1,7 @@
 /**
- * Sidemantic MetricsExplorer anywidget
+ * sqlctx MetricsExplorer anywidget
  *
- * Ported from the sidemantic-demo Pyodide implementation.
+ * Ported from the sqlctx-demo Pyodide implementation.
  * Renders metric cards with sparklines and dimension leaderboards.
  */
 
@@ -14,7 +14,7 @@ import {
   renderMetricSummaryCards as mountMetricCards,
   renderState as mountState,
   toggleFilterValue,
-} from "../plugins/sidemantic/skills/webapp-builder/assets/ui-dist/sidemantic-ui-static.js";
+} from "../plugins/sqlctx/skills/webapp-builder/assets/ui-dist/sqlctx-ui-static.js";
 
 // ============================================================================
 // Utility Functions
@@ -193,7 +193,7 @@ function parseArrowIPC(dataRaw) {
 function render({ model, el }) {
   // Create widget structure
   el.innerHTML = `
-    <div class="sidemantic-widget">
+    <div class="sqlctx-widget">
       <div class="widget-header">
         <div class="filter-scroll">
           <div class="filter-pills"></div>

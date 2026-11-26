@@ -2,9 +2,9 @@
 
 import pytest
 
-import sidemantic.core.semantic_layer as semantic_layer_module
-import sidemantic.rust_bridge as rust_bridge
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+import sqlctx.core.semantic_layer as semantic_layer_module
+import sqlctx.rust_bridge as rust_bridge
+from sqlctx import Dimension, Metric, Model, SemanticLayer
 
 
 class FakeRustModule:
@@ -39,8 +39,8 @@ def test_semantic_layer_rust_engine_uses_rust_compile_without_sql_string_verific
 
 
 def test_semantic_layer_python_engine_ignores_rust_env_flags(monkeypatch):
-    monkeypatch.setenv("SIDEMANTIC_RS_SQL_GENERATOR", "1")
-    monkeypatch.setenv("SIDEMANTIC_RS_QUERY_VALIDATION", "1")
+    monkeypatch.setenv("SQLCTX_RS_SQL_GENERATOR", "1")
+    monkeypatch.setenv("SQLCTX_RS_QUERY_VALIDATION", "1")
 
     layer = SemanticLayer(engine="python")
 
@@ -100,7 +100,7 @@ def test_engine_selection_sends_supported_query_options_to_rust(monkeypatch, eng
 
 @pytest.mark.parametrize("engine,fallback", [("rust", None), ("auto", None), ("rust", True), ("auto", False)])
 def test_engine_selection_sends_resolved_explore_anchor_to_rust(monkeypatch, engine, fallback):
-    from sidemantic.core.consumption import Explore
+    from sqlctx.core.consumption import Explore
 
     layer = _engine_layer(monkeypatch, engine, fallback)
     layer.add_explore(Explore(name="sales", model="orders", default_metrics=["orders.revenue"]))
@@ -142,7 +142,7 @@ def test_auto_engine_propagates_unexpected_failures(monkeypatch, stage, failure)
 
 
 def test_auto_engine_reports_missing_backend(monkeypatch):
-    from sidemantic.semantic_handoff import RustBackendUnavailableError
+    from sqlctx.semantic_handoff import RustBackendUnavailableError
 
     def unavailable():
         raise RustBackendUnavailableError("extension not installed")
@@ -155,7 +155,7 @@ def test_auto_engine_reports_missing_backend(monkeypatch):
 
 
 def test_auto_engine_does_not_compile_with_rust_after_unsupported_validation(monkeypatch):
-    from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+    from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 
     layer = _engine_layer(monkeypatch, "auto")
 
@@ -187,7 +187,7 @@ def test_auto_engine_rejects_empty_compiler_output(monkeypatch, sql):
 
 @pytest.mark.parametrize("engine,reject", [("rust", True), ("auto", False)])
 def test_compiler_capability_failure_obeys_engine_mode(monkeypatch, engine, reject):
-    from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+    from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 
     layer = _engine_layer(monkeypatch, engine)
 
@@ -205,7 +205,7 @@ def test_compiler_capability_failure_obeys_engine_mode(monkeypatch, engine, reje
 
 
 def test_cached_sql_restores_the_engine_selection_of_its_compilation(monkeypatch):
-    import sidemantic.core.transport_security as transport_security
+    import sqlctx.core.transport_security as transport_security
 
     layer = _engine_layer(monkeypatch, "auto")
     calls = []

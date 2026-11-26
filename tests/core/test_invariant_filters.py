@@ -1,14 +1,14 @@
 """Model invariant filters are unconditional source-row constraints."""
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.inheritance import merge_model
-from sidemantic.core.pre_aggregation import PreAggregation
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.core.transport_security import deny_raw_sql
-from sidemantic.rust_bridge import _model_dump_for_rust
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.inheritance import merge_model
+from sqlctx.core.pre_aggregation import PreAggregation
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.core.transport_security import deny_raw_sql
+from sqlctx.rust_bridge import _model_dump_for_rust
+from sqlctx.sql.query_rewriter import QueryRewriter
 
 
 def _orders() -> Model:
@@ -155,12 +155,12 @@ def test_partitioned_preaggregation_scopes_bucket_discovery_and_materialization(
 
 
 def test_inheritance_conjoins_invariants_and_rust_rewriter_falls_back(monkeypatch):
-    from sidemantic.semantic_handoff import RustBackendUnavailableError
+    from sqlctx.semantic_handoff import RustBackendUnavailableError
 
     def unavailable(*args, **kwargs):
         raise RustBackendUnavailableError("test backend unavailable")
 
-    monkeypatch.setattr("sidemantic.sql.query_rewriter.rewrite_semantic_input", unavailable)
+    monkeypatch.setattr("sqlctx.sql.query_rewriter.rewrite_semantic_input", unavailable)
     parent = Model(
         name="base",
         table="records",
@@ -171,7 +171,7 @@ def test_inheritance_conjoins_invariants_and_rust_rewriter_falls_back(monkeypatc
     merged = merge_model(child, parent)
 
     assert merged.invariant_filters == ["tenant_id = 1", "active"]
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
     exported = adapter._export_model(merged)
     assert adapter._parse_model(exported).invariant_filters == merged.invariant_filters
     layer = SemanticLayer(auto_register=False)
@@ -190,7 +190,7 @@ def test_inheritance_conjoins_invariants_and_rust_rewriter_falls_back(monkeypatc
 
 def test_native_yaml_roundtrip_preserves_invariants(tmp_path):
     path = tmp_path / "semantic.yml"
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
     graph = SemanticGraph()
     graph.add_model(_orders())
     adapter.export(graph, path)

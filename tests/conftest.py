@@ -3,7 +3,7 @@
 import pytest
 from typer import rich_utils as typer_rich_utils
 
-from sidemantic import SemanticLayer
+from sqlctx import SemanticLayer
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +30,7 @@ def pytest_addoption(parser):
 @pytest.fixture(autouse=True)
 def selected_test_engine(monkeypatch, request):
     """Run shared contracts with the selected engine without enabling fallback."""
-    monkeypatch.setenv("SIDEMANTIC_ENGINE", request.config.getoption("--test-engine"))
+    monkeypatch.setenv("SQLCTX_ENGINE", request.config.getoption("--test-engine"))
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +39,7 @@ def reset_registry():
 
     This ensures test isolation when using auto-registration.
     """
-    from sidemantic.core.registry import set_current_layer
+    from sqlctx.core.registry import set_current_layer
 
     # Clear before test to ensure no cross-test contamination
     set_current_layer(None)

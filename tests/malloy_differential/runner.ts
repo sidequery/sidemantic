@@ -27,7 +27,7 @@ type Fixture = {
   seed?: string;
   model?: string;
   malloy_query?: string;
-  sidemantic?: QuerySpec;
+  sqlctx?: QuerySpec;
   expected_schema?: string[];
   expected_rows?: Record<string, unknown>[];
 };
@@ -46,7 +46,7 @@ const DIFF_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(DIFF_DIR, "../..");
 const FIXTURE_DIR = join(DIFF_DIR, "fixtures");
 const MANIFEST_PATH = join(FIXTURE_DIR, "manifest.json");
-const PYTHON_RUNNER = join(DIFF_DIR, "sidemantic_runner.py");
+const PYTHON_RUNNER = join(DIFF_DIR, "sqlctx_runner.py");
 const STATUSES = new Set<Status>(["compatible", "unsupported", "planned"]);
 
 class LocalFileReader implements URLReader {
@@ -69,7 +69,7 @@ function assertManifest(manifest: Manifest): void {
     assert.ok(fixture.reason, `fixture ${fixture.id} needs a status reason`);
     if (fixture.status === "compatible") {
       assert.ok(fixture.source && fixture.seed && fixture.model && fixture.malloy_query, `incomplete ${fixture.id}`);
-      assert.ok(fixture.sidemantic && fixture.expected_schema && fixture.expected_rows, `incomplete ${fixture.id}`);
+      assert.ok(fixture.sqlctx && fixture.expected_schema && fixture.expected_rows, `incomplete ${fixture.id}`);
     }
   }
 }
@@ -117,8 +117,8 @@ async function runProcess(command: string[], cwd: string): Promise<string> {
   return Buffer.concat(stdout).toString("utf8").trim();
 }
 
-async function runSidemantic(workspace: string, fixture: Fixture): Promise<Result> {
-  const query = JSON.stringify(fixture.sidemantic);
+async function runSqlctx(workspace: string, fixture: Fixture): Promise<Result> {
+  const query = JSON.stringify(fixture.sqlctx);
   const output = await runProcess(
     [
       "uv",
@@ -169,23 +169,23 @@ async function runFixture(fixture: Fixture): Promise<void> {
     return;
   }
 
-  const workspace = await mkdtemp(join(tmpdir(), "sidemantic-malloy-diff-"));
+  const workspace = await mkdtemp(join(tmpdir(), "sqlctx-malloy-diff-"));
   try {
     await mkdir(join(workspace, "data"));
     await cp(join(FIXTURE_DIR, fixture.source!), join(workspace, basename(fixture.source!)));
     await cp(join(FIXTURE_DIR, fixture.seed!), join(workspace, basename(fixture.seed!)));
 
-    const sidemantic = await runSidemantic(workspace, fixture);
+    const sqlctx = await runSqlctx(workspace, fixture);
     const malloy = await runMalloy(workspace, fixture);
     const expected: Result = {
       schema: fixture.expected_schema!,
       rows: normalizeRows(fixture.expected_rows!),
     };
 
-    assert.deepEqual(sidemantic, expected, `${fixture.id}: unexpected Sidemantic result`);
+    assert.deepEqual(sqlctx, expected, `${fixture.id}: unexpected sqlctx result`);
     assert.deepEqual(malloy, expected, `${fixture.id}: unexpected Malloy result`);
-    assert.deepEqual(malloy, sidemantic, `${fixture.id}: Malloy/Sidemantic mismatch`);
-    console.log(`[pass] ${fixture.id}: Malloy and Sidemantic results match`);
+    assert.deepEqual(malloy, sqlctx, `${fixture.id}: Malloy/sqlctx mismatch`);
+    console.log(`[pass] ${fixture.id}: Malloy and sqlctx results match`);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

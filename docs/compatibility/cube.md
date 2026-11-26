@@ -1,8 +1,8 @@
 # Cube Compatibility
 
-Sidemantic's Cube adapter parses YAML schema files (`.yml` / `.yaml`) and maps Cube concepts to Sidemantic's semantic model (Model, Dimension, Metric, Segment, Relationship, PreAggregation). It also supports exporting back to Cube YAML for roundtrip workflows.
+sqlctx's Cube adapter parses YAML schema files (`.yml` / `.yaml`) and maps Cube concepts to sqlctx's semantic model (Model, Dimension, Metric, Segment, Relationship, PreAggregation). It also supports exporting back to Cube YAML for roundtrip workflows.
 
-Features are marked **supported**, **partial support**, or **unsupported**. Partial support entries include notes explaining the limitation. Properties that parse without error but have no Sidemantic equivalent (UI hints, caching config, access control) are grouped together per section rather than listed individually.
+Features are marked **supported**, **partial support**, or **unsupported**. Partial support entries include notes explaining the limitation. Properties that parse without error but have no sqlctx equivalent (UI hints, caching config, access control) are grouped together per section rather than listed individually.
 
 
 ## Export fidelity
@@ -186,7 +186,7 @@ Not mapped: join `type` (not the same as `relationship`; Cube does not use this 
 
 ## Pre-Aggregations
 
-Pre-aggregations are fully mapped to Sidemantic's `PreAggregation` model, including refresh configuration, partitioning, and indexes.
+Pre-aggregations are fully mapped to sqlctx's `PreAggregation` model, including refresh configuration, partitioning, and indexes.
 
 | Feature | Status |
 |---------|--------|
@@ -239,7 +239,7 @@ View models are marked with `meta={"cube_type": "view"}` and are excluded from C
 
 ### View Groups (top-level `view_groups`)
 
-The top-level `view_groups:` block (a UI grouping of views) is parsed and the raw definitions are preserved in `SemanticGraph.metadata["cube_view_groups"]`. Sidemantic has no first-class equivalent, so the definitions are kept verbatim for consumers that organize views.
+The top-level `view_groups:` block (a UI grouping of views) is parsed and the raw definitions are preserved in `SemanticGraph.metadata["cube_view_groups"]`. sqlctx has no first-class equivalent, so the definitions are kept verbatim for consumers that organize views.
 
 ---
 
@@ -258,7 +258,7 @@ Supported. `hierarchies:` blocks on cubes are parsed and used to set `Dimension.
 
 ## Access Control (`access_policy` / `accessPolicy`)
 
-Partially supported and **enforced**. Cube `access_policy` `row_level.filters` are imported into an enforced `Model.security` (`SecurityPolicy`) that Sidemantic applies per query when `user_attributes` are supplied; the raw `access_policy` is also preserved in `Model.meta`. Constructs with no mechanical equivalent are dropped with a warning. See [Security](../security.md).
+Partially supported and **enforced**. Cube `access_policy` `row_level.filters` are imported into an enforced `Model.security` (`SecurityPolicy`) that sqlctx applies per query when `user_attributes` are supplied; the raw `access_policy` is also preserved in `Model.meta`. Constructs with no mechanical equivalent are dropped with a warning. See [Security](../security.md).
 
 | Construct | Status |
 |-----------|--------|
@@ -302,9 +302,9 @@ Partial support. Cube supports custom calendar cubes (`calendar: true`) with cus
 
 ## SQL Syntax Normalization
 
-The adapter normalizes three Cube SQL reference patterns to Sidemantic's `{model}` placeholder:
+The adapter normalizes three Cube SQL reference patterns to sqlctx's `{model}` placeholder:
 
-| Cube Pattern | Sidemantic Output |
+| Cube Pattern | sqlctx Output |
 |-------------|-------------------|
 | `${CUBE}` | `{model}` |
 | `{CUBE}` (no dollar sign) | `{model}` |
@@ -313,13 +313,13 @@ The adapter normalizes three Cube SQL reference patterns to Sidemantic's `{model
 
 This normalization applies to dimension SQL, measure SQL, filter SQL, and segment SQL.
 
-Measure-to-measure references (`${measure_name}`) in derived measures are converted to `cube_name.measure_name` format for Sidemantic's dependency resolution.
+Measure-to-measure references (`${measure_name}`) in derived measures are converted to `cube_name.measure_name` format for sqlctx's dependency resolution.
 
 ---
 
 ## Cube Export (Roundtrip)
 
-Sidemantic can export its semantic model back to Cube YAML format.
+sqlctx can export its semantic model back to Cube YAML format.
 
 | Feature | Status |
 |---------|--------|

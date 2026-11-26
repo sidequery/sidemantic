@@ -2,14 +2,14 @@
 
 import pytest
 
-from sidemantic import Dimension, Explore, Metric, Model, SecurityPolicy, SemanticLayer
-from sidemantic.core.semantic_layer import SecurityError
+from sqlctx import Dimension, Explore, Metric, Model, SecurityPolicy, SemanticLayer
+from sqlctx.core.semantic_layer import SecurityError
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Conversion acceptance requires the real extension")
+        pytest.importorskip("sqlctx_rs", reason="Conversion acceptance requires the real extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(

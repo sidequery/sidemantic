@@ -1,6 +1,6 @@
 # Warehouse converter comparison
 
-Inspected official apache/ossie-converters commit `011ea9f9a1e2c941f351e18e071622339ccae881` and local `/workspace/sidemantic`. Product source unchanged. Upstream references below are immutable.
+Inspected official apache/ossie-converters commit `011ea9f9a1e2c941f351e18e071622339ccae881` and local `/workspace/sqlctx`. Product source unchanged. Upstream references below are immutable.
 
 ## Coverage matrix
 
@@ -11,7 +11,7 @@ Inspected official apache/ossie-converters commit `011ea9f9a1e2c941f351e18e07162
 | BigQuery | Offline Ossie → **LookML** using BigQuery SQL; no reverse importer | Bidirectional general LookML adapter plus separate BigQuery SQL connector | Overlap is LookML, not native BigQuery semantics; official exporter has stronger relationship/explore output |
 | Apache Polaris | Live Iceberg REST catalog ↔ Ossie table-schema bootstrap, Java | No Polaris converter/connector in format registry/db adapters | Genuine catalog integration gap; official is explicitly not semantic-model API integration |
 
-Local registry evidence: [LookML](/workspace/sidemantic/sidemantic/formats.py:127), [Snowflake](/workspace/sidemantic/sidemantic/formats.py:181), and whole registry `/workspace/sidemantic/sidemantic/formats.py:72`. Database connector evidence: [Databricks connection](/workspace/sidemantic/sidemantic/db/databricks.py:92), [lazy BigQuery import](/workspace/sidemantic/sidemantic/db/__init__.py:18). These database connections execute/query databases and do not imply Metric View or BigQuery semantic-document converters.
+Local registry evidence: [LookML](/workspace/sqlctx/sqlctx/formats.py:127), [Snowflake](/workspace/sqlctx/sqlctx/formats.py:181), and whole registry `/workspace/sqlctx/sqlctx/formats.py:72`. Database connector evidence: [Databricks connection](/workspace/sqlctx/sqlctx/db/databricks.py:92), [lazy BigQuery import](/workspace/sqlctx/sqlctx/db/__init__.py:18). These database connections execute/query databases and do not imply Metric View or BigQuery semantic-document converters.
 
 ## Snowflake
 
@@ -21,14 +21,14 @@ Official preserves all composite primary-key columns and unique keys (omitting a
 
 Official losses: labels, custom extensions, structured AI context other than consumed synonyms; relationship AI context; metric datatype. **Dataset-scoped metrics are silently ignored**: `_convert_dataset` processes fields only; root `_convert_model` processes metrics. Confirmed in executable probe, no warning. This is a specific upstream weakness relative to the local Cortex adapter, which parses table metrics and root metrics. The official converter has no Snowflake importer despite other documentation elsewhere discussing eventual reverse conversion.
 
-Local strengths: bidirectional facts/legacy measures, table and graph metrics, segments↔filters, synonyms/sample values, private access, nested Cortex search services, non-additive dimensions, relationship names referenced by `using_relationships`, labels/tags, verified queries, custom/module instructions. Selected metadata survives native serialization. [Field metadata](/workspace/sidemantic/sidemantic/adapters/snowflake.py:511), [top-level sections](/workspace/sidemantic/sidemantic/adapters/snowflake.py:537), [export metadata](/workspace/sidemantic/sidemantic/adapters/snowflake.py:785).
+Local strengths: bidirectional facts/legacy measures, table and graph metrics, segments↔filters, synonyms/sample values, private access, nested Cortex search services, non-additive dimensions, relationship names referenced by `using_relationships`, labels/tags, verified queries, custom/module instructions. Selected metadata survives native serialization. [Field metadata](/workspace/sqlctx/sqlctx/adapters/snowflake.py:511), [top-level sections](/workspace/sqlctx/sqlctx/adapters/snowflake.py:537), [export metadata](/workspace/sqlctx/sqlctx/adapters/snowflake.py:785).
 
 Local losses/compatibility concerns, confirmed by source:
 
-- Composite PK reduces to first column; omitted PK becomes invented `id`. No dataset unique-key preservation. [Parsing](/workspace/sidemantic/sidemantic/adapters/snowflake.py:269). Tests explicitly assert this truncation [test](/workspace/sidemantic/tests/adapters/snowflake/test_parsing.py:234).
-- Composite relationship retains first pair only; export forces `left_outer`. [Parsing](/workspace/sidemantic/sidemantic/adapters/snowflake.py:684), [export](/workspace/sidemantic/sidemantic/adapters/snowflake.py:1121).
-- **Official `Integer` → `NUMBER(38,0)` is misread as categorical and re-exported as TEXT.** Parser recognizes exact `NUMBER`, `INT`, `INTEGER`, etc., not parameterized NUMBER/DECIMAL. It also reduces temporal exports to TIMESTAMP and fact types to NUMBER. [Type parsing](/workspace/sidemantic/sidemantic/adapters/snowflake.py:331), [exports](/workspace/sidemantic/sidemantic/adapters/snowflake.py:917).
-- Model name becomes output filename stem; root description is not emitted. `base_table.definition` has no local parse path (`database/schema/table` only), so official subquery-backed source loses source SQL. [Table parsing](/workspace/sidemantic/sidemantic/adapters/snowflake.py:256), [root export](/workspace/sidemantic/sidemantic/adapters/snowflake.py:740).
+- Composite PK reduces to first column; omitted PK becomes invented `id`. No dataset unique-key preservation. [Parsing](/workspace/sqlctx/sqlctx/adapters/snowflake.py:269). Tests explicitly assert this truncation [test](/workspace/sqlctx/tests/adapters/snowflake/test_parsing.py:234).
+- Composite relationship retains first pair only; export forces `left_outer`. [Parsing](/workspace/sqlctx/sqlctx/adapters/snowflake.py:684), [export](/workspace/sqlctx/sqlctx/adapters/snowflake.py:1121).
+- **Official `Integer` → `NUMBER(38,0)` is misread as categorical and re-exported as TEXT.** Parser recognizes exact `NUMBER`, `INT`, `INTEGER`, etc., not parameterized NUMBER/DECIMAL. It also reduces temporal exports to TIMESTAMP and fact types to NUMBER. [Type parsing](/workspace/sqlctx/sqlctx/adapters/snowflake.py:331), [exports](/workspace/sqlctx/sqlctx/adapters/snowflake.py:917).
+- Model name becomes output filename stem; root description is not emitted. `base_table.definition` has no local parse path (`database/schema/table` only), so official subquery-backed source loses source SQL. [Table parsing](/workspace/sqlctx/sqlctx/adapters/snowflake.py:256), [root export](/workspace/sqlctx/sqlctx/adapters/snowflake.py:740).
 
 Executable probe: minimal flat Ossie with Integer dimensions, composite PK `[tenant_id,id]`, unique key `[id,sku]`, dataset metric COUNT(*). Official output had two NUMBER(38,0) dimensions and full keys but no dataset metric, warnings `[]`. Feeding that YAML through local Snowflake parse/export produced TEXT dimensions, only tenant_id PK, no unique keys. This demonstrates actual cross-converter interoperability loss, not just differing feature lists.
 
@@ -44,7 +44,7 @@ Do not repeat README's blanket “lossless” as universal: it applies to suppor
 
 ## BigQuery (really LookML)
 
-Official output includes views **and explores with transitive joins**; local LookML export emits `data = {"views": views}` and no explores/relationships. Local import is much broader and bidirectional, while official BigQuery has no reverse importer. [Local export](/workspace/sidemantic/sidemantic/adapters/lookml.py:4076), [official planning](https://github.com/apache/ossie-converters/blob/011ea9f9a1e2c941f351e18e071622339ccae881/bigquery/src/ossie_bigquery/ossie_to_lookml.py#L153), [official explores](https://github.com/apache/ossie-converters/blob/011ea9f9a1e2c941f351e18e071622339ccae881/bigquery/src/ossie_bigquery/ossie_to_lookml.py#L1103).
+Official output includes views **and explores with transitive joins**; local LookML export emits `data = {"views": views}` and no explores/relationships. Local import is much broader and bidirectional, while official BigQuery has no reverse importer. [Local export](/workspace/sqlctx/sqlctx/adapters/lookml.py:4076), [official planning](https://github.com/apache/ossie-converters/blob/011ea9f9a1e2c941f351e18e071622339ccae881/bigquery/src/ossie_bigquery/ossie_to_lookml.py#L153), [official explores](https://github.com/apache/ossie-converters/blob/011ea9f9a1e2c941f351e18e071622339ccae881/bigquery/src/ossie_bigquery/ossie_to_lookml.py#L1103).
 
 Official strongest features: BIGQUERY→ANSI_SQL→OSSIE_SQL_2026 selection with sqlglot conversion into BigQuery dialect; logical types/date groups and timezone distinction; collision-aware names and timeframe expansion; composite PK hidden dimensions; root and dataset-scoped metric ownership resolution; filtered aggregate rewriting; compound aggregate helper measures preserving Looker's symmetric aggregation; composite joins, aliases, transitive explore paths. [Metric planning](https://github.com/apache/ossie-converters/blob/011ea9f9a1e2c941f351e18e071622339ccae881/bigquery/src/ossie_bigquery/ossie_to_lookml.py#L802), [full mapping and caveats](https://github.com/apache/ossie-converters/blob/011ea9f9a1e2c941f351e18e071622339ccae881/bigquery/README.md).
 
@@ -61,7 +61,7 @@ Schema nuance: parser rejects wrapper/removed root dialect/vendor fields and req
 ## Verification
 
 - Local `uv run --no-sync pytest -q tests/adapters/snowflake`: **136 passed** (7.80s).
-- Upstream Snowflake using local environment and `PYTHONPATH=<upstream>/snowflake/src`, `uv run --no-sync --project /workspace/sidemantic pytest -q tests` from snowflake dir: **194 passed** (1.87s).
+- Upstream Snowflake using local environment and `PYTHONPATH=<upstream>/snowflake/src`, `uv run --no-sync --project /workspace/sqlctx pytest -q tests` from snowflake dir: **194 passed** (1.87s).
 - Upstream BigQuery equivalent in bigquery dir: **170 passed**, two expected warning messages (2.67s).
 - Initial combined upstream invocation failed import setup; corrected PYTHONPATH combined invocation had same-basename fixture collisions, so reran each suite separately, all pass. No upstream bug claimed from harness setup.
 - Databricks Java and Polaris Java tests inspected, not run (Maven unavailable). Databricks suites include generated seeded roundtrips, dialect classification, CLI, fixtures. Polaris includes parser/generator roundtrip, exporter request construction, exact type precedence, dropped-semantics warnings, importer metadata mappings and namespace-safe filenames. No live warehouse/catalog execution performed.

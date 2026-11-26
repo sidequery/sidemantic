@@ -4,15 +4,15 @@ import duckdb
 import pytest
 import yaml
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.omni import OmniAdapter
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+from sqlctx import SemanticLayer
+from sqlctx.adapters.omni import OmniAdapter
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 
 
 @pytest.mark.parametrize("engine", ["python", "rust"])
 def test_native_layout_topics_and_non_equi_join_roundtrip(tmp_path, engine):
     if engine == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires the native Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires the native Rust extension")
     source = tmp_path / "source"
     files = {
         "warehouse/orders.view": "# Reference this view as orders\nschema: main\ntable_name: orders\ndimensions:\n  id: {primary_key: true}\nmeasures:\n  revenue: {aggregate_type: sum, sql: amount}\n",
@@ -95,8 +95,8 @@ def test_join_literals_survive_roundtrip(tmp_path):
 
 
 def test_reversible_requires_boolean():
-    from sidemantic.core.model import Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.model import Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(Model(name="orders", table="orders"))
@@ -161,8 +161,8 @@ def test_query_views_are_rejected_before_fabricating_a_table(tmp_path, definitio
 
 
 def test_foreign_dimension_metadata_is_not_promoted_to_omni():
-    from sidemantic.core.dimension import Dimension
-    from sidemantic.core.model import Model
+    from sqlctx.core.dimension import Dimension
+    from sqlctx.core.model import Model
 
     model = Model(
         name="orders",
@@ -183,9 +183,9 @@ def test_foreign_dimension_metadata_is_not_promoted_to_omni():
     ],
 )
 def test_cross_format_and_edited_join_types_are_authoritative(tmp_path, metadata, expected):
-    from sidemantic.core.model import Model
-    from sidemantic.core.relationship import Relationship
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.model import Model
+    from sqlctx.core.relationship import Relationship
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(
@@ -204,7 +204,7 @@ def test_cross_format_and_edited_join_types_are_authoritative(tmp_path, metadata
 
 @pytest.mark.parametrize("edit", ["remove_relationship", "deactivate_relationship", "remove_view", "remove_base"])
 def test_retained_topics_reject_conflicting_graph_edits_before_writing(tmp_path, edit):
-    from sidemantic.fidelity import capture_export_report
+    from sqlctx.fidelity import capture_export_report
 
     source = tmp_path / "source"
     source.mkdir()
@@ -265,7 +265,7 @@ def test_edited_time_properties_override_preserved_timeframes(tmp_path, granular
 
 
 def test_conflicting_native_time_properties_are_rejected():
-    from sidemantic import Dimension, Model
+    from sqlctx import Dimension, Model
 
     model = Model(
         name="events",

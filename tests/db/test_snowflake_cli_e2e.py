@@ -3,7 +3,7 @@ import os
 import pytest
 from typer.testing import CliRunner
 
-from sidemantic.cli import app
+from sqlctx.cli import app
 
 runner = CliRunner()
 
@@ -79,7 +79,7 @@ models:
 """
     )
 
-    config_file = tmp_path / "sidemantic.yaml"
+    config_file = tmp_path / "sqlctx.yaml"
     config_file.write_text(
         """
 models_dir: ./models

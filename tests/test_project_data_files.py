@@ -1,4 +1,4 @@
-"""Tests for raw-data-file project resolution in sidemantic/project.py.
+"""Tests for raw-data-file project resolution in sqlctx/project.py.
 
 Covers ``--db`` pointing at a data file or directory, auto-discovery of a
 ``data/*.csv`` project, unchanged ``.db`` behavior, and the conventional-root
@@ -12,7 +12,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from sidemantic.project import ProjectContext
+from sqlctx.project import ProjectContext
 
 
 @pytest.mark.parametrize("suffix", ["csv", "json", "parquet", "duckdb", "db"])

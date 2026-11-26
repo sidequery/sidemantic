@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
 
 FIXTURES_DIR = Path("tests/fixtures/lookml")
 

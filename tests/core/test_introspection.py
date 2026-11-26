@@ -1,4 +1,4 @@
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sqlctx import Dimension, Metric, Model, SemanticLayer
 
 
 def test_describe_preserves_explicit_and_named_formats():

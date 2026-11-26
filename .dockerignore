@@ -9,8 +9,8 @@ __pycache__
 *.pyc
 
 # Rust/DuckDB extension builds (not needed for Python image)
-sidemantic-rs/
-sidemantic-duckdb/
+sqlctx-rs/
+sqlctx-duckdb/
 
 # Docs and examples not needed at runtime
 docs/

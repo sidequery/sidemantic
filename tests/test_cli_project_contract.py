@@ -13,8 +13,8 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-import sidemantic.cli as cli_module
-from sidemantic.cli import app
+import sqlctx.cli as cli_module
+from sqlctx.cli import app
 
 runner = CliRunner()
 
@@ -82,7 +82,7 @@ models:
     connection.execute("INSERT INTO orders VALUES (1, 'complete'), (2, 'pending')")
     connection.close()
 
-    (tmp_path / "sidemantic.yaml").write_text(
+    (tmp_path / "sqlctx.yaml").write_text(
         """
 models_dir: models
 connection:
@@ -116,7 +116,9 @@ def test_model_commands_honor_project_models_dir(
     assert expected in result.output
 
 
-def test_query_uses_project_models_and_connection(monkeypatch: pytest.MonkeyPatch, project: Path):
+@pytest.mark.parametrize("config_name", ["sqlctx.yaml", "sidemantic.yaml"])
+def test_query_uses_project_models_and_connection(monkeypatch: pytest.MonkeyPatch, project: Path, config_name: str):
+    (project / "sqlctx.yaml").rename(project / config_name)
     monkeypatch.chdir(project)
 
     result = runner.invoke(app, ["query", "SELECT order_count FROM orders"])
@@ -129,7 +131,7 @@ def test_query_uses_project_models_and_connection(monkeypatch: pytest.MonkeyPatc
 def test_project_duckdb_config_does_not_become_part_of_database_filename(
     monkeypatch: pytest.MonkeyPatch, project: Path
 ):
-    (project / "sidemantic.yaml").write_text(
+    (project / "sqlctx.yaml").write_text(
         "models_dir: models\nconnection:\n  type: duckdb\n  path: data/warehouse.duckdb\n  config:\n    threads: 1\n"
     )
     monkeypatch.chdir(project)
@@ -191,7 +193,7 @@ def test_migrate_query_path_is_relative_to_config_selected_project(
 
     result = runner.invoke(
         app,
-        ["--config", str(project / "sidemantic.yaml"), "migrate", "generate", "queries/orders.sql"],
+        ["--config", str(project / "sqlctx.yaml"), "migrate", "generate", "queries/orders.sql"],
     )
 
     assert result.exit_code == 0, result.output
@@ -265,7 +267,7 @@ def test_database_discovery_rejects_ambiguous_candidates(
     monkeypatch: pytest.MonkeyPatch,
     project: Path,
 ):
-    config = project / "sidemantic.yaml"
+    config = project / "sqlctx.yaml"
     config.write_text("models_dir: models\n")
     existing = project / "data" / "warehouse.duckdb"
     existing.rename(project / "data" / "alpha.db")
@@ -287,7 +289,7 @@ def test_dashboard_serve_discovers_default_spec_and_project(
     pytest.importorskip("fastapi")
     (project / "dashboard.yaml").write_text(
         """
-schema: sidemantic.dashboard.v1
+schema: sqlctx.dashboard.v1
 title: Orders dashboard
 tabs:
   - id: overview
@@ -311,8 +313,8 @@ tabs:
         called["layer"] = layer
         called.update(kwargs)
 
-    monkeypatch.setattr("sidemantic.api_server.ui_static_dir", lambda: static_dir)
-    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
+    monkeypatch.setattr("sqlctx.api_server.ui_static_dir", lambda: static_dir)
+    monkeypatch.setattr("sqlctx.api_server.start_api_server", fake_start_api_server)
     monkeypatch.chdir(project)
 
     result = runner.invoke(app, ["dashboard", "serve"])

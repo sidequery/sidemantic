@@ -7,10 +7,10 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-from sidemantic import SemanticLayer
-from sidemantic.cli import app
-from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx import SemanticLayer
+from sqlctx.cli import app
+from sqlctx.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+from sqlctx.sql.query_rewriter import QueryRewriter
 from tests.rust_layer_adapter import _rust_request
 
 FIXTURES = Path(__file__).resolve().parents[2] / "ossie-fixtures/latest-query-172a3e5"

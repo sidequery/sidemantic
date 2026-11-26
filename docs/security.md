@@ -1,6 +1,6 @@
 # Security (row-level filters, access gates, field visibility)
 
-Sidemantic can enforce **model-level security policies** — per-user row filters and
+sqlctx can enforce **model-level security policies** — per-user row filters and
 access gates — plus **field-level visibility**. Enforcement happens at query-compile
 time: the policy is baked into the generated SQL before it runs, so a scoped query can
 never return rows the user isn't allowed to see.
@@ -95,25 +95,25 @@ Parameter values are emitted as SQL literals using the query dialect, including
 inside Jinja conditionals and loops. Control-flow comparisons still use the raw
 typed parameter values.
 
-### HTTP (`sidemantic serve`)
+### HTTP (`sqlctx serve`)
 
 Client-supplied identity headers are rejected by default. Enable
 `--trust-user-header` only behind a header-sanitizing proxy that authenticates users,
-sets the JSON `X-Sidemantic-User` header, and owns the API bearer credential. Do not
+sets the JSON `X-sqlctx-User` header, and owns the API bearer credential. Do not
 give that credential to clients who can reach the trusted-header endpoint directly.
 Custom applications can instead supply `create_app(user_attributes_resolver=...)`
 to derive attributes from a verified principal. The shared bearer by itself does
 not verify caller-supplied roles or tenants. Resolved attributes scope structured
 queries, semantic SQL, mounted MCP tools, and result-cache keys.
 
-For example: `sidemantic serve ./models --auth-token-file .secrets/api-token --trust-user-header`.
+For example: `sqlctx serve ./models --auth-token-file .secrets/api-token --trust-user-header`.
 The additional header-name, required-attributes, and visibility options below are
-available on `sidemantic server api`.
+available on `sqlctx server api`.
 
 | Flag | Effect |
 |------|--------|
 | `--trust-user-header` | Explicitly trust identity headers from an authenticated proxy; requires bearer authentication. |
-| `--user-header NAME` | Header carrying the JSON user-attributes object (default `X-Sidemantic-User`). |
+| `--user-header NAME` | Header carrying the JSON user-attributes object (default `X-sqlctx-User`). |
 | `--require-user-attrs` | Reject data requests that lack the header (HTTP 400). |
 | `--enforce-visibility` | Apply field-visibility enforcement. |
 
@@ -125,7 +125,7 @@ The embedded web UI never reads bearer tokens from a URL, persists them in
 bearer-protected, the UI prompts once and exchanges the bearer through
 `POST /auth/session` for a short-lived credential. Same-origin deployments receive an
 HttpOnly, `SameSite=Strict` cookie. Cross-origin deployments receive a short-lived
-credential kept only in memory and sent with the `Sidemantic-Session` authorization
+credential kept only in memory and sent with the `sqlctx-Session` authorization
 scheme. The server stores only a SHA-256 digest of either session credential and expires
 it after ten minutes. API clients may continue to send the configured bearer directly.
 
@@ -169,9 +169,9 @@ behind a TLS-terminating proxy or a private network before exposing it.
 
 Stdio MCP may use `--user-attrs-file` as a local process identity. HTTP MCP
 (`--http` or `--apps`) requires `--auth-token-file` and rejects static identity
-files. Install both optional extras for this transport: `uv add 'sidemantic[mcp,api]'`.
+files. Install both optional extras for this transport: `uv add 'sqlctx[mcp,api] @ git+https://github.com/sidequery/sqlctx'`.
 Use `--trust-user-header` behind the authenticated, header-sanitizing proxy described
-above to resolve each request's `X-Sidemantic-User` attributes. This option works with
+above to resolve each request's `X-sqlctx-User` attributes. This option works with
 both `--http` and `--apps`; stdio rejects it and retains `--user-attrs-file`.
 It uses the same authenticated `/mcp/` mount as the API. All mounted transport
 methods require the API's bearer or browser session when authentication is configured.
@@ -183,7 +183,7 @@ across requests. Both `run_query` and `run_sql` enforce row filters.
 
 Defaults can be adjusted with `--max-result-rows`, `--max-response-bytes`,
 `--query-timeout` (seconds), `--max-concurrent-queries`, and `--query-queue-timeout`
-(seconds) on `sidemantic serve` and the API/MCP CLI, or
+(seconds) on `sqlctx serve` and the API/MCP CLI, or
 `create_app(server_limits=ServerLimits(...))` in a custom application.
 
 By default, query transports reject results above 10,000 rows or 16 MiB, admit at most four
@@ -204,7 +204,7 @@ memory bound. CLI and direct SemanticLayer execution defaults are unchanged.
 - **Cube** `access_policy` `row_level.filters` are imported into an enforced
   `SecurityPolicy` (see [Cube compatibility](compatibility/cube.md#access-control-access_policy--accesspolicy)).
 - **Rill** metrics-view `security:` blocks (`access`, `row_filter`) are imported, with
-  Go-template `.user.*` references translated to Sidemantic's `user.*` namespace.
+  Go-template `.user.*` references translated to sqlctx's `user.*` namespace.
 
 ## Limitations
 

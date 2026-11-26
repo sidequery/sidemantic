@@ -10,20 +10,20 @@ from pathlib import Path
 import pytest
 import yaml
 
-import sidemantic.adapters.tmdl as tmdl_module
-from sidemantic import SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.adapters.tmdl import TMDLAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.introspection import describe_graph
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.loaders import load_from_directory
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
-from sidemantic.sql.generator import SQLGenerator
-from sidemantic.validation import QueryValidationError
+import sqlctx.adapters.tmdl as tmdl_module
+from sqlctx import SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.adapters.tmdl import TMDLAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.introspection import describe_graph
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.loaders import load_from_directory
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
+from sqlctx.sql.generator import SQLGenerator
+from sqlctx.validation import QueryValidationError
 
 # =============================================================================
 # BASIC PARSING TESTS
@@ -32,7 +32,7 @@ from sidemantic.validation import QueryValidationError
 
 def _dax_parser_available() -> bool:
     try:
-        from sidemantic_dax import parse_expression
+        from sqlctx_dax import parse_expression
     except Exception:
         return False
 
@@ -479,18 +479,18 @@ def test_tmdl_calculated_table_multitable_summarizecolumns():
 
 
 def test_tmdl_parses_dax_ast_when_available():
-    """Ensure DAX AST is attached when sidemantic_dax is installed."""
+    """Ensure DAX AST is attached when sqlctx_dax is installed."""
     try:
-        import sidemantic_dax
-        import sidemantic_dax.ast as dax_ast
+        import sqlctx_dax
+        import sqlctx_dax.ast as dax_ast
     except Exception:
-        pytest.skip("sidemantic_dax not installed")
+        pytest.skip("sqlctx_dax not installed")
 
     try:
-        sidemantic_dax.parse_expression("1")
+        sqlctx_dax.parse_expression("1")
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
     adapter = TMDLAdapter()
@@ -507,7 +507,7 @@ def test_tmdl_parses_dax_ast_when_available():
 
 
 def test_tmdl_column_type_mapping():
-    """Test TMDL column data types map to sidemantic types."""
+    """Test TMDL column data types map to sqlctx types."""
     tmdl = textwrap.dedent(
         """
         table test
@@ -544,7 +544,7 @@ def test_tmdl_column_type_mapping():
 
 
 def test_tmdl_measure_aggregation_mapping():
-    """Test simple DAX measures map to sidemantic aggregations."""
+    """Test simple DAX measures map to sqlctx aggregations."""
     tmdl = textwrap.dedent(
         """
         table test
@@ -661,7 +661,7 @@ def test_tmdl_cross_table_dax_aggregate_stays_untranslated():
         temp_path.unlink()
 
 
-def test_sidemantic_yaml_export_preserves_dax_metric_sql_translation(tmp_path):
+def test_sqlctx_yaml_export_preserves_dax_metric_sql_translation(tmp_path):
     tmdl = textwrap.dedent(
         """
         table Sales
@@ -677,7 +677,7 @@ def test_sidemantic_yaml_export_preserves_dax_metric_sql_translation(tmp_path):
     graph = TMDLAdapter().parse(source)
 
     output = tmp_path / "models.yml"
-    SidemanticAdapter().export(graph, output)
+    SqlctxAdapter().export(graph, output)
 
     data = yaml.safe_load(output.read_text())
     sales = data["models"][0]
@@ -686,7 +686,7 @@ def test_sidemantic_yaml_export_preserves_dax_metric_sql_translation(tmp_path):
     assert revenue["expression_language"] == "dax"
     assert revenue["sql"] == "Amount"
 
-    reparsed = SidemanticAdapter().parse(output)
+    reparsed = SqlctxAdapter().parse(output)
     metric = reparsed.models["Sales"].get_metric("Revenue")
     assert metric.agg == "sum"
     assert metric.sql == "Amount"
@@ -918,7 +918,7 @@ def test_tmdl_import_collects_relationship_skip_warnings():
 
 
 def test_tmdl_inactive_relationship_is_preserved_and_excluded_from_graph_paths(tmp_path):
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     _write_tmdl_dax_relationship_fixture(
         tmp_path,
         """
@@ -945,7 +945,7 @@ def test_tmdl_inactive_relationship_is_preserved_and_excluded_from_graph_paths(t
 
 
 def test_tmdl_invalid_relationship_edges_are_skipped(tmp_path):
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     _write_tmdl_dax_relationship_fixture(
         tmp_path,
         """
@@ -1143,7 +1143,7 @@ def test_tmdl_import_valid_relationship_cardinalities_do_not_emit_skip_warnings(
 
 
 def test_tmdl_warning_fixture_collects_relationship_warnings():
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     graph = TMDLAdapter().parse("tests/fixtures/tmdl_warning")
 
     warnings = getattr(graph, "import_warnings")
@@ -2109,7 +2109,7 @@ def test_tmdl_export_preserves_imported_measure_and_calculated_column_expression
 
 
 def test_tmdl_export_preserves_native_dax_authored_sources(tmp_path):
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     source = tmp_path / "models.yml"
     source.write_text(
         """
@@ -2893,7 +2893,7 @@ def test_tmdl_dax_reduction_semantics():
     measure reference must not be treated as a column, an unbracketed dotted column must not leak
     the table prefix, and any reduced simple-aggregation sql must reference a real column.
     """
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     tmdl = textwrap.dedent(
         """
         table Sales
@@ -2946,7 +2946,7 @@ def test_tmdl_dax_reduction_semantics():
 def test_tmdl_real_fixture_reductions_reference_real_columns():
     """Every simple-aggregation measure reduced from a real Power BI model must reference an actual
     column of its table (guards the column-membership gating against silent mistranslation)."""
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     graph = TMDLAdapter().parse("tests/fixtures/external_powerbi/microsoft-analysis-services-sales")
     for model in graph.models.values():
         columns = {dim.name for dim in model.dimensions}
@@ -2959,11 +2959,11 @@ def test_tmdl_deeply_nested_dax_does_not_crash_import():
     """Regression: a pathologically nested DAX measure surfaces a catchable parse error (the Rust
     recursion-depth guard) and a dax_parse_error warning, rather than overflowing the stack and
     killing the host process."""
-    pytest.importorskip("sidemantic_dax")
-    import sidemantic_dax
+    pytest.importorskip("sqlctx_dax")
+    import sqlctx_dax
 
     with pytest.raises(Exception):
-        sidemantic_dax.parse_expression("(" * 5000 + "1" + ")" * 5000)
+        sqlctx_dax.parse_expression("(" * 5000 + "1" + ")" * 5000)
 
     nested = "(" * 5000 + "Sales[Amount]" + ")" * 5000
     tmdl = textwrap.dedent(
@@ -2995,7 +2995,7 @@ def test_tmdl_keyless_many_to_many_joins_without_keying_off_endpoints():
     keyless (primary_key None), while the join still references and projects each side's own column
     (using differently named columns so the related side cannot accidentally reuse the other name).
     """
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     tmdl = textwrap.dedent(
         """
         table Authors
@@ -3057,7 +3057,7 @@ def test_tmdl_keyless_many_to_many_metric_raises_clear_error():
     """Regression: a fan-out metric on a keyless table reached through a direct many-to-many cannot
     be de-duplicated, so it must raise a clear QueryValidationError rather than emitting an empty
     CONCAT() that crashes the SQL parser downstream."""
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     tmdl = textwrap.dedent(
         """
         table Authors
@@ -3107,7 +3107,7 @@ def test_tmdl_many_to_many_on_non_primary_key_column():
 
     import re
 
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     tmdl = textwrap.dedent(
         """
         table A
@@ -3172,7 +3172,7 @@ def test_tmdl_one_to_one_recovers_keyless_source_key():
     on the source's from-column, the source CTE -- keyed off the now-empty primary_key_columns --
     never selects that column, producing a join on a column missing from the CTE.
     """
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     tmdl = textwrap.dedent(
         """
         table A
@@ -3228,7 +3228,7 @@ def test_tmdl_one_to_one_alternate_key_does_not_shadow_real_key():
     is recovered only as a fallback for otherwise-keyless tables, so it never makes the primary key
     ambiguous (which would drop it to None and emit empty-key SQL).
     """
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     tmdl = textwrap.dedent(
         """
         table Orders
@@ -3296,7 +3296,7 @@ def test_tmdl_ambiguous_one_side_target_not_recovered_from_endpoint():
     Substituting a many-to-many/one-to-one endpoint would mask the ambiguity with a non-authoritative
     row identity, so symmetric aggregates on the table would silently dedupe on the wrong column.
     """
-    pytest.importorskip("sidemantic_dax")
+    pytest.importorskip("sqlctx_dax")
     tmdl = textwrap.dedent(
         """
         table D

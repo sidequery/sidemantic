@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.loaders import load_from_directory
+from sqlctx import SemanticLayer
+from sqlctx.loaders import load_from_directory
 
 
 @pytest.fixture

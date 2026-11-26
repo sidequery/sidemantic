@@ -3,11 +3,11 @@
 import duckdb
 import pytest
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.generator import SQLGenerator
 from tests.utils import df_rows
 
 
@@ -449,7 +449,7 @@ def test_retention_yaml_retention_granularity_key():
     import os
     import tempfile
 
-    from sidemantic.adapters.sidemantic import SidemanticAdapter
+    from sqlctx.adapters.sqlctx import SqlctxAdapter
 
     yaml_content = """
 models:
@@ -473,7 +473,7 @@ models:
         tmp_path = f.name
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         graph = adapter.parse(tmp_path)
         model = graph.get_model("events")
         metric = model.get_metric("weekly_retention")
@@ -488,7 +488,7 @@ def test_retention_yaml_granularity_fallback():
     import os
     import tempfile
 
-    from sidemantic.adapters.sidemantic import SidemanticAdapter
+    from sqlctx.adapters.sqlctx import SqlctxAdapter
 
     yaml_content = """
 metrics:
@@ -504,7 +504,7 @@ metrics:
         tmp_path = f.name
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         graph = adapter.parse(tmp_path)
         metric = graph.get_metric("monthly_retention")
         assert metric.retention_granularity == "month"
@@ -518,7 +518,7 @@ def test_retention_export_roundtrip_retention_granularity():
     import os
     import tempfile
 
-    from sidemantic.adapters.sidemantic import SidemanticAdapter
+    from sqlctx.adapters.sqlctx import SqlctxAdapter
 
     # Create a graph with a retention metric
     graph = SemanticGraph()
@@ -537,7 +537,7 @@ def test_retention_export_roundtrip_retention_granularity():
         tmp_path = f.name
 
     try:
-        adapter = SidemanticAdapter()
+        adapter = SqlctxAdapter()
         adapter.export(graph, tmp_path)
 
         # Re-parse and verify

@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.core.registry import get_current_layer, reset_current_layer, set_current_layer
-from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.interchange.ossie import (
+from sqlctx.core.registry import get_current_layer, reset_current_layer, set_current_layer
+from sqlctx.core.semantic_layer import SemanticLayer
+from sqlctx.interchange.ossie import (
     OssieImportPolicy,
     OssieParseOptions,
     lower_ossie_document,

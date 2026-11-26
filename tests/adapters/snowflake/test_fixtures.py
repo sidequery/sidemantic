@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.snowflake import SnowflakeAdapter
+from sqlctx.adapters.snowflake import SnowflakeAdapter
 
 
 @pytest.fixture
@@ -176,7 +176,7 @@ class TestRevenueTimeseriesMeasures:
 
     The Cortex Analyst format uses the table-level `measures` key as a legacy
     alias of `facts`. The adapter reads both, so measures from the tutorial
-    fixture are imported as Sidemantic metrics.
+    fixture are imported as sqlctx metrics.
     """
 
     def test_daily_revenue_has_measures(self, graph):

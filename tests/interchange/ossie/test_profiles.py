@@ -2,7 +2,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from sidemantic.interchange.ossie import (
+from sqlctx.interchange.ossie import (
     DBT_1_12_0_1_0_ALIAS,
     OSSIE_CORE_0_1_1,
     OssieConsumerProfile,

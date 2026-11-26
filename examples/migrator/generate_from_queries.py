@@ -1,6 +1,6 @@
 """Generate a semantic layer from real-world SQL queries.
 
-This example shows how sidemantic's Migrator reverse-engineers a complete
+This example shows how sqlctx's Migrator reverse-engineers a complete
 semantic layer from the SQL queries your team already writes. It:
 
   1. Creates a sample e-commerce database (customers, orders, products)
@@ -16,9 +16,9 @@ Run it:
 
 import yaml
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.core.migrator import Migrator
-from sidemantic.db.duckdb import DuckDBAdapter
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.core.migrator import Migrator
+from sqlctx.db.duckdb import DuckDBAdapter
 
 # ---------------------------------------------------------------------------
 # 1. Sample database

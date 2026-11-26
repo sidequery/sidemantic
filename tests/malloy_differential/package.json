@@ -1,5 +1,5 @@
 {
-  "name": "sidemantic-malloy-duckdb-differential",
+  "name": "sqlctx-malloy-duckdb-differential",
   "private": true,
   "type": "module",
   "scripts": {

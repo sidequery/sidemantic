@@ -1,7 +1,7 @@
 """Tests for querying Rill models."""
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.rill import RillAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.rill import RillAdapter
 
 
 def test_query_imported_rill_example():

@@ -1,4 +1,4 @@
-from sidemantic import Metric, Model, SemanticLayer
+from sqlctx import Metric, Model, SemanticLayer
 
 
 def test_duckdb_strips_unattached_catalog():

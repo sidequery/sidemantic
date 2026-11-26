@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.omni import OmniAdapter
+from sqlctx.adapters.omni import OmniAdapter
 
 ESTORE_DIR = Path("tests/fixtures/omni/estore")
 

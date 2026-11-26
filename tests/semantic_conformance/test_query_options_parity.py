@@ -3,15 +3,15 @@
 import pytest
 import sqlglot
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.core.table_calculation import TableCalculation
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.core.table_calculation import TableCalculation
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires the actual Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires the actual Rust extension")
     layer = SemanticLayer(engine=request.param, auto_register=False, default_limit=2)
     layer.adapter.execute(
         """create table orders as select * from (values

@@ -1,39 +1,41 @@
-# Sidemantic
+# sqlctx
 
-Sidemantic is an open-source semantic runtime. Define governed metrics once—or import the semantic models you already have—and query them consistently from SQL, the CLI, Python, HTTP, PostgreSQL clients, notebooks, BI tools, and AI agents.
+sqlctx is an open-source semantic runtime. Define governed metrics once—or import the semantic models you already have—and query them consistently from SQL, the CLI, Python, HTTP, PostgreSQL clients, notebooks, BI tools, and AI agents.
 
 - **Bring existing models:** Power BI TMDL/DAX, Cube, dbt MetricFlow, LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Snowflake Cortex, Malloy, Apache Ossie, AtScale SML, and ThoughtSpot TML
 - **Or author natively:** concise YAML, semantic SQL DDL, or Python
 - **Run on your warehouse:** DuckDB, MotherDuck, PostgreSQL, BigQuery, Snowflake, ClickHouse, Databricks, Spark SQL, and ADBC sources
 - **Consume metrics anywhere:** semantic SQL, CLI, Python, HTTP/Arrow, PostgreSQL wire protocol, MCP, notebooks, TypeScript/WASM, and embedded analytics
 
-[Documentation](https://sidemantic.com) | [GitHub](https://github.com/sidequery/sidemantic) | [Docker Hub](https://hub.docker.com/r/sidequery/sidemantic) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
+[Documentation](docs/cli.md) | [GitHub](https://github.com/sidequery/sqlctx) | [Docker](#docker) | [Discord](https://discord.com/invite/7MZ4UgSVvF) | [Demo](https://sidemantic.com/demo) (50+ MB data download, runs in your browser with Pyodide + DuckDB)
 
 ![Jupyter Widget Preview](preview.png)
 
-Sidemantic ships Claude Code and Codex plugin metadata for two skills (`modeler` and `webapp-builder`). See [Agent Plugin](#agent-plugin) below to install.
+sqlctx ships Claude Code and Codex plugin metadata for two skills (`modeler` and `webapp-builder`). See [Agent Plugin](#agent-plugin) below to install.
 
 Contributors working on browser surfaces should read the [UI architecture and canonical ownership map](docs/ui-architecture.md).
 
 ## 60-second quickstart
 
+Install from GitHub while PyPI serves the earlier sqlctx tool.
+
 See it working before writing anything — one command creates a complete demo
 project (models, sample DuckDB data, golden tests) and runs a first query:
 
 ```bash
-uvx sidemantic demo
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx demo
 ```
 
-Start from your own data — Sidemantic introspects it and generates models with
+Start from your own data — sqlctx introspects it and generates models with
 inferred dimensions, metrics, and relationships:
 
 ```bash
-uvx sidemantic init analytics --from 'data/*.csv'   # also Parquet, JSON, DuckDB
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx init analytics --from 'data/*.csv'   # also Parquet, JSON, DuckDB
 cd analytics
-uvx sidemantic query "SELECT orders.record_count FROM orders"
-uvx sidemantic test              # golden-query assertions
-uvx sidemantic validate --live   # models vs. actual database schema
-uvx --from "sidemantic[api,mcp]" sidemantic serve   # web UI + HTTP API + MCP on one port
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx query "SELECT orders.record_count FROM orders"
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx test              # golden-query assertions
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx validate --live   # models vs. actual database schema
+uvx --from "sqlctx[api,mcp] @ git+https://github.com/sidequery/sqlctx" sqlctx serve   # web UI + HTTP API + MCP on one port
 ```
 
 Or write a model by hand. Create `models/orders.yml`:
@@ -63,7 +65,7 @@ models:
 Query it directly—no database setup or package installation required:
 
 ```bash
-uvx sidemantic query \
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx query \
   "SELECT orders.status, orders.revenue, orders.order_count
    FROM orders
    ORDER BY orders.status" \
@@ -80,41 +82,43 @@ From here, inspect generated warehouse SQL or open an interactive explorer:
 
 ```bash
 # Compile without executing
-uvx sidemantic query \
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx query \
   "SELECT orders.status, orders.revenue FROM orders" \
   --models ./models --dry-run
 
 # Explore in the terminal
-uvx --from "sidemantic[workbench]" sidemantic workbench ./models
+uvx --from "sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx" sqlctx workbench ./models
 ```
 
 ## Choose your path
 
-- **Import existing semantic models:** point Sidemantic at a Cube, MetricFlow, LookML, Power BI, Malloy, Rill, or other supported project. Start with the [adapter guide](https://sidemantic.com/sidemantic/adapters).
-- **Model tables or SQL:** continue with [models](https://sidemantic.com/sidemantic/models), [dimensions](https://sidemantic.com/sidemantic/dimensions), [metrics](https://sidemantic.com/sidemantic/metrics), and [relationships](https://sidemantic.com/sidemantic/relationships).
-- **Query governed metrics:** use the [CLI](https://sidemantic.com/sidemantic/cli), [semantic SQL](https://sidemantic.com/sidemantic/query), or [Python API](https://sidemantic.com/sidemantic/python-api).
+- **Import existing semantic models:** point sqlctx at a Cube, MetricFlow, LookML, Power BI, Malloy, Rill, or other supported project. Start with the [adapter guide](https://sidequery.dev/sidemantic/adapters).
+- **Model tables or SQL:** continue with [models](https://sidequery.dev/sidemantic/models), [dimensions](https://sidequery.dev/sidemantic/dimensions), [metrics](https://sidequery.dev/sidemantic/metrics), and [relationships](https://sidequery.dev/sidemantic/relationships).
+- **Query governed metrics:** use the [CLI](https://github.com/sidequery/sqlctx/blob/main/docs/cli.md), [semantic SQL](https://sidequery.dev/sidemantic/query), or [Python API](https://sidequery.dev/sidemantic/python-api).
 - **Explore data:** launch the terminal workbench, notebook widget, or browser UI.
 - **Serve other tools:** expose models over the HTTP API, PostgreSQL wire protocol, or MCP server.
 
-Install Sidemantic in a project with `uv add sidemantic`. Optional features are packaged as extras:
+Install sqlctx in a project with `uv add git+https://github.com/sidequery/sqlctx`. Optional features are packaged as extras:
 
-- **Interfaces:** `api` (HTTP API and `sidemantic serve`), `mcp` (MCP server), `apps` (MCP apps with charts), `serve` (PostgreSQL wire protocol server), `workbench` (terminal UI), `widget` (Jupyter widget), `charts` (Altair charts for MCP chart tools), and `lsp` (language server)
+- **Interfaces:** `api` (HTTP API and `sqlctx serve`), `mcp` (MCP server), `apps` (MCP apps with charts), `serve` (PostgreSQL wire protocol server), `workbench` (terminal UI), `widget` (Jupyter widget), `charts` (Altair charts for MCP chart tools), and `lsp` (language server)
 - **Model formats:** `lookml`, `metricflow`, `malloy`, `dax` (Power BI TMDL/DAX), and `ossie` (Apache Ossie schema validation)
 - **Databases:** `postgres`, `bigquery`, `snowflake`, `clickhouse`, `databricks`, `spark`, and `adbc`, or `all-databases` for all of them
 - **Engine:** `rust` (Rust engine) and `fast` (compiled SQLGlot)
 - **Bundle:** `full` (every interface, format, and engine extra except `serve`, `fast`, and the databases)
 
-Python is the default engine. To use the optional Rust engine, install `uv tool install "sidemantic[rust]"` (CLI) or `uv add "sidemantic[rust]"` (project), then select `--engine rust`. See [Rust engine mode](docs/rust-engine-mode.md).
+Python is the default engine. To build the optional Rust engine from source and select it with `--engine rust`, follow [Rust engine mode](docs/rust-engine-mode.md).
 
 ## DAX And TMDL
 
 DAX/TMDL support lives behind the `dax` extra because it includes a native Rust parser:
 
 ```bash
-uv add "sidemantic[dax]"
+git clone https://github.com/sidequery/sqlctx.git
+cd sqlctx
+uv sync --extra dax
 ```
 
-Native Sidemantic YAML can preserve DAX expression source text next to the SQL definition Sidemantic queries, for Power BI interoperability:
+Native sqlctx YAML can preserve DAX expression source text next to the SQL definition sqlctx queries, for Power BI interoperability:
 
 ```yaml
 models:
@@ -138,7 +142,7 @@ models:
 Power BI TMDL projects can be loaded from a project root or `definition/` folder. Embedded DAX measures, calculated columns, calculated tables, relationships, and TMDL passthrough metadata are parsed and preserved in model metadata:
 
 ```python
-from sidemantic import SemanticLayer, load_from_directory
+from sqlctx import SemanticLayer, load_from_directory
 
 layer = SemanticLayer(connection="duckdb://warehouse.duckdb")
 load_from_directory(layer, "powerbi_project/")
@@ -148,7 +152,7 @@ print(layer.describe_models(["Sales"]))
 TMDL can also round-trip back to disk:
 
 ```python
-from sidemantic.adapters.tmdl import TMDLAdapter
+from sqlctx.adapters.tmdl import TMDLAdapter
 
 TMDLAdapter().export(layer.graph, "exported_tmdl/")
 ```
@@ -157,46 +161,46 @@ TMDLAdapter().export(layer.graph, "exported_tmdl/")
 
 ```bash
 # Scaffold a project (optionally generating models from your data)
-sidemantic init
-sidemantic init --from data/orders.csv --from data/customers.parquet
+sqlctx init
+sqlctx init --from data/orders.csv --from data/customers.parquet
 
 # Self-contained demo project with sample data
-sidemantic demo
+sqlctx demo
 
 # Query as a human-readable table (also supports csv, json, and jsonl)
-sidemantic query "SELECT revenue FROM orders" --db data.duckdb --format table
+sqlctx query "SELECT revenue FROM orders" --db data.duckdb --format table
 
 # Query raw files directly (CSV, Parquet, JSON become tables named by file stem)
-sidemantic query "SELECT orders.revenue FROM orders" --db data/orders.csv
+sqlctx query "SELECT orders.revenue FROM orders" --db data/orders.csv
 
 # Golden-query tests: pin expected metric values so definitions cannot drift
-sidemantic test
+sqlctx test
 
 # Serve teammates and tools on one port: web UI, HTTP API, and MCP
-uvx --from "sidemantic[api,mcp]" sidemantic serve models/ --db data.duckdb
+uvx --from "sqlctx[api,mcp] @ git+https://github.com/sidequery/sqlctx" sqlctx serve models/ --db data.duckdb
 
 # Interactive workbench (TUI with SQL editor + charts)
-uvx --from "sidemantic[workbench]" sidemantic workbench models/ --db data.duckdb
+uvx --from "sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx" sqlctx workbench models/ --db data.duckdb
 
 # PostgreSQL server (connect Tableau, DBeaver, etc.)
-uvx --from "sidemantic[serve]" sidemantic server postgres models/ --port 5433
+uvx --from "sqlctx[serve] @ git+https://github.com/sidequery/sqlctx" sqlctx server postgres models/ --port 5433
 
 # HTTP API server (JSON or Arrow)
-uvx --from "sidemantic[api]" sidemantic server api models/ --port 4400 --auth-token-file .secrets/api-token
+uvx --from "sqlctx[api] @ git+https://github.com/sidequery/sqlctx" sqlctx server api models/ --port 4400 --auth-token-file .secrets/api-token
 
 # Validate definitions (--live also checks tables/columns against the database)
-sidemantic validate models/
-sidemantic validate models/ --live --db data.duckdb
+sqlctx validate models/
+sqlctx validate models/ --live --db data.duckdb
 
 # Model info
-sidemantic info models/
+sqlctx info models/
 
 # Pre-aggregation recommendations from a log of compiled queries
 # (or --connection for Snowflake, BigQuery, Databricks, or ClickHouse query history)
-sidemantic preagg recommend --queries queries.sql
+sqlctx preagg recommend --queries queries.sql
 
 # Migrate SQL queries to semantic layer
-sidemantic migrate generate legacy/ --output output/
+sqlctx migrate generate legacy/ --output output/
 ```
 
 See [the CLI contract](docs/cli.md) for output formats, `--plain`, quiet/verbose
@@ -207,67 +211,67 @@ stdin/stdout, exit codes, debugging, and secure credential input.
 
 **Workbench** (TUI with SQL editor + charts):
 ```bash
-uvx --from "sidemantic[workbench]" sidemantic workbench --demo
+uvx --from "sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx" sqlctx workbench --demo
 ```
 
 **PostgreSQL server** (connect Tableau, DBeaver, etc.):
 ```bash
-uvx --from "sidemantic[serve]" sidemantic server postgres --demo --port 5433
+uvx --from "sqlctx[serve] @ git+https://github.com/sidequery/sqlctx" sqlctx server postgres --demo --port 5433
 ```
 
 **HTTP API server** (JSON or Arrow):
 ```bash
-uvx --from "sidemantic[api]" sidemantic server api --demo --port 4400
+uvx --from "sqlctx[api] @ git+https://github.com/sidequery/sqlctx" sqlctx server api --demo --port 4400
 ```
 
 **Colab notebooks:**
 
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/notebooks/sidemantic_sql_duckdb_demo.ipynb) SQL + DuckDB
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sqlctx/blob/main/examples/notebooks/sqlctx_sql_duckdb_demo.ipynb) SQL + DuckDB
 
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sidemantic/blob/main/examples/notebooks/lookml_multi_entity_duckdb_demo.ipynb) LookML multi-entity
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/sidequery/sqlctx/blob/main/examples/notebooks/lookml_multi_entity_duckdb_demo.ipynb) LookML multi-entity
 
 **SQL syntax:**
 ```bash
-uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/sql/sql_syntax_example.py
+uv run https://raw.githubusercontent.com/sidequery/sqlctx/main/examples/sql/sql_syntax_example.py
 ```
 
 **Comprehensive demo:**
 ```bash
-uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/advanced/comprehensive_demo.py
+uv run https://raw.githubusercontent.com/sidequery/sqlctx/main/examples/advanced/comprehensive_demo.py
 ```
 
 **Symmetric aggregates:**
 ```bash
-uv run https://raw.githubusercontent.com/sidequery/sidemantic/main/examples/features/symmetric_aggregates_example.py
+uv run https://raw.githubusercontent.com/sidequery/sqlctx/main/examples/features/symmetric_aggregates_example.py
 ```
 
 **Superset with DuckDB:**
 ```bash
-git clone https://github.com/sidequery/sidemantic.git && cd sidemantic
+git clone https://github.com/sidequery/sqlctx.git && cd sqlctx
 uv run examples/superset_demo/run_demo.py
 ```
 
 **Cube Playground:**
 ```bash
-git clone https://github.com/sidequery/sidemantic.git && cd sidemantic
+git clone https://github.com/sidequery/sqlctx.git && cd sqlctx
 uv run examples/cube_demo/run_demo.py
 ```
 
 **Rill Developer:**
 ```bash
-git clone https://github.com/sidequery/sidemantic.git && cd sidemantic
+git clone https://github.com/sidequery/sqlctx.git && cd sqlctx
 uv run examples/rill_demo/run_demo.py
 ```
 
 **Apache Ossie (complex adtech semantic model):**
 ```bash
-git clone https://github.com/sidequery/sidemantic.git && cd sidemantic
+git clone https://github.com/sidequery/sqlctx.git && cd sqlctx
 uv run examples/osi_demo/run_demo.py
 ```
 
 **Apache Ossie widget notebook (percent-cell Python notebook):**
 ```bash
-git clone https://github.com/sidequery/sidemantic.git && cd sidemantic
+git clone https://github.com/sidequery/sqlctx.git && cd sqlctx
 uv run examples/osi_demo/osi_widget_notebook.py
 ```
 
@@ -289,14 +293,14 @@ See `examples/` for more.
 
 ## Multi-Format Support
 
-Auto-detects: Sidemantic (SQL/YAML), Power BI TMDL, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Apache Ossie, AtScale SML, ThoughtSpot TML, Graphene GSQL
+Auto-detects: sqlctx (SQL/YAML), Power BI TMDL, Cube, MetricFlow (dbt), LookML, Hex, Rill, Superset, Omni, BSL, GoodData LDM, Apache Ossie, AtScale SML, ThoughtSpot TML, Graphene GSQL
 
 ```bash
-sidemantic query "SELECT revenue FROM orders" --models ./my_models
+sqlctx query "SELECT revenue FROM orders" --models ./my_models
 ```
 
 ```python
-from sidemantic import SemanticLayer, load_from_directory
+from sqlctx import SemanticLayer, load_from_directory
 
 layer = SemanticLayer(connection="duckdb://data.duckdb")  # duckdb:///abs/path.duckdb for absolute paths
 load_from_directory(layer, "my_models/")  # Auto-detects formats
@@ -307,12 +311,12 @@ Apache Ossie is registered as format `ossie`; `osi`, `apache-ossie`, and
 selecting an Ossie scope or execution dialect:
 
 ```bash
-sidemantic convert commerce.ossie.yaml \
-  --from ossie --to sidemantic --output models.yml \
+sqlctx convert commerce.ossie.yaml \
+  --from ossie --to sqlctx --output models.yml \
   --ossie-scope commerce --ossie-target-dialect bigquery
 
-sidemantic convert models/orders.yml \
-  --from sidemantic --to ossie --output commerce.ossie.yaml \
+sqlctx convert models/orders.yml \
+  --from sqlctx --to ossie --output commerce.ossie.yaml \
   --ossie-scope commerce --ossie-expression-dialect BIGQUERY
 ```
 
@@ -325,25 +329,29 @@ pinned schema profiles, validation policies, scope rules, and round-trip limits.
 |----------|:------:|--------------|
 | DuckDB | ✅ | built-in |
 | MotherDuck | ✅ | built-in |
-| PostgreSQL | ✅ | `uv add "sidemantic[postgres]"` |
-| BigQuery | ✅ | `uv add "sidemantic[bigquery]"` |
-| Snowflake | ✅ | `uv add "sidemantic[snowflake]"` |
-| ClickHouse | ✅ | `uv add "sidemantic[clickhouse]"` |
-| Databricks | ✅ | `uv add "sidemantic[databricks]"` |
-| Spark SQL | ✅ | `uv add "sidemantic[spark]"` |
+| PostgreSQL | ✅ | `uv add "sqlctx[postgres] @ git+https://github.com/sidequery/sqlctx"` |
+| BigQuery | ✅ | `uv add "sqlctx[bigquery] @ git+https://github.com/sidequery/sqlctx"` |
+| Snowflake | ✅ | `uv add "sqlctx[snowflake] @ git+https://github.com/sidequery/sqlctx"` |
+| ClickHouse | ✅ | `uv add "sqlctx[clickhouse] @ git+https://github.com/sidequery/sqlctx"` |
+| Databricks | ✅ | `uv add "sqlctx[databricks] @ git+https://github.com/sidequery/sqlctx"` |
+| Spark SQL | ✅ | `uv add "sqlctx[spark] @ git+https://github.com/sidequery/sqlctx"` |
 
 ## Docker
 
-The published image is [`sidequery/sidemantic`](https://hub.docker.com/r/sidequery/sidemantic) on Docker Hub. Mount your models directory as a volume at `/app/models`:
+Build the image from the repository root. Mount your models directory as a volume at `/app/models`:
 
 ```bash
-docker run -p 5433:5433 -v ./models:/app/models sidequery/sidemantic
+docker build -t sidequery/sqlctx .
+```
+
+```bash
+docker run -p 5433:5433 -v ./models:/app/models sidequery/sqlctx
 ```
 
 Demo mode (built-in sample data, no volume needed):
 
 ```bash
-docker run -p 5433:5433 sidequery/sidemantic --demo
+docker run -p 5433:5433 sidequery/sqlctx --demo
 ```
 
 See [`examples/docker/`](examples/docker/) for MCP mode, env vars, building from source, and integration test services.
@@ -352,16 +360,16 @@ For Cloudflare Worker + Container deployment, see [`examples/cloudflare_containe
 
 ## HTTP API
 
-These examples use the project created by `uvx sidemantic demo`. Create a
+These examples use the project created by `uvx --from git+https://github.com/sidequery/sqlctx sqlctx demo`. Create a
 bearer token file, then start the API server:
 
 ```bash
-cd sidemantic-demo
+cd sqlctx-demo
 mkdir -p .secrets && openssl rand -hex 32 > .secrets/api-token
-uvx --from "sidemantic[api]" sidemantic server api models/ --db data/demo.duckdb --port 4400 --auth-token-file .secrets/api-token
+uvx --from "sqlctx[api] @ git+https://github.com/sidequery/sqlctx" sqlctx server api models/ --db data/demo.duckdb --port 4400 --auth-token-file .secrets/api-token
 ```
 
-In another terminal in `sidemantic-demo`, compile a structured semantic query:
+In another terminal in `sqlctx-demo`, compile a structured semantic query:
 
 ```bash
 curl -s http://localhost:4400/compile \
@@ -401,7 +409,7 @@ curl -s http://localhost:4400/sql \
 
 ## Agent Plugin
 
-Sidemantic ships a [plugin bundle](plugins/sidemantic/) with Claude Code and Codex metadata for two skills:
+sqlctx ships a [plugin bundle](plugins/sqlctx/) with Claude Code and Codex metadata for two skills:
 
 - **`modeler`** — build, validate, and query semantic models
 - **`webapp-builder`** — generate analytics webapps from your models
@@ -409,31 +417,31 @@ Sidemantic ships a [plugin bundle](plugins/sidemantic/) with Claude Code and Cod
 **Install in Claude Code:**
 
 ```bash
-claude plugin marketplace add sidequery/sidemantic && claude plugin install sidemantic@sidequery
+claude plugin marketplace add sidequery/sqlctx && claude plugin install sqlctx@sidequery
 ```
 
 **Install in Codex:**
 
 ```bash
-codex plugin marketplace add sidequery/sidemantic && codex plugin add sidemantic@sidequery
+codex plugin marketplace add sidequery/sqlctx && codex plugin add sqlctx@sidequery
 ```
 
 **Use a local clone while developing:**
 
 ```bash
-claude --plugin-dir ./plugins/sidemantic
-codex plugin marketplace add . && codex plugin add sidemantic@sidequery
+claude --plugin-dir ./plugins/sqlctx
+codex plugin marketplace add . && codex plugin add sqlctx@sidequery
 ```
 
-The Claude Code plugin manifest lives at `plugins/sidemantic/.claude-plugin/plugin.json`, and its marketplace lives at `.claude-plugin/marketplace.json`.
+The Claude Code plugin manifest lives at `plugins/sqlctx/.claude-plugin/plugin.json`, and its marketplace lives at `.claude-plugin/marketplace.json`.
 
-The Codex plugin manifest lives at `plugins/sidemantic/.codex-plugin/plugin.json`, and its repo-local marketplace lives at `.agents/plugins/marketplace.json`.
+The Codex plugin manifest lives at `plugins/sqlctx/.codex-plugin/plugin.json`, and its repo-local marketplace lives at `.agents/plugins/marketplace.json`.
 
-The skills also work with other `SKILL.md`-compatible agents by pointing them at `plugins/sidemantic/skills/`.
+The skills also work with other `SKILL.md`-compatible agents by pointing them at `plugins/sqlctx/skills/`.
 
-## How mature is Sidemantic?
+## How mature is sqlctx?
 
-Sidemantic is an ambitious but young semantic layer project. You could encounter rough patches, especially with the more exotic features like converting between semantic model formats or serving semantic layers via the included Postgres protocol server.
+sqlctx is an ambitious but young semantic layer project. You could encounter rough patches, especially with the more exotic features like converting between semantic model formats or serving semantic layers via the included Postgres protocol server.
 
 ## Testing
 
@@ -441,4 +449,4 @@ Sidemantic is an ambitious but young semantic layer project. You could encounter
 uv run pytest -v
 ```
 
-This prints line coverage for `sidemantic` with missing lines in the terminal.
+This prints line coverage for `sqlctx` with missing lines in the terminal.

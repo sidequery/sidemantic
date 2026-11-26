@@ -7,7 +7,7 @@ from copy import deepcopy
 
 import pytest
 
-from sidemantic.interchange.ossie import (
+from sqlctx.interchange.ossie import (
     CURRENT_OSSIE_SCHEMA_COMMIT,
     LEGACY_OSSIE_SCHEMA_COMMIT,
     OssieParseOptions,
@@ -17,7 +17,7 @@ from sidemantic.interchange.ossie import (
     serialize_ossie_document,
     validate_ossie_semantics,
 )
-from sidemantic.interchange.ossie.validation import validate_ossie_schema
+from sqlctx.interchange.ossie.validation import validate_ossie_schema
 
 
 def _model():

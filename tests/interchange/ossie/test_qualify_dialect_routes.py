@@ -5,8 +5,8 @@ import json
 import duckdb
 import pytest
 
-from sidemantic.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
-from sidemantic.rust_bridge import _compiler_graph_json, get_rust_module
+from sqlctx.interchange.ossie import OssieParseOptions, lower_ossie_document, parse_ossie_document
+from sqlctx.rust_bridge import _compiler_graph_json, get_rust_module
 from tests.interchange.ossie.test_layer2_conformance import LATEST, model, setup
 
 

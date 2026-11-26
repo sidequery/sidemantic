@@ -6,9 +6,9 @@ These should have been included in the original commit but weren't.
 import pytest
 from sqlglot import exp, parse_one
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.core.table_calculation import TableCalculation
-from sidemantic.sql.table_calc_processor import TableCalculationProcessor
+from sqlctx import Dimension, Metric, Model
+from sqlctx.core.table_calculation import TableCalculation
+from sqlctx.sql.table_calc_processor import TableCalculationProcessor
 
 
 def test_count_without_sql_generates_valid_cte(layer):
@@ -351,8 +351,8 @@ def test_safe_eval_arithmetic_operations_work():
 
 def test_conversion_invalid_entity_rejected():
     """Conversion metric rejects entity names with SQL injection."""
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.generator import SQLGenerator
 
     events = Model(
         name="events",
@@ -385,8 +385,8 @@ def test_conversion_invalid_entity_rejected():
 
 def test_conversion_invalid_window_rejected():
     """Conversion metric rejects window values with SQL injection."""
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.generator import SQLGenerator
 
     events = Model(
         name="events",
@@ -419,8 +419,8 @@ def test_conversion_invalid_window_rejected():
 
 def test_conversion_event_name_quotes_escaped():
     """Conversion metric escapes single quotes in event names."""
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.generator import SQLGenerator
 
     events = Model(
         name="events",
@@ -454,8 +454,8 @@ def test_conversion_event_name_quotes_escaped():
 
 def test_count_fanout_uses_column_reference():
     """COUNT metric uses column reference instead of COUNT(*) to prevent fan-out."""
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.generator import SQLGenerator
 
     orders = Model(
         name="orders",
@@ -530,8 +530,8 @@ def test_conversion_metric_executes_with_expected_rate(layer):
 
 def test_build_interval_duckdb():
     """_build_interval produces correct DuckDB INTERVAL syntax."""
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.generator import SQLGenerator
 
     graph = SemanticGraph()
     gen = SQLGenerator(graph, dialect="duckdb")
@@ -540,8 +540,8 @@ def test_build_interval_duckdb():
 
 def test_build_interval_bigquery():
     """_build_interval produces correct BigQuery INTERVAL syntax."""
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.generator import SQLGenerator
 
     graph = SemanticGraph()
     gen = SQLGenerator(graph, dialect="bigquery")
@@ -551,8 +551,8 @@ def test_build_interval_bigquery():
 
 def test_build_interval_postgres():
     """_build_interval produces correct Postgres INTERVAL syntax."""
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.generator import SQLGenerator
 
     graph = SemanticGraph()
     gen = SQLGenerator(graph, dialect="postgres")

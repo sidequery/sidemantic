@@ -4,7 +4,7 @@ import duckdb
 import pytest
 import sqlglot
 
-from sidemantic.sql.ossie_relational import _has_aggregate
+from sqlctx.sql.ossie_relational import _has_aggregate
 from tests.interchange.ossie.test_layer2_conformance import ROUTES, execute
 
 DOCUMENT = {

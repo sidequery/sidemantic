@@ -7,9 +7,9 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.core.pre_aggregation import Index, PreAggregation, RefreshKey, RefreshResult
-from sidemantic.core.preagg_matcher import PreAggregationMatcher
+from sqlctx import Dimension, Metric, Model
+from sqlctx.core.pre_aggregation import Index, PreAggregation, RefreshKey, RefreshResult
+from sqlctx.core.preagg_matcher import PreAggregationMatcher
 
 
 def test_create_preaggregation():
@@ -2097,7 +2097,7 @@ def test_indexes_skipped_for_unsupported_dialect():
 
 def _layer_with_unbuilt_rollup(extra_dims=None):
     """A SemanticLayer with raw data and a rollup defined but NOT materialized."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     layer = SemanticLayer()
     layer.adapter.execute(
@@ -2132,7 +2132,7 @@ def test_preagg_falls_back_to_raw_when_table_missing():
 
 def test_preagg_strict_raises_when_no_rollup_matches():
     """Rollup-only mode errors when no pre-aggregation can serve the query."""
-    from sidemantic.core.semantic_layer import PreaggregationStrictError
+    from sqlctx.core.semantic_layer import PreaggregationStrictError
 
     layer = _layer_with_unbuilt_rollup(extra_dims=[Dimension(name="region", type="categorical", sql="'x'")])
 
@@ -2147,7 +2147,7 @@ def test_preagg_strict_raises_when_no_rollup_matches():
 
 def test_preagg_strict_raises_when_table_missing():
     """Rollup-only mode errors (no silent fallback) when the matching rollup table is not built."""
-    from sidemantic.core.semantic_layer import PreaggregationStrictError
+    from sqlctx.core.semantic_layer import PreaggregationStrictError
 
     layer = _layer_with_unbuilt_rollup()
 
@@ -2181,7 +2181,7 @@ def test_sql_path_falls_back_to_raw_when_rollup_missing(projection, columns, row
 
 def test_sql_path_strict_raises_when_rollup_missing():
     """Strict (rollup-only) mode also applies on the SQL/CLI path."""
-    from sidemantic.core.semantic_layer import PreaggregationStrictError
+    from sqlctx.core.semantic_layer import PreaggregationStrictError
 
     layer = _layer_with_unbuilt_rollup()
     layer.use_preaggregations = True
@@ -2535,7 +2535,7 @@ def test_ungrouped_avg_metric_bails_to_raw(layer):
 
 def test_ungrouped_strict_without_pk_rollup_raises(layer):
     """Strict mode + ungrouped errors when no PK-carrying rollup can serve the query."""
-    from sidemantic.core.semantic_layer import PreaggregationStrictError
+    from sqlctx.core.semantic_layer import PreaggregationStrictError
 
     layer.use_preaggregations = True
     layer.preagg_strict = True
@@ -2622,7 +2622,7 @@ def test_full_rebuild_drops_partitions_for_removed_buckets():
 
 def test_ungrouped_with_metric_filter_bails_to_raw():
     """An ungrouped query with a metric (HAVING) filter falls through to raw, not the rollup."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     layer = SemanticLayer()
     layer.add_model(
@@ -2673,7 +2673,7 @@ def test_full_rebuild_with_no_buckets_drops_covering_view():
 
 def test_ungrouped_approx_count_distinct_bails_to_raw():
     """An ungrouped query using approx_count_distinct falls back to raw (the _raw state is not per-row)."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     layer = SemanticLayer()
     layer.add_model(
@@ -2715,7 +2715,7 @@ def test_query_with_post_process_falls_back_to_raw_when_rollup_missing():
 
 def test_is_missing_relation_error_recognizes_bigquery_not_found():
     """BigQuery surfaces missing tables as '404 Not found: Table ...', which must trigger fallback."""
-    from sidemantic.core.semantic_layer import SemanticLayer
+    from sqlctx.core.semantic_layer import SemanticLayer
 
     err = Exception("404 Not found: Table myproj:ds.orders_preagg_by_status was not found in location US")
     assert SemanticLayer._is_missing_relation_error(err)
@@ -2754,7 +2754,7 @@ def test_build_partitions_scopes_discovery_to_target_schema():
 
 def test_lambda_union_does_not_double_count_boundary_bucket():
     """A mid-bucket build_range_end must not double-count the boundary bucket's post-cutoff rows."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     layer = SemanticLayer()
     layer.adapter.execute(
@@ -2802,7 +2802,7 @@ def test_lambda_union_does_not_double_count_boundary_bucket():
 
 
 def _multi_fact_filter_layer():
-    from sidemantic import Relationship, SemanticLayer
+    from sqlctx import Relationship, SemanticLayer
 
     layer = SemanticLayer()
     con = layer.adapter.conn

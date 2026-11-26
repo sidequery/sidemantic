@@ -3,7 +3,7 @@
 Declare table calculations in your native model file, then select names with the CLI:
 
 ```bash
-sidemantic query --explore revenue_overview --order-by 'orders.revenue DESC' \
+sqlctx query --explore revenue_overview --order-by 'orders.revenue DESC' \
   --table-calculation running --table-calculation share \
   --models ./models --db data.duckdb
 ```

@@ -35,12 +35,12 @@ examples/juv.tmp*.py
 # Package installers
 *.pkg
 .claude/settings.local.json
-crates/dax-pyo3/python/sidemantic_dax/_native*.so
+crates/dax-pyo3/python/sqlctx_dax/_native*.so
 
 # Docker volumes
 docker-compose.override.yml
 Dockerfile.test
-sidemantic_definitions.sql
+sqlctx_definitions.sql
 
 # Node.js (for bun tests)
 node_modules/
@@ -49,7 +49,8 @@ package.json
 !js/package.json
 !js/bun.lock
 !webapp/package.json
-!sidemantic/apps/web/package.json
+!sqlctx/apps/web/package.json
+!vscode-sqlctx/package.json
 
 # Rust workspace build artifacts (dax local wheel builds)
 /target/

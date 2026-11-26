@@ -1,7 +1,7 @@
 """Tests for Superset adapter - extended dataset/column/metric metadata.
 
 Covers Apache Superset dataset import/export fields that have no first-class
-Sidemantic equivalent and are preserved under ``meta['superset']``:
+sqlctx equivalent and are preserved under ``meta['superset']``:
 
 - Dataset: ``catalog`` (multi-catalog qualifier), ``currency_code_column``,
   ``folders`` (column/metric folder organization).
@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.superset import SupersetAdapter
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.superset import SupersetAdapter
+from sqlctx.core.semantic_graph import SemanticGraph
 
 # =============================================================================
 # MULTI-CATALOG FIXTURE PARSING
@@ -277,7 +277,7 @@ class TestMetadataExport:
 
 
 class TestMetadataRoundtrip:
-    """All new metadata survives Superset -> Sidemantic -> Superset."""
+    """All new metadata survives Superset -> sqlctx -> Superset."""
 
     @pytest.fixture
     def reparsed(self):

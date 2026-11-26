@@ -8,7 +8,7 @@ type DashboardShellProps = {
   children: ReactNode;
 };
 
-export function DashboardShell({ title, eyebrow = "Sidemantic", status, toolbar, children }: DashboardShellProps) {
+export function DashboardShell({ title, eyebrow = "sqlctx", status, toolbar, children }: DashboardShellProps) {
   return (
     <main className="mx-auto max-w-6xl px-4 py-5 text-ink sm:px-6">
       <header className="flex flex-wrap items-end justify-between gap-4 border-b border-line pb-4">

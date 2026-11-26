@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.omni import OmniAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.omni import OmniAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 def test_import_real_omni_example():
@@ -277,7 +277,7 @@ def test_omni_one_to_many_key_direction(tmp_path):
     """one_to_many keys must keep the local/related sides straight.
 
     For ``customers one_to_many orders`` joined on
-    ``${customers.id} = ${orders.customer_id}``, Sidemantic interprets
+    ``${customers.id} = ${orders.customer_id}``, sqlctx interprets
     ``primary_key`` as the local (customers) key and ``foreign_key`` as the
     related (orders) key. Assigning the on_sql sides naively (from->foreign,
     to->primary) reverses the join and produces invalid SQL.
@@ -296,7 +296,7 @@ def test_omni_one_to_many_key_direction(tmp_path):
 
 def test_omni_one_to_many_join_sql_not_reversed(tmp_path):
     """The compiled join condition must be customers.id = orders.customer_id."""
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
 
     _write_one_to_many_fixture(tmp_path)
 
@@ -323,7 +323,7 @@ def test_omni_one_to_many_join_sql_not_reversed(tmp_path):
 
 def test_omni_one_to_many_export_round_trip(tmp_path):
     """Exporting a one_to_many relationship preserves key direction on re-import."""
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.relationship import Relationship
 
     customers = Model(
         name="customers",
@@ -505,7 +505,7 @@ def test_omni_measure_aggregation_types():
 
 
 def test_omni_extended_aggregate_types():
-    """Test extended Omni aggregate types map to closest Sidemantic aggregation."""
+    """Test extended Omni aggregate types map to closest sqlctx aggregation."""
     view_def = {
         "name": "test",
         "table_name": "test_table",
@@ -535,7 +535,7 @@ def test_omni_extended_aggregate_types():
         # plain median maps to median
         assert model.get_metric("med").agg == "median"
         # *_distinct_on variants dedupe by a custom key before aggregating, which
-        # Sidemantic cannot model natively; they must NOT collapse to a plain
+        # sqlctx cannot model natively; they must NOT collapse to a plain
         # sum/avg/median (that would silently drop the dedup and overcount on
         # fan-out). They parse with agg unset and preserve the intent in metadata.
         assert model.get_metric("med_distinct").agg is None
@@ -970,7 +970,7 @@ def test_omni_export_simple_model():
 
 def test_omni_export_with_relationships():
     """Test exporting models with relationships creates relationships.yaml."""
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.relationship import Relationship
 
     model1 = Model(
         name="orders",

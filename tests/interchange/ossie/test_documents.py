@@ -2,7 +2,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from sidemantic.interchange.ossie import (
+from sqlctx.interchange.ossie import (
     FrozenJSONObject,
     OssieDocumentSource,
     OssieLogicalDocument,

@@ -5,13 +5,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.snowflake import SnowflakeAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.segment import Segment
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.snowflake import SnowflakeAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.segment import Segment
+from sqlctx.core.semantic_graph import SemanticGraph
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def examples_dir():
 
 
 class TestSnowflakeRoundtrip:
-    """Test roundtrip conversion: Snowflake -> Sidemantic -> Snowflake."""
+    """Test roundtrip conversion: Snowflake -> sqlctx -> Snowflake."""
 
     def test_roundtrip_simple_model(self, adapter, examples_dir, tmp_path):
         """Test roundtrip of a simple model."""
@@ -108,8 +108,8 @@ class TestSnowflakeRoundtrip:
         assert "'delivered'" in completed.sql
 
 
-class TestSnowflakeExportFromSidemantic:
-    """Test exporting Sidemantic models to Snowflake format."""
+class TestSnowflakeExportFromSqlctx:
+    """Test exporting sqlctx models to Snowflake format."""
 
     def test_export_basic_model(self, adapter, tmp_path):
         """Test exporting a basic model to Snowflake format."""
@@ -337,7 +337,7 @@ class TestSnowflakeTopLevelMetrics:
     """Test parsing/exporting of graph-level (top-level) metrics.
 
     Snowflake semantic-view metrics that omit ``table`` (or reference a table not
-    present in the model) become graph-level Sidemantic metrics that reference
+    present in the model) become graph-level sqlctx metrics that reference
     other fields with ``model.field`` syntax.
     """
 

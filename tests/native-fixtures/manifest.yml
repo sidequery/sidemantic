@@ -353,4 +353,4 @@ fixtures:
     valid: false
     expected_validation: expected/validation.json
     error_contains:
-      - Unsupported native Sidemantic format version
+      - Unsupported native sqlctx format version

@@ -2,14 +2,14 @@
 
 import pytest
 
-from sidemantic import Metric, Model, Relationship, SemanticLayer
-from sidemantic.validation import QueryValidationError
+from sqlctx import Metric, Model, Relationship, SemanticLayer
+from sqlctx.validation import QueryValidationError
 
 
 @pytest.mark.parametrize("engine", ["python", "rust"])
 def test_declared_foreign_key_groups_without_dimension(engine):
     if engine == "rust":
-        pytest.importorskip("sidemantic_rs")
+        pytest.importorskip("sqlctx_rs")
     layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
     layer.add_model(Model(name="customers", table="customers", primary_key="id"))
     layer.add_model(

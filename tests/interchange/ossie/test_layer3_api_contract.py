@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.rust_bridge import compile_ossie_wide_semantic_input
-from sidemantic.sql.ossie_wide import OssieWideQueryError
+from sqlctx import SemanticLayer
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.rust_bridge import compile_ossie_wide_semantic_input
+from sqlctx.sql.ossie_wide import OssieWideQueryError
 
 
 def test_native_wide_transport_retains_caller_filter_obligations():

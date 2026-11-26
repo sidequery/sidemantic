@@ -1,6 +1,6 @@
 # Conversion fidelity and Ossie interoperability
 
-`sidemantic convert` reports import and export fidelity separately. Exact features
+`sqlctx convert` reports import and export fidelity separately. Exact features
 are listed when adapters report them; partial mappings require review; unsupported
 or rejected mappings block publication. A report with no recorded losses is not
 proof of vendor compilation or SQL equivalence. Shared conversion APIs stage exports,
@@ -23,8 +23,8 @@ not carry. Two outcomes are possible when a target cannot represent a construct:
 
 | Target | Filtered measure | Row count / distinct count | Primary key | Joins | Graph-level metrics |
 |---|---|---|---|---|---|
-| `sidemantic`, `metricflow`, `snowflake` | Carried | Carried | Carried | Carried | Carried |
-| `ossie` | Carried | Carried | Carried | Carried | Carried (review: needs the Sidemantic runtime extension) |
+| `sqlctx`, `metricflow`, `snowflake` | Carried | Carried | Carried | Carried | Carried |
+| `ossie` | Carried | Carried | Carried | Carried | Carried (review: needs the sqlctx runtime extension) |
 | `bsl` | Carried (`where=`) | Carried | Carried | Carried | Blocked |
 | `cube`, `lookml`, `malloy` | Carried | Carried | Carried | Carried | Blocked |
 | `hex`, `omni`, `holistics` | Carried | Carried | Carried (hidden key dimension) | Carried | Blocked |
@@ -52,13 +52,13 @@ which this adapter does not write.
 `tests/adapters/test_export_roundtrip.py` enforces this table: it exports one
 model to every registered target, re-imports it, and compares metric values
 grouped by categorical dimensions on DuckDB against the native model. It checks
-import through Sidemantic's own adapters, not compilation by the vendor, and it
+import through sqlctx's own adapters, not compilation by the vendor, and it
 does not compare time-dimension names or grains.
 
 ## Exporting for official Ossie converters
 
 ```sh
-sidemantic convert models.yml --from sidemantic --to ossie \
+sqlctx convert models.yml --from sqlctx --to ossie \
   --ossie-scope commerce --ossie-expression-dialect ANSI_SQL \
   --ossie-official-compatible --output commerce.ossie.yaml
 ```
@@ -68,7 +68,7 @@ metrics into model scope with qualified field references, and validates the
 conservative flat `0.2.0.dev0` shape. It rejects duplicate metric names and
 aggregates without a field binding, including `COUNT(*)` inside larger expressions.
 It also rejects runtime-only semantics such as invariant filters and directed joins
-that require Sidemantic's extension. This addresses the observed dataset-metric
+that require sqlctx's extension. This addresses the observed dataset-metric
 loss in the official converter snapshot `011ea9f9a1e2c941f351e18e071622339ccae881`;
 individual vendors still have narrower capabilities.
 
@@ -77,7 +77,7 @@ default an untyped numeric field to a string. Set the actual logical datatype
 before relying on downstream type preservation; compatibility mode does not
 guess numeric precision.
 
-Ordinary Ossie exports can preserve unsupported native behavior in a Sidemantic
+Ordinary Ossie exports can preserve unsupported native behavior in a sqlctx
 runtime extension. The CLI marks this as partial export fidelity. Other consumers
 see only an empty sentinel dataset. Use `--ossie-portable-only` to require core
 output without changing metric placement, or `--ossie-official-compatible` for
@@ -89,7 +89,7 @@ Graph conversion can lose vendor extensions and AI annotations. It now reports
 those losses. To retain the complete valid document, use:
 
 ```sh
-sidemantic convert source.ossie.yaml --from ossie --to ossie \
+sqlctx convert source.ossie.yaml --from ossie --to ossie \
   --ossie-preserve-document --output preserved.ossie.yaml
 ```
 
@@ -102,7 +102,7 @@ For physical source names with warehouse-specific quoting, supply both source an
 execution dialects:
 
 ```sh
-sidemantic convert source.ossie.yaml --from ossie --to sidemantic \
+sqlctx convert source.ossie.yaml --from ossie --to sqlctx \
   --ossie-source-dialect bigquery --ossie-target-dialect bigquery \
   --output models.yml
 ```
@@ -110,15 +110,15 @@ sidemantic convert source.ossie.yaml --from ossie --to sidemantic \
 ## Optional reference-converter bridges
 
 Lightdash and Sigma are explicitly selected formats backed by separately installed
-`ossie-lightdash` and `ossie-sigma` executables. Sidemantic does not download or
+`ossie-lightdash` and `ossie-sigma` executables. sqlctx does not download or
 install them automatically. Lightdash accepts native model YAML, not arbitrary dbt
 schema metadata. Sigma accepts native JSON. The bridge validates its supported
 subset and rejects unsupported semantics before publishing output.
 
 ```sh
-sidemantic convert models.yml --from sidemantic --to lightdash \
+sqlctx convert models.yml --from sqlctx --to lightdash \
   --ossie-expression-dialect ANSI_SQL --output lightdash-project
-sidemantic convert models.yml --from sidemantic --to sigma \
+sqlctx convert models.yml --from sqlctx --to sigma \
   --ossie-expression-dialect ANSI_SQL --output sigma.json
 ```
 

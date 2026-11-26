@@ -1,9 +1,9 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx import Dimension, Metric, Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.query_rewriter import QueryRewriter
 
 
 @pytest.mark.parametrize(

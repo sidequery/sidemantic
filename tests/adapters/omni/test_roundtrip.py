@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.omni import OmniAdapter
+from sqlctx.adapters.omni import OmniAdapter
 
 from ..helpers import (
     assert_dimension_equivalent,
@@ -14,8 +14,8 @@ from ..helpers import (
 )
 
 
-def test_omni_to_sidemantic_to_omni_roundtrip():
-    """Test roundtrip: Omni -> Sidemantic -> Omni."""
+def test_omni_to_sqlctx_to_omni_roundtrip():
+    """Test roundtrip: Omni -> sqlctx -> Omni."""
     adapter = OmniAdapter()
 
     # Import original

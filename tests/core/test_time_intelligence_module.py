@@ -10,7 +10,7 @@ Tests cover:
 import pytest
 from pydantic import ValidationError
 
-from sidemantic.core.time_intelligence import (
+from sqlctx.core.time_intelligence import (
     TimeComparison,
     TrailingPeriod,
     generate_time_comparison_sql,

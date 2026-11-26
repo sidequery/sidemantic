@@ -5,8 +5,8 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-import sidemantic.cli as cli_module
-from sidemantic.cli import app
+import sqlctx.cli as cli_module
+from sqlctx.cli import app
 
 runner = CliRunner()
 PORTABLE = ["--authoring-mode", "ossie-portable", "--ossie-expression-dialect", "ANSI_SQL"]
@@ -45,7 +45,7 @@ models:
 def test_portable_core_and_full_mode_preserve_source(tmp_path):
     source = write_source(tmp_path)
     original = source.read_bytes()
-    for options in ([], ["--authoring-mode", "sidemantic"], PORTABLE):
+    for options in ([], ["--authoring-mode", "sqlctx"], PORTABLE):
         result = runner.invoke(app, ["validate", str(tmp_path), "--json", *options])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
@@ -126,7 +126,7 @@ semantic_model:
               dialects:
                 - {dialect: SIGMA, expression: '[Amount]'}
 """)
-    from sidemantic.interchange.ossie import OssieParseOptions, parse_ossie_document
+    from sqlctx.interchange.ossie import OssieParseOptions, parse_ossie_document
 
     original = source.read_bytes()
     parsed = parse_ossie_document(original, options=OssieParseOptions(validate_schema=True))
@@ -139,8 +139,8 @@ semantic_model:
 
 @pytest.mark.parametrize("extended", [False, True])
 def test_ossie_source_uses_same_authoring_contract(tmp_path, extended):
-    from sidemantic.adapters.ossie import OssieAdapter
-    from sidemantic.adapters.sidemantic import SidemanticAdapter
+    from sqlctx.adapters.ossie import OssieAdapter
+    from sqlctx.adapters.sqlctx import SqlctxAdapter
 
     native_dir = tmp_path / "native"
     native_dir.mkdir()
@@ -148,7 +148,7 @@ def test_ossie_source_uses_same_authoring_contract(tmp_path, extended):
     ossie_dir = tmp_path / "ossie"
     ossie_dir.mkdir()
     source = ossie_dir / "model.ossie.json"
-    graph = SidemanticAdapter().parse(native)
+    graph = SqlctxAdapter().parse(native)
     OssieAdapter(export_scope_name="commerce", expression_dialect="ANSI_SQL").export(graph, source)
     original = source.read_bytes()
     result = runner.invoke(app, ["validate", str(ossie_dir), "--json", *PORTABLE])

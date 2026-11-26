@@ -3,7 +3,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "sidemantic[widget,ossie]",
+#   "sqlctx[widget,ossie] @ git+https://github.com/sidequery/sqlctx",
 #   "duckdb",
 #   "pandas",
 # ]
@@ -305,17 +305,17 @@ conn.execute("""
 """)
 
 # %% [markdown]
-# ## 3) Load OSI model into Sidemantic
+# ## 3) Load OSI model into sqlctx
 
 # %%
 with tempfile.TemporaryDirectory() as tmp_dir:
     tmp_path = Path(tmp_dir) / "model.yaml"
     tmp_path.write_text(OSI_MODEL_YAML, encoding="utf-8")
-    from sidemantic.adapters.osi import OSIAdapter
+    from sqlctx.adapters.osi import OSIAdapter
 
     graph = OSIAdapter().parse(tmp_path)
 
-from sidemantic import Metric, SemanticLayer
+from sqlctx import Metric, SemanticLayer
 
 layer = SemanticLayer()
 layer.conn = conn
@@ -408,12 +408,12 @@ weekly_spend_df = conn.execute(weekly_spend_sql).fetchdf()
 weekly_spend_df
 
 # %% [markdown]
-# ## 6) Launch Sidemantic widget
+# ## 6) Launch sqlctx widget
 #
 # In notebook mode, render `widget` to explore metrics interactively.
 
 # %%
-from sidemantic.widget import MetricsExplorer
+from sqlctx.widget import MetricsExplorer
 
 widget = MetricsExplorer(
     layer,

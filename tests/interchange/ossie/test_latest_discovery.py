@@ -6,9 +6,9 @@ import duckdb
 import pytest
 from typer.testing import CliRunner
 
-from sidemantic import SemanticLayer
-from sidemantic.cli import app
-from sidemantic.interchange.ossie import lower_ossie_document, parse_ossie_document
+from sqlctx import SemanticLayer
+from sqlctx.cli import app
+from sqlctx.interchange.ossie import lower_ossie_document, parse_ossie_document
 from tests.interchange.ossie.test_latest_query_interface import FIXTURES, ROUTES, _execute
 
 

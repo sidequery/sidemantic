@@ -3,7 +3,7 @@
 import duckdb
 import pytest
 
-from sidemantic import Metric, Model, SemanticLayer
+from sqlctx import Metric, Model, SemanticLayer
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ def db():
 @pytest.fixture
 def layer(db):
     """Create a SemanticLayer with the test DB connection."""
-    from sidemantic.db.duckdb import DuckDBAdapter
+    from sqlctx.db.duckdb import DuckDBAdapter
 
     adapter = DuckDBAdapter()
     adapter.conn = db
@@ -95,7 +95,7 @@ def test_auto_dimensions_type_mapping(layer):
 
 def test_explicit_dimensions_take_precedence(layer):
     """Explicitly defined dimensions are preserved, introspection fills gaps."""
-    from sidemantic.core.dimension import Dimension
+    from sqlctx.core.dimension import Dimension
 
     model = Model(
         name="orders",

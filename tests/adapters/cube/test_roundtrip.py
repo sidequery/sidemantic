@@ -5,12 +5,12 @@ from pathlib import Path
 
 import yaml
 
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
 
 from ..helpers import (
     assert_dimension_equivalent,
@@ -20,8 +20,8 @@ from ..helpers import (
 )
 
 
-def test_cube_to_sidemantic_to_cube_roundtrip():
-    """Test that Cube -> Sidemantic -> Cube preserves structure."""
+def test_cube_to_sqlctx_to_cube_roundtrip():
+    """Test that Cube -> sqlctx -> Cube preserves structure."""
     cube_adapter = CubeAdapter()
     graph1 = cube_adapter.parse("tests/fixtures/cube/orders.yml")
 

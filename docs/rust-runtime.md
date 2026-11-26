@@ -1,6 +1,6 @@
 # Rust Native Runtime
 
-The Rust runtime supports native Sidemantic YAML and SQL projects. It is not a Rust port of every Python adapter.
+The Rust runtime supports native sqlctx YAML and SQL projects. It is not a Rust port of every Python adapter.
 
 Use Python to import external semantic formats, then export or normalize them into native YAML/SQL. Use Rust to validate, compile, rewrite, and eventually execute those native projects.
 
@@ -8,8 +8,8 @@ Export adapter output to the native contract with:
 
 ```bash
 mkdir -p ./native-models
-sidemantic convert ./adapter-project --to sidemantic --output ./native-models/sidemantic.yml
-sidemantic validate ./native-models --engine rust
+sqlctx convert ./adapter-project --to sqlctx --output ./native-models/sqlctx.yml
+sqlctx validate ./native-models --engine rust
 ```
 
 ## Supported Inputs
@@ -50,17 +50,16 @@ Those remain Python-owned import paths.
 
 ## Default runtime and installation
 
-A normal `uv tool install sidemantic` uses Python and does not install the Rust
-backend. Install `uv tool install "sidemantic[rust]"` for the CLI or
-`uv add "sidemantic[rust]"` in a project to include the matching `sidemantic-rs`
-package. The `full` extra also includes it. Installing the extra leaves Python
-as the default for validation, compilation, and semantic SQL rewriting.
+A normal `uv tool install git+https://github.com/sidequery/sqlctx` uses the Python
+engine. From a source checkout, `uv sync --extra rust` builds and installs the
+matching `sqlctx-rs` package. The `full` extra also includes it. Python remains
+the default for validation, compilation, and semantic SQL rewriting.
 Select `--engine rust` to use the native runtime and report an
 error if it is unavailable or a capability is unsupported, or `--engine auto` to
 allow fallback for known unsupported capabilities. Invalid input and unexpected
-failures still propagate. `SIDEMANTIC_ENGINE=rust` sets a process-wide default;
+failures still propagate. `SQLCTX_ENGINE=rust` sets a process-wide default;
 explicit engine selection and project runtime configuration take precedence.
-The process-wide choice overrides legacy `SIDEMANTIC_RS_*` flags.
+The process-wide choice overrides legacy `SQLCTX_RS_*` flags.
 
 Pyodide excludes the native dependency and defaults to Python. The distributed
 Python extension uses the lightweight `python` feature; database execution
@@ -72,7 +71,7 @@ source build with `python-adbc`.
 Python users can select the native runtime explicitly:
 
 ```python
-from sidemantic import SemanticLayer
+from sqlctx import SemanticLayer
 
 layer = SemanticLayer(engine="rust")
 ```
@@ -92,15 +91,15 @@ layer = SemanticLayer(engine="rust", fallback=True)
 The Python CLI exposes engine selection on native validation and semantic SQL query paths:
 
 ```bash
-sidemantic validate ./models --engine rust
-sidemantic query "select orders.total_revenue from metrics" --models ./models --engine rust --dry-run
-sidemantic rewrite "select orders.total_revenue from metrics" --models ./models --engine rust
+sqlctx validate ./models --engine rust
+sqlctx query "select orders.total_revenue from metrics" --models ./models --engine rust --dry-run
+sqlctx rewrite "select orders.total_revenue from metrics" --models ./models --engine rust
 ```
 
 Use `--fallback` when trying Rust but allowing Python fallback:
 
 ```bash
-sidemantic query "select orders.total_revenue from metrics" --models ./models --engine rust --fallback
+sqlctx query "select orders.total_revenue from metrics" --models ./models --engine rust --fallback
 ```
 
 Config files can set the same behavior:
@@ -111,7 +110,7 @@ runtime:
   fallback: false
 ```
 
-Environment variables such as `SIDEMANTIC_RS_SQL_GENERATOR` and `SIDEMANTIC_RS_REWRITER` remain internal migration and CI controls. New user-facing docs should prefer `engine`.
+Environment variables such as `SQLCTX_RS_SQL_GENERATOR` and `SQLCTX_RS_REWRITER` remain internal migration and CI controls. New user-facing docs should prefer `engine`.
 
 ## Compatibility Checks
 
@@ -119,7 +118,7 @@ Native compatibility is enforced by:
 
 ```bash
 uv run pytest tests/native_compat -v
-cd sidemantic-rs && cargo test --test native_fixtures
+cd sqlctx-rs && cargo test --test native_fixtures
 ```
 
 CI runs these in the `Native Compatibility` job.

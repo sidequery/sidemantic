@@ -1,16 +1,16 @@
-# Sidemantic
+# sqlctx
 
 Universal SQL-first semantic layer in Python. Imports from Cube/LookML/dbt/Hex/Rill/Malloy, queries against DuckDB/Postgres/BigQuery/Snowflake/etc.
 
 ## Usage Preference (Important)
 
-- Sidemantic usage is overwhelmingly CLI-first in practice (roughly 95% CLI usage).
-- Default to `sidemantic` CLI workflows (`validate`, `info`, `query`, `migrate`, etc.).
+- sqlctx usage is overwhelmingly CLI-first in practice (roughly 95% CLI usage).
+- Default to `sqlctx` CLI workflows (`validate`, `info`, `query`, `migrate`, etc.).
 - Treat Python API examples as secondary, advanced automation paths, not the default onboarding path.
 
 ## Codebase Structure
 
-**Main Python package:** `sidemantic/`
+**Main Python package:** `sqlctx/`
 - `core/` - SemanticLayer, Model, Dimension, Metric, SemanticGraph
 - `adapters/` - Format parsers (Cube, LookML, MetricFlow, Hex, Rill, Malloy, etc.)
 - `db/` - Database adapters
@@ -18,8 +18,8 @@ Universal SQL-first semantic layer in Python. Imports from Cube/LookML/dbt/Hex/R
 - `widget/`, `server/`, `workbench/`, `mcp_server.py` - Optional features with lazy imports
 
 **Rust runtime and DuckDB extension (experimental):**
-- `sidemantic-rs/` - Rust native runtime, also built as the `sidemantic-rs` Python extension. Python opts in through `sidemantic/rust_bridge.py`, the optional `rust` extra, and `--engine rust|auto`; Python stays the default engine (see `docs/rust-engine-mode.md`).
-- `sidemantic-duckdb/` - DuckDB extension wrapping sidemantic-rs
+- `sqlctx-rs/` - Rust native runtime, also built as the `sqlctx-rs` Python extension. Python opts in through `sqlctx/rust_bridge.py`, the optional `rust` extra, and `--engine rust|auto`; Python stays the default engine (see `docs/rust-engine-mode.md`).
+- `sqlctx-duckdb/` - DuckDB extension wrapping sqlctx-rs
 
 CI runs the Rust and DuckDB jobs when their dirs change, and the Rust jobs also when the Python code they exercise changes (bridge, core, SQL, CLI; see the paths filter in `.github/workflows/ci.yml`).
 
@@ -27,7 +27,7 @@ CI runs the Rust and DuckDB jobs when their dirs change, and the Rust jobs also 
 
 Update BOTH when releasing:
 - `pyproject.toml`: `version = "X.Y.Z"`
-- `sidemantic/__init__.py`: `__version__ = "X.Y.Z"`
+- `sqlctx/__init__.py`: `__version__ = "X.Y.Z"`
 
 ## Validation Before Commits
 
@@ -47,16 +47,16 @@ uv sync --extra dev
 uv run python - <<'PY'
 import sys
 
-from sidemantic import Dimension, Metric, Model
+from sqlctx import Dimension, Metric, Model
 
 assert Model.__name__ == "Model"
 assert Dimension.__name__ == "Dimension"
 assert Metric.__name__ == "Metric"
-assert "sidemantic_dax" not in sys.modules
+assert "sqlctx_dax" not in sys.modules
 PY
 uv sync --extra dev --extra dax
-uv run ruff check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
-uv run ruff format --check . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
+uv run ruff check . --exclude docs/_extensions --exclude sqlctx-duckdb/extension-ci-tools --exclude sqlctx-duckdb/scripts --exclude sqlctx-duckdb/duckdb --exclude sqlctx/adapters/malloy_grammar --exclude sqlctx/adapters/holistics_grammar
+uv run ruff format --check . --exclude docs/_extensions --exclude sqlctx-duckdb/extension-ci-tools --exclude sqlctx-duckdb/scripts --exclude sqlctx-duckdb/duckdb --exclude sqlctx/adapters/malloy_grammar --exclude sqlctx/adapters/holistics_grammar
 uv run python -m playwright install --with-deps chromium
 uv run pytest -v
 ```
@@ -64,8 +64,8 @@ uv run pytest -v
 If any fail, fix them:
 ```bash
 # Fix ruff issues
-uv run ruff check --fix . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
-uv run ruff format . --exclude docs/_extensions --exclude sidemantic-duckdb/extension-ci-tools --exclude sidemantic-duckdb/scripts --exclude sidemantic-duckdb/duckdb --exclude sidemantic/adapters/malloy_grammar --exclude sidemantic/adapters/holistics_grammar
+uv run ruff check --fix . --exclude docs/_extensions --exclude sqlctx-duckdb/extension-ci-tools --exclude sqlctx-duckdb/scripts --exclude sqlctx-duckdb/duckdb --exclude sqlctx/adapters/malloy_grammar --exclude sqlctx/adapters/holistics_grammar
+uv run ruff format . --exclude docs/_extensions --exclude sqlctx-duckdb/extension-ci-tools --exclude sqlctx-duckdb/scripts --exclude sqlctx-duckdb/duckdb --exclude sqlctx/adapters/malloy_grammar --exclude sqlctx/adapters/holistics_grammar
 ```
 
 **PRs:** Do not include test commands in PR bodies unless explicitly requested.
@@ -83,23 +83,23 @@ uv run ruff format . --exclude docs/_extensions --exclude sidemantic-duckdb/exte
 - DO NOT add dev tools to main dependencies unless explicitly requested
 - Optional features use `[project.optional-dependencies]`:
   - `workbench` - textual, plotext, textual-plotext (for TUI, NOT Pyodide compatible)
-  - `serve` - riffq, pyarrow (for the PostgreSQL wire server, `sidemantic server postgres`; NOT Pyodide compatible)
-  - `api` / `mcp` - fastapi, uvicorn, pyarrow / mcp[cli] (for `sidemantic serve`, `server api`, `server mcp`)
+  - `serve` - riffq, pyarrow (for the PostgreSQL wire server, `sqlctx server postgres`; NOT Pyodide compatible)
+  - `api` / `mcp` - fastapi, uvicorn, pyarrow / mcp[cli] (for `sqlctx serve`, `server api`, `server mcp`)
   - `dev` - pytest, ruff, pandas, numpy (for development)
 
 **CRITICAL: Pyodide Compatibility Rules**
 - **Core dependencies** (in main `dependencies` list) MUST work in Pyodide/WASM
 - **Optional dependencies** can use packages incompatible with Pyodide (textual, riffq, pyarrow, mcp)
 - **ALL imports** of optional deps MUST be lazy (inside functions, NOT at module level)
-- **Test**: `from sidemantic import Model, Dimension, Metric` must work without any optional deps
+- **Test**: `from sqlctx import Model, Dimension, Metric` must work without any optional deps
 
 ## Pyodide Compatibility
 
 **Import Structure:**
-- `sidemantic/__init__.py` - Only imports core classes (Model, Dimension, etc.)
-- `sidemantic/cli.py` - Imports typer (core dep) at top, workbench/server imports inside command functions
-- `sidemantic/workbench/__init__.py` - Lazy imports textual inside `run_workbench()` function
-- `sidemantic/server/` - Not imported by `sidemantic/__init__.py`; `server.py`/`connection.py` (riffq) load only for `sidemantic server postgres`, and the dependency-free `common.py` is shared with the API, MCP, and chart modules
+- `sqlctx/__init__.py` - Only imports core classes (Model, Dimension, etc.)
+- `sqlctx/cli.py` - Imports typer (core dep) at top, workbench/server imports inside command functions
+- `sqlctx/workbench/__init__.py` - Lazy imports textual inside `run_workbench()` function
+- `sqlctx/server/` - Not imported by `sqlctx/__init__.py`; `server.py`/`connection.py` (riffq) load only for `sqlctx server postgres`, and the dependency-free `common.py` is shared with the API, MCP, and chart modules
 
 **Pyodide install path** (`docs/pyodide.md`, `.github/workflows/pyodide-test.yml`):
 - Pyodide's bundled `pydantic`, `pyyaml`, and `jinja2` are loaded first; `sqlglot`, `lkml`, and `inflect` are installed with `deps=False`

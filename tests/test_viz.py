@@ -5,8 +5,8 @@ import re
 import pytest
 
 from examples.integrations.headless_charting import _build_chart, build_layer
-from sidemantic import Dimension, Freshness, Metric, Model, Relationship, SemanticLayer
-from sidemantic.viz import (
+from sqlctx import Dimension, Freshness, Metric, Model, Relationship, SemanticLayer
+from sqlctx.viz import (
     CrossfilterDashboard,
     CrossfilterTab,
     DimensionEquals,
@@ -18,8 +18,8 @@ from sidemantic.viz import (
 
 def _strip_vendored_script_bodies(html: str) -> str:
     return re.sub(
-        r'<script data-sidemantic-vendor="[^"]+">.*?</script>',
-        '<script data-sidemantic-vendor=""></script>',
+        r'<script data-sqlctx-vendor="[^"]+">.*?</script>',
+        '<script data-sqlctx-vendor=""></script>',
         html,
         flags=re.DOTALL,
     )
@@ -98,10 +98,10 @@ def test_layer_chart_emits_renderer_specs():
     assert d3["fields"]["series"] == "region"
 
     crossfilter = chart.to_crossfilter()
-    assert crossfilter["renderer"] == "sidemantic-crossfilter"
+    assert crossfilter["renderer"] == "sqlctx-crossfilter"
     assert crossfilter["fields"]["series"] == "region"
     assert crossfilter["fields"]["metric_aggs"] == {"revenue": "sum"}
-    assert crossfilter["field_plan"]["protocol"] == "sidemantic-field-plan-v1"
+    assert crossfilter["field_plan"]["protocol"] == "sqlctx-field-plan-v1"
     assert crossfilter["field_plan"]["aliases"] == {
         "created_at__month": "orders.created_at__month",
         "region": "orders.region",
@@ -241,8 +241,8 @@ def test_chart_sql_uses_stable_aliases_for_same_named_join_fields():
     spec = layer.chart("orders.revenue", by=["orders.region", "customers.region"]).to_crossfilter()
 
     assert spec["fields"]["dimensions"] == ["orders_region", "customers_region"]
-    assert "AS orders_region" in spec["sidemantic"]["sql"]
-    assert "AS customers_region" in spec["sidemantic"]["sql"]
+    assert "AS orders_region" in spec["sqlctx"]["sql"]
+    assert "AS customers_region" in spec["sqlctx"]["sql"]
     assert set(spec["data"][0]) == {"orders_region", "customers_region", "revenue"}
 
 
@@ -271,7 +271,7 @@ def test_layer_chart_html_contains_vega_embed():
 
     assert "<!doctype html>" in html
     assert "vega-embed" in html
-    assert "__SIDEMANTIC_CHART_READY__" in html
+    assert "__SQLCTX_CHART_READY__" in html
     assert "interaction-status" in html
     assert "orders.revenue" in html
 
@@ -279,7 +279,7 @@ def test_layer_chart_html_contains_vega_embed():
         "orders.revenue",
         by=["orders.created_at__month", "orders.region"],
     ).to_html("crossfilter")
-    assert "__SIDEMANTIC_CROSSFILTER__" in crossfilter_html
+    assert "__SQLCTX_CROSSFILTER__" in crossfilter_html
     assert "cf-summary" in crossfilter_html
     assert "metricRange" in crossfilter_html
     assert "cf-scatter" in crossfilter_html
@@ -289,8 +289,8 @@ def test_layer_chart_html_contains_vega_embed():
     assert "cf-filter-pill" in crossfilter_html
     assert "clearFilter" in crossfilter_html
     assert "refreshFromServer" in crossfilter_html
-    assert "sidemanticCrossfilterMode" in crossfilter_html
-    assert "sidemanticCrossfilterSqlHasHaving" in crossfilter_html
+    assert "sqlctxCrossfilterMode" in crossfilter_html
+    assert "sqlctxCrossfilterSqlHasHaving" in crossfilter_html
     assert "Interaction preagg" in crossfilter_html
     assert "activatePreagg" in crossfilter_html
     assert "cf-preagg-toggle" in crossfilter_html
@@ -312,7 +312,7 @@ def test_layer_chart_html_contains_vega_embed():
     assert "renderXRangeOverlay" in crossfilter_html
     assert "domainSourceRows" in crossfilter_html
     assert "refreshDomainsFromLiveViews" in crossfilter_html
-    assert "__SIDEMANTIC_CROSSFILTER_API__" in crossfilter_html
+    assert "__SQLCTX_CROSSFILTER_API__" in crossfilter_html
 
 
 def test_chart_html_uses_vendored_renderer_assets():
@@ -338,7 +338,7 @@ def test_chart_html_uses_vendored_renderer_assets():
         html = chart.to_html(renderer)
         shell_html = _strip_vendored_script_bodies(html)
         for vendor in expected_vendors:
-            assert f'data-sidemantic-vendor="{vendor}"' in html
+            assert f'data-sqlctx-vendor="{vendor}"' in html
         for forbidden in forbidden_loaders:
             assert forbidden not in shell_html
 
@@ -351,7 +351,7 @@ def test_layer_chart_crossfilter_session_api():
     ).crossfilter()
 
     spec = session.to_spec(query_endpoint="/query")
-    assert spec["protocol"] == "sidemantic-crossfilter-v1"
+    assert spec["protocol"] == "sqlctx-crossfilter-v1"
     assert spec["query_endpoint"] == "/query"
     assert spec["chart_renderer"] == "d3"
     assert spec["chart_renderer_options"] == ["vega-lite", "plotly", "observable-plot", "d3"]
@@ -361,7 +361,7 @@ def test_layer_chart_crossfilter_session_api():
         by=["orders.created_at__month", "orders.region"],
     ).crossfilter(renderer="plotly")
     assert plotly_session.to_spec()["chart_renderer"] == "plotly"
-    assert plotly_session.to_spec()["sidemantic"]["chart_renderer_options"] == [
+    assert plotly_session.to_spec()["sqlctx"]["chart_renderer_options"] == [
         "vega-lite",
         "plotly",
         "observable-plot",
@@ -369,9 +369,9 @@ def test_layer_chart_crossfilter_session_api():
     ]
 
     response = session.query([DimensionEquals("orders.region", "North")])
-    assert response["protocol"] == "sidemantic-crossfilter-v1"
+    assert response["protocol"] == "sqlctx-crossfilter-v1"
     assert response["diagnostics"]["mode"] == "database"
-    assert response["freshness"]["protocol"] == "sidemantic-freshness-v1"
+    assert response["freshness"]["protocol"] == "sqlctx-freshness-v1"
     assert response["freshness"]["status"] == "direct"
     assert response["freshness"]["stale"] is False
     assert response["diagnostics"]["freshness"] == response["freshness"]
@@ -397,7 +397,7 @@ def test_crossfilter_interaction_preagg_materializes_and_reuses_table():
     assert activated["freshness"]["status"] == "preaggregated"
     assert activated["freshness"]["stale"] is False
     assert activated["freshness"]["interaction_preagg"]["built_at"]
-    assert preagg["table"]["table_name"].startswith("sidemantic_ipreagg_")
+    assert preagg["table"]["table_name"].startswith("sqlctx_ipreagg_")
     assert preagg["table"]["built_at"]
     assert preagg["table"]["model_version"]
     assert preagg["table"]["row_count"] == 6
@@ -711,14 +711,14 @@ def test_crossfilter_dashboard_routes_requests_and_emits_tabs(tmp_path):
     )
 
     spec = dashboard.to_spec()
-    assert spec["renderer"] == "sidemantic-crossfilter-tabs"
+    assert spec["renderer"] == "sqlctx-crossfilter-tabs"
     assert [tab["id"] for tab in spec["tabs"]] == ["standard", "comparison"]
     assert spec["tabs"][0]["query_endpoint"] == "/crossfilter/query"
     assert "cf-tabs" in dashboard.to_html()
     written = dashboard.write(tmp_path)
     assert written["html"].name == "crossfilter.html"
     assert written["spec"].name == "crossfilter.json"
-    assert "sidemantic-crossfilter-tabs" in written["spec"].read_text()
+    assert "sqlctx-crossfilter-tabs" in written["spec"].read_text()
 
     response = dashboard.handle_request(
         {

@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from "react";
-import type { SidemanticBackend } from "../data/backend";
+import type { SqlctxBackend } from "../data/backend";
 import type { Catalog, DashboardSpec } from "../data/types";
 import { dashboardTabConfig } from "../lib/dashboard";
 import {
@@ -15,7 +15,7 @@ type ExplorerContextValue = {
   state: ExplorerState;
   dispatch: React.Dispatch<ExplorerAction>;
   catalog: Catalog;
-  backend: SidemanticBackend;
+  backend: SqlctxBackend;
   initial: ExplorerState;
   dashboard?: DashboardSpec | null;
 };
@@ -56,7 +56,7 @@ export function ExplorerProvider({
   children,
 }: {
   catalog: Catalog;
-  backend: SidemanticBackend;
+  backend: SqlctxBackend;
   dashboard?: DashboardSpec | null;
   /** Query string to hydrate the initial state from (with or without the leading "?"). Defaults to
    *  the browser's `window.location.search`; a host that server-renders can pass the request's

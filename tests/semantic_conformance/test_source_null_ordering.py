@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
 
 @pytest.fixture(params=["python", "rust"])
 def layer(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Requires real native extension")
+        pytest.importorskip("sqlctx_rs", reason="Requires real native extension")
     layer = SemanticLayer(engine=request.param, fallback=False, auto_register=False)
     layer.add_model(
         Model(
@@ -76,7 +76,7 @@ def test_source_ordering_matches_independent_rows(layer, plan, field, suffix, pa
 def test_minimized_nullable_fanout_case():
     from tests.semantic_conformance.differential.harness import Case, DifferentialRunner
 
-    pytest.importorskip("sidemantic_rs", reason="Requires real native extension")
+    pytest.importorskip("sqlctx_rs", reason="Requires real native extension")
     case = Case.read(Path(__file__).parent / "fixtures" / "source_null_ordering.json")
     runner = DifferentialRunner()
     try:
@@ -102,7 +102,7 @@ def test_multi_source_ordering_renders_target_dialect(layer, dialect, suffix):
     )
     # Check the newly emitted clause independently of unrelated source-join
     # dialect capabilities. Neither SQL Server nor MySQL accepts NULLS syntax.
-    order = sql.rsplit("ORDER BY", 1)[1].split("-- sidemantic:", 1)[0].strip()
+    order = sql.rsplit("ORDER BY", 1)[1].split("-- sqlctx:", 1)[0].strip()
     assert "NULLS FIRST" not in order and "NULLS LAST" not in order
     probe = sqlglot.parse_one("select label from facts order by " + order, read=dialect)
     actual = layer.adapter.execute(probe.sql(dialect="duckdb")).fetchall()

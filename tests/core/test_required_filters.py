@@ -6,12 +6,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.consumption import Explore
-from sidemantic.core.inheritance import merge_model
-from sidemantic.core.segment import Segment
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.consumption import Explore
+from sqlctx.core.inheritance import merge_model
+from sqlctx.core.segment import Segment
+from sqlctx.sql.query_rewriter import QueryRewriter
 
 
 @pytest.fixture
@@ -47,8 +47,8 @@ def native_dispatch(required_layer, monkeypatch):
         compile_with_semantic_input=Mock(return_value=expected),
         rewrite_with_semantic_input=Mock(return_value=expected),
     )
-    monkeypatch.setattr("sidemantic.core.semantic_layer.get_rust_module", lambda: module)
-    monkeypatch.setattr("sidemantic.rust_bridge.get_rust_module", lambda: module)
+    monkeypatch.setattr("sqlctx.core.semantic_layer.get_rust_module", lambda: module)
+    monkeypatch.setattr("sqlctx.rust_bridge.get_rust_module", lambda: module)
     return module
 
 
@@ -185,9 +185,9 @@ def test_sql_group_fields_and_aliases(required_layer, group):
 
 
 def test_yaml_roundtrip_and_inheritance(required_layer, tmp_path):
-    from sidemantic.semantic_handoff import graph_to_semantic_input
+    from sqlctx.semantic_handoff import graph_to_semantic_input
 
-    adapter = SidemanticAdapter()
+    adapter = SqlctxAdapter()
     model = required_layer.graph.models["events"]
     model.required_filters_or_groups = ["test_name"]
     child = merge_model(Model(name="child", extends="events", required_filters=["status"]), model)
@@ -211,9 +211,9 @@ def test_default_off(required_layer):
 def test_cli_filter_error_and_success(required_layer, tmp_path):
     from typer.testing import CliRunner
 
-    from sidemantic.cli import app
+    from sqlctx.cli import app
 
-    SidemanticAdapter().export(required_layer.graph, tmp_path / "models.yml")
+    SqlctxAdapter().export(required_layer.graph, tmp_path / "models.yml")
     args = ["query", "--models", str(tmp_path), "--engine", "python", "--metric", "events.count", "--dry-run"]
     runner = CliRunner()
     missing = runner.invoke(app, args)
@@ -229,7 +229,7 @@ def test_api_returns_400_and_accepts_date_picker(required_layer):
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
 
-    from sidemantic.api_server import create_app
+    from sqlctx.api_server import create_app
 
     with TestClient(create_app(required_layer)) as client:
         missing = client.post("/query", json={"metrics": ["events.count"]})
@@ -246,8 +246,8 @@ def test_api_returns_400_and_accepts_date_picker(required_layer):
 
 
 def test_pgwire_transport_and_raw_bypass(required_layer):
-    from sidemantic.core.semantic_layer import SecurityError
-    from sidemantic.core.transport_security import deny_raw_sql, rewrite_transport_sql
+    from sqlctx.core.semantic_layer import SecurityError
+    from sqlctx.core.transport_security import deny_raw_sql, rewrite_transport_sql
 
     with pytest.raises(ValueError, match="must filter events.event_date"):
         rewrite_transport_sql(
@@ -277,7 +277,7 @@ def test_filter_only_model_and_multiple_requirements(required_layer):
 
 
 def test_predicate_subquery_does_not_satisfy_outer_read(required_layer):
-    from sidemantic.core.required_filters import validate_required_filters
+    from sqlctx.core.required_filters import validate_required_filters
 
     with pytest.raises(ValueError, match="must filter events.event_date"):
         validate_required_filters(

@@ -8,11 +8,11 @@ import time
 import duckdb
 import pytest
 
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_layer import SemanticLayer
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_layer import SemanticLayer
 from tests.utils import fetch_rows
 
 
@@ -128,7 +128,7 @@ def performance_layer():
 
 def test_simple_rewrite_performance(performance_layer):
     """Measure performance of simple query rewriting."""
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.sql.query_rewriter import QueryRewriter
 
     sql = "SELECT revenue FROM orders"
     rewriter = QueryRewriter(performance_layer.graph, dialect="duckdb")
@@ -148,7 +148,7 @@ def test_simple_rewrite_performance(performance_layer):
 
 def test_complex_rewrite_performance(performance_layer):
     """Measure performance of complex query rewriting with joins and filters."""
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.sql.query_rewriter import QueryRewriter
 
     sql = """
         SELECT
@@ -177,7 +177,7 @@ def test_complex_rewrite_performance(performance_layer):
 
 def test_sql_generation_performance(performance_layer):
     """Measure performance of SQL generation."""
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.sql.generator import SQLGenerator
 
     generator = SQLGenerator(performance_layer.graph, dialect="duckdb")
 
@@ -200,7 +200,7 @@ def test_sql_generation_performance(performance_layer):
 
 def test_multi_join_generation_performance(performance_layer):
     """Measure performance of SQL generation with multiple joins."""
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.sql.generator import SQLGenerator
 
     generator = SQLGenerator(performance_layer.graph, dialect="duckdb")
 
@@ -245,7 +245,7 @@ def test_end_to_end_execution_performance(performance_layer):
 
 def test_filter_parsing_performance(performance_layer):
     """Measure performance of filter parsing and transformation."""
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.sql.generator import SQLGenerator
 
     generator = SQLGenerator(performance_layer.graph, dialect="duckdb")
 
@@ -275,7 +275,7 @@ def test_filter_parsing_performance(performance_layer):
 
 def test_query_rewriter_warm_vs_cold(performance_layer):
     """Compare performance of first query (cold) vs subsequent queries (warm)."""
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.sql.query_rewriter import QueryRewriter
 
     rewriter = QueryRewriter(performance_layer.graph, dialect="duckdb")
 
@@ -307,7 +307,7 @@ def test_query_rewriter_warm_vs_cold(performance_layer):
 
 def test_parameter_substitution_performance(performance_layer):
     """Measure performance with parameter substitution."""
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.sql.generator import SQLGenerator
 
     generator = SQLGenerator(performance_layer.graph, dialect="duckdb")
 

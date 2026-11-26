@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic", "duckdb", "pandas"]
+# dependencies = ["sqlctx @ git+https://github.com/sidequery/sqlctx", "duckdb", "pandas"]
 # ///
-"""Example: Using Sidemantic with Hive-partitioned parquet files.
+"""Example: Using sqlctx with Hive-partitioned parquet files.
 
 DuckDB natively supports reading Hive-partitioned parquet directories.
-Sidemantic works with them via the `sql` field on a Model, which lets you
+sqlctx works with them via the `sql` field on a Model, which lets you
 use read_parquet() with hive_partitioning=true.
 
 This example:
@@ -25,7 +25,7 @@ import shutil
 
 import duckdb
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sqlctx import Dimension, Metric, Model, SemanticLayer
 
 
 def create_hive_partitioned_data(base_dir: str):

@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.ossie import OssieAdapter
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.semantic_handoff import UnsupportedSemanticFeaturesError, graph_to_semantic_input
-from sidemantic.validation import QueryValidationError
+from sqlctx import SemanticLayer
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.ossie import OssieAdapter
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.semantic_handoff import UnsupportedSemanticFeaturesError, graph_to_semantic_input
+from sqlctx.validation import QueryValidationError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CASES = yaml.safe_load((FIXTURES / "cases.yml").read_text())
@@ -21,7 +21,7 @@ ERROR_TYPES = {"QueryValidationError": QueryValidationError, "SecurityError": Se
 
 
 def load_source(source):
-    adapter = {"native": SidemanticAdapter, "cube": CubeAdapter, "ossie": OssieAdapter}[source.split("/")[0]]()
+    adapter = {"native": SqlctxAdapter, "cube": CubeAdapter, "ossie": OssieAdapter}[source.split("/")[0]]()
     return adapter.parse(FIXTURES / f"{source}.yml")
 
 
@@ -37,7 +37,7 @@ def normalize(value):
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["name"])
 def test_compiler_results(case, engine):
     if engine == "rust":
-        pytest.importorskip("sidemantic_rs", reason="The real Rust extension must be installed for acceptance")
+        pytest.importorskip("sqlctx_rs", reason="The real Rust extension must be installed for acceptance")
     layer = SemanticLayer(engine=engine, auto_register=False)
     try:
         layer.graph = load_source(case["source"])

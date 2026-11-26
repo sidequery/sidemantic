@@ -7,7 +7,7 @@ expr_calc dimensions, and display names.
 
 import pytest
 
-from sidemantic.adapters.hex import HexAdapter
+from sqlctx.adapters.hex import HexAdapter
 
 # =============================================================================
 # SAAS ANALYTICS FIXTURE TESTS

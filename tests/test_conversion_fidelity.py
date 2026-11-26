@@ -9,11 +9,11 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from sidemantic import Dimension, Model
-from sidemantic.adapters.ossie import OssieAdapter
-from sidemantic.cli import app
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.fidelity import (
+from sqlctx import Dimension, Model
+from sqlctx.adapters.ossie import OssieAdapter
+from sqlctx.cli import app
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.fidelity import (
     ConversionFidelityError,
     ExportReport,
     capture_export_report,
@@ -22,10 +22,10 @@ from sidemantic.fidelity import (
     record_export_note,
     record_import_feature,
 )
-from sidemantic.formats import convert_semantic_source, export_semantic_graph, get_semantic_format, load_semantic_source
-from sidemantic.interchange.ossie.compatibility import for_official_converters
-from sidemantic.interchange.ossie.documents import OssieLogicalDocument
-from sidemantic.interchange.ossie.profiles import LATEST_OSSIE_SCHEMA_COMMIT, OssieSerialization
+from sqlctx.formats import convert_semantic_source, export_semantic_graph, get_semantic_format, load_semantic_source
+from sqlctx.interchange.ossie.compatibility import for_official_converters
+from sqlctx.interchange.ossie.documents import OssieLogicalDocument
+from sqlctx.interchange.ossie.profiles import LATEST_OSSIE_SCHEMA_COMMIT, OssieSerialization
 
 RUNNER = CliRunner()
 FIXTURES = Path(__file__).parent / "fixtures" / "converter_interop"
@@ -86,7 +86,7 @@ def test_shared_export_does_not_publish_blocked_adapter_output(tmp_path, monkeyp
             output.write_text("partial result")
             record_export_feature("security.filter", blocked, detail="Cannot preserve scope")
 
-    monkeypatch.setattr("sidemantic.formats.SemanticFormat.create_adapter", lambda *a, **kw: Adapter())
+    monkeypatch.setattr("sqlctx.formats.SemanticFormat.create_adapter", lambda *a, **kw: Adapter())
     with capture_export_report() as report, pytest.raises(ConversionFidelityError, match="Cannot preserve scope"):
         export_semantic_graph(native_graph(), destination)
     assert report.is_blocked
@@ -119,7 +119,7 @@ def test_existing_suffixed_directory_keeps_shape_and_publication_gate(
 
     if entrypoint == "cli":
         source = tmp_path / "source.yml"
-        get_semantic_format("sidemantic").create_adapter().export(graph, source)
+        get_semantic_format("sqlctx").create_adapter().export(graph, source)
         result = RUNNER.invoke(app, ["convert", str(source), "--to", target, "--output", str(output), "--force"])
         assert result.exit_code == (1 if blocked else 0), result.output
         if blocked:
@@ -137,7 +137,7 @@ def test_existing_suffixed_directory_keeps_shape_and_publication_gate(
     else:
         assert set(after) == {Path(f"{name}{suffix}") for name in graph.models}
         assert all(after.values())
-    assert not list(tmp_path.glob(".sidemantic-promote-*"))
+    assert not list(tmp_path.glob(".sqlctx-promote-*"))
 
 
 @pytest.mark.parametrize("contents", ["", " \n", "{}", "[]", "models: []", "datasets: []"])
@@ -146,7 +146,7 @@ def test_shared_export_rejects_empty_output(tmp_path, monkeypatch, contents):
         def export(self, graph, output):
             output.write_text(contents)
 
-    monkeypatch.setattr("sidemantic.formats.SemanticFormat.create_adapter", lambda *a, **kw: Adapter())
+    monkeypatch.setattr("sqlctx.formats.SemanticFormat.create_adapter", lambda *a, **kw: Adapter())
     output = tmp_path / "output.yaml"
     with pytest.raises(ValueError, match="no non-empty model output"):
         export_semantic_graph(native_graph(), output)
@@ -177,7 +177,7 @@ def test_native_language_empty_output_still_rejected(tmp_path, monkeypatch):
         def export(self, graph, output):
             output.write_text(" \n")
 
-    monkeypatch.setattr("sidemantic.formats.SemanticFormat.create_adapter", lambda *a, **kw: Adapter())
+    monkeypatch.setattr("sqlctx.formats.SemanticFormat.create_adapter", lambda *a, **kw: Adapter())
     with pytest.raises(ValueError, match="no non-empty model output"):
         export_semantic_graph(native_graph(), tmp_path / "output.yml", target_format="lookml")
 
@@ -187,8 +187,8 @@ def test_shared_convert_blocks_import_before_export(tmp_path, monkeypatch):
         record_import_feature("join", "rejected", detail="Unsafe join")
         return native_graph()
 
-    monkeypatch.setattr("sidemantic.formats.load_semantic_source", load)
-    monkeypatch.setattr("sidemantic.formats.export_semantic_graph", lambda *a, **kw: pytest.fail("export must not run"))
+    monkeypatch.setattr("sqlctx.formats.load_semantic_source", load)
+    monkeypatch.setattr("sqlctx.formats.export_semantic_graph", lambda *a, **kw: pytest.fail("export must not run"))
     with pytest.raises(ConversionFidelityError, match="Unsafe join"):
         convert_semantic_source(tmp_path / "input", tmp_path / "output")
 
@@ -205,7 +205,7 @@ def test_cli_reports_export_partial_and_blocks_unsupported(tmp_path, monkeypatch
         record_export_feature("metric", status, detail="Not fully representable")
         return native_graph()
 
-    monkeypatch.setattr("sidemantic.formats.convert_semantic_source", convert)
+    monkeypatch.setattr("sqlctx.formats.convert_semantic_source", convert)
     args = ["convert", str(source), "--output", str(output), "--force"]
     result = RUNNER.invoke(app, args)
     assert result.exit_code == 0, result.output
@@ -393,7 +393,7 @@ def test_latest_sql_expression_exports_to_pinned_official_dialect_form(tmp_path)
 
 
 def test_official_subset_rejects_forward_only_relationship_metadata(tmp_path):
-    from sidemantic import Relationship
+    from sqlctx import Relationship
 
     graph = native_graph()
     graph.add_model(
@@ -533,7 +533,7 @@ def test_cli_official_compatible_surfaces_numeric_datatype_risk(tmp_path):
             "convert",
             str(source),
             "--from",
-            "sidemantic",
+            "sqlctx",
             "--to",
             "ossie",
             "--output",

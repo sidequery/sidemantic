@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 import duckdb
 from sqlglot import exp, parse_one
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.sql.generator import SQLGenerator
 from tests.utils import df_rows
 
 

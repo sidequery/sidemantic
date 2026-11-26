@@ -1,4 +1,4 @@
-"""Unit tests for the raw data-file helpers (sidemantic/datafiles.py)."""
+"""Unit tests for the raw data-file helpers (sqlctx/datafiles.py)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.datafiles import (
+from sqlctx.datafiles import (
     DATA_FILE_SUFFIXES,
     build_file_views,
     discover_data_files,

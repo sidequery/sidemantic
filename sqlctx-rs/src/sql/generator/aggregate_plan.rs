@@ -1,0 +1,1900 @@
+//! Scoped calculations over independently aggregated source populations.
+//!
+//! This path never gives a graph calculation a synthetic model owner. Only
+//! aggregate leaves enter child queries; scalar calculations bind their outputs.
+
+use super::*;
+use crate::core::replace_semantic_columns;
+
+#[derive(Clone)]
+struct ResolvedMetric {
+    reference: String,
+    context: Option<String>,
+    metric: Metric,
+}
+
+#[derive(Clone)]
+struct Leaf {
+    reference: String,
+    metric: Metric,
+    alias: String,
+    population: String,
+}
+
+/// Aggregate inputs share a child only when they have the same row grain.
+/// A joined-row expression is distinct from either source's independent total.
+struct Population {
+    name: String,
+    sources: Vec<String>,
+}
+
+struct Plan<'a, 'g> {
+    generator: &'a SqlGenerator<'g>,
+    leaves: Vec<Leaf>,
+    models: Vec<String>,
+    populations: Vec<Population>,
+    expressions: HashMap<String, String>,
+    active: HashSet<String>,
+    cross_source_calculation: bool,
+    inline_aggregates: bool,
+}
+
+pub(super) fn is_osi_model_calculation(metric: &Metric) -> bool {
+    metric.r#type == MetricType::Derived
+        && metric
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata["osi_model_metric"].as_bool() == Some(true))
+}
+
+pub(super) fn has_logical_inputs(metric: &Metric) -> bool {
+    metric
+        .metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.get("ossie_expression_dialect").is_some())
+        || is_osi_model_calculation(metric)
+}
+
+fn unsupported(capability: &str) -> SqlctxError {
+    SqlctxError::UnsupportedSemanticFeatures {
+        capabilities: vec![format!("aggregation.{capability}")],
+    }
+}
+
+fn count_aggregate(expression: &Expression) -> bool {
+    match expression {
+        Expression::Count(_)
+        | Expression::CountIf(_)
+        | Expression::ApproxDistinct(_)
+        | Expression::ApproxCountDistinct(_) => true,
+        Expression::Filter(filter) => count_aggregate(&filter.this),
+        Expression::WithinGroup(group) => count_aggregate(&group.this),
+        _ => false,
+    }
+}
+
+impl<'a, 'g> Plan<'a, 'g> {
+    fn population(&mut self, mut sources: Vec<String>) -> String {
+        sources.sort();
+        // Start joined rows at the finest declared grain. A many-to-one
+        // lookup must not discard unmatched fact rows by starting at its target.
+        if let Some(index) = sources.iter().position(|source| {
+            sources
+                .iter()
+                .filter(|target| *target != source)
+                .all(|target| {
+                    self.generator
+                        .graph
+                        .find_join_path(source, target)
+                        .is_ok_and(|path| !path.has_fan_out())
+                })
+        }) {
+            sources.swap(0, index);
+        }
+        if let Some(population) = self.populations.iter().find(|item| item.sources == sources) {
+            return population.name.clone();
+        }
+        for source in &sources {
+            if !self.models.contains(source) {
+                self.models.push(source.clone());
+            }
+        }
+        let name = if sources.len() == 1 {
+            sources[0].clone()
+        } else {
+            let mut index = self.populations.len();
+            loop {
+                let candidate = format!("__sqlctx_joined_{index}");
+                if self.generator.graph.get_model(&candidate).is_none()
+                    && !self
+                        .populations
+                        .iter()
+                        .any(|population| population.name == candidate)
+                {
+                    break candidate;
+                }
+                index += 1;
+            }
+        };
+        self.populations.push(Population {
+            name: name.clone(),
+            sources,
+        });
+        name
+    }
+
+    /// Split authored aggregate calls before expanding scalar metric references.
+    /// Each call owns a source population; arithmetic combines grouped outputs.
+    fn expand_calculation(
+        &mut self,
+        node: &mut serde_json::Value,
+        context: Option<&str>,
+        constant_owner: Option<&str>,
+        bindings: &HashSet<String>,
+        logical_inputs: bool,
+    ) -> Result<()> {
+        let aggregate_node = crate::core::is_aggregate_ast_node(node);
+        if let serde_json::Value::Object(fields) = node {
+            let kind = (fields.len() == 1).then(|| fields.keys().next().unwrap().as_str());
+            if kind == Some("lambda") {
+                let lambda = fields.get_mut("lambda").unwrap();
+                let mut bindings = bindings.clone();
+                if let Some(parameters) = lambda["parameters"].as_array() {
+                    bindings.extend(
+                        parameters
+                            .iter()
+                            .filter_map(|parameter| parameter["name"].as_str().map(str::to_owned)),
+                    );
+                }
+                return self.expand_calculation(
+                    &mut lambda["body"],
+                    context,
+                    constant_owner,
+                    &bindings,
+                    logical_inputs,
+                );
+            }
+            if matches!(
+                kind,
+                Some("window" | "window_function" | "select" | "subquery" | "raw")
+            ) {
+                return Err(unsupported("calculation_shape"));
+            }
+            let aggregate = aggregate_node || matches!(kind, Some("filter" | "within_group"));
+            if aggregate || kind == Some("column") {
+                let expression: Expression = serde_json::from_value(node.clone())
+                    .map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+                let sql = self.generator.emit_expression(&expression)?;
+                let replacement = if aggregate {
+                    self.inline_aggregates = true;
+                    let columns = semantic_column_references(&sql)?;
+                    let mut owners = HashSet::new();
+                    for column in columns {
+                        // Hoisting an aggregate out of a lambda would change
+                        // the binding of its local inputs.
+                        if bindings.contains(column.model.as_deref().unwrap_or(&column.field)) {
+                            return Err(unsupported("calculation_shape"));
+                        }
+                        let owner = column
+                            .model
+                            .as_deref()
+                            .or(context)
+                            .ok_or_else(|| unsupported("unscoped_leaf"))?;
+                        if self.generator.graph.get_model(owner).is_none() {
+                            return Err(unsupported("cross_source_raw_input"));
+                        }
+                        owners.insert(owner.to_string());
+                    }
+                    if owners.is_empty() {
+                        owners.extend(context.or(constant_owner).map(str::to_string));
+                    }
+                    if owners.is_empty() || (owners.len() > 1 && !logical_inputs) {
+                        return Err(unsupported("cross_source_raw_input"));
+                    }
+                    let mut owners: Vec<_> = owners.into_iter().collect();
+                    owners.sort();
+                    let model = owners[0].clone();
+                    let population = self.population(owners);
+                    let alias = format!("__sqlctx_metric_{}", self.leaves.len());
+                    let mut metric = Metric::derived(&alias, sql);
+                    metric.sql_is_complete = true;
+                    if logical_inputs {
+                        metric.metadata =
+                            Some(serde_json::json!({"ossie_expression_dialect": "ANSI_SQL"}));
+                    }
+                    self.leaves.push(Leaf {
+                        reference: format!("{model}.{alias}"),
+                        metric,
+                        alias: alias.clone(),
+                        population: population.clone(),
+                    });
+                    let output = format!(
+                        "{}.{}",
+                        self.generator
+                            .quote_identifier(&format!("{population}_preagg")),
+                        self.generator.quote_identifier(&alias),
+                    );
+                    if count_aggregate(&expression) {
+                        format!("COALESCE({output}, 0)")
+                    } else {
+                        output
+                    }
+                } else {
+                    let column = semantic_column_references(&sql)?.remove(0);
+                    if bindings.contains(column.model.as_deref().unwrap_or(&column.field)) {
+                        return Ok(());
+                    }
+                    self.expand(&column.name(), context)?
+                };
+                *node =
+                    serde_json::to_value(parse_semantic_expression(&format!("({replacement})"))?)
+                        .map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+                return Ok(());
+            }
+        }
+        match node {
+            serde_json::Value::Object(fields) => {
+                for child in fields.values_mut() {
+                    self.expand_calculation(
+                        child,
+                        context,
+                        constant_owner,
+                        bindings,
+                        logical_inputs,
+                    )?;
+                }
+            }
+            serde_json::Value::Array(children) => {
+                for child in children {
+                    self.expand_calculation(
+                        child,
+                        context,
+                        constant_owner,
+                        bindings,
+                        logical_inputs,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn graph_metric_context(&self, reference: &str, metric: &Metric) -> Result<Option<String>> {
+        if let Some(owner) = self.generator.graph.metric_owner(reference) {
+            return Ok(Some(owner.to_string()));
+        }
+        if let Some(owner) = self.generator.logical_constant_owner(metric)? {
+            return Ok(Some(owner));
+        }
+        // Imported graph aggregates can bind their source in qualified SQL
+        // without an explicit owner annotation. Scalar calculations stay unowned.
+        if metric.agg.is_some() && !metric.sql_is_complete {
+            let owners = self
+                .generator
+                .graph_metric_owner_models(reference, metric)?;
+            if owners.len() == 1 {
+                return Ok(owners.into_iter().next());
+            }
+        }
+        Ok(None)
+    }
+
+    fn resolve(&self, reference: &str, context: Option<&str>) -> Result<Option<ResolvedMetric>> {
+        let graph = self.generator.graph;
+        if let Some((model_name, name)) = reference.split_once('.') {
+            if let Some(metric) = graph.get_metric(reference) {
+                let context = self.graph_metric_context(reference, metric)?;
+                return Ok(Some(ResolvedMetric {
+                    reference: reference.to_string(),
+                    metric: self
+                        .generator
+                        .graph_metric_source_inputs(metric, context.as_deref())?,
+                    context,
+                }));
+            }
+            return Ok(graph.get_model(model_name).and_then(|model| {
+                model.get_metric(name).map(|metric| ResolvedMetric {
+                    reference: reference.to_string(),
+                    context: Some(model_name.to_string()),
+                    metric: metric.clone(),
+                })
+            }));
+        }
+        if let Some(model_name) = context {
+            if let Some(metric) = graph
+                .get_model(model_name)
+                .and_then(|m| m.get_metric(reference))
+            {
+                return Ok(Some(ResolvedMetric {
+                    reference: format!("{model_name}.{reference}"),
+                    context: Some(model_name.to_string()),
+                    metric: metric.clone(),
+                }));
+            }
+        }
+        if let Some(metric) = graph.get_metric(reference) {
+            let context = self.graph_metric_context(reference, metric)?;
+            return Ok(Some(ResolvedMetric {
+                reference: reference.to_string(),
+                metric: self
+                    .generator
+                    .graph_metric_source_inputs(metric, context.as_deref())?,
+                context,
+            }));
+        }
+        let owners: Vec<_> = graph
+            .models()
+            .filter(|m| m.get_metric(reference).is_some())
+            .collect();
+        if owners.len() > 1 {
+            return Err(SqlctxError::AmbiguousReference {
+                field: reference.to_string(),
+                models: owners
+                    .iter()
+                    .map(|m| m.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            });
+        }
+        Ok(owners.first().map(|model| ResolvedMetric {
+            reference: format!("{}.{}", model.name, reference),
+            context: Some(model.name.clone()),
+            metric: model.get_metric(reference).unwrap().clone(),
+        }))
+    }
+
+    fn expand(&mut self, reference: &str, context: Option<&str>) -> Result<String> {
+        let resolved = self
+            .resolve(reference, context)?
+            .ok_or_else(|| SqlctxError::Validation(format!("Metric not found: '{reference}'")))?;
+        if let Some(expression) = self.expressions.get(&resolved.reference) {
+            return Ok(expression.clone());
+        }
+        if !self.active.insert(resolved.reference.clone()) {
+            return Err(SqlctxError::CircularDependency(resolved.reference));
+        }
+        let metric = &resolved.metric;
+        if metric.non_additive_dimension.is_some() || metric.offset_window.is_some() {
+            return Err(unsupported("calculation_shape"));
+        }
+        if metric.r#type != MetricType::Simple
+            && !metric.sql_is_complete
+            && !metric.filters.is_empty()
+        {
+            return Err(unsupported("calculation_filters"));
+        }
+        let leaf_type = if metric.sql_is_complete && resolved.context.is_some() {
+            MetricType::Simple
+        } else if metric.sql_is_complete {
+            MetricType::Derived
+        } else {
+            metric.r#type.clone()
+        };
+        let expression = match leaf_type {
+            MetricType::Simple => {
+                let model = resolved
+                    .context
+                    .clone()
+                    .ok_or_else(|| unsupported("unscoped_leaf"))?;
+                if !metric.sql_is_complete
+                    && (metric.agg.is_none() || metric.agg == Some(Aggregation::Expression))
+                {
+                    return Err(unsupported("inline_aggregate"));
+                }
+                // Complete expressions may own a joined tuple of physical rows.
+                // Resolve actual model names before generated CTE aliases so a
+                // real `facts_cte` source cannot collapse into `facts`.
+                let mut sources = HashSet::from([model.clone()]);
+                if let Some(sql) = metric.sql.as_deref().filter(|sql| *sql != "*") {
+                    let sql = crate::core::replace_model_placeholder(sql, Some(&model))?;
+                    for column in semantic_column_references(&sql)? {
+                        let Some(owner) = column.model.as_deref() else {
+                            continue;
+                        };
+                        let owner = if self.generator.graph.get_model(owner).is_some() {
+                            owner
+                        } else if metric.sql_is_complete && owner == format!("{model}_cte") {
+                            &model
+                        } else {
+                            return Err(unsupported("cross_source_raw_input"));
+                        };
+                        if owner != model && !metric.sql_is_complete {
+                            return Err(unsupported("cross_source_raw_input"));
+                        }
+                        sources.insert(owner.to_string());
+                    }
+                }
+                if sources.len() > 1 && !metric.filters.is_empty() {
+                    return Err(unsupported("cross_source_raw_input"));
+                }
+                let mut sources: Vec<_> = sources.into_iter().collect();
+                sources.sort();
+                let population = self.population(sources);
+                let alias = format!("__sqlctx_metric_{}", self.leaves.len());
+                self.leaves.push(Leaf {
+                    reference: resolved.reference.clone(),
+                    metric: metric.clone(),
+                    alias: alias.clone(),
+                    population: population.clone(),
+                });
+                let output = format!(
+                    "{}.{}",
+                    self.generator
+                        .quote_identifier(&format!("{population}_preagg")),
+                    self.generator.quote_identifier(&alias)
+                );
+                // A restored outer-join group has no source rows: COUNT is
+                // zero there, before metric defaults or downstream arithmetic.
+                // SUM/MIN and other nullable aggregates retain their NULL value.
+                if matches!(
+                    metric.agg,
+                    Some(
+                        Aggregation::Count
+                            | Aggregation::CountDistinct
+                            | Aggregation::ApproxCountDistinct
+                    )
+                ) {
+                    format!("COALESCE({output}, 0)")
+                } else {
+                    output
+                }
+            }
+            MetricType::Ratio => {
+                let numerator = metric.numerator.as_deref().ok_or_else(|| {
+                    SqlctxError::Validation(format!("Ratio {} requires numerator", metric.name))
+                })?;
+                let denominator = metric.denominator.as_deref().ok_or_else(|| {
+                    SqlctxError::Validation(format!("Ratio {} requires denominator", metric.name))
+                })?;
+                let numerator = self.expand(numerator, resolved.context.as_deref())?;
+                let denominator = self.expand(denominator, resolved.context.as_deref())?;
+                format!("({numerator}) / NULLIF(({denominator}), 0)")
+            }
+            MetricType::Derived => {
+                if !metric.filters.is_empty() {
+                    return Err(unsupported("calculation_filters"));
+                }
+                let sql = metric.sql.as_deref().ok_or_else(|| {
+                    SqlctxError::Validation(format!("Derived metric {} requires sql", metric.name))
+                })?;
+                let sql = crate::core::replace_model_placeholder(sql, resolved.context.as_deref())?;
+                // A columnless leaf such as COUNT(*) shares the enclosing
+                // Ossie expression's population only when it names one source.
+                // Keep scalar metric lookup unowned and reject ambiguous counts.
+                let expression_owners: HashSet<_> = if has_logical_inputs(metric) {
+                    semantic_column_references(&sql)?
+                        .into_iter()
+                        .map(|column| column.model)
+                        .collect()
+                } else {
+                    HashSet::new()
+                };
+                let constant_owner = (expression_owners.len() == 1)
+                    .then(|| expression_owners.iter().next().unwrap().as_deref())
+                    .flatten()
+                    .filter(|owner| self.generator.graph.get_model(owner).is_some());
+                let mut ast = serde_json::to_value(parse_semantic_expression(&sql)?)
+                    .map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+                self.expand_calculation(
+                    &mut ast,
+                    resolved.context.as_deref(),
+                    constant_owner,
+                    &HashSet::new(),
+                    has_logical_inputs(metric),
+                )?;
+                let expression = serde_json::from_value(ast)
+                    .map_err(|error| SqlctxError::SqlGeneration(error.to_string()))?;
+                self.generator.emit_expression(&expression)?
+            }
+            _ => return Err(unsupported("calculation_shape")),
+        };
+        // Complete SQL is opaque inside another formula. Python applies its
+        // default only when that metric itself is selected, not at each use.
+        let expression = if metric.sql_is_complete {
+            expression
+        } else {
+            self.generator.fill_metric_expression(metric, expression)?
+        };
+        self.active.remove(&resolved.reference);
+        if metric.r#type != MetricType::Simple
+            && resolved
+                .context
+                .as_ref()
+                .is_some_and(|owner| self.models.iter().any(|model| model != owner))
+        {
+            self.cross_source_calculation = true;
+        }
+        self.expressions
+            .insert(resolved.reference, expression.clone());
+        Ok(expression)
+    }
+}
+
+fn conjuncts(expression: Expression, output: &mut Vec<Expression>) {
+    match expression {
+        Expression::And(binary) => {
+            conjuncts(binary.left, output);
+            conjuncts(binary.right, output);
+        }
+        Expression::Paren(paren) => conjuncts(paren.this, output),
+        other => output.push(other),
+    }
+}
+
+fn dimension_alias(index: usize) -> String {
+    format!("__sqlctx_dimension_{index}")
+}
+
+fn independent_source_path(
+    graph: &SemanticGraph,
+    from: &str,
+    to: &str,
+    dimensions: &[DimensionRef],
+) -> Result<Option<JoinPath>> {
+    match graph.find_join_path(from, to) {
+        Ok(path) => Ok(Some(path)),
+        Err(SqlctxError::AmbiguousJoinPath { .. })
+            if dimensions.iter().any(|dimension| {
+                [from, to].into_iter().all(|source| {
+                    graph
+                        .find_join_path(source, &dimension.model)
+                        .is_ok_and(|path| {
+                            path.steps
+                                .iter()
+                                .all(|step| step.relationship_type != RelationshipType::Cross)
+                        })
+                })
+            }) =>
+        {
+            // Both children have a unique keyed route to a requested grouping
+            // model. Their aggregate outputs meet there; no source-to-source
+            // row join needs to choose among the alternate graph routes.
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Normalize the ordinary compiler's public outputs at the child boundary.
+/// Each child has its own collision set because it selects different measures.
+fn child_projection(
+    generator: &SqlGenerator<'_>,
+    dimensions: &[DimensionRef],
+    leaves: &[&Leaf],
+) -> Result<Vec<String>> {
+    let references: Vec<_> = leaves.iter().map(|leaf| leaf.reference.clone()).collect();
+    let metrics = generator.parse_metric_refs(&references)?;
+    let mut collisions = HashMap::new();
+    for alias in dimensions
+        .iter()
+        .map(|dimension| &dimension.alias)
+        .chain(metrics.iter().map(|metric| &metric.alias))
+    {
+        *collisions.entry(alias.clone()).or_insert(0) += 1;
+    }
+    let mut names = HashSet::new();
+    let mut projection = Vec::new();
+    for (index, dimension) in dimensions.iter().enumerate() {
+        let source = generator.output_alias(&dimension.model, &dimension.alias, &collisions);
+        if !names.insert(source.clone()) {
+            return Err(unsupported("child_output_alias_collision"));
+        }
+        projection.push(format!(
+            "__sqlctx_source.{} AS {}",
+            generator.quote_identifier(&source),
+            dimension_alias(index)
+        ));
+    }
+    for (metric, leaf) in metrics.iter().zip(leaves) {
+        let source = generator.output_alias(&metric.model, &metric.alias, &collisions);
+        if !names.insert(source.clone()) {
+            return Err(unsupported("child_output_alias_collision"));
+        }
+        projection.push(format!(
+            "__sqlctx_source.{} AS {}",
+            generator.quote_identifier(&source),
+            leaf.alias
+        ));
+    }
+    Ok(projection)
+}
+
+/// Resolve scalar dependencies without assigning the calculation a source grain.
+/// Window wrappers expose these grouped leaves alongside the selected output.
+pub(super) fn window_scalar_leaves(
+    generator: &SqlGenerator<'_>,
+    reference: &str,
+) -> Result<Vec<String>> {
+    let mut plan = Plan {
+        generator,
+        leaves: Vec::new(),
+        models: Vec::new(),
+        populations: Vec::new(),
+        expressions: HashMap::new(),
+        active: HashSet::new(),
+        cross_source_calculation: false,
+        inline_aggregates: false,
+    };
+    plan.expand(reference, None)?;
+    // Synthetic inline aggregates are not public metric references that the
+    // grouped inner query can request independently.
+    if plan.inline_aggregates {
+        return Err(unsupported("window_inline_calculation"));
+    }
+    let mut references: Vec<_> = plan.leaves.into_iter().map(|leaf| leaf.reference).collect();
+    references.sort();
+    references.dedup();
+    Ok(references)
+}
+
+/// Return None for the existing single-source/special-metric paths. Only this
+/// module's fully planned multi-source calculations bypass graph-owner parsing.
+pub(super) fn try_generate(
+    generator: &SqlGenerator<'_>,
+    query: &SemanticQuery,
+) -> Result<Option<String>> {
+    let has_osi_calculation = query.metrics.iter().any(|reference| {
+        generator
+            .graph
+            .get_metric(reference)
+            .is_some_and(is_osi_model_calculation)
+    });
+    if query.metrics.is_empty()
+        || (!generator.graph.has_strict_metric_scope() && !has_osi_calculation)
+    {
+        return Ok(None);
+    }
+    let mut plan = Plan {
+        generator,
+        leaves: Vec::new(),
+        models: Vec::new(),
+        populations: Vec::new(),
+        expressions: HashMap::new(),
+        active: HashSet::new(),
+        cross_source_calculation: false,
+        inline_aggregates: false,
+    };
+    let mut outputs = Vec::new();
+    for reference in &query.metrics {
+        let expression = match plan.expand(reference, None) {
+            Ok(expression) => expression,
+            // Existing routes own special shapes; their scope gate stays intact.
+            Err(SqlctxError::UnsupportedSemanticFeatures { .. }) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let metric = plan.resolve(reference, None)?.unwrap();
+        let expression = if metric.metric.sql_is_complete {
+            generator.fill_metric_expression(&metric.metric, expression)?
+        } else {
+            expression
+        };
+        outputs.push((reference.clone(), metric, expression));
+    }
+    let all_filters: Vec<_> = query
+        .filters
+        .iter()
+        .cloned()
+        .chain(generator.resolve_segments(&query.segments, query.parameter_values.as_ref())?)
+        .collect();
+    let mut filters = Vec::new();
+    for filter in &all_filters {
+        conjuncts(parse_semantic_expression(filter)?, &mut filters);
+        for column in crate::core::outer_semantic_column_references(filter)? {
+            if plan.resolve(&column.name(), None)?.is_some() {
+                plan.expand(&column.name(), None)?;
+            }
+        }
+    }
+    let mut effective_query;
+    let query = if !query.skip_default_time_dimensions {
+        effective_query = query.clone();
+        // Defaults belong to selected model metric references, not every source
+        // discovered while expanding graph calculations. Resolve them once for
+        // the whole query before creating independent aggregate children.
+        effective_query.dimensions = generator.apply_default_time_dimensions(
+            &query.metrics,
+            &query.dimensions,
+            query.explicit_projection,
+        )?;
+        effective_query.skip_default_time_dimensions = true;
+        &effective_query
+    } else {
+        query
+    };
+    let dimensions = generator.parse_dimension_refs(&query.dimensions)?;
+    // Inline splitting exists to combine independent sources. The ordinary
+    // single-source compiler binds semantic dimension inputs and owns authored
+    // aggregate/window expressions without manufacturing physical columns.
+    if plan.inline_aggregates
+        && plan.models.len() < 2
+        && !plan
+            .leaves
+            .iter()
+            .any(|leaf| has_logical_inputs(&leaf.metric))
+    {
+        return Ok(None);
+    }
+    // Cartesian products require every participating source even in a child
+    // selecting only one source's measure: an empty sibling annihilates rows.
+    // Keyed independent aggregates keep their existing separate populations.
+    let mut population_models = query.required_population_models.clone();
+    for (index, from) in plan.models.iter().enumerate() {
+        for to in plan.models.iter().skip(index + 1) {
+            let Some(path) = independent_source_path(generator.graph, from, to, &dimensions)?
+            else {
+                continue;
+            };
+            if path
+                .steps
+                .iter()
+                .any(|step| step.relationship_type == RelationshipType::Cross)
+            {
+                for step in path.steps {
+                    population_models.insert(step.from_model);
+                    population_models.insert(step.to_model);
+                }
+            }
+        }
+    }
+    let mut fanout_models = HashSet::new();
+    for model in &plan.models {
+        let mut required = HashSet::from([model.clone()]);
+        required.extend(dimensions.iter().map(|dimension| dimension.model.clone()));
+        required.extend(query.prepared_policies.model_names().cloned());
+        required.extend(generator.find_filter_models(&all_filters));
+        required.extend(query.consumption_base_model.iter().cloned());
+        required.extend(population_models.iter().cloned());
+        let anchor = query.consumption_base_model.as_deref().unwrap_or(model);
+        let paths = generator.build_join_paths(anchor, &required)?;
+        if !query.ungrouped
+            && generator
+                .detect_fan_out_risk(anchor, &paths)
+                .contains(model)
+        {
+            fanout_models.insert(model.clone());
+        }
+    }
+    if plan.models.len() < 2
+        && !plan.cross_source_calculation
+        && fanout_models.is_empty()
+        && !plan.leaves.iter().any(|leaf| leaf.metric.sql_is_complete)
+    {
+        return Ok(None);
+    }
+    if query.use_preaggregations {
+        generator.reject_totals_route(query, "preaggregation")?;
+    }
+    if query.with_totals {
+        for (index, source) in plan.models.iter().enumerate() {
+            for target in plan.models.iter().skip(index + 1) {
+                for (from, to) in [(source, target), (target, source)] {
+                    if generator
+                        .graph
+                        .find_join_path(from, to)?
+                        .steps
+                        .iter()
+                        .any(|step| step.relationship_type == RelationshipType::ManyToOne)
+                    {
+                        generator.reject_totals_route(query, "preaggregation")?;
+                    }
+                }
+            }
+        }
+    }
+    if query.ungrouped || !query.table_calculations.is_empty() {
+        return Err(unsupported("cross_grain_query_shape"));
+    }
+    // Independent populations still require a declared, supported model graph.
+    for model in plan.models.iter().skip(1) {
+        independent_source_path(generator.graph, &plan.models[0], model, &dimensions)?;
+    }
+    for dimension in &dimensions {
+        if generator
+            .graph
+            .get_model(&dimension.model)
+            .and_then(|model| model.get_dimension(&dimension.name))
+            .is_some_and(|dimension| dimension.window.is_some())
+        {
+            return Err(unsupported("window_dimension"));
+        }
+    }
+    let dimension_expressions: HashMap<_, _> = query
+        .dimensions
+        .iter()
+        .zip(&dimensions)
+        .enumerate()
+        .map(|(index, (reference, _))| {
+            let columns = plan
+                .populations
+                .iter()
+                .map(|population| {
+                    format!(
+                        "{}.{}",
+                        generator.quote_identifier(&format!("{}_preagg", population.name)),
+                        dimension_alias(index)
+                    )
+                })
+                .collect::<Vec<_>>();
+            let expression = if columns.len() == 1 {
+                columns[0].clone()
+            } else {
+                format!("COALESCE({})", columns.join(", "))
+            };
+            (reference.clone(), expression)
+        })
+        .collect();
+    let mut row_filters = Vec::new();
+    let mut window_filters: HashMap<String, Vec<String>> = HashMap::new();
+    let mut aggregate_filters = Vec::new();
+    for filter in filters {
+        let sql = generator.emit_expression(&filter)?;
+        let columns = crate::core::outer_semantic_column_references(&sql)?;
+        let window_owners: HashSet<_> = columns
+            .iter()
+            .filter_map(|column| {
+                let owner = column.model.as_deref()?;
+                generator
+                    .graph
+                    .get_model(owner)?
+                    .get_dimension(&column.field)?
+                    .window
+                    .as_ref()
+                    .map(|_| owner.to_string())
+            })
+            .collect();
+        if !window_owners.is_empty() {
+            // Window predicates filter source rows after window evaluation and
+            // before that source's aggregate. Metric references in the same
+            // predicate therefore refer to their row inputs, not outer totals.
+            let mut replacements = HashMap::new();
+            for column in &columns {
+                if let Some(metric) = plan.resolve(&column.name(), None)? {
+                    let owner = metric
+                        .context
+                        .as_deref()
+                        .ok_or_else(|| unsupported("mixed_row_aggregate_filter"))?;
+                    if !window_owners.contains(owner)
+                        || metric.metric.r#type != MetricType::Simple
+                        || metric.metric.sql_is_complete
+                    {
+                        return Err(unsupported("mixed_row_aggregate_filter"));
+                    }
+                    let source_model = generator.graph.get_model(owner).unwrap();
+                    let mut raw = generator.metric_raw_expression(&metric.metric, source_model)?;
+                    if !metric.metric.filters.is_empty() {
+                        let predicate = generator.normalize_metric_filters(
+                            &metric.metric.filters,
+                            owner,
+                            &generator.model_alias(owner),
+                        )?;
+                        raw = format!("CASE WHEN {predicate} THEN {raw} END");
+                    }
+                    raw = raw.replace("{model}", owner);
+                    let mut inputs = HashMap::new();
+                    for input in semantic_column_references(&raw)? {
+                        if input.model.as_deref().is_some_and(|qualifier| {
+                            qualifier != owner
+                                && qualifier != generator.model_alias(owner)
+                                && qualifier != source_model.table_name()
+                        }) {
+                            return Err(unsupported("mixed_row_aggregate_filter"));
+                        }
+                        // Bind physical inputs directly to the CTE. Going back
+                        // through semantic names could expand a same-named
+                        // computed dimension instead of the metric's row input.
+                        let qualified = format!(
+                            "{}.{}",
+                            generator.model_alias(owner),
+                            generator.quote_identifier(&input.field)
+                        );
+                        inputs.insert((input.model, input.field), qualified);
+                    }
+                    let raw = generator.emit_expression(&replace_semantic_columns(
+                        parse_semantic_expression(&raw)?,
+                        &inputs,
+                    )?)?;
+                    replacements.insert(
+                        (column.model.clone(), column.field.clone()),
+                        format!("({raw})"),
+                    );
+                }
+            }
+            let predicate = generator.emit_expression(
+                &crate::core::replace_outer_semantic_columns(filter, &replacements)?,
+            )?;
+            for owner in window_owners {
+                window_filters
+                    .entry(owner)
+                    .or_default()
+                    .push(predicate.clone());
+            }
+            continue;
+        }
+        let mut replacements = HashMap::new();
+        let mut has_metric = false;
+        let mut has_raw = false;
+        for column in columns {
+            let reference = column.name();
+            if let Some(metric) = plan.resolve(&reference, None)? {
+                has_metric = true;
+                let expression = outputs
+                    .iter()
+                    .find(|(_, output, _)| output.reference == metric.reference)
+                    .map(|(_, _, expression)| expression)
+                    .unwrap_or_else(|| plan.expressions.get(&metric.reference).unwrap());
+                replacements.insert((column.model, column.field), format!("({expression})"));
+            } else if let Some(expression) = dimension_expressions.get(&reference) {
+                replacements.insert((column.model, column.field), format!("({expression})"));
+            } else {
+                has_raw = true;
+            }
+        }
+        if has_metric && has_raw {
+            return Err(unsupported("mixed_row_aggregate_filter"));
+        }
+        if has_metric {
+            aggregate_filters.push(generator.emit_expression(
+                &crate::core::replace_outer_semantic_columns(filter, &replacements)?,
+            )?);
+        } else {
+            row_filters.push(format!("({sql})"));
+        }
+    }
+    let mut ctes = Vec::new();
+    for population in &plan.populations {
+        let model = &population.sources[0];
+        let leaves: Vec<_> = plan
+            .leaves
+            .iter()
+            .filter(|leaf| leaf.population == population.name)
+            .collect();
+        let mut child = query.clone();
+        child.required_population_models = population_models.clone();
+        child
+            .required_population_models
+            .extend(population.sources.iter().cloned());
+        child.metrics = leaves.iter().map(|leaf| leaf.reference.clone()).collect();
+        child.filters = row_filters.clone();
+        child
+            .filters
+            .extend(window_filters.get(model).into_iter().flatten().cloned());
+        child.segments.clear();
+        child.order_by.clear();
+        child.limit = None;
+        child.offset = None;
+        child.skip_default_time_dimensions = true;
+        // Materialized routing is qualified for whole single-source queries.
+        // Cross-source child populations need separate grain/domain acceptance.
+        child.use_preaggregations = false;
+        let entity_rows =
+            fanout_models.contains(model) || leaves.iter().any(|leaf| leaf.metric.sql_is_complete);
+        let child_sql = if entity_rows {
+            let metrics: Vec<_> = leaves
+                .iter()
+                .map(|leaf| (&leaf.metric, leaf.alias.as_str()))
+                .collect();
+            super::fanout_complete::generate_entity_aggregates(
+                generator,
+                &child,
+                &dimensions,
+                &metrics,
+                fanout_models.contains(model),
+                plan.models.len() > 1,
+                &population.sources,
+            )?
+        } else {
+            let mut projection = child_projection(generator, &dimensions, &leaves)?;
+            if query.with_totals && !dimensions.is_empty() {
+                projection.push("__sqlctx_source._is_total AS _is_total".into());
+            }
+            // Independent sources retain unmatched rows. Grouping order must
+            // not choose which population contributes to the calculation.
+            let anchor = if plan.models.len() > 1 {
+                Some(model.clone())
+            } else {
+                generator
+                    .query_base_model(&dimensions, &generator.parse_metric_refs(&child.metrics)?)
+            };
+            let sql = generator.generate_from_model(&child, anchor.as_deref())?;
+            format!(
+                "SELECT {}\nFROM (\n{sql}\n) AS __sqlctx_source",
+                projection.join(", ")
+            )
+        };
+        ctes.push(format!(
+            "{} AS (\n{child_sql}\n)",
+            generator.quote_identifier(&format!("{}_preagg", population.name)),
+        ));
+    }
+    let mut names = HashMap::new();
+    for dimension in &dimensions {
+        *names.entry(dimension.alias.clone()).or_insert(0usize) += 1;
+    }
+    for (_, resolved, _) in &outputs {
+        *names.entry(resolved.metric.name.clone()).or_insert(0usize) += 1;
+    }
+    let mut public_names = HashSet::new();
+    let mut order_names = HashMap::new();
+    let mut output_aliases = Vec::new();
+    let mut selections = Vec::new();
+    for (reference, dimension) in query.dimensions.iter().zip(&dimensions) {
+        let alias = generator.output_alias(&dimension.model, &dimension.alias, &names);
+        if !public_names.insert(alias.clone()) {
+            return Err(unsupported("ambiguous_output_alias"));
+        }
+        order_names.insert(reference.clone(), alias.clone());
+        if names[&dimension.alias] == 1 {
+            order_names.insert(dimension.alias.clone(), alias.clone());
+        }
+        selections.push(format!(
+            "{} AS {}",
+            dimension_expressions[reference],
+            generator.quote_identifier(&alias)
+        ));
+        output_aliases.push(alias);
+    }
+    for (reference, resolved, expression) in outputs {
+        let name = &resolved.metric.name;
+        let alias = if names[name] > 1 {
+            let owner = resolved
+                .context
+                .as_deref()
+                .ok_or_else(|| unsupported("ambiguous_output_alias"))?;
+            generator.output_alias(owner, name, &names)
+        } else {
+            name.clone()
+        };
+        if !public_names.insert(alias.clone()) {
+            return Err(unsupported("ambiguous_output_alias"));
+        }
+        order_names.insert(reference, alias.clone());
+        if names[name] == 1 {
+            order_names.insert(name.clone(), alias.clone());
+        }
+        selections.push(format!(
+            "{expression} AS {}",
+            generator.quote_identifier(&alias)
+        ));
+        output_aliases.push(alias);
+    }
+    if query.with_totals && !dimensions.is_empty() {
+        let markers: Vec<_> = plan
+            .populations
+            .iter()
+            .map(|population| {
+                format!(
+                    "{}._is_total",
+                    generator.quote_identifier(&format!("{}_preagg", population.name))
+                )
+            })
+            .collect();
+        let marker = if markers.len() == 1 {
+            markers[0].clone()
+        } else {
+            format!("COALESCE({})", markers.join(", "))
+        };
+        selections.push(format!("{marker} AS _is_total"));
+    }
+    let mut sql = format!(
+        "WITH {}\nSELECT {}\nFROM {}",
+        ctes.join(",\n"),
+        selections.join(",\n"),
+        generator.quote_identifier(&format!("{}_preagg", plan.populations[0].name))
+    );
+    for (index, population) in plan.populations.iter().enumerate().skip(1) {
+        let table = generator.quote_identifier(&format!("{}_preagg", population.name));
+        if dimensions.is_empty() {
+            sql.push_str(&format!("\nCROSS JOIN {table}"));
+        } else {
+            let mut conditions = dimensions
+                .iter()
+                .enumerate()
+                .map(|(dimension_index, _)| {
+                    let name = dimension_alias(dimension_index);
+                    let previous: Vec<_> = plan.populations[..index]
+                        .iter()
+                        .map(|population| {
+                            format!(
+                                "{}.{name}",
+                                generator.quote_identifier(&format!("{}_preagg", population.name))
+                            )
+                        })
+                        .collect();
+                    let previous = if previous.len() == 1 {
+                        previous[0].clone()
+                    } else {
+                        format!("COALESCE({})", previous.join(", "))
+                    };
+                    generator.full_join_null_safe_equality(&previous, &format!("{table}.{name}"))
+                })
+                .collect::<Vec<_>>();
+            if query.with_totals {
+                let previous: Vec<_> = plan.populations[..index]
+                    .iter()
+                    .map(|population| {
+                        format!(
+                            "{}._is_total",
+                            generator.quote_identifier(&format!("{}_preagg", population.name))
+                        )
+                    })
+                    .collect();
+                let previous = if previous.len() == 1 {
+                    previous[0].clone()
+                } else {
+                    format!("COALESCE({})", previous.join(", "))
+                };
+                // A real all-NULL group and the grand-total group are different
+                // rows even though their dimension values are identical.
+                conditions.push(format!("{previous} = {table}._is_total"));
+            }
+            sql.push_str(&format!(
+                "\nFULL OUTER JOIN {table} ON {}",
+                conditions.join(" AND ")
+            ));
+        }
+    }
+    if !aggregate_filters.is_empty() {
+        sql.push_str(&format!(
+            "\nWHERE {}",
+            aggregate_filters
+                .iter()
+                .map(|filter| format!("({filter})"))
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        ));
+    }
+    if !query.order_by.is_empty() {
+        let known_names: Vec<_> = order_names.keys().map(String::as_str).collect();
+        let mut order = Vec::new();
+        for item in &query.order_by {
+            let (reference, suffix) = crate::sql::split_order_field(item, &known_names);
+            let alias = match order_names.get(reference) {
+                Some(alias) => alias,
+                // A position selects an output column, as in a single-source
+                // query; it is not a field named by that number.
+                None if reference.bytes().all(|byte| byte.is_ascii_digit()) => reference
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|position| position.checked_sub(1))
+                    .and_then(|index| output_aliases.get(index))
+                    .ok_or_else(|| unsupported("unprojected_order_by"))?,
+                None => return Err(unsupported("unprojected_order_by")),
+            };
+            // Source splitting must retain the ordinary query's NULL ordering.
+            let suffix = if suffix.contains("NULLS") {
+                suffix
+            } else {
+                let nulls = if suffix == "DESC" { "LAST" } else { "FIRST" };
+                format!("{suffix} NULLS {nulls}").trim().to_owned()
+            };
+            let mut column = Expression::column(alias);
+            if let Expression::Column(column) = &mut column {
+                if generator.quote_identifier(alias) != *alias {
+                    column.name = Identifier::quoted(alias);
+                }
+            }
+            let mut ordered = polyglot_sql::expressions::Ordered::asc(column);
+            ordered.desc = suffix.starts_with("DESC");
+            ordered.explicit_asc = suffix.starts_with("ASC");
+            ordered.nulls_first = Some(suffix.ends_with("NULLS FIRST"));
+            // The pinned Polyglot emitter does not emulate NULL placement for
+            // MySQL or TSQL. Preserve the order with a scalar CASE key.
+            if matches!(generator.dialect, DialectType::MySQL | DialectType::TSQL) {
+                let nulls_first = ordered.nulls_first.take().unwrap();
+                if nulls_first == ordered.desc {
+                    let identifier = alias.replace('"', "\"\"");
+                    let key = parse_semantic_expression(&format!(
+                        "CASE WHEN \"{identifier}\" IS NULL THEN 1 ELSE 0 END"
+                    ))?;
+                    let mut null_order = polyglot_sql::expressions::Ordered::asc(key);
+                    null_order.desc = nulls_first;
+                    order.push(null_order);
+                }
+            }
+            order.push(ordered);
+        }
+        let clause = Expression::OrderBy(Box::new(polyglot_sql::expressions::OrderBy {
+            expressions: order,
+            siblings: false,
+            comments: Vec::new(),
+        }));
+        sql.push_str(&format!("\n{}", generator.emit_expression(&clause)?));
+    }
+    if let Some(limit) = query.limit {
+        sql.push_str(&format!("\nLIMIT {limit}"));
+    }
+    if let Some(offset) = query.offset {
+        sql.push_str(&format!("\nOFFSET {offset}"));
+    }
+    Ok(Some(sql))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Dimension, Relationship};
+
+    fn try_generate(generator: &SqlGenerator<'_>, query: &SemanticQuery) -> Result<Option<String>> {
+        // Match the public handoff's stack for the large typed SQL AST.
+        crate::semantic_input::with_semantic_stack(|| super::try_generate(generator, query))
+    }
+
+    fn assert_valid_sql(sql: &str) {
+        crate::semantic_input::with_semantic_stack(|| {
+            polyglot_sql::parse_one(sql, DialectType::DuckDB)
+                .map(|_| ())
+                .map_err(|error| SqlctxError::SqlParse(error.to_string()))
+        })
+        .unwrap();
+    }
+
+    fn graph() -> SemanticGraph {
+        let mut graph = SemanticGraph::new();
+        let mut customers = Relationship::many_to_one("customers");
+        customers.foreign_key = Some("customer_id".into());
+        graph
+            .add_model(
+                Model::new("orders", "id")
+                    .with_table("orders")
+                    .with_dimension(Dimension::categorical("region"))
+                    .with_dimension(Dimension::categorical("revenue").with_sql("region"))
+                    .with_metric(Metric::sum("revenue", "amount"))
+                    .with_metric(Metric::derived("proxy", "customers.customer_count"))
+                    .with_metric(Metric::derived(
+                        "local_sum",
+                        "revenue + customers.customer_count",
+                    ))
+                    .with_relationship(customers),
+            )
+            .unwrap();
+        graph
+            .add_model(
+                Model::new("customers", "id")
+                    .with_table("customers")
+                    .with_dimension(Dimension::categorical("region"))
+                    .with_dimension(Dimension::categorical("revenue").with_sql("region"))
+                    .with_dimension(Dimension::categorical("orders_region").with_sql("region"))
+                    .with_metric(Metric::count("customer_count")),
+            )
+            .unwrap();
+        for metric in [
+            Metric::ratio("ratio", "orders.revenue", "customers.customer_count"),
+            Metric::ratio("proxy_ratio", "orders.revenue", "orders.proxy"),
+            Metric::derived("added", "orders.revenue + customers.customer_count"),
+            Metric::derived("double_added", "added * 2"),
+        ] {
+            graph.add_metric_unvalidated(metric).unwrap();
+        }
+        graph.set_metric_scopes(HashMap::new()).unwrap();
+        graph
+    }
+
+    fn compile(graph: &SemanticGraph, metrics: &[&str], filters: &[&str]) -> Result<String> {
+        let query = SemanticQuery::new()
+            .with_metrics(metrics.iter().map(|s| s.to_string()).collect())
+            .with_filters(filters.iter().map(|s| s.to_string()).collect());
+        try_generate(&SqlGenerator::new(graph), &query)?
+            .ok_or_else(|| unsupported("test_not_planned"))
+    }
+
+    #[test]
+    fn imported_columnless_leaf_requires_one_expression_source() {
+        for (expression, supported) in [
+            ("SUM(orders.amount) / COUNT(*)", true),
+            ("(SUM(orders.amount) + SUM(customers.id)) / COUNT(*)", false),
+        ] {
+            let mut graph = graph();
+            let mut metric = Metric::derived("average_value", expression);
+            metric.sql_is_complete = true;
+            metric.metadata = Some(serde_json::json!({"ossie_expression_dialect": "ANSI_SQL"}));
+            graph.add_metric_unvalidated(metric).unwrap();
+            let query = SemanticQuery::new().with_metrics(vec!["average_value".into()]);
+            let sql = try_generate(&SqlGenerator::new(&graph), &query).unwrap();
+            assert_eq!(sql.is_some(), supported);
+            if let Some(sql) = sql {
+                assert_valid_sql(&sql);
+            }
+        }
+    }
+
+    #[test]
+    fn graph_ratio_has_independent_source_aggregates() {
+        let sql = compile(&graph(), &["ratio"], &[]).unwrap();
+        assert!(sql.contains("orders_preagg AS"));
+        assert!(sql.contains("customers_preagg AS"));
+        assert!(sql.contains("CROSS JOIN customers_preagg"));
+        assert!(sql.contains("NULLIF((COALESCE(customers_preagg.__sqlctx_metric_1, 0)), 0)"));
+        assert!(!sql.contains("LEFT JOIN customers_cte"));
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn cross_source_graph_alias_does_not_require_a_single_owner() {
+        let graph = graph();
+        let generator = SqlGenerator::new(&graph);
+        let mut query = SemanticQuery::new().with_metrics(vec!["ratio".into()]);
+        query.aliases.insert("ratio".into(), "value".into());
+        let sql = generator.generate(&query).unwrap();
+        assert!(sql.contains("orders_preagg AS"), "{sql}");
+        assert!(sql.contains("customers_preagg AS"), "{sql}");
+        assert!(sql.contains("AS \"value\""), "{sql}");
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn dotted_graph_calculation_is_not_reinterpreted_as_a_model_path() {
+        let mut graph = graph();
+        graph
+            .add_metric_unvalidated(Metric::derived("business.ratio", "ratio * 2"))
+            .unwrap();
+        let sql = compile(&graph, &["business.ratio"], &[]).unwrap();
+        assert!(sql.contains("orders_preagg AS"), "{sql}");
+        assert!(sql.contains("customers_preagg AS"), "{sql}");
+        assert!(sql.contains("AS \"business.ratio\""), "{sql}");
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn grouped_children_preserve_each_source_domain() {
+        let graph = graph();
+        for dimension in ["customers.region", "orders.region"] {
+            let query = SemanticQuery::new()
+                .with_metrics(vec!["ratio".into()])
+                .with_dimensions(vec![dimension.into()]);
+            let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+            for owner in ["orders", "customers"] {
+                assert!(
+                    sql.contains(&format!("FROM {owner}_cte AS {owner}_cte")),
+                    "{sql}"
+                );
+            }
+            assert_valid_sql(&sql);
+        }
+    }
+
+    #[test]
+    fn inline_cross_source_aggregates_are_split_before_scalar_arithmetic() {
+        let mut graph = graph();
+        for (name, expression) in [
+            (
+                "inline_ratio",
+                "COUNT(orders.id) * 1.0 / NULLIF(COUNT(customers.id), 0)",
+            ),
+            (
+                "inline_sum",
+                "SUM(orders.amount) + SUM(CASE WHEN customers.id > 1 THEN customers.id ELSE 0 END)",
+            ),
+        ] {
+            let mut metric = Metric::derived(name, expression);
+            metric.sql_is_complete = true;
+            graph.add_metric_unvalidated(metric).unwrap();
+            let sql = compile(&graph, &[name], &[]).unwrap();
+            assert!(sql.contains("orders_preagg AS"), "{sql}");
+            assert!(sql.contains("customers_preagg AS"), "{sql}");
+            assert!(sql.contains("CROSS JOIN customers_preagg"), "{sql}");
+            assert_valid_sql(&sql);
+        }
+    }
+
+    #[test]
+    fn aggregate_splitting_preserves_lambda_bindings_and_expands_free_metrics() {
+        let mut graph = graph();
+        graph
+            .add_metric_unvalidated(Metric::derived(
+                "median_plus_count",
+                concat!(
+                    "LIST_AGGREGATE(LIST_TRANSFORM(LIST_DISTINCT(",
+                    "LIST(STRUCT_PACK(k := orders.id, v := orders.amount))), ",
+                    "x -> x.v), 'quantile_cont', 0.5) + customers.customer_count",
+                ),
+            ))
+            .unwrap();
+        let sql = compile(&graph, &["median_plus_count"], &[]).unwrap();
+        assert!(sql.contains("x.v"), "{sql}");
+        assert!(sql.contains("customers_preagg"), "{sql}");
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn inline_filtered_distinct_count_restores_absent_sources_to_zero() {
+        let mut graph = graph();
+        let mut metric = Metric::derived(
+            "filtered_count_ratio",
+            "COUNT(DISTINCT orders.id) FILTER (WHERE orders.amount > 10) / NULLIF(COUNT(customers.id), 0)",
+        );
+        metric.sql_is_complete = true;
+        graph.add_metric_unvalidated(metric).unwrap();
+        let sql = compile(&graph, &["filtered_count_ratio"], &[]).unwrap();
+        assert!(
+            sql.contains("COALESCE(orders_preagg.__sqlctx_metric_"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("FILTER(WHERE") || sql.contains("FILTER (WHERE"),
+            "{sql}"
+        );
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn inline_cross_source_metric_filters_are_not_discarded() {
+        let mut graph = graph();
+        let mut metric = Metric::derived(
+            "filtered_inline",
+            "SUM(orders.amount) + COUNT(customers.id)",
+        );
+        metric.sql_is_complete = true;
+        metric.filters.push("orders.amount > 10".into());
+        graph.add_metric_unvalidated(metric).unwrap();
+        let generator = SqlGenerator::new(&graph);
+        let mut plan = Plan {
+            generator: &generator,
+            leaves: Vec::new(),
+            models: Vec::new(),
+            populations: Vec::new(),
+            expressions: HashMap::new(),
+            active: HashSet::new(),
+            cross_source_calculation: false,
+            inline_aggregates: false,
+        };
+        assert!(matches!(plan.expand("filtered_inline", None),
+            Err(SqlctxError::UnsupportedSemanticFeatures { capabilities })
+            if capabilities == vec!["aggregation.calculation_filters"]));
+    }
+
+    #[test]
+    fn inline_single_source_and_window_aggregates_keep_existing_compiler() {
+        for sql in [
+            "COUNT(orders.virtual_row)",
+            "SUM(orders.amount) / NULLIF(SUM(SUM(orders.amount)) OVER (), 0)",
+        ] {
+            let mut graph = graph();
+            let mut orders = graph.get_model("orders").unwrap().clone();
+            orders
+                .dimensions
+                .push(Dimension::categorical("virtual_row").with_sql("1"));
+            graph.replace_model(orders).unwrap();
+            let mut metric = Metric::derived("inline", sql);
+            metric.sql_is_complete = true;
+            graph.add_metric_unvalidated(metric).unwrap();
+            let query = SemanticQuery::new().with_metrics(vec!["inline".into()]);
+            assert!(try_generate(&SqlGenerator::new(&graph), &query)
+                .unwrap()
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn imported_aggregate_leaves_use_qualified_inputs_and_requested_group_routes() {
+        let mut graph = SemanticGraph::new();
+        for name in ["clicks", "impressions"] {
+            let mut model = Model::new(name, "id").with_table(name);
+            for target in ["campaigns", "publishers"] {
+                let mut relationship = Relationship::many_to_one(target);
+                relationship.foreign_key = Some(format!("{target}_id"));
+                model.relationships.push(relationship);
+            }
+            graph.add_model(model).unwrap();
+        }
+        for name in ["campaigns", "publishers"] {
+            graph
+                .add_model(
+                    Model::new(name, "id")
+                        .with_table(name)
+                        .with_dimension(Dimension::categorical("name")),
+                )
+                .unwrap();
+        }
+        let mut click_count = Metric::count("click_count");
+        click_count.sql = Some("clicks.id".into());
+        graph.add_metric_unvalidated(click_count).unwrap();
+        let mut ratio = Metric::derived(
+            "ctr",
+            "COUNT(clicks.id) * 1.0 / NULLIF(COUNT(impressions.id), 0)",
+        );
+        ratio.sql_is_complete = true;
+        graph.add_metric_unvalidated(ratio).unwrap();
+        graph.set_metric_scopes(HashMap::new()).unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["click_count".into(), "ctr".into()])
+            .with_dimensions(vec!["campaigns.name".into()]);
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(sql.contains("clicks_preagg AS"), "{sql}");
+        assert!(sql.contains("impressions_preagg AS"), "{sql}");
+        assert!(!sql.contains("publishers_cte"), "{sql}");
+        assert_valid_sql(&sql);
+        let mut ungrouped = query;
+        ungrouped.dimensions.clear();
+        assert!(matches!(
+            SqlGenerator::new(&graph).generate(&ungrouped),
+            Err(SqlctxError::AmbiguousJoinPath { .. })
+        ));
+    }
+
+    #[test]
+    fn legacy_window_metric_predicate_is_applied_before_aggregation() {
+        let mut legacy = SemanticGraph::new();
+        for model in graph().models() {
+            legacy.add_model(model.clone()).unwrap();
+        }
+        let mut orders = legacy.get_model("orders").unwrap().clone();
+        let mut next_status = Dimension::categorical("next_status").with_sql("status");
+        next_status.window = Some("LEAD(status) OVER (ORDER BY id)".into());
+        orders.dimensions.push(next_status);
+        legacy.replace_model(orders).unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec![
+                "orders.revenue".into(),
+                "customers.customer_count".into(),
+            ])
+            .with_dimensions(vec!["orders.region".into()])
+            .with_filters(vec![
+                "orders.next_status = 'complete' OR orders.revenue > 100".into(),
+            ]);
+        let sql = SqlGenerator::new(&legacy).generate(&query).unwrap();
+        let (orders_sql, customers_sql) = sql.split_once("customers_preagg AS (").unwrap();
+        assert!(orders_sql.contains("'complete'"), "{sql}");
+        assert!(!orders_sql.contains("HAVING"), "{sql}");
+        assert!(!customers_sql.contains("'complete'"), "{sql}");
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn complete_count_without_inputs_retains_owner_join_and_population() {
+        let mut graph = graph();
+        let mut orders = graph.get_model("orders").unwrap().clone();
+        let mut count = Metric::derived("opaque_count", "COUNT(*)");
+        count.sql_is_complete = true;
+        orders.metrics.push(count);
+        graph.replace_model(orders).unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["orders.opaque_count".into()])
+            .with_dimensions(vec!["customers.region".into()]);
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        assert!(sql.contains("COUNT(*) AS __sqlctx_metric_0"), "{sql}");
+        assert!(sql.contains("FROM orders_cte AS orders_cte"), "{sql}");
+        assert!(
+            sql.contains("LEFT JOIN customers_cte AS customers_cte"),
+            "{sql}"
+        );
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn mixed_window_predicate_filters_only_its_source_before_aggregation() {
+        let mut graph = graph();
+        let mut orders = graph.get_model("orders").unwrap().clone();
+        let mut next_status = crate::core::Dimension::categorical("next_status").with_sql("status");
+        next_status.window = Some("LEAD(status) OVER (ORDER BY id)".into());
+        orders.dimensions.push(next_status);
+        graph.replace_model(orders).unwrap();
+        let query = SemanticQuery::new()
+            .with_metrics(vec![
+                "orders.revenue".into(),
+                "customers.customer_count".into(),
+            ])
+            .with_dimensions(vec!["orders.region".into()])
+            .with_filters(vec![
+                "orders.next_status = 'complete' OR orders.revenue > 100".into(),
+            ]);
+        let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+        let (orders_sql, rest) = sql.split_once("customers_preagg AS (").unwrap();
+        assert!(orders_sql.contains("'complete'"), "{sql}");
+        assert!(
+            orders_sql.contains("amount) > 100") || orders_sql.contains("amount > 100"),
+            "{sql}"
+        );
+        assert!(!rest.contains("'complete'"), "{sql}");
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn proxies_and_local_names_expand_to_aggregate_owners() {
+        let graph = graph();
+        for metric in ["proxy_ratio", "orders.local_sum"] {
+            let sql = compile(&graph, &[metric], &[]).unwrap();
+            assert!(sql.contains("customers_preagg.__sqlctx_metric_"));
+            assert!(!sql.contains("proxy_raw"));
+            assert!(!sql.contains("local_sum_raw"));
+        }
+    }
+
+    #[test]
+    fn nested_arithmetic_keeps_parentheses() {
+        let sql = compile(&graph(), &["double_added"], &[]).unwrap();
+        assert!(sql.contains("((orders_preagg.__sqlctx_metric_"));
+        assert!(sql.contains(") + (COALESCE(customers_preagg.__sqlctx_metric_"));
+        assert!(sql.contains(")) * 2"));
+    }
+
+    #[test]
+    fn filters_project_unselected_dependencies_and_bind_outer_columns() {
+        let sql = compile(
+            &graph(),
+            &["double_added"],
+            &["ratio > 90 AND orders.proxy > 2"],
+        )
+        .unwrap();
+        assert!(sql.contains("WHERE"));
+        assert!(!sql.contains("WHERE ratio"));
+        assert!(!sql.contains("proxy_raw"));
+        assert!(sql.contains("customers_preagg.__sqlctx_metric_"));
+    }
+
+    #[test]
+    fn mixed_raw_and_aggregate_or_is_typed_unsupported() {
+        assert!(
+            matches!(compile(&graph(), &["ratio"], &["ratio > 90 OR orders.amount > 60"]),
+            Err(SqlctxError::UnsupportedSemanticFeatures { capabilities })
+                if capabilities == vec!["aggregation.mixed_row_aggregate_filter"])
+        );
+    }
+
+    #[test]
+    fn grouped_filters_and_order_use_outer_dimension() {
+        let graph = graph();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["ratio".into()])
+            .with_dimensions(vec!["customers.region".into()])
+            .with_filters(vec!["ratio > 90 OR customers.region = 'west'".into()])
+            .with_order_by(vec!["customers.region DESC".into()]);
+        let sql = try_generate(&SqlGenerator::new(&graph), &query)
+            .unwrap()
+            .unwrap();
+        assert!(sql.contains("IS NOT DISTINCT FROM"));
+        assert!(sql.contains(
+            "COALESCE(orders_preagg.__sqlctx_dimension_0, customers_preagg.__sqlctx_dimension_0)"
+        ));
+        assert!(sql.contains("ORDER BY region DESC"));
+    }
+
+    #[test]
+    fn postgres_combines_sources_on_hash_joinable_null_safe_keys() {
+        let graph = graph();
+        let query = SemanticQuery::new()
+            .with_metrics(vec![
+                "orders.revenue".into(),
+                "customers.customer_count".into(),
+            ])
+            .with_dimensions(vec!["customers.region".into()]);
+        let generator = SqlGenerator::new(&graph).with_dialect(DialectType::PostgreSQL);
+        let sql = try_generate(&generator, &query).unwrap().unwrap();
+        // PostgreSQL rejects FULL JOIN ... ON a IS NOT DISTINCT FROM b.
+        assert!(
+            sql.contains(
+                "FULL OUTER JOIN customers_preagg ON ARRAY[orders_preagg.__sqlctx_dimension_0] \
+                 = ARRAY[customers_preagg.__sqlctx_dimension_0] \
+                 AND (orders_preagg.__sqlctx_dimension_0 IS NULL) \
+                 = (customers_preagg.__sqlctx_dimension_0 IS NULL)"
+            ),
+            "{sql}"
+        );
+        assert!(!sql.contains("IS NOT DISTINCT FROM"), "{sql}");
+    }
+
+    #[test]
+    fn order_position_selects_the_output_column() {
+        let graph = graph();
+        let query = SemanticQuery::new()
+            .with_metrics(vec![
+                "orders.revenue".into(),
+                "customers.customer_count".into(),
+            ])
+            .with_dimensions(vec!["customers.region".into()])
+            .with_order_by(vec!["3 DESC".into(), "1".into()]);
+        let sql = try_generate(&SqlGenerator::new(&graph), &query)
+            .unwrap()
+            .unwrap();
+        assert!(
+            sql.contains("ORDER BY customer_count DESC NULLS LAST, region ASC NULLS FIRST"),
+            "{sql}"
+        );
+        assert_valid_sql(&sql);
+
+        let query = query.with_order_by(vec!["4".into()]);
+        assert!(matches!(
+            try_generate(&SqlGenerator::new(&graph), &query),
+            Err(SqlctxError::UnsupportedSemanticFeatures { capabilities })
+                if capabilities == vec!["aggregation.unprojected_order_by"]
+        ));
+    }
+
+    #[test]
+    fn single_source_stays_on_existing_path() {
+        let graph = graph();
+        let query = SemanticQuery::new().with_metrics(vec!["orders.revenue".into()]);
+        assert!(try_generate(&SqlGenerator::new(&graph), &query)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn ungrouped_cross_grain_query_is_rejected() {
+        let graph = graph();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["ratio".into()])
+            .with_ungrouped(true);
+        assert!(matches!(
+            try_generate(&SqlGenerator::new(&graph), &query),
+            Err(SqlctxError::UnsupportedSemanticFeatures { .. })
+        ));
+    }
+
+    #[test]
+    fn dimension_leaf_alias_collision_is_normalized_per_child() {
+        let graph = graph();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["ratio".into()])
+            .with_dimensions(vec!["customers.revenue".into()]);
+        let sql = try_generate(&SqlGenerator::new(&graph), &query)
+            .unwrap()
+            .unwrap();
+        assert!(
+            sql.contains("__sqlctx_source.customers_revenue AS __sqlctx_dimension_0"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("__sqlctx_source.orders_revenue AS __sqlctx_metric_0"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("__sqlctx_source.revenue AS __sqlctx_dimension_0"),
+            "{sql}"
+        );
+        assert!(sql.contains(") AS revenue"), "{sql}");
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn duplicate_dimension_names_have_distinct_grouping_and_order_names() {
+        let graph = graph();
+        let query = SemanticQuery::new()
+            .with_metrics(vec!["ratio".into()])
+            .with_dimensions(vec!["orders.region".into(), "customers.region".into()])
+            .with_filters(vec!["ratio > 1 OR customers.region IS NULL".into()])
+            .with_order_by(vec![
+                "orders.region ASC".into(),
+                "customers.region DESC".into(),
+            ]);
+        let sql = try_generate(&SqlGenerator::new(&graph), &query)
+            .unwrap()
+            .unwrap();
+        assert!(
+            sql.contains("__sqlctx_source.orders_region AS __sqlctx_dimension_0"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("__sqlctx_source.customers_region AS __sqlctx_dimension_1"),
+            "{sql}"
+        );
+        assert!(sql.contains(") AS orders_region"), "{sql}");
+        assert!(sql.contains(") AS customers_region"), "{sql}");
+        assert!(
+            sql.contains(
+                "__sqlctx_dimension_0 IS NOT DISTINCT FROM customers_preagg.__sqlctx_dimension_0"
+            ),
+            "{sql}"
+        );
+        assert!(
+            sql.contains(
+                "__sqlctx_dimension_1 IS NOT DISTINCT FROM customers_preagg.__sqlctx_dimension_1"
+            ),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY orders_region ASC NULLS FIRST, customers_region DESC"),
+            "{sql}"
+        );
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn selected_metric_and_dimension_collisions_use_qualified_public_names() {
+        let graph = graph();
+        let query = SemanticQuery::new()
+            .with_metrics(vec![
+                "orders.revenue".into(),
+                "customers.customer_count".into(),
+            ])
+            .with_dimensions(vec!["customers.revenue".into()])
+            .with_filters(vec!["orders.revenue > 100".into()])
+            .with_order_by(vec![
+                "orders.revenue DESC".into(),
+                "customers.revenue ASC".into(),
+            ]);
+        let sql = try_generate(&SqlGenerator::new(&graph), &query)
+            .unwrap()
+            .unwrap();
+        assert!(sql.contains(") AS customers_revenue"), "{sql}");
+        assert!(
+            sql.contains("orders_preagg.__sqlctx_metric_0 AS orders_revenue"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains(
+                "ORDER BY orders_revenue DESC NULLS LAST, customers_revenue ASC NULLS FIRST"
+            ),
+            "{sql}"
+        );
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn genuinely_duplicate_child_outputs_remain_unsupported() {
+        let graph = graph();
+        for dimensions in [
+            vec!["orders.revenue"],
+            vec![
+                "orders.region",
+                "customers.region",
+                "customers.orders_region",
+            ],
+        ] {
+            let query = SemanticQuery::new()
+                .with_metrics(vec!["ratio".into()])
+                .with_dimensions(dimensions.into_iter().map(str::to_string).collect());
+            assert!(matches!(try_generate(&SqlGenerator::new(&graph), &query),
+                Err(SqlctxError::UnsupportedSemanticFeatures { capabilities })
+                if capabilities == vec!["aggregation.child_output_alias_collision"]));
+        }
+    }
+
+    #[test]
+    fn single_source_proxy_keeps_the_aggregate_owner() {
+        let sql = compile(&graph(), &["orders.proxy"], &["orders.amount > 60"]).unwrap();
+        assert!(sql.contains("customers_preagg"));
+        assert!(!sql.contains("orders_preagg AS"));
+        assert_valid_sql(&sql);
+    }
+
+    #[test]
+    fn default_time_dimensions_follow_selected_metrics_across_sources() {
+        let mut graph = graph();
+        for (owner, field, grain) in [
+            ("orders", "ordered_at", "month"),
+            ("customers", "signed_up_at", "week"),
+        ] {
+            let mut model = graph.get_model(owner).unwrap().clone();
+            model.dimensions.push(Dimension::time(field));
+            model.default_time_dimension = Some(field.into());
+            model.default_grain = Some(grain.into());
+            graph.replace_model(model).unwrap();
+        }
+        for (metrics, dimensions, skip, expected_month, expected_week) in [
+            (vec!["ratio"], vec![], false, false, false),
+            (
+                vec!["orders.revenue", "customers.customer_count"],
+                vec![],
+                false,
+                true,
+                true,
+            ),
+            // Selected dimensions are the whole grain: no other source's
+            // default joins them.
+            (
+                vec!["orders.revenue", "customers.customer_count"],
+                vec!["orders.ordered_at__day"],
+                false,
+                false,
+                false,
+            ),
+            (
+                vec!["orders.revenue", "customers.customer_count"],
+                vec![],
+                true,
+                false,
+                false,
+            ),
+        ] {
+            let query = SemanticQuery::new()
+                .with_metrics(metrics.into_iter().map(str::to_string).collect())
+                .with_dimensions(dimensions.into_iter().map(str::to_string).collect())
+                .with_skip_default_time_dimensions(skip);
+            let sql = SqlGenerator::new(&graph).generate(&query).unwrap();
+            assert_eq!(sql.contains("ordered_at__month"), expected_month, "{sql}");
+            assert_eq!(sql.contains("signed_up_at__week"), expected_week, "{sql}");
+            assert_valid_sql(&sql);
+        }
+    }
+}

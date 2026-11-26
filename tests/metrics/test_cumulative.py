@@ -9,7 +9,7 @@ from datetime import date
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model
+from sqlctx import Dimension, Metric, Model
 
 
 @pytest.mark.parametrize(
@@ -415,8 +415,8 @@ def test_rolling_count(timeseries_db, layer):
 
 def test_cumulative_with_time_comparison(layer):
     """Cumulative window expressions must appear in LAG CTE output."""
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.generator import SQLGenerator
     from tests.utils import fetch_dicts
 
     sales = Model(
@@ -477,8 +477,8 @@ def test_cumulative_with_time_comparison(layer):
 
 def test_time_comparison_over_derived_cumulative_chain():
     """Time comparison should support cumulative -> derived dependency chains."""
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.generator import SQLGenerator
     from tests.utils import fetch_dicts
 
     sales = Model(
@@ -537,8 +537,8 @@ def test_time_comparison_over_derived_cumulative_chain():
 
 def test_time_comparison_over_ratio_cumulative_chain():
     """Time comparison should support cumulative -> ratio dependency chains."""
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.generator import SQLGenerator
     from tests.utils import fetch_dicts
 
     sales = Model(
@@ -597,8 +597,8 @@ def test_time_comparison_over_ratio_cumulative_chain():
 
 def test_time_comparison_with_dependency_free_expression_metric():
     """Dependency-free expression metrics should not be recomputed in outer window queries."""
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.sql.generator import SQLGenerator
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.sql.generator import SQLGenerator
 
     sales = Model(
         name="sales",

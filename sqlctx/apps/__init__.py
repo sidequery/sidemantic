@@ -1,0 +1,79 @@
+"""MCP Apps integration for sqlctx.
+
+Creates vendor-neutral UI resources (MCP Apps standard) that render
+interactive charts in any MCP Apps-compatible host.
+"""
+
+import json
+from pathlib import Path
+from typing import Any
+
+from sqlctx.vendor_assets import inline_vendor_scripts
+
+_WIDGET_TEMPLATE: str | None = None
+_PROTOCOL_WIDGET_HTML: str | None = None
+
+
+def _get_widget_template() -> str:
+    """Load the chart widget HTML template."""
+    global _WIDGET_TEMPLATE
+    if _WIDGET_TEMPLATE is None:
+        path = Path(__file__).parent / "chart_widget.html"
+        _WIDGET_TEMPLATE = path.read_text()
+    return _WIDGET_TEMPLATE
+
+
+def _get_protocol_widget_html() -> str:
+    """Load the Vite-built chart widget used by the MCP Apps resource."""
+    global _PROTOCOL_WIDGET_HTML
+    if _PROTOCOL_WIDGET_HTML is None:
+        built = Path(__file__).parent / "chart.html"
+        if not built.exists():
+            raise FileNotFoundError(
+                f"Chart widget not built at {built}. Run: cd sqlctx/apps/web && bun install && bun run build"
+            )
+        _PROTOCOL_WIDGET_HTML = built.read_text()
+    return _PROTOCOL_WIDGET_HTML
+
+
+def build_chart_html(vega_spec: dict[str, Any]) -> str:
+    """Build a self-contained chart widget HTML with embedded Vega spec.
+
+    Args:
+        vega_spec: Vega-Lite specification dict.
+
+    Returns:
+        Complete HTML string with the spec injected.
+    """
+    template = _get_widget_template()
+    # Escape </script> sequences to prevent XSS when user-provided strings
+    # (e.g., chart titles) flow into the Vega spec.
+    safe_json = json.dumps(vega_spec).replace("<", "\\u003c")
+    return template.replace("{{VEGA_SPEC}}", safe_json).replace(
+        "{{VEGA_VENDOR_JS}}",
+        inline_vendor_scripts("vega", "vega_lite", "vega_embed"),
+    )
+
+
+def create_chart_resource(vega_spec: dict[str, Any]):
+    """Create a UIResource for a chart visualization.
+
+    Args:
+        vega_spec: Vega-Lite specification dict.
+
+    Returns:
+        UIResource (EmbeddedResource) for MCP Apps-compatible hosts.
+    """
+    from sqlctx.apps._mcp_ui import create_ui_resource
+
+    html = build_chart_html(vega_spec)
+    return create_ui_resource(
+        {
+            "uri": "ui://sqlctx/chart",
+            "content": {
+                "type": "rawHtml",
+                "htmlString": html,
+            },
+            "encoding": "text",
+        }
+    )

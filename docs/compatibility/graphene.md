@@ -1,15 +1,15 @@
 # Graphene GSQL Compatibility
 
-Sidemantic can import Graphene `.gsql` semantic model files through `load_from_directory()` and CLI commands that use the normal model loader.
+sqlctx can import Graphene `.gsql` semantic model files through `load_from_directory()` and CLI commands that use the normal model loader.
 
-The importer is a Sidemantic-owned compatibility parser for Graphene's documented model declarations. It does not bundle Graphene, call the Graphene runtime, or vendor Graphene's parser/grammar/analyzer.
+The importer is a sqlctx-owned compatibility parser for Graphene's documented model declarations. It does not bundle Graphene, call the Graphene runtime, or vendor Graphene's parser/grammar/analyzer.
 
 ## Supported
 
 - `table name (...)` physical table definitions
 - `table name as (...)` derived table definitions, with the view query preserved as model SQL
 - `extend name (...)` blocks
-- Base columns as Sidemantic dimensions
+- Base columns as sqlctx dimensions
 - Computed scalar expressions as dimensions
 - Aggregate expressions and measure-composed expressions as metrics
 - `join one` as `many_to_one`

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.snowflake import SnowflakeAdapter
+from sqlctx.adapters.snowflake import SnowflakeAdapter
 
 
 @pytest.fixture

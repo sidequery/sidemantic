@@ -3,8 +3,8 @@ import os
 import pytest
 from typer.testing import CliRunner
 
-from sidemantic.cli import app
-from sidemantic.db.postgres import PostgreSQLAdapter
+from sqlctx.cli import app
+from sqlctx.db.postgres import PostgreSQLAdapter
 
 runner = CliRunner()
 
@@ -20,7 +20,7 @@ pytestmark = [
 def _postgres_adapter():
     host = os.getenv("POSTGRES_HOST", "localhost")
     port = int(os.getenv("POSTGRES_PORT", "5433"))
-    database = os.getenv("POSTGRES_DB", "sidemantic_test")
+    database = os.getenv("POSTGRES_DB", "sqlctx_test")
     username = os.getenv("POSTGRES_USER", "test")
     password = os.getenv("POSTGRES_PASSWORD", "test")
     return PostgreSQLAdapter(host=host, port=port, database=database, user=username, password=password)
@@ -50,7 +50,7 @@ models:
 """
         )
 
-        config_file = tmp_path / "sidemantic.yaml"
+        config_file = tmp_path / "sqlctx.yaml"
         config_file.write_text(
             f"""
 models_dir: ./models
@@ -58,7 +58,7 @@ connection:
   type: postgres
   host: {os.getenv("POSTGRES_HOST", "localhost")}
   port: {os.getenv("POSTGRES_PORT", "5433")}
-  database: {os.getenv("POSTGRES_DB", "sidemantic_test")}
+  database: {os.getenv("POSTGRES_DB", "sqlctx_test")}
   username: {os.getenv("POSTGRES_USER", "test")}
   password: {os.getenv("POSTGRES_PASSWORD", "test")}
 """

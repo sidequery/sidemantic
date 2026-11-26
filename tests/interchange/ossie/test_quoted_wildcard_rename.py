@@ -76,7 +76,7 @@ def test_quoted_rename_matches_ordinary_sql(route, query):
 
 @pytest.mark.parametrize("engine", ["python", "rust"])
 def test_persistent_view_definition_supports_quoted_rename(engine):
-    from sidemantic import SemanticLayer
+    from sqlctx import SemanticLayer
     from tests.interchange.ossie.test_layer2_conformance import shared_catalog
 
     layer = SemanticLayer.from_catalog(shared_catalog(_document()), engine=engine, fallback=False, auto_register=False)

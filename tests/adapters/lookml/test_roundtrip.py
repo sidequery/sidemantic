@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.lookml import LookMLAdapter
+from sqlctx.adapters.lookml import LookMLAdapter
 
 from ..helpers import (
     assert_dimension_equivalent,
@@ -19,8 +19,8 @@ from ..helpers import (
 # =============================================================================
 
 
-def test_lookml_to_sidemantic_to_lookml_roundtrip():
-    """Test that LookML -> Sidemantic -> LookML preserves structure."""
+def test_lookml_to_sqlctx_to_lookml_roundtrip():
+    """Test that LookML -> sqlctx -> LookML preserves structure."""
     # Import from LookML
     lookml_adapter = LookMLAdapter()
     graph1 = lookml_adapter.parse("tests/fixtures/lookml/orders.lkml")

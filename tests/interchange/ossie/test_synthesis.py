@@ -4,18 +4,18 @@ import json
 
 import pytest
 
-from sidemantic.core.consumption import Explore, SavedQuery
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.parameter import Parameter
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.security import SecurityPolicy
-from sidemantic.core.segment import Segment
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.core.semantic_layer import SemanticLayer
-from sidemantic.core.table_calculation import TableCalculation
-from sidemantic.interchange.ossie import (
+from sqlctx.core.consumption import Explore, SavedQuery
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.parameter import Parameter
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.security import SecurityPolicy
+from sqlctx.core.segment import Segment
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.core.semantic_layer import SemanticLayer
+from sqlctx.core.table_calculation import TableCalculation
+from sqlctx.interchange.ossie import (
     OssieConsumerProfile,
     OssieSynthesisError,
     lower_ossie_document,
@@ -308,7 +308,7 @@ def test_synthesis_qualifies_expression_columns_and_preserves_numeric_results(op
 
 
 def test_synthesis_preserves_quoted_column_case_and_existing_qualifiers() -> None:
-    from sidemantic.interchange.ossie.profiles import CURRENT_OSSIE_SCHEMA_COMMIT
+    from sqlctx.interchange.ossie.profiles import CURRENT_OSSIE_SCHEMA_COMMIT
 
     graph = _graph()
     graph.models["orders"].metrics[0].sql = 'coalesce("Amount", 0) * orders."Quantity"'
@@ -327,7 +327,7 @@ def test_synthesis_preserves_quoted_column_case_and_existing_qualifiers() -> Non
 
 @pytest.mark.parametrize("expression", ["revenue * 2", "orders.revenue * 2"])
 def test_synthesis_preserves_model_metric_references_in_derived_formulas(expression: str) -> None:
-    from sidemantic.interchange.ossie.profiles import CURRENT_OSSIE_SCHEMA_COMMIT
+    from sqlctx.interchange.ossie.profiles import CURRENT_OSSIE_SCHEMA_COMMIT
 
     graph = _graph()
     graph.models["orders"].metrics.append(Metric(name="double_revenue", type="derived", sql=expression))
@@ -353,7 +353,7 @@ def test_synthesis_retains_model_binding_for_columnless_aggregates(options: dict
 
     assert result.valid, result.diagnostics
     scope = result.document.to_parsed_data()
-    assert "orders.__sidemantic_row" in scope["metrics"][0]["expression"]["dialects"][0]["expression"]
+    assert "orders.__sqlctx_row" in scope["metrics"][0]["expression"]["dialects"][0]["expression"]
 
 
 @pytest.mark.parametrize(
@@ -432,7 +432,7 @@ def test_columnless_aggregate_uses_own_rows_and_avoids_declared_field_collision(
         Model(
             name="orders",
             sql="SELECT * FROM (VALUES (NULL), (NULL), (NULL)) AS t(id)",
-            dimensions=[Dimension(name="__sidemantic_row", type="numeric", sql="id")],
+            dimensions=[Dimension(name="__sqlctx_row", type="numeric", sql="id")],
             metrics=[Metric(name="rows", agg="count")],
         )
     )
@@ -612,7 +612,7 @@ def test_extension_selection_does_not_hide_invalid_native_expression(feature):
 
 
 def test_core_metric_dialect_provenance_is_not_native_semantics():
-    from sidemantic.interchange.ossie import lower_ossie_document, parse_ossie_document
+    from sqlctx.interchange.ossie import lower_ossie_document, parse_ossie_document
 
     source = b"""{"version":"0.2.0.dev0","semantic_model":[{"name":"commerce",
       "datasets":[{"name":"orders","source":"orders","fields":[{"name":"amount",
@@ -694,7 +694,7 @@ def test_synthesis_preserves_native_non_time_role_for_temporal_datatype(datatype
 
 
 def test_explicit_legacy_revision_preserves_enveloped_export_contract():
-    from sidemantic.interchange.ossie.profiles import LEGACY_OSSIE_SCHEMA_COMMIT
+    from sqlctx.interchange.ossie.profiles import LEGACY_OSSIE_SCHEMA_COMMIT
 
     result = synthesize_ossie_document(
         _graph(),

@@ -47,7 +47,7 @@ runs:
         # MBX 1.27.0 fixes native Windows Cargo build-script dispatch (upstream #787).
         version: ${{ runner.os == 'Windows' && '1.27.0' || (runner.os != 'macOS' || runner.arch != 'X64') && '1.11.0' || '' }}
         github-cache-mode: objects
-        cache-generation: ${{ runner.os == 'Windows' && 'sidemantic-windows-mbx-1.27.0' || 'sidemantic-v1' }}-${{ inputs.suffix }}
+        cache-generation: ${{ runner.os == 'Windows' && 'sqlctx-windows-mbx-1.27.0' || 'sqlctx-v1' }}-${{ inputs.suffix }}
 
     - name: Remove imported Rust cache archive
       env:

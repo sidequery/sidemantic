@@ -1,7 +1,7 @@
 # Malloy/DuckDB differential harness
 
 This opt-in harness runs the official Malloy compiler/runtime and the local
-Sidemantic DuckDB query path against the same deterministic fixtures. The
+sqlctx DuckDB query path against the same deterministic fixtures. The
 manifest is declarative: `compatible` fixtures execute, while `unsupported`
 and `planned` fixture families are reported without creating per-test xfails.
 
@@ -32,7 +32,7 @@ output without Bun's test reporter is preferred.
 The runner creates a temporary DuckDB/Parquet workspace, seeds it from the
 fixture SQL, executes the Malloy query with `DuckDBConnection`, imports the
 same source with `MalloyAdapter(strict=True)`, executes the equivalent
-Sidemantic query, normalizes schemas/rows, and compares both results against
+sqlctx query, normalizes schemas/rows, and compares both results against
 the fixture's expected rows.
 
 Add future cases to `fixtures/manifest.json` and keep unsupported behavior

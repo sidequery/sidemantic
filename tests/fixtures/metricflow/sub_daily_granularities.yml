@@ -5,7 +5,7 @@
 #   cumulative metrics with sub-daily windows, derived metrics with offset_window/offset_to_grain
 #
 # Note: The original fixture also includes millisecond granularity on dimensions and
-# grain_to_date: hour on cumulative metrics. Both are omitted here because sidemantic's
+# grain_to_date: hour on cumulative metrics. Both are omitted here because sqlctx's
 # Dimension model does not support 'millisecond' and Metric model does not support
 # sub-daily grain_to_date. See test_millisecond_xfail and test_subdaily_grain_to_date_xfail.
 

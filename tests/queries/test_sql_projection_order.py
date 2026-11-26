@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, PreAggregation, SemanticLayer
+from sqlctx import Dimension, Metric, Model, PreAggregation, SemanticLayer
 
 
 @pytest.mark.parametrize("engine", ["python", "rust"])

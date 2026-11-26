@@ -2417,42 +2417,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
-name = "sidemantic"
-version = "0.1.0"
-dependencies = [
- "adbc_core",
- "adbc_driver_manager",
- "arrow-array",
- "arrow-ipc",
- "arrow-schema",
- "axum",
- "chrono",
- "crossterm",
- "lazy_static",
- "mime_guess",
- "minijinja",
- "nom",
- "once_cell",
- "polyglot-sql",
- "pyo3",
- "ratatui",
- "regex",
- "rmcp",
- "rust-embed",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.21",
- "tokio",
- "tokio-stream",
- "tower-lsp",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-test",
- "windows-sys",
-]
-
-[[package]]
 name = "signal-hook"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2508,6 +2472,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
+ "windows-sys",
+]
+
+[[package]]
+name = "sqlctx"
+version = "0.1.0"
+dependencies = [
+ "adbc_core",
+ "adbc_driver_manager",
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "axum",
+ "chrono",
+ "crossterm",
+ "lazy_static",
+ "mime_guess",
+ "minijinja",
+ "nom",
+ "once_cell",
+ "polyglot-sql",
+ "pyo3",
+ "ratatui",
+ "regex",
+ "rmcp",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-stream",
+ "tower-lsp",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
  "windows-sys",
 ]
 

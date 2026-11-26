@@ -1,10 +1,10 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx import Dimension, Metric, Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.sql.generator import SQLGenerator
 
 
 @pytest.fixture

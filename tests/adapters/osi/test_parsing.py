@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sidemantic.adapters.osi import LegacyOSIAdapter as OSIAdapter
-from sidemantic.core.dimension import Dimension
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
+from sqlctx.adapters.osi import LegacyOSIAdapter as OSIAdapter
+from sqlctx.core.dimension import Dimension
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
 
 # =============================================================================
 # BASIC PARSING TESTS
@@ -1224,7 +1224,7 @@ def test_export_meta_as_ai_context():
 
         # Model meta
         assert dataset["ai_context"] == {"synonyms": ["revenue", "transactions"]}
-        assert dataset["custom_extensions"] == [{"vendor_name": "SIDEMANTIC", "data": '{"vendor_id": "acme123"}'}]
+        assert dataset["custom_extensions"] == [{"vendor_name": "SQLCTX", "data": '{"vendor_id": "acme123"}'}]
 
         # Field meta
         amount_field = next(f for f in dataset["fields"] if f["name"] == "amount")
@@ -1275,7 +1275,7 @@ def test_roundtrip_preserves_meta():
             exported = yaml.safe_load(f)
 
         dataset = exported["semantic_model"][0]["datasets"][0]
-        assert dataset["custom_extensions"] == [{"vendor_name": "SIDEMANTIC", "data": '{"catalog_version": "2.0"}'}]
+        assert dataset["custom_extensions"] == [{"vendor_name": "SQLCTX", "data": '{"catalog_version": "2.0"}'}]
 
         # Import back
         graph2 = adapter.parse(temp_path)
@@ -1786,7 +1786,7 @@ def test_export_released_json_coerces_unsupported_extension_vendor():
 
     The released 0.1.x JSON Schema constrains vendor_name to an enum
     (COMMON/SNOWFLAKE/SALESFORCE/DBT/DATABRICKS/GOODDATA), so dbt's OSI consumer
-    rejects any other vendor. Sidemantic's own SIDEMANTIC wrapper (and any other
+    rejects any other vendor. sqlctx's own SQLCTX wrapper (and any other
     non-enum vendor) must be relabeled to COMMON on the released JSON path.
     """
     model = Model(
@@ -1811,9 +1811,9 @@ def test_export_released_json_coerces_unsupported_extension_vendor():
         # Every emitted vendor must be in the released enum.
         for ext in exts:
             assert ext["vendor_name"] in OSIAdapter.RELEASED_OSI_VENDORS
-        # The SIDEMANTIC wrapper is relabeled to COMMON, preserving the original.
+        # The SQLCTX wrapper is relabeled to COMMON, preserving the original.
         assert exts[0]["vendor_name"] == "COMMON"
-        assert "SIDEMANTIC" in exts[0]["data"]
+        assert "SQLCTX" in exts[0]["data"]
     finally:
         temp_path.unlink()
 
@@ -1928,7 +1928,7 @@ def test_export_yaml_preserves_unsupported_extension_vendor():
         OSIAdapter().export(graph, temp_path, format="yaml")
         data = yaml.safe_load(temp_path.read_text())
         dataset = data["semantic_model"][0]["datasets"][0]
-        assert dataset["custom_extensions"][0]["vendor_name"] == "SIDEMANTIC"
+        assert dataset["custom_extensions"][0]["vendor_name"] == "SQLCTX"
     finally:
         temp_path.unlink()
 
@@ -2357,7 +2357,7 @@ class TestTpcdsRetailFixture:
         """custom_extensions at semantic_model level (SALESFORCE, DBT, SNOWFLAKE) are captured.
 
         Semantic-model-level metadata is stored on the graph because it does not
-        belong to any one Sidemantic Model.
+        belong to any one sqlctx Model.
         """
         extensions = graph.metadata["osi"]["semantic_models"][0]["custom_extensions"]
         vendors = {extension["vendor_name"] for extension in extensions}

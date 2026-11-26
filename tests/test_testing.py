@@ -1,4 +1,4 @@
-"""Tests for the golden-test loader/runner and live schema drift (sidemantic/testing.py)."""
+"""Tests for the golden-test loader/runner and live schema drift (sqlctx/testing.py)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
-from sidemantic.testing import (
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx.testing import (
     _values_match,
     check_schema_drift,
     load_test_file,

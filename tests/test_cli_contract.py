@@ -1,4 +1,4 @@
-"""Behavioral contract tests for the public Sidemantic CLI surface."""
+"""Behavioral contract tests for the public sqlctx CLI surface."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-import sidemantic.cli as cli_module
-from sidemantic import SemanticLayer
-from sidemantic.adapters.ossie import OssieAdapter
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.cli import app
+import sqlctx.cli as cli_module
+from sqlctx import SemanticLayer
+from sqlctx.adapters.ossie import OssieAdapter
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.cli import app
 from tests.optional_dep_stubs import ensure_fake_riffq
 
 runner = CliRunner()
@@ -62,13 +62,13 @@ def _write_db(path: Path) -> None:
 
 @pytest.mark.parametrize("option", ["-h", "--help"])
 def test_root_and_subcommand_help_aliases(option: str):
-    root = runner.invoke(app, [option], prog_name="sidemantic")
-    nested = runner.invoke(app, ["migrate", "generate", option], prog_name="sidemantic")
+    root = runner.invoke(app, [option], prog_name="sqlctx")
+    nested = runner.invoke(app, ["migrate", "generate", option], prog_name="sqlctx")
 
     assert root.exit_code == 0
-    assert "Usage: sidemantic" in root.stdout
+    assert "Usage: sqlctx" in root.stdout
     assert nested.exit_code == 0
-    assert "sidemantic migrate generate" in nested.stdout
+    assert "sqlctx migrate generate" in nested.stdout
     assert not root.stderr
     assert not nested.stderr
 
@@ -76,9 +76,9 @@ def test_root_and_subcommand_help_aliases(option: str):
 @pytest.mark.parametrize(
     ("arguments", "usage"),
     [
-        (["help"], "Usage: sidemantic"),
-        (["help", "info"], "Usage: sidemantic info"),
-        (["help", "migrate", "generate"], "Usage: sidemantic migrate generate"),
+        (["help"], "Usage: sqlctx"),
+        (["help", "info"], "Usage: sqlctx info"),
+        (["help", "migrate", "generate"], "Usage: sqlctx migrate generate"),
     ],
 )
 def test_help_command_resolves_nested_paths(arguments: list[str], usage: str):
@@ -92,11 +92,11 @@ def test_help_command_resolves_nested_paths(arguments: list[str], usage: str):
 @pytest.mark.parametrize(
     ("arguments", "usage", "exit_code"),
     [
-        (["help"], "Usage: sidemantic", 0),
-        (["help", "migrate", "generate"], "Usage: sidemantic migrate generate", 0),
-        (["info", "--help"], "Usage: sidemantic info", 0),
-        (["migrate", "generate", "-h"], "Usage: sidemantic migrate generate", 0),
-        (["migrate"], "Usage: sidemantic migrate", 2),
+        (["help"], "Usage: sqlctx", 0),
+        (["help", "migrate", "generate"], "Usage: sqlctx migrate generate", 0),
+        (["info", "--help"], "Usage: sqlctx info", 0),
+        (["migrate", "generate", "-h"], "Usage: sqlctx migrate generate", 0),
+        (["migrate"], "Usage: sqlctx migrate", 2),
     ],
 )
 def test_all_help_paths_bypass_malformed_project_config(
@@ -106,10 +106,10 @@ def test_all_help_paths_bypass_malformed_project_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    (tmp_path / "sidemantic.yaml").write_text("models_dir: [\n")
+    (tmp_path / "sqlctx.yaml").write_text("models_dir: [\n")
     monkeypatch.chdir(tmp_path)
 
-    result = runner.invoke(app, arguments, prog_name="sidemantic")
+    result = runner.invoke(app, arguments, prog_name="sqlctx")
 
     assert result.exit_code == exit_code, result.output
     assert usage in result.stdout
@@ -143,7 +143,7 @@ def test_click_runtime_types_belong_to_installed_typer():
     # are invisible to its runtime and escape as tracebacks.
     from typer.core import TyperGroup
 
-    from sidemantic.click_compat import ClickException, Command, Context, UsageError
+    from sqlctx.click_compat import ClickException, Command, Context, UsageError
 
     assert issubclass(typer.BadParameter, UsageError)
     assert issubclass(UsageError, ClickException)
@@ -159,7 +159,7 @@ def test_console_entry_point_reports_handled_errors_and_help_without_tracebacks(
 
     def run(*arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, "-m", "sidemantic.cli", *arguments],
+            [sys.executable, "-m", "sqlctx.cli", *arguments],
             capture_output=True,
             text=True,
             timeout=60,
@@ -265,8 +265,7 @@ def test_migration_generate_and_preagg_reports_are_json(tmp_path: Path):
     )
     query_log = tmp_path / "queries.sql"
     query_log.write_text(
-        ("SELECT revenue FROM orders\n-- sidemantic: models=orders metrics=orders.revenue dimensions=orders.status;\n")
-        * 15
+        ("SELECT revenue FROM orders\n-- sqlctx: models=orders metrics=orders.revenue dimensions=orders.status;\n") * 15
     )
     preagg = runner.invoke(app, ["preagg", "recommend", "--queries", str(query_log), "--json"])
 
@@ -292,7 +291,7 @@ def test_convert_can_stream_single_file_input_and_output():
 
     result = runner.invoke(
         app,
-        ["convert", "-", "--from", "sidemantic", "--to", "sidemantic", "--output", "-"],
+        ["convert", "-", "--from", "sqlctx", "--to", "sqlctx", "--output", "-"],
         input=source,
     )
 
@@ -311,9 +310,9 @@ def test_convert_preserves_or_infers_sql_extension_for_stdin(extension_arguments
             "convert",
             "-",
             "--from",
-            "sidemantic",
+            "sqlctx",
             "--to",
-            "sidemantic",
+            "sqlctx",
             "--output",
             "-",
             *extension_arguments,
@@ -327,7 +326,7 @@ def test_convert_preserves_or_infers_sql_extension_for_stdin(extension_arguments
 
 
 def test_convert_renders_feature_only_fidelity_counts_details_and_readiness(tmp_path, monkeypatch):
-    from sidemantic.fidelity import record_import_feature
+    from sqlctx.fidelity import record_import_feature
 
     source = _write_model(tmp_path / "source")
     output = tmp_path / "converted.yml"
@@ -347,9 +346,9 @@ def test_convert_renders_feature_only_fidelity_counts_details_and_readiness(tmp_
         )
         return FakeGraph()
 
-    monkeypatch.setattr("sidemantic.formats.convert_semantic_source", fake_convert)
+    monkeypatch.setattr("sqlctx.formats.convert_semantic_source", fake_convert)
 
-    result = runner.invoke(app, ["convert", str(source), "--output", str(output), "--to", "sidemantic"])
+    result = runner.invoke(app, ["convert", str(source), "--output", str(output), "--to", "sqlctx"])
 
     assert result.exit_code == 0, result.output
     assert "Import fidelity: 1 construct(s)" in result.stderr
@@ -360,7 +359,7 @@ def test_convert_renders_feature_only_fidelity_counts_details_and_readiness(tmp_
 
 
 def test_convert_blocked_fidelity_preserves_forced_destination_and_exits_nonzero(tmp_path, monkeypatch):
-    from sidemantic.fidelity import record_import_feature, record_import_note
+    from sqlctx.fidelity import record_import_feature, record_import_note
 
     source = _write_model(tmp_path / "source")
     output = tmp_path / "converted.yml"
@@ -377,11 +376,11 @@ def test_convert_blocked_fidelity_preserves_forced_destination_and_exits_nonzero
         record_import_note("future_construct", "Unknown compatibility state", severity="future_status")
         return FakeGraph()
 
-    monkeypatch.setattr("sidemantic.formats.convert_semantic_source", fake_convert)
+    monkeypatch.setattr("sqlctx.formats.convert_semantic_source", fake_convert)
 
     result = runner.invoke(
         app,
-        ["convert", str(source), "--output", str(output), "--to", "sidemantic", "--force"],
+        ["convert", str(source), "--output", str(output), "--to", "sqlctx", "--force"],
     )
 
     assert result.exit_code == 1, result.output
@@ -394,7 +393,7 @@ def test_convert_blocked_fidelity_preserves_forced_destination_and_exits_nonzero
 
 
 def test_convert_legacy_review_only_note_still_writes_output(tmp_path, monkeypatch):
-    from sidemantic.fidelity import record_import_note
+    from sqlctx.fidelity import record_import_note
 
     source = _write_model(tmp_path / "source")
     output = tmp_path / "converted.yml"
@@ -408,9 +407,9 @@ def test_convert_legacy_review_only_note_still_writes_output(tmp_path, monkeypat
         record_import_note("legacy_case", "Dropped optional case", severity="dropped")
         return FakeGraph()
 
-    monkeypatch.setattr("sidemantic.formats.convert_semantic_source", fake_convert)
+    monkeypatch.setattr("sqlctx.formats.convert_semantic_source", fake_convert)
 
-    result = runner.invoke(app, ["convert", str(source), "--output", str(output), "--to", "sidemantic"])
+    result = runner.invoke(app, ["convert", str(source), "--output", str(output), "--to", "sqlctx"])
 
     assert result.exit_code == 0, result.output
     assert output.read_text() == "reviewed-output\n"
@@ -436,7 +435,7 @@ def test_convert_force_directory_replaces_tree_without_stale_files(tmp_path, mon
         (staged / "fresh.yml").write_text("fresh\n")
         return FakeGraph()
 
-    monkeypatch.setattr("sidemantic.formats.convert_semantic_source", fake_convert)
+    monkeypatch.setattr("sqlctx.formats.convert_semantic_source", fake_convert)
 
     result = runner.invoke(
         app,
@@ -446,7 +445,7 @@ def test_convert_force_directory_replaces_tree_without_stale_files(tmp_path, mon
     assert result.exit_code == 0, result.output
     assert sorted(path.name for path in output.iterdir()) == ["fresh.yml", "replaced.yml"]
     assert (output / "replaced.yml").read_text() == "new\n"
-    assert not list(tmp_path.glob(".sidemantic-promote-*"))
+    assert not list(tmp_path.glob(".sqlctx-promote-*"))
 
 
 def test_convert_force_directory_promotion_failure_restores_exact_prior_tree(tmp_path, monkeypatch):
@@ -474,7 +473,7 @@ def test_convert_force_directory_promotion_failure_restores_exact_prior_tree(tmp
             raise OSError("injected directory promotion failure")
         return original_replace(path, target)
 
-    monkeypatch.setattr("sidemantic.formats.convert_semantic_source", fake_convert)
+    monkeypatch.setattr("sqlctx.formats.convert_semantic_source", fake_convert)
     monkeypatch.setattr(Path, "replace", fail_new_tree_promotion)
 
     result = runner.invoke(
@@ -487,7 +486,7 @@ def test_convert_force_directory_promotion_failure_restores_exact_prior_tree(tmp
     assert "injected directory promotion failure" in result.stderr
     assert after == before
     assert not (output / "new.yml").exists()
-    assert not list(tmp_path.glob(".sidemantic-promote-*"))
+    assert not list(tmp_path.glob(".sqlctx-promote-*"))
 
 
 def test_file_promotion_prepares_on_destination_filesystem_before_atomic_replace(tmp_path, monkeypatch):
@@ -512,7 +511,7 @@ def test_file_promotion_prepares_on_destination_filesystem_before_atomic_replace
 
     assert output.read_text() == "new\n"
     assert staged.read_text() == "new\n"
-    assert not list(destination_root.glob(".sidemantic-promote-*"))
+    assert not list(destination_root.glob(".sqlctx-promote-*"))
 
 
 def test_file_promotion_failure_preserves_existing_destination(tmp_path, monkeypatch):
@@ -536,7 +535,7 @@ def test_file_promotion_failure_preserves_existing_destination(tmp_path, monkeyp
 
     assert output.read_text() == "old\n"
     assert staged.read_text() == "new\n"
-    assert not list(destination_root.glob(".sidemantic-promote-*"))
+    assert not list(destination_root.glob(".sqlctx-promote-*"))
 
 
 def test_convert_to_ossie_requires_explicit_scope_and_expression_dialect(tmp_path: Path):
@@ -552,7 +551,7 @@ models:
 
     missing = runner.invoke(
         app,
-        ["convert", str(source), "--from", "sidemantic", "--to", "ossie", "--output", str(output)],
+        ["convert", str(source), "--from", "sqlctx", "--to", "ossie", "--output", str(output)],
     )
     assert missing.exit_code == 2
     assert "--ossie-scope is required" in missing.stderr
@@ -563,7 +562,7 @@ models:
             "convert",
             str(source),
             "--from",
-            "sidemantic",
+            "sqlctx",
             "--to",
             "ossie",
             "--output",
@@ -598,7 +597,7 @@ def test_convert_filtered_metrics_roundtrip_executes(tmp_path: Path, target_form
             "convert",
             str(source),
             "--from",
-            "sidemantic",
+            "sqlctx",
             "--to",
             target_format,
             "--output",
@@ -639,7 +638,7 @@ def test_convert_native_metric_extension_roundtrip_and_portable_refusal(tmp_path
         "convert",
         str(source),
         "--from",
-        "sidemantic",
+        "sqlctx",
         "--to",
         target_format,
         "--output",
@@ -656,17 +655,17 @@ def test_convert_native_metric_extension_roundtrip_and_portable_refusal(tmp_path
     assert "non_additive_dimension" in refused.stderr
     assert output.read_text() == "existing document\n"
 
-    with pytest.warns(UserWarning, match="requires Sidemantic runtime extension"):
+    with pytest.warns(UserWarning, match="requires sqlctx runtime extension"):
         converted = runner.invoke(app, arguments)
     assert converted.exit_code == 0, converted.output
     assert json.loads(output.read_text())["custom_extensions"]
     reimported = runner.invoke(
         app,
-        ["convert", str(output), "--from", target_format, "--to", "sidemantic", "--output", str(restored)],
+        ["convert", str(output), "--from", target_format, "--to", "sqlctx", "--output", str(restored)],
     )
     assert reimported.exit_code == 0, reimported.output
     layer = SemanticLayer()
-    layer.graph = SidemanticAdapter().parse(restored)
+    layer.graph = SqlctxAdapter().parse(restored)
     layer.adapter.conn.execute("create table orders(day date, amount integer)")
     layer.adapter.conn.execute("insert into orders values ('2026-01-01',100), ('2026-01-31',120)")
     assert layer.query(metrics=["orders.balance"], dimensions=["orders.day__month"]).fetchall()[0][1] == 120
@@ -700,7 +699,7 @@ models:
             "convert",
             str(source),
             "--from",
-            "sidemantic",
+            "sqlctx",
             "--to",
             "ossie",
             "--output",
@@ -752,7 +751,7 @@ semantic_model:
             "--from",
             source_format,
             "--to",
-            "sidemantic",
+            "sqlctx",
             "--output",
             str(output),
             "--ossie-scope",
@@ -822,7 +821,7 @@ def test_convert_ossie_can_export_pinned_legacy_draft(tmp_path: Path):
 
 @pytest.mark.parametrize("source_format", ["auto", "ossie"])
 def test_convert_ossie_input_revision_validates_ambiguous_source(tmp_path: Path, source_format: str):
-    from sidemantic.interchange.ossie import CURRENT_OSSIE_SCHEMA_COMMIT, LATEST_OSSIE_SCHEMA_COMMIT
+    from sqlctx.interchange.ossie import CURRENT_OSSIE_SCHEMA_COMMIT, LATEST_OSSIE_SCHEMA_COMMIT
 
     source = tmp_path / "model.ossie.json"
     source.write_text(
@@ -963,7 +962,7 @@ def test_validate_debug_propagates_unexpected_exception(monkeypatch: pytest.Monk
     def explode(_directory):
         raise RuntimeError("unexpected validation failure")
 
-    monkeypatch.setattr("sidemantic.validation_runner.validate_directory", explode)
+    monkeypatch.setattr("sqlctx.validation_runner.validate_directory", explode)
 
     concise = runner.invoke(app, ["validate", str(models)])
     debug = runner.invoke(app, ["--debug", "validate", str(models)])
@@ -989,7 +988,7 @@ def test_postgres_password_file_is_safe_and_deprecated_flag_is_hidden(
     def fake_start_server(_layer, **kwargs):
         captured.update(kwargs)
 
-    monkeypatch.setattr("sidemantic.server.server.start_server", fake_start_server)
+    monkeypatch.setattr("sqlctx.server.server.start_server", fake_start_server)
 
     result = runner.invoke(
         app,
@@ -1024,7 +1023,7 @@ def test_deprecated_secret_flag_warns_without_printing_or_leaking_value(
     def explode(_layer, **_kwargs):
         raise RuntimeError(f"backend rejected {secret}")
 
-    monkeypatch.setattr("sidemantic.server.server.start_server", explode)
+    monkeypatch.setattr("sqlctx.server.server.start_server", explode)
 
     result = runner.invoke(
         app,
@@ -1046,7 +1045,7 @@ def test_api_auth_token_can_be_read_from_stdin(monkeypatch: pytest.MonkeyPatch, 
     def fake_start_api_server(_layer, **kwargs):
         captured.update(kwargs)
 
-    monkeypatch.setattr("sidemantic.api_server.start_api_server", fake_start_api_server)
+    monkeypatch.setattr("sqlctx.api_server.start_api_server", fake_start_api_server)
 
     result = runner.invoke(
         app,

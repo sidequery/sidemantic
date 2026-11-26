@@ -2,9 +2,9 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Parameter, SemanticLayer
-from sidemantic.core.parameter import ParameterSet
-from sidemantic.sql.fragment import parse_query_fragment
+from sqlctx import Dimension, Metric, Model, Parameter, SemanticLayer
+from sqlctx.core.parameter import ParameterSet
+from sqlctx.sql.fragment import parse_query_fragment
 
 
 @pytest.fixture
@@ -193,7 +193,7 @@ def test_escape_string_parameter_values_roundtrip(query_layer, kind, value):
 
 
 def test_rewriter_cte_scope_does_not_authorize_structured_or_later_calls(query_layer):
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.sql.query_rewriter import QueryRewriter
 
     rewriter = QueryRewriter(query_layer.graph, dialect="duckdb", use_rust_rewriter=False)
     predicate = "events.user_id IN (SELECT user_id FROM allowed)"
@@ -209,7 +209,7 @@ def test_rewriter_cte_scope_does_not_authorize_structured_or_later_calls(query_l
 
 
 def test_cte_scope_allows_expression_plan_and_identifier_folding(query_layer):
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.sql.query_rewriter import QueryRewriter
 
     rewriter = QueryRewriter(query_layer.graph, dialect="duckdb", use_rust_rewriter=False)
     sql = """WITH Allowed AS (SELECT 1 AS user_id)
@@ -221,7 +221,7 @@ def test_cte_scope_allows_expression_plan_and_identifier_folding(query_layer):
 @pytest.mark.parametrize("kind", ["date", "string"])
 @pytest.mark.parametrize("use_segment", [False, True])
 def test_escape_string_filters_preserve_scope_through_query_pipeline(query_layer, kind, use_segment):
-    from sidemantic.core.segment import Segment
+    from sqlctx.core.segment import Segment
 
     query_layer.graph.add_parameter(Parameter(name="value", type=kind))
     predicate = "{# c #}events.event_type = E'{{ value }}'"
@@ -245,8 +245,8 @@ def test_escape_string_filters_preserve_scope_through_query_pipeline(query_layer
 
 @pytest.mark.parametrize("trusted_source", ["segment", "security"])
 def test_window_recursion_preserves_trusted_filter_provenance(query_layer, trusted_source):
-    from sidemantic.core.security import SecurityPolicy
-    from sidemantic.core.segment import Segment
+    from sqlctx.core.security import SecurityPolicy
+    from sqlctx.core.segment import Segment
 
     query_layer.conn.execute("create table allowed_users(user_id integer)")
     query_layer.conn.execute("insert into allowed_users values (1)")
@@ -270,8 +270,8 @@ def test_window_recursion_preserves_trusted_filter_provenance(query_layer, trust
 
 
 def test_multimodel_recursion_preserves_trusted_segment_filter(query_layer):
-    from sidemantic.core.relationship import Relationship
-    from sidemantic.core.segment import Segment
+    from sqlctx.core.relationship import Relationship
+    from sqlctx.core.segment import Segment
 
     query_layer.conn.execute("create table users_raw(user_id integer, region varchar)")
     query_layer.conn.execute("insert into users_raw values (1, 'US'), (2, 'EU')")
@@ -329,7 +329,7 @@ def test_escaped_static_quote_before_parameter_keeps_literal_boundary(query_laye
     ],
 )
 def test_escaped_static_quote_before_parameter_through_query(query_layer, use_segment, literal, static_prefix):
-    from sidemantic.core.segment import Segment
+    from sqlctx.core.segment import Segment
 
     query_layer.graph.add_parameter(Parameter(name="value", type="string"))
     predicate = "{# c #}events.event_type = " + literal

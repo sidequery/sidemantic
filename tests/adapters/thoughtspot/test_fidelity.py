@@ -3,7 +3,7 @@
 import pytest
 import yaml
 
-from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
+from sqlctx.adapters.thoughtspot import ThoughtSpotAdapter
 
 
 @pytest.mark.parametrize("kind", ["table", "worksheet", "model"])
@@ -122,8 +122,8 @@ def test_native_column_names_roundtrip_without_sql_identifier_restrictions(tmp_p
 
 
 def test_multimodel_file_output_rejects_instead_of_dropping_models(tmp_path):
-    from sidemantic.core.model import Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.model import Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_model(Model(name="orders", table="orders"))
@@ -135,8 +135,8 @@ def test_multimodel_file_output_rejects_instead_of_dropping_models(tmp_path):
 
 
 def test_graph_level_metrics_are_not_silently_dropped(tmp_path):
-    from sidemantic.core.metric import Metric
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx.core.metric import Metric
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     graph = SemanticGraph()
     graph.add_metric(Metric(name="Total", agg="count"))

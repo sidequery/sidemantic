@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sidemantic.interchange.ossie.identifier import (
+from sqlctx.interchange.ossie.identifier import (
     OSSIE_IDENTIFIER_MAX_LENGTH,
     identifier_length,
     identifier_within_limit,

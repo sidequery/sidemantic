@@ -25,7 +25,7 @@ compatibility alias is intentionally not covered by this gate.
 
 The gate invokes the vendored script as a subprocess with only these local
 validator, schema, and generated-output paths. It checks both successful
-canonical Sidemantic exports and a deliberately invalid input.
+canonical sqlctx exports and a deliberately invalid input.
 
 `b6c702e/` retains an additional unmodified validator and core/ontology schemas
 from Apache Ossie commit `b6c702ed1c07e91382a69e870c875cbd19570828`.

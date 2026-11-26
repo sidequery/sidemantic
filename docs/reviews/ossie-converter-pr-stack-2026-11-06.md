@@ -1,19 +1,19 @@
 # Converter PR map — 2026-11-06
 
-The combined implementation in [#469](https://github.com/sidequery/sidemantic/pull/469)
+The combined implementation in [#469](https://github.com/sidequery/sqlctx/pull/469)
 is superseded by focused PRs. Each code PR includes its own regression tests and
 compatibility documentation. The research, initial implementation validation and
 review-resolution records remain together in this documentation change.
 
 | PR | Scope | Review base / prerequisite |
 |---|---|---|
-| [#470](https://github.com/sidequery/sidemantic/pull/470) | Shared export fidelity, staged publication and Ossie modes | `main` |
-| [#471](https://github.com/sidequery/sidemantic/pull/471) | Directed joins, aggregate populations and nested role keys | #470 |
-| [#472](https://github.com/sidequery/sidemantic/pull/472) | Cube and MetricFlow source semantics | #471 |
-| [#473](https://github.com/sidequery/sidemantic/pull/473) | Hex, Holistics and Omni fidelity | #472 |
-| [#474](https://github.com/sidequery/sidemantic/pull/474) | Snowflake keys/types and LookML relationships | #473 |
-| [#475](https://github.com/sidequery/sidemantic/pull/475) | ThoughtSpot, TMDL and GoodData fidelity | #474 |
-| [#476](https://github.com/sidequery/sidemantic/pull/476) | Optional guarded Lightdash and Sigma bridges | #475 |
+| [#470](https://github.com/sidequery/sqlctx/pull/470) | Shared export fidelity, staged publication and Ossie modes | `main` |
+| [#471](https://github.com/sidequery/sqlctx/pull/471) | Directed joins, aggregate populations and nested role keys | #470 |
+| [#472](https://github.com/sidequery/sqlctx/pull/472) | Cube and MetricFlow source semantics | #471 |
+| [#473](https://github.com/sidequery/sqlctx/pull/473) | Hex, Holistics and Omni fidelity | #472 |
+| [#474](https://github.com/sidequery/sqlctx/pull/474) | Snowflake keys/types and LookML relationships | #473 |
+| [#475](https://github.com/sidequery/sqlctx/pull/475) | ThoughtSpot, TMDL and GoodData fidelity | #474 |
+| [#476](https://github.com/sidequery/sqlctx/pull/476) | Optional guarded Lightdash and Sigma bridges | #475 |
 | This documentation PR | Research comparison, evidence and review resolutions | `main` |
 
 ## Merge order
@@ -34,7 +34,7 @@ no conflicting product behavior; overlapping target-model fixtures were deduplic
 
 ## Initial split verification
 
-Before the PR-review fixes below, all product files under `sidemantic/` in the
+Before the PR-review fixes below, all product files under `sqlctx/` in the
 recombined tree were byte-for-byte identical to reviewed implementation commit
 `a6a6b47f5b594c58fbff080a329f863747ac8e93`. The only test-content change separated
 the former combined Ossie/bridge CLI test into an Ossie test and a parametrized

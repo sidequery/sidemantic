@@ -2,14 +2,14 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sqlctx import Dimension, Metric, Model, SemanticLayer
 
 
 @pytest.mark.parametrize("engine", ["python", "rust"])
 @pytest.mark.parametrize("window, expected", [("min", 20), ("max", 30)])
 def test_snapshot_wrappers_preserve_leaf_populations(engine, window, expected):
     if engine == "rust":
-        pytest.importorskip("sidemantic_rs")
+        pytest.importorskip("sqlctx_rs")
     layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
     layer.adapter.execute("create table snapshots (id integer, account varchar, day date, amount integer)")
     layer.adapter.execute("insert into snapshots values (1, 'a', '2026-01-01', 10), (2, 'a', '2026-01-02', 15)")
@@ -50,7 +50,7 @@ def test_snapshot_wrappers_preserve_leaf_populations(engine, window, expected):
 @pytest.mark.parametrize("engine", ["python", "rust"])
 def test_snapshot_wrapper_defaults_apply_after_leaf_selection(engine):
     if engine == "rust":
-        pytest.importorskip("sidemantic_rs")
+        pytest.importorskip("sqlctx_rs")
     layer = SemanticLayer(engine=engine, fallback=False, auto_register=False)
     layer.adapter.execute("create table snapshots (id integer, day date, amount integer)")
     layer.adapter.execute("insert into snapshots values (1, '2026-01-01', 10), (2, '2026-01-02', null)")

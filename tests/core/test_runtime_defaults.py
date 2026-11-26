@@ -7,19 +7,19 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-import sidemantic.core.semantic_layer as semantic_layer_module
-import sidemantic.runtime as runtime
-import sidemantic.rust_bridge as rust_bridge
-from sidemantic import Metric, Model, SemanticLayer
-from sidemantic.config import RuntimeConfig
-from sidemantic.semantic_handoff import RustBackendUnavailableError
+import sqlctx.core.semantic_layer as semantic_layer_module
+import sqlctx.runtime as runtime
+import sqlctx.rust_bridge as rust_bridge
+from sqlctx import Metric, Model, SemanticLayer
+from sqlctx.config import RuntimeConfig
+from sqlctx.semantic_handoff import RustBackendUnavailableError
 
 
 @pytest.fixture(autouse=True)
 def normal_runtime_environment(monkeypatch):
-    monkeypatch.delenv("SIDEMANTIC_ENGINE", raising=False)
+    monkeypatch.delenv("SQLCTX_ENGINE", raising=False)
     for key in list(runtime.os.environ):
-        if key.startswith("SIDEMANTIC_RS_"):
+        if key.startswith("SQLCTX_RS_"):
             monkeypatch.delenv(key)
 
 
@@ -77,13 +77,13 @@ def test_missing_explicit_rust_runtime_does_not_silently_fall_back(monkeypatch):
 
 
 def test_missing_rust_extra_reports_install_command_and_auto_executes_with_python(monkeypatch):
-    monkeypatch.setitem(sys.modules, "sidemantic_rs", None)
-    with pytest.raises(RustBackendUnavailableError, match=r"sidemantic\[rust\]"):
+    monkeypatch.setitem(sys.modules, "sqlctx_rs", None)
+    with pytest.raises(RustBackendUnavailableError, match=r"sqlctx\[rust\]"):
         SemanticLayer(engine="rust")
     with _count_layer(engine="auto") as layer:
         assert layer.sql("select count from orders").fetchall() == [(2,)]
         assert layer.last_engine_selection["engine"] == "python"
-        assert "sidemantic[rust]" in layer.last_engine_selection["reason"]
+        assert "sqlctx[rust]" in layer.last_engine_selection["reason"]
 
 
 def test_pyodide_defaults_to_python_without_native_import(monkeypatch):
@@ -95,9 +95,9 @@ def test_pyodide_defaults_to_python_without_native_import(monkeypatch):
 @pytest.mark.parametrize("engine", ["python", "rust", "auto"])
 @pytest.mark.parametrize("legacy_value", ["0", "1"])
 def test_process_override_takes_precedence_over_legacy_flags(monkeypatch, engine, legacy_value):
-    monkeypatch.setenv("SIDEMANTIC_ENGINE", engine)
+    monkeypatch.setenv("SQLCTX_ENGINE", engine)
     for flag in ("SQL_GENERATOR", "QUERY_VALIDATION", "REWRITER", "SQL_GENERATOR_VERIFY", "NO_FALLBACK"):
-        monkeypatch.setenv(f"SIDEMANTIC_RS_{flag}", legacy_value)
+        monkeypatch.setenv(f"SQLCTX_RS_{flag}", legacy_value)
     native = Runtime()
     monkeypatch.setattr(semantic_layer_module, "get_rust_module", lambda: native)
     monkeypatch.setattr(rust_bridge, "get_rust_module", lambda: native)
@@ -114,21 +114,21 @@ def test_process_override_takes_precedence_over_legacy_flags(monkeypatch, engine
 
 @pytest.mark.parametrize("process_engine,explicit_engine", [("python", "rust"), ("rust", "python")])
 def test_explicit_selection_overrides_process_engine(monkeypatch, process_engine, explicit_engine):
-    monkeypatch.setenv("SIDEMANTIC_ENGINE", process_engine)
+    monkeypatch.setenv("SQLCTX_ENGINE", process_engine)
     monkeypatch.setattr(semantic_layer_module, "get_rust_module", Runtime)
     with _count_layer(engine=explicit_engine) as layer:
         assert layer.engine == explicit_engine
 
 
 def test_invalid_process_override_is_not_hidden_by_legacy_flags(monkeypatch):
-    monkeypatch.setenv("SIDEMANTIC_ENGINE", "sideways")
-    monkeypatch.setenv("SIDEMANTIC_RS_SQL_GENERATOR", "0")
-    with pytest.raises(ValueError, match="SIDEMANTIC_ENGINE must be one of"):
+    monkeypatch.setenv("SQLCTX_ENGINE", "sideways")
+    monkeypatch.setenv("SQLCTX_RS_SQL_GENERATOR", "0")
+    with pytest.raises(ValueError, match="SQLCTX_ENGINE must be one of"):
         SemanticLayer()
 
 
 def test_cli_default_and_fallback_override(monkeypatch):
-    import sidemantic.cli as cli
+    import sqlctx.cli as cli
 
     monkeypatch.setattr(cli, "_loaded_config", None)
     assert cli._resolve_engine_options(None, None) == ("python", False)
@@ -153,7 +153,7 @@ def test_default_sql_rewrite_uses_python_without_native_import(monkeypatch):
 
 @pytest.mark.parametrize("command", [["query", "--dry-run"], ["rewrite"]])
 def test_cli_default_compiles_supported_tmdl_metric(monkeypatch, command):
-    import sidemantic.cli as cli
+    import sqlctx.cli as cli
 
     monkeypatch.setattr(cli, "_loaded_config", None)
     monkeypatch.setattr(cli, "_project_context", None)

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-sidemantic_dax = pytest.importorskip("sidemantic_dax")
+sqlctx_dax = pytest.importorskip("sqlctx_dax")
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH = ROOT / "tests" / "dax" / "fixtures" / "query-docs" / "queries.txt"
@@ -13,10 +13,10 @@ FIXTURE_PATH = ROOT / "tests" / "dax" / "fixtures" / "query-docs" / "queries.txt
 
 def _parse_query(text: str):
     try:
-        return sidemantic_dax.parse_query(text)
+        return sqlctx_dax.parse_query(text)
     except RuntimeError as exc:
         if "native module is not available" in str(exc):
-            pytest.skip("sidemantic_dax native module not available")
+            pytest.skip("sqlctx_dax native module not available")
         raise
 
 

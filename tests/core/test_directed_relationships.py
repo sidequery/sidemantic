@@ -3,11 +3,11 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model
-from sidemantic.core.relationship import Relationship
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.semantic_handoff import graph_handoff_requirements
-from sidemantic.sql.generator import SQLGenerator
+from sqlctx import Dimension, Metric, Model
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.semantic_handoff import graph_handoff_requirements
+from sqlctx.sql.generator import SQLGenerator
 
 
 @pytest.mark.parametrize("kind", ["many_to_one", "one_to_many", "one_to_one", "many_to_many", "cross"])

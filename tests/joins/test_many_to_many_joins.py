@@ -2,7 +2,7 @@
 
 import duckdb
 
-from sidemantic import Dimension, Metric, Model, Relationship
+from sqlctx import Dimension, Metric, Model, Relationship
 
 
 def test_many_to_many_join_path(layer):

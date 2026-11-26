@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic import SecurityPolicy, SemanticLayer
-from sidemantic.adapters.sidemantic import SidemanticAdapter
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.validation import QueryValidationError
+from sqlctx import SecurityPolicy, SemanticLayer
+from sqlctx.adapters.sqlctx import SqlctxAdapter
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.validation import QueryValidationError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -20,7 +20,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 @pytest.fixture(params=["python", "rust"])
 def engine(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Migration acceptance requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Migration acceptance requires the real Rust extension")
     return request.param
 
 
@@ -30,7 +30,7 @@ def layer_for(engine):
 
     def create(source):
         layer = SemanticLayer(engine=engine, auto_register=False)
-        layer.graph = SidemanticAdapter().parse(FIXTURES / f"{source}.yml")
+        layer.graph = SqlctxAdapter().parse(FIXTURES / f"{source}.yml")
         layer.adapter.execute((FIXTURES / "migration_seed.sql").read_text())
         layers.append(layer)
         return layer

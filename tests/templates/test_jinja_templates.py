@@ -1,7 +1,7 @@
 """Test Jinja template rendering in SQL fields."""
 
-from sidemantic import SemanticLayer
-from sidemantic.core.template import SQLTemplateRenderer, is_sql_template, render_sql_template
+from sqlctx import SemanticLayer
+from sqlctx.core.template import SQLTemplateRenderer, is_sql_template, render_sql_template
 
 
 def test_basic_template_rendering():

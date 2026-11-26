@@ -10,9 +10,9 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.core.security import SecurityPolicy, render_row_filter
-from sidemantic.core.semantic_layer import SecurityError
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.core.security import SecurityPolicy, render_row_filter
+from sqlctx.core.semantic_layer import SecurityError
 
 # --- P0-1: injection via unquoted row-filter templates ---------------------------------
 
@@ -233,7 +233,7 @@ def test_row_filter_boolean_control_flow_preserves_truthiness():
 
 def test_visibility_blocks_non_public_segment():
     """enforce_visibility must reject a public=False segment referenced in a query."""
-    from sidemantic.core.segment import Segment
+    from sqlctx.core.segment import Segment
 
     layer = SemanticLayer(enforce_visibility=True)
     con = layer.adapter.conn
@@ -258,7 +258,7 @@ def test_pg_server_refuses_user_attrs_map_without_auth():
     import pytest as _pytest
 
     _pytest.importorskip("riffq")
-    from sidemantic.server.server import start_server
+    from sqlctx.server.server import start_server
 
     layer = SemanticLayer()
     layer.add_model(Model(name="orders", table="orders", primary_key="id", metrics=[Metric(name="cnt", agg="count")]))
@@ -268,7 +268,7 @@ def test_pg_server_refuses_user_attrs_map_without_auth():
 
 def test_segment_only_secured_query_forces_python_and_enforces():
     """PR review P1: a secured model referenced only via segments must not bypass enforcement."""
-    from sidemantic.core.segment import Segment
+    from sqlctx.core.segment import Segment
 
     layer = SemanticLayer()
     con = layer.adapter.conn
@@ -313,7 +313,7 @@ def test_row_filter_subquery_scopes_correctly():
 
 def test_rewriter_threads_user_attributes():
     """PR review P2: SQL-first rewrite evaluates the access gate against the caller's attributes."""
-    from sidemantic.sql.query_rewriter import QueryRewriter
+    from sqlctx.sql.query_rewriter import QueryRewriter
 
     layer = SemanticLayer()
     con = layer.adapter.conn

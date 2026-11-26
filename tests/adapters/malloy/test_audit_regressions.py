@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.malloy import MalloyAdapter, MalloyModelVisitor
+from sqlctx.adapters.malloy import MalloyAdapter, MalloyModelVisitor
 
 
 def _parse(src: str):
@@ -255,7 +255,7 @@ def test_explicit_id_primary_key_is_exported_and_roundtrips():
 
 
 def test_child_without_primary_key_inherits_parent_key_through_export_roundtrip():
-    from sidemantic.core.inheritance import resolve_model_inheritance
+    from sqlctx.core.inheritance import resolve_model_inheritance
 
     g = _parse(
         "source: base is duckdb.table('base') extend { primary_key: base_id }\n"
@@ -457,9 +457,9 @@ def test_join_cross_maps_to_cross_type():
 
 
 def test_cross_relationship_exports_without_key_clause():
-    from sidemantic import Metric, Model
-    from sidemantic.core.relationship import Relationship
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Metric, Model
+    from sqlctx.core.relationship import Relationship
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     g = SemanticGraph()
     g.add_model(Model(name="regions", table="regions", primary_key="id"))
@@ -487,8 +487,8 @@ def test_cross_relationship_exports_without_key_clause():
 
 
 def test_time_dimension_granularity_survives_roundtrip():
-    from sidemantic import Dimension, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Dimension, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     g = SemanticGraph()
     g.add_model(
@@ -505,8 +505,8 @@ def test_time_dimension_granularity_survives_roundtrip():
 
 
 def test_unsupported_metric_not_exported_as_count():
-    from sidemantic import Metric, Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Metric, Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     g = SemanticGraph()
     g.add_model(
@@ -526,8 +526,8 @@ def test_unsupported_metric_not_exported_as_count():
 
 
 def test_multiline_description_collapsed_to_one_line():
-    from sidemantic import Model
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Model
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     g = SemanticGraph()
     g.add_model(Model(name="o", table="o", primary_key="id", description="Line one\nLine two"))
@@ -536,9 +536,9 @@ def test_multiline_description_collapsed_to_one_line():
 
 
 def test_one_to_one_exports_as_join_one_not_cross():
-    from sidemantic import Model
-    from sidemantic.core.relationship import Relationship
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Model
+    from sqlctx.core.relationship import Relationship
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     g = SemanticGraph()
     g.add_model(Model(name="customers", table="c", primary_key="customer_id"))
@@ -631,9 +631,9 @@ def test_pick_keyword_inside_string_literal_is_not_a_delimiter():
 
 
 def test_many_to_many_exports_as_join_many():
-    from sidemantic import Model
-    from sidemantic.core.relationship import Relationship
-    from sidemantic.core.semantic_graph import SemanticGraph
+    from sqlctx import Model
+    from sqlctx.core.relationship import Relationship
+    from sqlctx.core.semantic_graph import SemanticGraph
 
     g = SemanticGraph()
     g.add_model(Model(name="tags", table="t", primary_key="id"))

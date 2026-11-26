@@ -1,6 +1,6 @@
 """Regression tests for Snowflake expression parsing boundaries."""
 
-from sidemantic.adapters.snowflake import SnowflakeAdapter, _qualify_columns
+from sqlctx.adapters.snowflake import SnowflakeAdapter, _qualify_columns
 
 
 def test_qualify_columns_only_rewrites_real_snowflake_columns():

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       duckdb_version:
-        description: "Stable DuckDB release to package (v1.5.6); Cyanoptera is tested separately in CI"
+        description: "Stable DuckDB release to package (v1.5.6 or v2.0.1)"
         required: true
         default: "v1.5.6"
         type: string
@@ -15,7 +15,7 @@ on:
         type: boolean
   push:
     tags:
-      - "sidemantic-duckdb-v*"
+      - "sqlctx-duckdb-v*"
 
   pull_request:
     paths:
@@ -32,13 +32,38 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
 
 jobs:
+  versions:
+    name: Select stable DuckDB releases
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.duckdb.outputs.versions }}
+    steps:
+      - name: Resolve DuckDB versions
+        id: duckdb
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_VERSION: ${{ inputs.duckdb_version }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            case "$REQUESTED_VERSION" in
+              v1.5.6|v2.0.1) ;;
+              *) echo "Unsupported DuckDB version" >&2; exit 1 ;;
+            esac
+            printf 'versions=["%s"]\n' "$REQUESTED_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo 'versions=["v1.5.6","v2.0.1"]' >> "$GITHUB_OUTPUT"
+          fi
+
   build:
-    name: Build ${{ matrix.platform }} extension package
+    name: Build ${{ matrix.duckdb_version }} ${{ matrix.platform }} extension package
+    needs: versions
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
+        duckdb_version: ${{ fromJSON(needs.versions.outputs.versions) }}
+        platform: [linux_amd64, linux_arm64, osx_amd64, osx_arm64]
         include:
           - platform: linux_amd64
             runner: ubuntu-24.04
@@ -72,52 +97,39 @@ jobs:
         with:
           suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
-      - name: Resolve DuckDB version
-        id: duckdb
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REQUESTED_VERSION: ${{ inputs.duckdb_version }}
-        run: |
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            VERSION="$REQUESTED_VERSION"
-          else
-            VERSION="v1.5.6"
-          fi
-
-          # Publish stable artifacts only. CI separately tests the pinned PEG development build.
-          if [ "$VERSION" != "v1.5.6" ]; then
-            echo "Unsupported DuckDB version" >&2
-            exit 1
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Fetch DuckDB dependencies
-        working-directory: sidemantic-duckdb
+        working-directory: sqlctx-duckdb
         env:
-          DUCKDB_VERSION: ${{ steps.duckdb.outputs.version }}
+          DUCKDB_VERSION: ${{ matrix.duckdb_version }}
         run: make deps DUCKDB_VERSION="$DUCKDB_VERSION"
 
       - name: Build extension
-        working-directory: sidemantic-duckdb
+        working-directory: sqlctx-duckdb
         env:
           DUCKDB_PLATFORM: ${{ matrix.platform }}
         run: make
 
       - name: Run extension tests
-        working-directory: sidemantic-duckdb
-        run: make test
+        working-directory: sqlctx-duckdb
+        env:
+          SQLCTX_NATIVE_PEG: ${{ matrix.duckdb_version == 'v2.0.1' && '1' || '' }}
+          EXPECTED_VERSION: ${{ matrix.duckdb_version }}
+        run: |
+          VERSION=$(./build/release/duckdb -unsigned -csv -noheader :memory: -c \
+            "LOAD 'build/release/extension/sqlctx/sqlctx.duckdb_extension'; SELECT version();")
+          test "$VERSION" = "$EXPECTED_VERSION"
+          make test
 
       - name: Package extension artifact
-        working-directory: sidemantic-duckdb
+        working-directory: sqlctx-duckdb
         env:
-          DUCKDB_VERSION: ${{ steps.duckdb.outputs.version }}
+          DUCKDB_VERSION: ${{ matrix.duckdb_version }}
           PLATFORM: ${{ matrix.platform }}
         run: |
           mkdir -p dist
           DUCKDB_VERSION="${DUCKDB_VERSION#v}"
-          ASSET="sidemantic-duckdb-${DUCKDB_VERSION}-${PLATFORM}.duckdb_extension"
-          cp build/release/extension/sidemantic/sidemantic.duckdb_extension "dist/$ASSET"
+          ASSET="sqlctx-duckdb-${DUCKDB_VERSION}-${PLATFORM}.duckdb_extension"
+          cp build/release/extension/sqlctx/sqlctx.duckdb_extension "dist/$ASSET"
           cd dist
           if command -v sha256sum >/dev/null; then
             sha256sum "$ASSET" > "$ASSET.sha256"
@@ -128,8 +140,8 @@ jobs:
       - name: Upload extension artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sidemantic-duckdb-extension-${{ matrix.platform }}
-          path: sidemantic-duckdb/dist/*
+          name: sqlctx-duckdb-extension-${{ matrix.duckdb_version }}-${{ matrix.platform }}
+          path: sqlctx-duckdb/dist/*
           if-no-files-found: error
 
       - name: Save completed build caches
@@ -140,7 +152,7 @@ jobs:
 
   github-release:
     name: Attach extension artifact to GitHub release
-    needs: build
+    needs: [versions, build]
     if: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.create_github_release == true) }}
     runs-on: ubuntu-latest
     permissions:
@@ -152,7 +164,7 @@ jobs:
       - name: Download extension artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: sidemantic-duckdb-extension-*
+          pattern: sqlctx-duckdb-extension-*
           path: dist
           merge-multiple: true
 
@@ -165,11 +177,11 @@ jobs:
           if [ "$REF_TYPE" = "tag" ]; then
             TAG="$REF_NAME"
           else
-            VERSION=$(grep '^version = ' sidemantic-rs/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-            TAG="sidemantic-duckdb-v${VERSION}"
+            VERSION=$(grep '^version = ' sqlctx-rs/Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+            TAG="sqlctx-duckdb-v${VERSION}"
           fi
 
-          if [[ ! "$TAG" =~ ^sidemantic-duckdb-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ ! "$TAG" =~ ^sqlctx-duckdb-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Invalid extension release tag" >&2
             exit 1
           fi
@@ -181,6 +193,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag }}
           RELEASE_COMMIT: ${{ github.sha }}
+          DUCKDB_VERSIONS: ${{ join(fromJSON(needs.versions.outputs.versions), ' ') }}
         run: |
           set -euo pipefail
           # Checkout can create a lightweight local ref for an annotated tag.
@@ -191,10 +204,12 @@ jobs:
             exit 1
           fi
           cd dist
-          for PLATFORM in linux_amd64 linux_arm64 osx_amd64 osx_arm64; do
-            ASSET="sidemantic-duckdb-1.5.6-${PLATFORM}.duckdb_extension"
-            test -s "$ASSET"
-            sha256sum --check "$ASSET.sha256"
+          for VERSION in $DUCKDB_VERSIONS; do
+            for PLATFORM in linux_amd64 linux_arm64 osx_amd64 osx_arm64; do
+              ASSET="sqlctx-duckdb-${VERSION#v}-${PLATFORM}.duckdb_extension"
+              test -s "$ASSET"
+              sha256sum --check "$ASSET.sha256"
+            done
           done
           cat *.sha256 > SHA256SUMS
           cp ../LICENSE .

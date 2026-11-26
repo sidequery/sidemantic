@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship
+from sqlctx import Dimension, Metric, Model, Relationship
 
 
 def test_default_time_dimension_auto_included(layer):

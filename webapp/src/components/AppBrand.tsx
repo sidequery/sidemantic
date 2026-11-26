@@ -9,7 +9,7 @@ export function AppBrand({
 }) {
   const content = (
     <>
-      <span className="text-sm font-semibold text-ink">{dashboardTitle ?? "Sidemantic"}</span>
+      <span className="text-sm font-semibold text-ink">{dashboardTitle ?? "sqlctx"}</span>
       {dashboardTitle === undefined && modelLabel ? (
         <span className="truncate text-2xs text-faint">{modelLabel}</span>
       ) : null}

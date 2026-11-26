@@ -2,7 +2,7 @@
 
 import pytest
 
-from sidemantic import Parameter
+from sqlctx import Parameter
 from tests.semantic_conformance import test_semantic_sql_binding
 
 layer = test_semantic_sql_binding.layer

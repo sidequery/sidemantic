@@ -5,10 +5,10 @@
   },
   "plugins": [
     {
-      "name": "sidemantic",
+      "name": "sqlctx",
       "source": {
         "source": "local",
-        "path": "./plugins/sidemantic"
+        "path": "./plugins/sqlctx"
       },
       "policy": {
         "installation": "AVAILABLE",

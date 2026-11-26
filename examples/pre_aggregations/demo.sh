@@ -24,7 +24,7 @@ uv run setup_data.py
 echo ""
 echo "[Step 2] Analyzing query history to find pre-aggregation opportunities..."
 echo "---------------------------------------------------------------------"
-uvx sidemantic preagg recommend --queries query_history.sql --min-count 5
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg recommend --queries query_history.sql --min-count 5
 
 echo ""
 read -p "Press Enter to apply recommendations..."
@@ -33,7 +33,7 @@ read -p "Press Enter to apply recommendations..."
 echo ""
 echo "[Step 3] Applying recommended pre-aggregations to model file..."
 echo "---------------------------------------------------------------------"
-uvx sidemantic preagg apply models/ --queries query_history.sql --min-count 5
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg apply models/ --queries query_history.sql --min-count 5
 
 echo ""
 read -p "Press Enter to materialize pre-aggregations..."
@@ -42,7 +42,7 @@ read -p "Press Enter to materialize pre-aggregations..."
 echo ""
 echo "[Step 4] Materializing pre-aggregation tables..."
 echo "---------------------------------------------------------------------"
-uvx sidemantic preagg refresh
+uvx --from git+https://github.com/sidequery/sqlctx sqlctx preagg refresh
 
 echo ""
 echo "====================================================================="
@@ -51,10 +51,10 @@ echo "====================================================================="
 echo ""
 echo "Try querying with pre-aggregations enabled:"
 echo ""
-echo "  uvx --from \"sidemantic[workbench]\" sidemantic workbench"
+echo "  uvx --from \"sqlctx[workbench] @ git+https://github.com/sidequery/sqlctx\" sqlctx workbench"
 echo ""
 echo "Or test from command line:"
 echo ""
 echo "  # Enable pre-aggregation routing explicitly"
-echo "  uvx sidemantic query \"SELECT status, revenue FROM orders\" --models models --use-preaggregations"
+echo "  uvx --from git+https://github.com/sidequery/sqlctx sqlctx query \"SELECT status, revenue FROM orders\" --models models --use-preaggregations"
 echo ""

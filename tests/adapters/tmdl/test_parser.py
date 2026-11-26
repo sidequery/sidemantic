@@ -4,7 +4,7 @@ import textwrap
 
 import pytest
 
-from sidemantic.adapters.tmdl_parser import TmdlExpression, TmdlParseError, TmdlParser, merge_documents
+from sqlctx.adapters.tmdl_parser import TmdlExpression, TmdlParseError, TmdlParser, merge_documents
 
 
 def test_parser_description_and_meta():

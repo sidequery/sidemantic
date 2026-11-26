@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.interchange.ossie import (
+from sqlctx.interchange.ossie import (
     LATEST_OSSIE_SCHEMA_COMMIT,
     OssieParseOptions,
     lower_ossie_document,
@@ -153,8 +153,8 @@ def test_new_native_targets_import_portable_and_exact_variants(target, exact):
 def test_schema_assets_in_standalone_crate_are_exact_pinned_copies():
     root = Path(__file__).resolve().parents[3]
     for version in ["0.1.1", "0.2.0.dev0", "0.2.0.dev0-b6c702e", "0.2.0.dev0-172a3e5"]:
-        assert (root / f"sidemantic-rs/schemas/ossie/{version}.json").read_bytes() == (
-            root / f"sidemantic/interchange/ossie/schemas/logical/{version}/schema.json"
+        assert (root / f"sqlctx-rs/schemas/ossie/{version}.json").read_bytes() == (
+            root / f"sqlctx/interchange/ossie/schemas/logical/{version}/schema.json"
         ).read_bytes()
 
 
@@ -186,8 +186,8 @@ def test_unknown_vendor_expression_is_opaque_even_when_it_is_not_sql():
 @pytest.mark.parametrize("revision", ["0.1.1", "831f48e", "b6c702e", "172a3e5"])
 @pytest.mark.parametrize("valid", [False, True])
 def test_all_pinned_logical_schema_revisions_validate_native_and_shared(revision, valid):
-    from sidemantic.interchange.ossie import resolve_ossie_profile
-    from sidemantic.interchange.ossie.validation import validate_ossie_schema
+    from sqlctx.interchange.ossie import resolve_ossie_profile
+    from sqlctx.interchange.ossie.validation import validate_ossie_schema
     from tests.rust_layer_adapter import _rust_request
 
     scope = {

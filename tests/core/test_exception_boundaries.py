@@ -6,16 +6,16 @@ from pathlib import Path
 ROOT = Path(__file__).parents[2]
 
 NO_BROAD_CATCH_PATHS = (
-    "sidemantic/sql/generator.py",
-    "sidemantic/sql/query_rewriter.py",
-    "sidemantic/sql/parsing.py",
-    "sidemantic/sql/aggregation_detection.py",
-    "sidemantic/api_server.py",
-    "sidemantic/server/common.py",
-    "sidemantic/adapters/graphene.py",
-    "sidemantic/adapters/metricflow.py",
-    "sidemantic/adapters/osi.py",
-    "sidemantic/adapters/rill.py",
+    "sqlctx/sql/generator.py",
+    "sqlctx/sql/query_rewriter.py",
+    "sqlctx/sql/parsing.py",
+    "sqlctx/sql/aggregation_detection.py",
+    "sqlctx/api_server.py",
+    "sqlctx/server/common.py",
+    "sqlctx/adapters/graphene.py",
+    "sqlctx/adapters/metricflow.py",
+    "sqlctx/adapters/osi.py",
+    "sqlctx/adapters/rill.py",
 )
 
 
@@ -62,12 +62,12 @@ def _broad_handler_tries_by_function(relative_path: str) -> dict[str, list[ast.T
 
 
 def test_postgres_protocol_boundary_logs_and_reraises_unchanged():
-    tries = _broad_handler_tries_by_function("sidemantic/server/connection.py")
+    tries = _broad_handler_tries_by_function("sqlctx/server/connection.py")
 
     # Exactly two broad handlers: query handling, and the executor-thread boundary
     # checked by the next test. Anything else must catch specific exceptions.
     assert sorted(tries) == ["_handle_query", "_run_query"]
-    assert len(_broad_handlers("sidemantic/server/connection.py")) == 2
+    assert len(_broad_handlers("sqlctx/server/connection.py")) == 2
 
     (query_try,) = tries["_handle_query"]
     (handler,) = query_try.handlers
@@ -83,7 +83,7 @@ def test_postgres_protocol_boundary_reports_the_exception_to_the_client():
     logged and re-raised, and its only action is to hand that same exception to
     the client as a PostgreSQL error. It must not swallow, retry, or substitute.
     """
-    tries = _broad_handler_tries_by_function("sidemantic/server/connection.py")
+    tries = _broad_handler_tries_by_function("sqlctx/server/connection.py")
 
     (boundary,) = tries["_run_query"]
     assert [ast.unparse(statement) for statement in boundary.body] == ["self._handle_query(sql, callback, **kwargs)"]

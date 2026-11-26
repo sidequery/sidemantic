@@ -2,10 +2,10 @@
 
 import pytest
 
-from sidemantic.core.metric import Metric
-from sidemantic.core.model import Model
-from sidemantic.core.semantic_graph import AmbiguousJoinPathError, SemanticGraph
-from sidemantic.core.table_calculation import TableCalculation
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.semantic_graph import AmbiguousJoinPathError, SemanticGraph
+from sqlctx.core.table_calculation import TableCalculation
 
 
 def test_add_duplicate_model():
@@ -121,7 +121,7 @@ def test_find_path_no_relationship():
 
 def test_find_path_rejects_registration_order_independent_diamond_ambiguity():
     """Two equally short routes must fail instead of selecting the first declared edge."""
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.relationship import Relationship
 
     def build_graph(reverse: bool) -> SemanticGraph:
         first = Relationship(name="c", type="many_to_one", foreign_key="c_id")
@@ -161,7 +161,7 @@ def test_find_path_rejects_registration_order_independent_diamond_ambiguity():
 
 
 def test_find_path_prefers_a_unique_direct_route_over_longer_alternatives():
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.relationship import Relationship
 
     graph = SemanticGraph()
     graph.add_model(
@@ -191,7 +191,7 @@ def test_find_path_prefers_a_unique_direct_route_over_longer_alternatives():
 
 
 def test_relationship_path_cache_is_cleared_when_adjacency_is_rebuilt():
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.relationship import Relationship
 
     graph = SemanticGraph()
     source = Model(name="a", table="a", primary_key="id")
@@ -210,7 +210,7 @@ def test_relationship_path_cache_is_cleared_when_adjacency_is_rebuilt():
 
 
 def test_reciprocal_custom_joins_are_one_semantic_path():
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.relationship import Relationship
 
     graph = SemanticGraph()
     graph.add_model(
@@ -297,7 +297,7 @@ def test_no_auto_register_regular_metrics():
 
 def test_adjacency_not_built_on_add():
     """Adjacency should not be rebuilt on every add_model."""
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.relationship import Relationship
 
     graph = SemanticGraph()
 
@@ -319,7 +319,7 @@ def test_adjacency_not_built_on_add():
 
 def test_adjacency_built_on_find_path():
     """find_relationship_path should trigger lazy adjacency rebuild."""
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.relationship import Relationship
 
     graph = SemanticGraph()
 
@@ -343,7 +343,7 @@ def test_adjacency_built_on_find_path():
 
 def test_one_to_many_path_can_use_tmdl_from_column_override():
     """Imported TMDL relationships preserve explicit fromColumn join keys."""
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.relationship import Relationship
 
     graph = SemanticGraph()
 
@@ -366,7 +366,7 @@ def test_one_to_many_path_can_use_tmdl_from_column_override():
 
 def test_inactive_relationship_is_not_used_for_default_path():
     """Inactive imported relationships must not participate in normal SQL pathing."""
-    from sidemantic.core.relationship import Relationship
+    from sqlctx.core.relationship import Relationship
 
     graph = SemanticGraph()
     sales = Model(

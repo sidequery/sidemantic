@@ -7,7 +7,7 @@ Example: orders -> customers -> regions (2 hops)
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship
+from sqlctx import Dimension, Metric, Model, Relationship
 from tests.utils import fetch_dicts
 
 

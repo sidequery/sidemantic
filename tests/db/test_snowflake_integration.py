@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
 # Mark all tests in this module as integration tests
 pytestmark = [
@@ -484,7 +484,7 @@ def test_semantic_layer_catalog_with_cube_import(snowflake_layer):
     import tempfile
     from pathlib import Path
 
-    from sidemantic.adapters.cube import CubeAdapter
+    from sqlctx.adapters.cube import CubeAdapter
 
     # Create a Cube YAML file with catalog-qualified table
     cube_yaml = """

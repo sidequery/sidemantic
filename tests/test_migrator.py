@@ -1,7 +1,7 @@
 """Tests for semantic layer coverage analyzer."""
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.core.migrator import Migrator
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.core.migrator import Migrator
 
 
 def test_coverage_analyzer_basic():
@@ -288,7 +288,7 @@ def test_approx_count_distinct_normalizes_consistently_across_paths():
     import sqlglot
     from sqlglot import exp
 
-    from sidemantic.core.migrator import _normalize_agg_name
+    from sqlctx.core.migrator import _normalize_agg_name
 
     node = sqlglot.parse_one("APPROX_COUNT_DISTINCT(x)").find(exp.AggFunc)
     assert _normalize_agg_name(node) == "approx_count_distinct"

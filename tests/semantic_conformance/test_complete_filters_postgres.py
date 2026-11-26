@@ -4,9 +4,9 @@ import os
 
 import pytest
 
-from sidemantic import Metric, Model
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.rust_bridge import compile_semantic_input
+from sqlctx import Metric, Model
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.rust_bridge import compile_semantic_input
 
 
 @pytest.mark.parametrize(
@@ -26,13 +26,13 @@ from sidemantic.rust_bridge import compile_semantic_input
     ],
 )
 def test_complete_filters_preserve_identifier_identity(expression, predicate, expected):
-    dsn = os.environ.get("SIDEMANTIC_TEST_POSTGRES_DSN")
+    dsn = os.environ.get("SQLCTX_TEST_POSTGRES_DSN")
     if not dsn:
-        pytest.skip("PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN")
+        pytest.skip("PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN")
     import psycopg
-    import sidemantic_rs
+    import sqlctx_rs
 
-    assert callable(sidemantic_rs.compile_with_semantic_input)
+    assert callable(sqlctx_rs.compile_with_semantic_input)
     graph = SemanticGraph()
     graph.add_model(
         Model(
@@ -56,15 +56,15 @@ def test_complete_filters_preserve_identifier_identity(expression, predicate, ex
 
 @pytest.mark.parametrize("having", ["none", "average", "sum"])
 def test_postgres_filtered_float_fanout_average_preserves_values(having):
-    dsn = os.environ.get("SIDEMANTIC_TEST_POSTGRES_DSN")
+    dsn = os.environ.get("SQLCTX_TEST_POSTGRES_DSN")
     if not dsn:
-        pytest.skip("PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN")
+        pytest.skip("PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN")
     import psycopg
-    import sidemantic_rs
+    import sqlctx_rs
 
-    from sidemantic import Dimension, Relationship
+    from sqlctx import Dimension, Relationship
 
-    assert callable(sidemantic_rs.compile_with_semantic_input)
+    assert callable(sqlctx_rs.compile_with_semantic_input)
     graph = SemanticGraph()
     graph.add_model(
         Model(
@@ -132,15 +132,15 @@ def test_postgres_filtered_float_fanout_average_preserves_values(having):
 
 @pytest.mark.parametrize("population", ["grouped", "no_matches", "empty"])
 def test_postgres_filtered_complete_row_count(population):
-    dsn = os.environ.get("SIDEMANTIC_TEST_POSTGRES_DSN")
+    dsn = os.environ.get("SQLCTX_TEST_POSTGRES_DSN")
     if not dsn:
-        pytest.skip("PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN")
+        pytest.skip("PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN")
     import psycopg
-    import sidemantic_rs
+    import sqlctx_rs
 
-    from sidemantic import Dimension, SecurityPolicy
+    from sqlctx import Dimension, SecurityPolicy
 
-    assert callable(sidemantic_rs.compile_with_semantic_input)
+    assert callable(sqlctx_rs.compile_with_semantic_input)
     graph = SemanticGraph()
     predicate = 'orders."Amount" IS NULL' if population != "no_matches" else 'orders."Amount" > 1000'
     graph.add_model(
@@ -175,18 +175,18 @@ def test_postgres_filtered_complete_row_count(population):
 @pytest.mark.parametrize("declaration", ["model", "graph"])
 @pytest.mark.parametrize("population", ["grouped", "empty", "no_matches", "fanout"])
 def test_postgres_filtered_owned_count_family(declaration, population):
-    dsn = os.environ.get("SIDEMANTIC_TEST_POSTGRES_DSN")
+    dsn = os.environ.get("SQLCTX_TEST_POSTGRES_DSN")
     if not dsn:
-        pytest.skip("PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN")
+        pytest.skip("PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN")
     from copy import deepcopy
 
     import psycopg
-    import sidemantic_rs
+    import sqlctx_rs
 
-    from sidemantic import Dimension, Relationship, SecurityPolicy
-    from sidemantic.semantic_handoff import graph_to_semantic_input
+    from sqlctx import Dimension, Relationship, SecurityPolicy
+    from sqlctx.semantic_handoff import graph_to_semantic_input
 
-    assert callable(sidemantic_rs.compile_with_semantic_input)
+    assert callable(sqlctx_rs.compile_with_semantic_input)
     graph = SemanticGraph()
     graph.add_model(
         Model(

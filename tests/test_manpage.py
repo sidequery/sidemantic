@@ -7,9 +7,9 @@ import click
 import pytest
 from typer.main import get_command
 
-from sidemantic import __version__
-from sidemantic.cli import app
-from sidemantic.manpage import render_manpage
+from sqlctx import __version__
+from sqlctx.cli import app
+from sqlctx.manpage import render_manpage
 
 
 def _sample_cli() -> click.Group:
@@ -36,8 +36,8 @@ def test_manpage_is_deterministic_and_covers_visible_commands() -> None:
     second = render_manpage(_sample_cli(), version="1.2.3")
 
     assert first == second
-    assert '.TH "SIDEMANTIC" "1"' in first
-    assert "SIDEMANTIC VALIDATE" in first
+    assert '.TH "SQLCTX" "1"' in first
+    assert "SQLCTX VALIDATE" in first
     assert "Validate semantic models" in first
     assert "--verbose" in first.replace(r"\-", "-")
     assert "LEGACY" not in first
@@ -54,20 +54,20 @@ def test_manpage_supports_legacy_click_metavar_signature(monkeypatch) -> None:
 
 
 def test_checked_in_manpage_exists() -> None:
-    path = Path(__file__).parents[1] / "sidemantic" / "man" / "sidemantic.1"
+    path = Path(__file__).parents[1] / "sqlctx" / "man" / "sqlctx.1"
     assert path.exists()
 
 
 def test_live_cli_manpage_renders_nested_commands_and_options() -> None:
     rendered = render_manpage(get_command(app), version=__version__)
 
-    assert '.SH "SIDEMANTIC MIGRATE GENERATE"' in rendered
-    assert '.SH "SIDEMANTIC SERVER API"' in rendered
+    assert '.SH "SQLCTX MIGRATE GENERATE"' in rendered
+    assert '.SH "SQLCTX SERVER API"' in rendered
     assert r"\fB\-\-format table|csv|json|jsonl\fR" in rendered
 
 
 def test_checked_in_manpage_matches_live_cli() -> None:
-    path = Path(__file__).parents[1] / "sidemantic" / "man" / "sidemantic.1"
+    path = Path(__file__).parents[1] / "sqlctx" / "man" / "sqlctx.1"
     checked_in = path.read_text()
     rendered = render_manpage(get_command(app), version=__version__)
 
@@ -86,5 +86,5 @@ def test_wheel_installs_generated_manpage_in_standard_location() -> None:
     config = tomllib.loads((root / "pyproject.toml").read_text())
 
     assert config["tool"]["hatch"]["build"]["targets"]["wheel"]["shared-data"] == {
-        "sidemantic/man/sidemantic.1": "share/man/man1/sidemantic.1"
+        "sqlctx/man/sqlctx.1": "share/man/man1/sqlctx.1"
     }

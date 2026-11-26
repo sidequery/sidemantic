@@ -1,7 +1,7 @@
 # Kitchen Sink LookML Example
 # Comprehensive multi-entity data model for integration testing
 # Uses authentic LookML syntax with dimension references (${dim_name})
-# This tests sidemantic's ability to resolve LookML's internal references
+# This tests sqlctx's ability to resolve LookML's internal references
 
 view: regions {
   sql_table_name: analytics.regions ;;

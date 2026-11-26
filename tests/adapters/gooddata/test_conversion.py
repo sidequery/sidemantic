@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from sidemantic.adapters.cube import CubeAdapter
-from sidemantic.adapters.gooddata import GoodDataAdapter
+from sqlctx.adapters.cube import CubeAdapter
+from sqlctx.adapters.gooddata import GoodDataAdapter
 
 
 def test_gooddata_to_cube_conversion():

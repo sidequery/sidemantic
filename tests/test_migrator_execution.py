@@ -2,8 +2,8 @@
 
 import pytest
 
-from sidemantic import Metric, Model, SemanticLayer
-from sidemantic.core.migrator import Migrator
+from sqlctx import Metric, Model, SemanticLayer
+from sqlctx.core.migrator import Migrator
 
 
 @pytest.fixture

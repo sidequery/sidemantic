@@ -17,8 +17,8 @@ from tests.optional_dep_stubs import ensure_fake_mcp
 
 ensure_fake_mcp()
 
-from sidemantic.core.semantic_layer import SecurityError
-from sidemantic.mcp_server import get_user_attributes, initialize_layer, run_query, run_sql
+from sqlctx.core.semantic_layer import SecurityError
+from sqlctx.mcp_server import get_user_attributes, initialize_layer, run_query, run_sql
 
 
 def _write_secured_models(directory: Path) -> None:

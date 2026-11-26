@@ -515,8 +515,8 @@ export function encodeDashboardState(state: DashboardViewState, document: Dashbo
 }
 
 export function dashboardStorageKey(document: DashboardDocument): string {
-  const identity = `${document.schema ?? "sidemantic.dashboard.v1"}:${document.title}`;
-  return `sidemantic-dashboard-views:${identity}`;
+  const identity = `${document.schema ?? "sqlctx.dashboard.v1"}:${document.title}`;
+  return `sqlctx-dashboard-views:${identity}`;
 }
 
 export function loadSavedDashboardViews(document: DashboardDocument): SavedDashboardView[] {

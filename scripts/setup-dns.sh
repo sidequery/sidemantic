@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-DOMAIN="sidemantic.com"
+DOMAIN="${1:?Usage: setup-dns.sh <domain>}"
 
 # Get Cloudflare credentials
 if [ -z "$CLOUDFLARE_API_TOKEN" ]; then

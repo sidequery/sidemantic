@@ -1,0 +1,6 @@
+{
+  "crate": "sqlctx-rs",
+  "profile": "release",
+  "target": "wasm32-unknown-unknown",
+  "bindings": "wasm-bindgen"
+}

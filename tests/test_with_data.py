@@ -6,7 +6,7 @@ This test verifies end-to-end functionality with actual database queries.
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 from tests.utils import fetch_dicts
 
 

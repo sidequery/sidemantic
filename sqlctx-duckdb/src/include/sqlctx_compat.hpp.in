@@ -1,0 +1,37 @@
+#pragma once
+
+#cmakedefine01 SQLCTX_TOKEN_PARSE_FN
+#cmakedefine01 SQLCTX_NEW_IDENTIFIER_API
+#cmakedefine01 SQLCTX_NEW_EXPRESSION_API
+#cmakedefine01 SQLCTX_QUALIFIED_TABLE_API
+#cmakedefine01 SQLCTX_BUILTIN_PARSER_OPTIONS
+#cmakedefine01 SQLCTX_LITERAL_API
+#cmakedefine01 SQLCTX_GRAMMAR_EXTENSION
+#cmakedefine01 SQLCTX_INSERT_QUERY_NODE
+#cmakedefine01 SQLCTX_BOUND_TABLE_FUNCTION
+#cmakedefine01 SQLCTX_GRAMMAR_EXTENSION_LIST
+#cmakedefine01 SQLCTX_ARENA_TRANSFORM
+#cmakedefine01 SQLCTX_SHELL_GRAMMAR_CONTEXT
+
+#include "duckdb/parser/parser_options.hpp"
+#if SQLCTX_NEW_IDENTIFIER_API
+#include "duckdb/common/identifier.hpp"
+#endif
+
+namespace duckdb {
+#if SQLCTX_NEW_IDENTIFIER_API
+using SqlctxIdentifier = Identifier;
+inline const string &SqlctxName(const Identifier &name) { return name.GetIdentifierName(); }
+#else
+using SqlctxIdentifier = string;
+#endif
+inline const string &SqlctxName(const string &name) { return name; }
+
+inline ParserOptions SqlctxBuiltinParserOptions() {
+#if SQLCTX_BUILTIN_PARSER_OPTIONS
+    return ParserOptions::Builtin();
+#else
+    return ParserOptions();
+#endif
+}
+} // namespace duckdb

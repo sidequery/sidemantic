@@ -134,7 +134,7 @@ export function ComponentGallery() {
     <main className="min-h-screen bg-bg text-ink">
       <header className="sticky top-0 z-20 flex items-center justify-between border-b border-line bg-surface px-4 py-3">
         <div>
-          <h1 className="text-sm font-semibold">Sidemantic component gallery</h1>
+          <h1 className="text-sm font-semibold">sqlctx component gallery</h1>
           <p className="text-2xs text-faint">
             Canonical React primitives · <a className="text-accent hover:underline" href="/typography">typography workbench →</a>
           </p>

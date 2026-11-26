@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import type { SidemanticBackend } from "../data/backend";
+import type { SqlctxBackend } from "../data/backend";
 import type { QueryResult, StructuredQuery } from "../data/types";
 import { useQueryResult, type QueryResultState } from "./useQueryResult";
 
@@ -14,7 +14,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-async function start(backend: SidemanticBackend) {
+async function start(backend: SqlctxBackend) {
   let state!: QueryResultState;
   function Probe({ query }: { query: StructuredQuery | null }) {
     state = useQueryResult(backend, query);
@@ -30,7 +30,7 @@ describe("useQueryResult cancellation", () => {
   test.each(["resolve", "reject"] as const)("ignores a late %s after disabling an in-flight query", async (completion) => {
     const pending = deferred();
     let called = false;
-    const probe = await start({ runQuery: () => { called = true; return pending.promise; } } as SidemanticBackend);
+    const probe = await start({ runQuery: () => { called = true; return pending.promise; } } as SqlctxBackend);
     try {
       expect(called).toBe(true);
       await act(async () => probe.update(null));
@@ -49,7 +49,7 @@ describe("useQueryResult cancellation", () => {
     const old = deferred();
     const current = deferred();
     let calls = 0;
-    const probe = await start({ runQuery: () => ++calls === 1 ? old.promise : current.promise } as SidemanticBackend);
+    const probe = await start({ runQuery: () => ++calls === 1 ? old.promise : current.promise } as SqlctxBackend);
     try {
       await act(async () => probe.update(null));
       await act(async () => probe.update(query));

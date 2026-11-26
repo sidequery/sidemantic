@@ -4,8 +4,8 @@ from copy import deepcopy
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
-from sidemantic.semantic_handoff import graph_to_semantic_input
+from sqlctx import Dimension, Metric, Model, Relationship, SecurityPolicy, SemanticLayer
+from sqlctx.semantic_handoff import graph_to_semantic_input
 
 INPUTS = [
     (
@@ -23,7 +23,7 @@ INPUTS = [
 @pytest.fixture(params=["python", "rust"])
 def engine(request):
     if request.param == "rust":
-        pytest.importorskip("sidemantic_rs", reason="Row-expression acceptance requires the real Rust extension")
+        pytest.importorskip("sqlctx_rs", reason="Row-expression acceptance requires the real Rust extension")
     return request.param
 
 
@@ -184,16 +184,16 @@ def test_distinct_case_strings_keep_physical_literal_values(layer):
 def test_postgres_filtered_row_expression_oracles(declaration, expression, expected, fanout):
     import os
 
-    dsn = os.environ.get("SIDEMANTIC_TEST_POSTGRES_DSN")
+    dsn = os.environ.get("SQLCTX_TEST_POSTGRES_DSN")
     if not dsn:
-        pytest.skip("PostgreSQL execution requires SIDEMANTIC_TEST_POSTGRES_DSN")
+        pytest.skip("PostgreSQL execution requires SQLCTX_TEST_POSTGRES_DSN")
     import psycopg
-    import sidemantic_rs
+    import sqlctx_rs
 
-    from sidemantic.core.semantic_graph import SemanticGraph
-    from sidemantic.rust_bridge import compile_semantic_input
+    from sqlctx.core.semantic_graph import SemanticGraph
+    from sqlctx.rust_bridge import compile_semantic_input
 
-    assert callable(sidemantic_rs.compile_with_semantic_input)
+    assert callable(sqlctx_rs.compile_with_semantic_input)
     graph = SemanticGraph()
     graph.add_model(
         Model(

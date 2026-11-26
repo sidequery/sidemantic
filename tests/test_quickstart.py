@@ -1,4 +1,4 @@
-"""Tests for project scaffolding (sidemantic/quickstart.py)."""
+"""Tests for project scaffolding (sqlctx/quickstart.py)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from sidemantic.quickstart import (
+from sqlctx.quickstart import (
     create_demo_database,
     scaffold_demo_project,
     scaffold_starter_project,
@@ -18,7 +18,7 @@ def test_scaffold_starter_project_creates_expected_files(tmp_path: Path):
     result = scaffold_starter_project(tmp_path)
 
     created = {path.relative_to(tmp_path).as_posix() for path in result.created}
-    assert created == {"sidemantic.yaml", "models/orders.yml", "tests/orders.yml"}
+    assert created == {"sqlctx.yaml", "models/orders.yml", "tests/orders.yml"}
     for name in created:
         assert (tmp_path / name).is_file()
 
@@ -43,7 +43,7 @@ def test_scaffold_demo_project_creates_files_and_database(tmp_path: Path):
     result = scaffold_demo_project(tmp_path)
 
     created = {path.relative_to(tmp_path).as_posix() for path in result.created}
-    assert "sidemantic.yaml" in created
+    assert "sqlctx.yaml" in created
     assert "tests/demo.yml" in created
     assert "models/customers.yml" in created
     assert "models/products.yml" in created

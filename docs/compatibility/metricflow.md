@@ -17,6 +17,6 @@ The MetricFlow adapter reads dbt **source YAML**: legacy `semantic_models` and `
 | Semi-additive measures | Window choice and groupings are mapped natively | Native non-additive parameters retained |
 | Natural entities / SCD joins | Source entity retained; SCD behavior is unsupported | Source entity retained with an unsupported diagnostic |
 
-The adapter stores source-only definitions separately from executable graph fields. Preserving a property for a source roundtrip does not mean it is used by Sidemantic's query engine. Fidelity reports distinguish retained but unsupported execution from native mappings.
+The adapter stores source-only definitions separately from executable graph fields. Preserving a property for a source roundtrip does not mean it is used by sqlctx's query engine. Fidelity reports distinguish retained but unsupported execution from native mappings.
 
 Export is not a complete dbt project generator. It reports unsupported SQL-only models, relationship kinds without a foreign-entity mapping, and metrics that cannot become legacy measures. Warehouse qualification is lost when a table is lowered to `ref('model_name')`, and is reported as an approximation. Percentile aggregation remains unsupported. Exported source should be validated in the destination dbt project, including its model refs, time spine and project configuration.

@@ -3,7 +3,7 @@ import os
 import pytest
 from typer.testing import CliRunner
 
-from sidemantic.cli import app
+from sqlctx.cli import app
 
 runner = CliRunner()
 
@@ -40,7 +40,7 @@ models:
     password = os.getenv("SPARK_PASSWORD")
     password_config = f"  password: {password}\n" if password else ""
 
-    config_file = tmp_path / "sidemantic.yaml"
+    config_file = tmp_path / "sqlctx.yaml"
     config_file.write_text(
         f"""
 models_dir: ./models

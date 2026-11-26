@@ -6,8 +6,8 @@ from zoneinfo import ZoneInfo
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.sql.frozen_time import freeze_current_time
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.sql.frozen_time import freeze_current_time
 
 NOW = datetime(2026, 10, 11, 18, 30, 15, 123456, tzinfo=UTC)
 PACIFIC = timezone(timedelta(hours=-7))
@@ -173,10 +173,10 @@ def test_compile_freezes_pushed_down_filters_on_duckdb():
     assert f"timestamp >= {_local_date_literal(30)}" in sql
     assert f"timestamp < {NOW_TZ}" in sql
     assert "CURRENT_DATE" not in sql.upper()
-    assert "-- sidemantic:" in sql
+    assert "-- sqlctx:" in sql
 
 
-def test_compile_freezes_sidemantic_relative_date_range():
+def test_compile_freezes_sqlctx_relative_date_range():
     layer = _events_layer()
 
     sql = _compile(layer, metrics=["events.event_count"], filters=["events.timestamp = 'yesterday'"])
@@ -216,7 +216,7 @@ def test_semantic_sql_freezes_each_execution_despite_rewrite_cache():
 
 
 def test_rust_engine_output_is_frozen():
-    pytest.importorskip("sidemantic_rs", reason="Requires the built Rust extension")
+    pytest.importorskip("sqlctx_rs", reason="Requires the built Rust extension")
     layer = _events_layer(engine="rust", fallback=False)
 
     sql = _compile(

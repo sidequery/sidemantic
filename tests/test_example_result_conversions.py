@@ -8,7 +8,7 @@ the notebooks now go through ``layer.adapter.fetch_record_batch()`` instead.
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
+from sqlctx import Dimension, Metric, Model, SemanticLayer
 
 EXPECTED_ROWS = {("completed", 200.0, 2), ("pending", 50.0, 1)}
 COLUMNS = ["status", "revenue", "order_count"]

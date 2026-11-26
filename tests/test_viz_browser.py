@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import Browser, Page, expect, sync_playwright
 
-from sidemantic import DashboardDocument, Dimension, Metric, Model, SemanticLayer
+from sqlctx import DashboardDocument, Dimension, Metric, Model, SemanticLayer
 
 
 def _build_layer() -> SemanticLayer:
@@ -66,7 +66,7 @@ def browser_page(browser: Browser) -> Iterator[tuple[Page, list[str]]]:
     )
 
     def block_unexpected_network(route, request):
-        if request.url.startswith(("http://", "https://")) and not request.url.startswith("https://sidemantic.test/"):
+        if request.url.startswith(("http://", "https://")) and not request.url.startswith("https://sqlctx.test/"):
             errors.append(f"unexpected external network request: {request.url}")
             route.abort()
             return
@@ -112,10 +112,10 @@ def test_chart_html_renderer_integrations_render_in_browser(
     html_path = _write_html(tmp_path, chart.to_html(renderer), f"{renderer}.html")
 
     page.goto(html_path.as_uri(), wait_until="networkidle", timeout=90_000)
-    page.wait_for_function("window.__SIDEMANTIC_CHART_READY__ === true", timeout=60_000)
+    page.wait_for_function("window.__SQLCTX_CHART_READY__ === true", timeout=60_000)
 
     expect(page.locator(selector).first).to_be_visible(timeout=20_000)
-    assert page.evaluate("document.documentElement.dataset.sidemanticReady") == "true"
+    assert page.evaluate("document.documentElement.dataset.sqlctxReady") == "true"
     assert errors == []
 
 
@@ -137,7 +137,7 @@ def test_crossfilter_chart_renderer_integrations_switch_in_browser(
     html_path = _write_html(tmp_path, session.to_html(query_endpoint=None), "crossfilter-renderers.html")
 
     page.goto(html_path.as_uri(), wait_until="networkidle", timeout=90_000)
-    page.wait_for_function("window.__SIDEMANTIC_CROSSFILTER__?.renderer === 'd3'", timeout=60_000)
+    page.wait_for_function("window.__SQLCTX_CROSSFILTER__?.renderer === 'd3'", timeout=60_000)
 
     renderers = [
         ("d3", "D3", "#cf-line svg path"),
@@ -148,13 +148,13 @@ def test_crossfilter_chart_renderer_integrations_switch_in_browser(
     for renderer, label, selector in renderers:
         page.get_by_role("button", name=label).click()
         page.wait_for_function(
-            "renderer => window.__SIDEMANTIC_CROSSFILTER__?.renderer === renderer",
+            "renderer => window.__SQLCTX_CROSSFILTER__?.renderer === renderer",
             arg=renderer,
             timeout=60_000,
         )
         expect(page.locator(selector).first).to_be_visible(timeout=20_000)
 
-    assert page.evaluate("document.documentElement.dataset.sidemanticCrossfilterFilters") == "0"
+    assert page.evaluate("document.documentElement.dataset.sqlctxCrossfilterFilters") == "0"
     assert errors == []
 
 
@@ -172,7 +172,7 @@ def test_crossfilter_single_dimension_line_renders_one_series_in_browser(
     html_path = _write_html(tmp_path, session.to_html(query_endpoint=None), "single-dimension-crossfilter.html")
 
     page.goto(html_path.as_uri(), wait_until="networkidle", timeout=90_000)
-    page.wait_for_function("window.__SIDEMANTIC_CROSSFILTER__?.renderer === 'd3'", timeout=60_000)
+    page.wait_for_function("window.__SQLCTX_CROSSFILTER__?.renderer === 'd3'", timeout=60_000)
 
     line_paths = page.locator("#cf-line svg path[stroke-width='2.5']")
     expect(line_paths.first).to_be_visible(timeout=20_000)
@@ -196,7 +196,7 @@ def test_crossfilter_live_endpoint_api_queries_in_browser(
         .line()
         .crossfilter(renderer="d3")
     )
-    endpoint = "https://sidemantic.test/crossfilter/query"
+    endpoint = "https://sqlctx.test/crossfilter/query"
     requests: list[dict[str, object]] = []
 
     def handle_query(route, request):
@@ -209,9 +209,9 @@ def test_crossfilter_live_endpoint_api_queries_in_browser(
     html_path = _write_html(tmp_path, session.to_html(query_endpoint=endpoint), "live-crossfilter.html")
 
     page.goto(html_path.as_uri(), wait_until="networkidle", timeout=90_000)
-    page.wait_for_function("window.__SIDEMANTIC_CROSSFILTER_API__ != null", timeout=60_000)
+    page.wait_for_function("window.__SQLCTX_CROSSFILTER_API__ != null", timeout=60_000)
     response = page.evaluate(
-        """async () => window.__SIDEMANTIC_CROSSFILTER_API__.query(
+        """async () => window.__SQLCTX_CROSSFILTER_API__.query(
             [{ type: 'category', field: 'region', value: 'North' }],
             'category:region:North',
             { type: 'category', field: 'region', value: 'North' }
@@ -251,7 +251,7 @@ def test_crossfilter_live_endpoint_filters_update_each_renderer_in_browser(
         .line()
         .crossfilter(renderer=renderer, table_limit=1)
     )
-    endpoint = f"https://sidemantic.test/{renderer}/crossfilter/query"
+    endpoint = f"https://sqlctx.test/{renderer}/crossfilter/query"
     requests: list[dict[str, object]] = []
 
     def handle_query(route, request):
@@ -265,13 +265,13 @@ def test_crossfilter_live_endpoint_filters_update_each_renderer_in_browser(
 
     page.goto(html_path.as_uri(), wait_until="networkidle", timeout=90_000)
     page.wait_for_function(
-        "renderer => window.__SIDEMANTIC_CROSSFILTER__?.renderer === renderer",
+        "renderer => window.__SQLCTX_CROSSFILTER__?.renderer === renderer",
         arg=renderer,
         timeout=60_000,
     )
-    page.evaluate("window.__SIDEMANTIC_CROSSFILTER_API__.setXRange('2024-01-01', '2024-02-01')")
+    page.evaluate("window.__SQLCTX_CROSSFILTER_API__.setXRange('2024-01-01', '2024-02-01')")
     page.wait_for_function(
-        "document.documentElement.dataset.sidemanticCrossfilterSemanticFilters === '2'",
+        "document.documentElement.dataset.sqlctxCrossfilterSemanticFilters === '2'",
         timeout=60_000,
     )
 
@@ -284,21 +284,17 @@ def test_crossfilter_live_endpoint_filters_update_each_renderer_in_browser(
         }
     ]
     assert requests[-1]["interaction_preaggregations"] is False
-    assert page.evaluate("window.__SIDEMANTIC_CROSSFILTER__.totalRows") == 4
-    assert page.evaluate("window.__SIDEMANTIC_CROSSFILTER__.freshness.status") == "direct"
-    assert page.evaluate("window.__SIDEMANTIC_CROSSFILTER__.freshness.source_watermark.status") == ("not_configured")
-    assert page.evaluate("window.__SIDEMANTIC_CROSSFILTER_API__.freshnessPolicy.protocol") == (
-        "sidemantic-freshness-policy-v1"
-    )
-    assert page.evaluate("window.__SIDEMANTIC_CROSSFILTER__.fieldPlan.aliases.region") == "orders.region"
-    assert page.evaluate("window.__SIDEMANTIC_CROSSFILTER__.interactionPlan.protocol") == (
-        "sidemantic-interaction-plan-v1"
-    )
+    assert page.evaluate("window.__SQLCTX_CROSSFILTER__.totalRows") == 4
+    assert page.evaluate("window.__SQLCTX_CROSSFILTER__.freshness.status") == "direct"
+    assert page.evaluate("window.__SQLCTX_CROSSFILTER__.freshness.source_watermark.status") == ("not_configured")
+    assert page.evaluate("window.__SQLCTX_CROSSFILTER_API__.freshnessPolicy.protocol") == ("sqlctx-freshness-policy-v1")
+    assert page.evaluate("window.__SQLCTX_CROSSFILTER__.fieldPlan.aliases.region") == "orders.region"
+    assert page.evaluate("window.__SQLCTX_CROSSFILTER__.interactionPlan.protocol") == ("sqlctx-interaction-plan-v1")
     assert page.locator("#cf-table tbody tr").count() == 1
     assert page.locator("#cf-dataset-meta").inner_text().count("Updated") == 1
-    assert page.evaluate("document.documentElement.dataset.sidemanticCrossfilterUpdatedAt") != ""
-    assert page.evaluate("document.documentElement.dataset.sidemanticCrossfilterFreshnessStatus") == "direct"
-    assert page.evaluate("document.documentElement.dataset.sidemanticCrossfilterSourceWatermarkStatus") == (
+    assert page.evaluate("document.documentElement.dataset.sqlctxCrossfilterUpdatedAt") != ""
+    assert page.evaluate("document.documentElement.dataset.sqlctxCrossfilterFreshnessStatus") == "direct"
+    assert page.evaluate("document.documentElement.dataset.sqlctxCrossfilterSourceWatermarkStatus") == (
         "not_configured"
     )
     assert errors == []
@@ -312,7 +308,7 @@ def test_dashboard_select_fields_drive_browser_breakdowns(
     layer = _build_layer()
     dashboard = DashboardDocument.from_dict(
         {
-            "schema": "sidemantic.dashboard.v1",
+            "schema": "sqlctx.dashboard.v1",
             "title": "Channel Explorer",
             "tabs": [
                 {
@@ -347,12 +343,10 @@ def test_dashboard_select_fields_drive_browser_breakdowns(
     html_path = _write_html(tmp_path, dashboard.to_html(), "dashboard-select-fields.html")
 
     page.goto(html_path.as_uri(), wait_until="networkidle", timeout=90_000)
-    page.wait_for_function("window.__SIDEMANTIC_CROSSFILTER__?.renderer === 'd3'", timeout=60_000)
+    page.wait_for_function("window.__SQLCTX_CROSSFILTER__?.renderer === 'd3'", timeout=60_000)
 
     expect(page.locator("#cf-bars > div[data-field='channel']")).to_be_visible(timeout=20_000)
     assert page.locator("#cf-bars > div[data-field='region']").count() == 0
-    assert page.evaluate("window.__SIDEMANTIC_CROSSFILTER_API__.spec.interactions.select.fields") == ["channel"]
-    assert page.evaluate("window.__SIDEMANTIC_CROSSFILTER_API__.interactionPlan.select.fields[0].id") == (
-        "orders.channel"
-    )
+    assert page.evaluate("window.__SQLCTX_CROSSFILTER_API__.spec.interactions.select.fields") == ["channel"]
+    assert page.evaluate("window.__SQLCTX_CROSSFILTER_API__.interactionPlan.select.fields[0].id") == ("orders.channel")
     assert errors == []

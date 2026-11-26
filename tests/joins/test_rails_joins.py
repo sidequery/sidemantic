@@ -3,7 +3,7 @@
 import duckdb
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship
+from sqlctx import Dimension, Metric, Model, Relationship
 
 
 def test_belongs_to_join(layer):

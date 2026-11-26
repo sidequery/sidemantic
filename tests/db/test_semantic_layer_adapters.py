@@ -2,8 +2,8 @@
 
 import pytest
 
-from sidemantic import Metric, Model, SemanticLayer
-from sidemantic.db.duckdb import DuckDBAdapter
+from sqlctx import Metric, Model, SemanticLayer
+from sqlctx.db.duckdb import DuckDBAdapter
 
 
 def test_semantic_layer_with_duckdb_url():
@@ -92,7 +92,7 @@ def test_postgres_url_recognized():
     """Test PostgreSQL URL is recognized as valid format."""
     # Test that postgres:// URLs are recognized (but don't actually connect)
     try:
-        from sidemantic.db.postgres import PostgreSQLAdapter  # noqa: F401
+        from sqlctx.db.postgres import PostgreSQLAdapter  # noqa: F401
 
         # If psycopg is installed, we can't test without connecting
         # This is tested in integration tests instead

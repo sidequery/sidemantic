@@ -47,7 +47,7 @@ and checks Rust selection. Its direct Rust graph/compiler probes remain separate
 
 A successful shared run is not evidence that every optional test executed:
 
-- PostgreSQL conformance cases require `SIDEMANTIC_TEST_POSTGRES_DSN`; the native
+- PostgreSQL conformance cases require `SQLCTX_TEST_POSTGRES_DSN`; the native
   CI job supplies a PostgreSQL service and runs this suite with the built extension.
 - Native binding and validation tests may skip their unused Python parameter.
   The Rust parameter must execute. Such skips are not missing Rust coverage.

@@ -1,0 +1,830 @@
+"""Semantic graph for managing models and relationships."""
+
+import re
+from collections import deque
+from dataclasses import dataclass
+from typing import Any
+
+from sqlctx.core.consumption import Explore, SavedQuery
+from sqlctx.core.metric import Metric
+from sqlctx.core.model import Model
+from sqlctx.core.parameter import Parameter
+from sqlctx.core.relationship import Relationship
+from sqlctx.core.table_calculation import TableCalculation
+
+
+def _relationship_local_key_columns(model: Model, relationship: Relationship) -> list[str]:
+    primary_key = getattr(relationship, "primary_key", None)
+    if primary_key:
+        return relationship.primary_key_columns
+    tmdl_from_column = getattr(relationship, "_tmdl_from_column", None)
+    if isinstance(tmdl_from_column, str) and tmdl_from_column.strip():
+        return [tmdl_from_column]
+    return model.primary_key_columns
+
+
+def _reverse_custom_join_condition(sql: str | None) -> str | None:
+    if sql is None:
+        return None
+    return sql.replace("{from}", "__SQLCTX_FROM__").replace("{to}", "{from}").replace("__SQLCTX_FROM__", "{to}")
+
+
+def _custom_join_condition(sql: str | None) -> str | None:
+    """Return custom join SQL only for the placeholder-based native contract."""
+    if not sql:
+        return None
+    if "{from}" in sql or "{to}" in sql:
+        return sql
+    return None
+
+
+def _normalized_join_condition(sql: str | None) -> str | None:
+    """Canonicalize simple equality conjunctions for path de-duplication.
+
+    Reciprocal relationship declarations generate the same custom join once as
+    ``from.x = to.x`` and once as ``to.x = from.x``. Equality and AND are
+    commutative, so normalize those shapes while leaving opaque predicates
+    distinct. This prevents a declared reciprocal edge from looking like a
+    second semantic path without hiding genuinely different join predicates.
+    """
+    if sql is None:
+        return None
+    conjuncts = re.split(r"\s+AND\s+", sql.strip(), flags=re.IGNORECASE)
+    normalized: list[str] = []
+    for conjunct in conjuncts:
+        comparison = re.fullmatch(r"\s*(.+?)\s*=\s*(.+?)\s*", conjunct)
+        if comparison and not any(operator in conjunct for operator in ("!=", "<=", ">=", "<>")):
+            sides = sorted(re.sub(r"\s+", "", side) for side in comparison.groups())
+            normalized.append("=".join(sides))
+        else:
+            normalized.append(re.sub(r"\s+", " ", conjunct.strip()))
+    return " AND ".join(sorted(normalized))
+
+
+@dataclass
+class JoinPath:
+    """Represents a join between two models."""
+
+    from_model: str
+    to_model: str
+    from_columns: list[str]  # Foreign key column(s) in from_model
+    to_columns: list[str]  # Primary/unique key column(s) in to_model
+    relationship: str  # many_to_one, one_to_many, one_to_one
+    custom_condition: str | None = None
+    from_target_model: str | None = None
+    to_target_model: str | None = None
+    edge_id: str | None = None
+
+    @property
+    def from_instance(self) -> str:
+        """SQL/query identity for the source side of this relationship hop."""
+        return self.from_model
+
+    @property
+    def to_instance(self) -> str:
+        """SQL/query identity for the target side of this relationship hop."""
+        return self.to_model
+
+    # Backwards compatibility properties (return first column)
+    @property
+    def from_entity(self) -> str:
+        """Get first foreign key column (backwards compatibility)."""
+        return self.from_columns[0] if self.from_columns else ""
+
+    @property
+    def to_entity(self) -> str:
+        """Get first primary key column (backwards compatibility)."""
+        return self.to_columns[0] if self.to_columns else ""
+
+
+class AmbiguousJoinPathError(ValueError):
+    """Raised when two models have more than one equally short semantic join path."""
+
+
+class SemanticGraph:
+    """Semantic graph managing models, metrics, and join relationships.
+
+    The graph uses entities as edges to automatically discover join paths
+    between models.
+    """
+
+    def __init__(self):
+        self.models: dict[str, Model] = {}
+        self.metrics: dict[str, Metric] = {}
+        self.metric_owners: dict[str, str] = {}
+        self.table_calculations: dict[str, TableCalculation] = {}
+        self.parameters: dict[str, Parameter] = {}
+        self.explores: dict[str, Explore] = {}
+        self.saved_queries: dict[str, SavedQuery] = {}
+        self.import_warnings: list[dict[str, object]] = []
+        self.metadata: dict[str, Any] = {}
+        self._version = 0
+        self._adjacency_dirty = True
+        self._adjacency: dict[str, list[tuple[str, list[str], list[str], str, str | None, str | None]]] = {}
+        self._role_models: dict[str, str] = {}
+        self._role_owners: dict[str, str] = {}
+        self._relationship_instances: dict[tuple[str, str], str] = {}
+        self._relationship_path_cache: dict[tuple[str, str, frozenset[str] | None], tuple[JoinPath, ...] | str] = {}
+
+    def _mark_dirty(self) -> None:
+        self._version += 1
+        self._adjacency_dirty = True
+        self._relationship_path_cache.clear()
+
+    def add_model(self, model: Model) -> None:
+        """Add a model to the graph.
+
+        Args:
+            model: Model to add
+        """
+        if model.name in self.models:
+            raise ValueError(f"Model {model.name} already exists")
+
+        self.models[model.name] = model
+
+        # Auto-register graph-level metrics from model
+        # Graph-level metric types: time_comparison, conversion
+        # These need to be accessible without model prefix
+        if model.metrics:
+            for metric in model.metrics:
+                if metric.type in ("time_comparison", "conversion"):
+                    # Register at graph level if not already there
+                    if metric.name not in self.metrics:
+                        self.metrics[metric.name] = metric
+
+        self._mark_dirty()
+
+    def add_metric(self, measure: Metric, model_name: str | None = None) -> None:
+        """Add a measure to the graph.
+
+        Args:
+            measure: Metric to add
+            model_name: Optional owning model for a graph-addressable model metric
+        """
+        if measure.name in self.metrics:
+            raise ValueError(f"Measure {measure.name} already exists")
+        if model_name is not None and model_name not in self.models:
+            raise ValueError(f"Model {model_name} not found for measure {measure.name}")
+
+        self.metrics[measure.name] = measure
+        if model_name is not None:
+            self.metric_owners[measure.name] = model_name
+        self._mark_dirty()
+
+    def add_table_calculation(self, calc: TableCalculation) -> None:
+        """Add a table calculation to the graph.
+
+        Args:
+            calc: Table calculation to add
+        """
+        if calc.name in self.table_calculations:
+            raise ValueError(f"Table calculation {calc.name} already exists")
+
+        self.table_calculations[calc.name] = calc
+        self._mark_dirty()
+
+    def get_table_calculation(self, name: str) -> TableCalculation:
+        """Get a table calculation by name.
+
+        Args:
+            name: Table calculation name
+
+        Returns:
+            Table calculation object
+
+        Raises:
+            KeyError: If table calculation doesn't exist
+        """
+        if name not in self.table_calculations:
+            raise KeyError(f"Table calculation {name} not found")
+
+        return self.table_calculations[name]
+
+    def add_parameter(self, param: Parameter) -> None:
+        """Add a parameter to the graph.
+
+        Args:
+            param: Parameter to add
+
+        Raises:
+            ValueError: If parameter already exists
+        """
+        if param.name in self.parameters:
+            raise ValueError(f"Parameter {param.name} already exists")
+
+        self.parameters[param.name] = param
+        self._mark_dirty()
+
+    def add_explore(self, explore: Explore) -> None:
+        """Add a curated Explore/View consumption contract."""
+        if explore.name in self.explores:
+            raise ValueError(f"Explore {explore.name} already exists")
+        self.explores[explore.name] = explore
+        self._mark_dirty()
+
+    def get_explore(self, name: str) -> Explore:
+        """Get an Explore/View contract by name."""
+        if name not in self.explores:
+            raise KeyError(f"Explore {name} not found")
+        return self.explores[name]
+
+    def add_saved_query(self, saved_query: SavedQuery) -> None:
+        """Add a named structured query contract."""
+        if saved_query.name in self.saved_queries:
+            raise ValueError(f"Saved query {saved_query.name} already exists")
+        self.saved_queries[saved_query.name] = saved_query
+        self._mark_dirty()
+
+    def get_saved_query(self, name: str) -> SavedQuery:
+        """Get a saved query by name."""
+        if name not in self.saved_queries:
+            raise KeyError(f"Saved query {name} not found")
+        return self.saved_queries[name]
+
+    def get_parameter(self, name: str) -> Parameter:
+        """Get a parameter by name.
+
+        Args:
+            name: Parameter name
+
+        Returns:
+            Parameter object
+
+        Raises:
+            KeyError: If parameter doesn't exist
+        """
+        if name not in self.parameters:
+            raise KeyError(f"Parameter {name} not found")
+
+        return self.parameters[name]
+
+    def _add_metric_impl(self, measure: Metric) -> None:
+        """Internal method to add a measure without checks (for legacy compatibility).
+
+        Args:
+            measure: Metric to add
+        """
+        if measure.name in self.metrics:
+            raise ValueError(f"Measure {measure.name} already exists")
+
+        self.metrics[measure.name] = measure
+
+    def get_model(self, name: str) -> Model:
+        """Get model by name.
+
+        Args:
+            name: Model name
+
+        Returns:
+            Model instance
+
+        Raises:
+            KeyError: If model not found
+        """
+        if name not in self.models and getattr(self, "_adjacency_dirty", True):
+            self.build_adjacency()
+        canonical_name = self._role_models.get(name, name)
+        if canonical_name not in self.models:
+            raise KeyError(f"Model {name} not found")
+        return self.models[canonical_name]
+
+    def get_metric(self, name: str) -> Metric:
+        """Get measure by name.
+
+        Args:
+            name: Metric name
+
+        Returns:
+            Measure instance
+
+        Raises:
+            KeyError: If measure not found
+        """
+        if name not in self.metrics:
+            raise KeyError(f"Measure {name} not found")
+        return self.metrics[name]
+
+    def resolve_metric_reference(self, reference: str) -> tuple[str | None, Metric]:
+        """Resolve a query metric reference using exact graph metric names first.
+
+        Returns:
+            Tuple of (model_name, metric). model_name is None for graph-level metrics.
+
+        Raises:
+            KeyError: If the reference does not resolve to a graph or model metric.
+        """
+        if reference in self.metrics:
+            return None, self.metrics[reference]
+
+        if "." in reference:
+            model_name, metric_name = reference.split(".", 1)
+            try:
+                model = self.get_model(model_name)
+            except KeyError:
+                model = None
+            if model:
+                metric = model.get_metric(metric_name)
+                if metric:
+                    return model_name, metric
+
+        raise KeyError(f"Metric reference {reference} not found")
+
+    def build_adjacency(self) -> None:
+        """Build adjacency list for join path discovery.
+
+        Creates edges between models using join relationships.
+
+        This is automatically called when models are added, but can be called
+        manually if relationships are modified after models are registered.
+        """
+        if not hasattr(self, "_adjacency"):
+            self._adjacency = {}
+        self._adjacency.clear()
+        self._role_models.clear()
+        self._role_owners.clear()
+        self._relationship_instances.clear()
+        self._relationship_path_cache.clear()
+        self._adjacency_dirty = False
+
+        def add_edge(
+            from_model: str,
+            to_model: str,
+            from_keys: list[str],
+            to_keys: list[str],
+            relationship_type: str,
+            custom_condition: str | None = None,
+            edge_id: str | None = None,
+        ) -> None:
+            # Invalid/unknown key pairs are not graph edges. Structural validation reports the
+            # actionable cause; omitting the edge prevents compilation from producing ``JOIN ON``
+            # predicates with fabricated or empty columns when validation is bypassed.
+            if relationship_type != "cross" and custom_condition is None:
+                if not from_keys or not to_keys or len(from_keys) != len(to_keys):
+                    return
+            if from_model not in self._adjacency:
+                self._adjacency[from_model] = []
+            self._adjacency[from_model].append(
+                (to_model, from_keys, to_keys, relationship_type, custom_condition, edge_id)
+            )
+
+        def invert_relationship(relationship_type: str) -> str:
+            if relationship_type == "many_to_one":
+                return "one_to_many"
+            if relationship_type == "one_to_many":
+                return "many_to_one"
+            return relationship_type
+
+        role_counts: dict[str, int] = {}
+        for candidate_model in self.models.values():
+            for candidate_relationship in candidate_model.relationships:
+                if (
+                    candidate_relationship.active
+                    and candidate_relationship.target_model
+                    and candidate_relationship.related_model in self.models
+                ):
+                    role_counts[candidate_relationship.name] = role_counts.get(candidate_relationship.name, 0) + 1
+
+        if role_counts:
+            reserved_models = sorted(name for name in self.models if "$" in name)
+            if reserved_models:
+                raise ValueError(
+                    "Model names cannot contain '$' when relationship roles are used; '$' is reserved for "
+                    f"scoped role paths: {', '.join(reserved_models)}"
+                )
+
+        def register_role_instance(instance: str, target: str, owner: str) -> None:
+            if instance in self.models:
+                raise ValueError(f"Relationship role instance '{instance}' collides with canonical model '{instance}'")
+            existing_target = self._role_models.get(instance)
+            existing_owner = self._role_owners.get(instance)
+            if existing_target is not None and (existing_target != target or existing_owner != owner):
+                raise ValueError(
+                    f"Relationship role instance '{instance}' is declared by both '{existing_owner}' and '{owner}'"
+                )
+            self._role_models[instance] = target
+            self._role_owners[instance] = owner
+
+        # Build adjacency from join relationships
+        for model_name, model in self.models.items():
+            for relationship in model.relationships:
+                if not relationship.active:
+                    continue
+
+                related_model = relationship.related_model
+                edge_id = relationship.edge_id
+                reversible = (relationship.metadata or {}).get("reversible") is not False
+                if related_model not in self.models:
+                    continue  # Skip if related model doesn't exist yet
+
+                # A role alias is a distinct query/SQL instance of its canonical target.
+                # Keep the legacy node identity unchanged when no target_model is declared.
+                related_instance = related_model
+                if relationship.target_model:
+                    related_instance = relationship.name
+                if relationship.target_model and role_counts.get(relationship.name, 0) > 1:
+                    # Same role under different parents is addressable by its scoped identity.
+                    related_instance = f"{model_name}${relationship.name}"
+                if relationship.target_model:
+                    register_role_instance(related_instance, related_model, model_name)
+                    if (model_name, relationship.name) in self._relationship_instances:
+                        raise ValueError(
+                            f"Model '{model_name}' declares relationship role '{relationship.name}' more than once"
+                        )
+                self._relationship_instances[(model_name, relationship.name)] = related_instance
+
+                if relationship.type == "cross":
+                    add_edge(model_name, related_instance, [], [], "cross", edge_id=edge_id)
+                    if reversible:
+                        add_edge(related_instance, model_name, [], [], "cross", edge_id=edge_id)
+                    continue
+
+                if relationship.type == "many_to_many":
+                    junction_model = relationship.through
+                    if not junction_model or junction_model not in self.models:
+                        if not relationship.foreign_key:
+                            continue
+                        if relationship.primary_key:
+                            # An explicit target key is recorded: a direct TMDL many-to-many carries
+                            # the source fromColumn as foreign_key and the target toColumn as
+                            # primary_key, and either may be an alternate (non-primary) key. Each side
+                            # joins on its own recorded column, keeping a join between differently
+                            # named columns (A[a_id] <-> B[b_id]) correct on both sides.
+                            local_keys = relationship.foreign_key_columns or model.primary_key_columns
+                            remote_keys = relationship.primary_key_columns
+                        else:
+                            # Legacy/compatibility shape: foreign_key names the RELATED side's column
+                            # and the local side joins on this model's primary key.
+                            local_keys = model.primary_key_columns
+                            remote_keys = relationship.foreign_key_columns
+                        custom_condition = _custom_join_condition(relationship.sql)
+                        add_edge(
+                            model_name,
+                            related_instance,
+                            local_keys,
+                            remote_keys,
+                            "one_to_many",
+                            custom_condition,
+                            edge_id,
+                        )
+                        if reversible:
+                            add_edge(
+                                related_instance,
+                                model_name,
+                                remote_keys,
+                                local_keys,
+                                "one_to_many",
+                                _reverse_custom_join_condition(custom_condition),
+                                edge_id,
+                            )
+                        continue
+
+                    junction_self_fks, junction_related_fks = relationship.junction_key_columns()
+                    if not junction_self_fks or not junction_related_fks:
+                        continue
+
+                    base_pk = model.primary_key_columns
+                    related_pk = (
+                        relationship.primary_key_columns
+                        if relationship.primary_key
+                        else self.models[related_model].primary_key_columns
+                    )
+
+                    add_edge(model_name, junction_model, base_pk, junction_self_fks, "one_to_many", edge_id=edge_id)
+                    if reversible:
+                        add_edge(junction_model, model_name, junction_self_fks, base_pk, "many_to_one", edge_id=edge_id)
+
+                    add_edge(
+                        junction_model,
+                        related_instance,
+                        junction_related_fks,
+                        related_pk,
+                        "many_to_one",
+                        edge_id=edge_id,
+                    )
+                    if reversible:
+                        add_edge(
+                            related_instance,
+                            junction_model,
+                            related_pk,
+                            junction_related_fks,
+                            "one_to_many",
+                            edge_id=edge_id,
+                        )
+                    continue
+
+                # Get the join key names
+                if relationship.type == "many_to_one":
+                    # This model has foreign key pointing to related model
+                    # Example: orders many_to_one customers (orders.customer_id -> customers.id)
+                    local_keys = relationship.foreign_key_columns  # [customer_id] (in orders)
+                    remote_keys = (
+                        relationship.primary_key_columns
+                        if relationship.primary_key
+                        else self.models[related_model].primary_key_columns
+                    )  # Use related model's primary key
+                else:
+                    # one_to_one or one_to_many: related model has foreign key pointing here
+                    # Example: customers one_to_many orders (customers.id <- orders.customer_id)
+                    local_keys = _relationship_local_key_columns(model, relationship)
+                    remote_keys = relationship.foreign_key_columns  # [customer_id] (in orders)
+
+                custom_condition = _custom_join_condition(relationship.sql)
+                add_edge(
+                    model_name,
+                    related_instance,
+                    local_keys,
+                    remote_keys,
+                    relationship.type,
+                    custom_condition,
+                    edge_id,
+                )
+                if reversible:
+                    add_edge(
+                        related_instance,
+                        model_name,
+                        remote_keys,
+                        local_keys,
+                        invert_relationship(relationship.type),
+                        _reverse_custom_join_condition(custom_condition),
+                        edge_id,
+                    )
+
+        # Role instances inherit the canonical target's explicitly role-aliased
+        # outgoing relationships. Scope nested roles by their parent instance so
+        # two identical role names below different parents remain distinct.
+        pending = [(instance, target, 1) for instance, target in self._role_models.items()]
+        expanded: set[str] = set()
+        while pending:
+            source_instance, source_model_name, depth = pending.pop(0)
+            if source_instance in expanded:
+                continue
+            expanded.add(source_instance)
+            if depth >= len(self.models):
+                continue
+            source_model = self.models[source_model_name]
+            for relationship in source_model.relationships:
+                if not relationship.active:
+                    continue
+                reversible = (relationship.metadata or {}).get("reversible") is not False
+                related_model = relationship.related_model
+                if related_model not in self.models:
+                    continue
+                nested_instance = f"{source_instance}${relationship.name}"
+                register_role_instance(nested_instance, related_model, source_instance)
+                self._relationship_instances[(source_instance, relationship.name)] = nested_instance
+                if relationship.type == "cross":
+                    add_edge(source_instance, nested_instance, [], [], "cross", edge_id=relationship.edge_id)
+                    if reversible:
+                        add_edge(nested_instance, source_instance, [], [], "cross", edge_id=relationship.edge_id)
+                elif relationship.type in {"many_to_one", "one_to_one", "one_to_many"}:
+                    if relationship.type == "many_to_one":
+                        local_keys = relationship.foreign_key_columns
+                        remote_keys = (
+                            relationship.primary_key_columns
+                            if relationship.primary_key
+                            else self.models[related_model].primary_key_columns
+                        )
+                    else:
+                        local_keys = _relationship_local_key_columns(source_model, relationship)
+                        remote_keys = relationship.foreign_key_columns
+                    custom_condition = _custom_join_condition(relationship.sql)
+                    add_edge(
+                        source_instance,
+                        nested_instance,
+                        local_keys,
+                        remote_keys,
+                        relationship.type,
+                        custom_condition,
+                        relationship.edge_id,
+                    )
+                    if reversible:
+                        add_edge(
+                            nested_instance,
+                            source_instance,
+                            remote_keys,
+                            local_keys,
+                            invert_relationship(relationship.type),
+                            _reverse_custom_join_condition(custom_condition),
+                            relationship.edge_id,
+                        )
+                elif relationship.type == "many_to_many":
+                    if relationship.through:
+                        raise ValueError(
+                            f"Nested role path '{nested_instance}' uses a many_to_many relationship through "
+                            f"'{relationship.through}', which is not supported for role instances"
+                        )
+                    if not relationship.foreign_key:
+                        raise ValueError(
+                            f"Nested role path '{nested_instance}' has no keys for its many_to_many relationship"
+                        )
+                    if relationship.primary_key:
+                        local_keys = relationship.foreign_key_columns
+                        remote_keys = relationship.primary_key_columns
+                    else:
+                        local_keys = source_model.primary_key_columns
+                        remote_keys = relationship.foreign_key_columns
+                    custom_condition = _custom_join_condition(relationship.sql)
+                    add_edge(
+                        source_instance,
+                        nested_instance,
+                        local_keys,
+                        remote_keys,
+                        "one_to_many",
+                        custom_condition,
+                        relationship.edge_id,
+                    )
+                    if reversible:
+                        add_edge(
+                            nested_instance,
+                            source_instance,
+                            remote_keys,
+                            local_keys,
+                            "many_to_one",
+                            _reverse_custom_join_condition(custom_condition),
+                            relationship.edge_id,
+                        )
+                pending.append((nested_instance, related_model, depth + 1))
+
+    def relationship_target_instance(self, source_instance: str, relationship: Relationship) -> str:
+        """Return the query/SQL instance reached by a relationship from a source instance."""
+        if getattr(self, "_adjacency_dirty", True):
+            self.build_adjacency()
+        return self._relationship_instances.get((source_instance, relationship.name), relationship.related_model)
+
+    def instance_has_keyed_relationship(self, instance: str, query_instances: set[str]) -> bool:
+        """Return whether an instance has a non-cross graph edge used by this query."""
+        if getattr(self, "_adjacency_dirty", True):
+            self.build_adjacency()
+        return any(
+            target in query_instances and relationship_type != "cross"
+            for target, _from_keys, _to_keys, relationship_type, _condition, _edge_id in self._adjacency.get(
+                instance, []
+            )
+        )
+
+    def find_relationship_path(
+        self, from_model: str, to_model: str, query_models: set[str] | frozenset[str] | None = None
+    ) -> list[JoinPath]:
+        """Find the unique shortest join path between two models.
+
+        Args:
+            from_model: Source model name
+            to_model: Target model name
+            query_models: Optional models already referenced by the query. If
+                equally short routes exist, a unique route whose intermediate
+                hops stay in this set is preferred.
+
+        Returns:
+            List of JoinPath objects representing the join sequence
+
+        Raises:
+            ValueError: If no join path exists
+            AmbiguousJoinPathError: If multiple equally short paths exist
+        """
+        if from_model == to_model:
+            return []
+
+        if getattr(self, "_adjacency_dirty", True):
+            self.build_adjacency()
+            self._adjacency_dirty = False
+
+        if from_model not in self.models and from_model not in self._role_models:
+            raise KeyError(f"Model {from_model} not found")
+        if to_model not in self.models and to_model not in self._role_models:
+            raise KeyError(f"Model {to_model} not found")
+
+        context = frozenset(query_models) if query_models else None
+        cache_key = (from_model, to_model, context)
+        cached = self._relationship_path_cache.get(cache_key)
+        if isinstance(cached, str):
+            if cached.startswith("Ambiguous join paths"):
+                raise AmbiguousJoinPathError(cached)
+            raise ValueError(cached)
+        if cached is not None:
+            return list(cached)
+
+        queue: deque[tuple[str, tuple[JoinPath, ...], frozenset[str]]] = deque(
+            [(from_model, tuple(), frozenset({from_model}))]
+        )
+        shortest_length: int | None = None
+        candidates: dict[tuple[object, ...], tuple[JoinPath, ...]] = {}
+
+        def edge_sort_key(edge):
+            next_model, from_keys, to_keys, relationship_type, custom_condition, edge_id = edge
+            return (
+                next_model,
+                tuple(from_keys),
+                tuple(to_keys),
+                relationship_type,
+                custom_condition or "",
+                edge_id or "",
+            )
+
+        def path_signature(path: tuple[JoinPath, ...]) -> tuple[object, ...]:
+            return tuple(
+                (
+                    hop.from_model,
+                    hop.to_model,
+                    tuple(hop.from_columns) if hop.custom_condition is None else (),
+                    tuple(hop.to_columns) if hop.custom_condition is None else (),
+                    hop.relationship,
+                    _normalized_join_condition(hop.custom_condition),
+                    hop.edge_id,
+                )
+                for hop in path
+            )
+
+        while queue:
+            current, path, visited = queue.popleft()
+            if shortest_length is not None and len(path) >= shortest_length:
+                continue
+
+            for next_model, from_keys, to_keys, relationship_type, custom_condition, edge_id in sorted(
+                self._adjacency.get(current, []), key=edge_sort_key
+            ):
+                if next_model in visited:
+                    continue
+                new_path = path + (
+                    JoinPath(
+                        from_model=current,
+                        to_model=next_model,
+                        from_columns=from_keys,
+                        to_columns=to_keys,
+                        relationship=relationship_type,
+                        custom_condition=custom_condition,
+                        from_target_model=self._role_models.get(current, current),
+                        to_target_model=self._role_models.get(next_model, next_model),
+                        edge_id=edge_id,
+                    ),
+                )
+
+                if next_model == to_model:
+                    shortest_length = len(new_path)
+                    candidates[path_signature(new_path)] = new_path
+                elif shortest_length is None or len(new_path) < shortest_length:
+                    queue.append((next_model, new_path, visited | {next_model}))
+
+        if not candidates:
+            message = f"No join path found between {from_model} and {to_model}"
+            self._relationship_path_cache[cache_key] = message
+            raise ValueError(message)
+
+        ordered_candidates = [candidates[key] for key in sorted(candidates, key=repr)]
+        if len(ordered_candidates) > 1 and context is not None:
+
+            def out_of_query_hops(path: tuple[JoinPath, ...]) -> int:
+                return sum(1 for hop in path[:-1] if hop.to_model not in context)
+
+            best_score = min(out_of_query_hops(path) for path in ordered_candidates)
+            preferred = [path for path in ordered_candidates if out_of_query_hops(path) == best_score]
+            if len(preferred) == 1:
+                selected = preferred[0]
+                self._relationship_path_cache[cache_key] = selected
+                return list(selected)
+            ordered_candidates = preferred
+
+        if len(ordered_candidates) > 1:
+            routes = []
+            for path in ordered_candidates:
+                if any(hop.edge_id is not None for hop in path):
+                    route = from_model + "".join(
+                        f" -[{hop.edge_id}]-> {hop.to_model}" if hop.edge_id else f" -> {hop.to_model}" for hop in path
+                    )
+                else:
+                    route = " -> ".join([from_model, *(hop.to_model for hop in path)])
+                routes.append(route)
+            message = (
+                f"Ambiguous join paths between {from_model} and {to_model}: "
+                + "; ".join(routes)
+                + ". Define a unique relationship route before querying these models."
+            )
+            self._relationship_path_cache[cache_key] = message
+            raise AmbiguousJoinPathError(message)
+
+        selected = ordered_candidates[0]
+        self._relationship_path_cache[cache_key] = selected
+        return list(selected)
+
+    def find_all_models_for_query(self, dimensions: list[str], measures: list[str]) -> set[str]:
+        """Find all models needed for a query.
+
+        Args:
+            dimensions: List of dimension references (model.dimension)
+            measures: List of measure references (model.measure)
+
+        Returns:
+            Set of model names needed for the query
+        """
+        models = set()
+
+        for dim in dimensions:
+            if "." in dim:
+                model_name = dim.split(".")[0]
+                models.add(model_name)
+
+        for measure in measures:
+            if "." in measure:
+                model_name = measure.split(".")[0]
+                models.add(model_name)
+
+        return models

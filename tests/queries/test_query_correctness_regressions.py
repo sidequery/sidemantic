@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
 
 @pytest.fixture
@@ -182,7 +182,7 @@ def test_filtered_cumulative_scopes_population_without_mutating_graph(sales, own
         order_by=["sales.day"],
     )
     columns = [column[0] for column in result.description]
-    assert not any(column.startswith("__sidemantic") for column in columns)
+    assert not any(column.startswith("__sqlctx") for column in columns)
     rows = [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
     factor = 2 if base_kind == "derived" else 1
     assert [(row["revenue"], row["running"], row["paid_running"]) for row in rows] == [
@@ -248,7 +248,7 @@ def test_conversion_source_expressions_and_pagination(python_layer, multistep, t
 
 
 @pytest.mark.parametrize("alias_reference", ["sales.day", "sales.running"])
-@pytest.mark.parametrize("alias", ["__sidemantic_cumulative_0", "__sidemantic_cumulative_0_raw"])
+@pytest.mark.parametrize("alias", ["__sqlctx_cumulative_0", "__sqlctx_cumulative_0_raw"])
 def test_filtered_cumulative_private_inputs_do_not_collide_with_caller_aliases(sales, alias_reference, alias):
     sales.graph.get_model("sales").get_metric("running").filters = ["category = 'a'"]
     sql = sales.compile(

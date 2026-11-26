@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic", "duckdb"]
+# dependencies = ["sqlctx @ git+https://github.com/sidequery/sqlctx", "duckdb"]
 # ///
 """Test multi-hop joins."""
 
 import duckdb
 
-from sidemantic import Dimension, Metric, Model, Relationship, SemanticLayer
+from sqlctx import Dimension, Metric, Model, Relationship, SemanticLayer
 
 conn = duckdb.connect(":memory:")
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# dependencies = ["sidemantic", "duckdb", "pandas"]
+# dependencies = ["sqlctx @ git+https://github.com/sidequery/sqlctx", "duckdb", "pandas"]
 # ///
 """Example: DuckDB pre-aggregation layer on top of Hive-partitioned parquet.
 
@@ -25,8 +25,8 @@ import shutil
 
 import duckdb
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.core.pre_aggregation import PreAggregation
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.core.pre_aggregation import PreAggregation
 
 
 def create_hive_partitioned_data(base_dir: str):

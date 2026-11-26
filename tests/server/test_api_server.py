@@ -17,10 +17,10 @@ pytest.importorskip("httpx")
 import duckdb
 from fastapi.testclient import TestClient
 
-from sidemantic import DashboardDocument, Dimension, Metric, Model, SemanticLayer, load_from_directory
-from sidemantic.api_server import create_app
-from sidemantic.db.base import BaseDatabaseAdapter
-from sidemantic.server.common import ARROW_STREAM_MEDIA_TYPE
+from sqlctx import DashboardDocument, Dimension, Metric, Model, SemanticLayer, load_from_directory
+from sqlctx.api_server import create_app
+from sqlctx.db.base import BaseDatabaseAdapter
+from sqlctx.server.common import ARROW_STREAM_MEDIA_TYPE
 
 
 def _write_models(directory: Path) -> None:
@@ -140,7 +140,7 @@ def test_bearer_exchange_issues_short_lived_httponly_session(tmp_path):
     assert exchange.status_code == 200
     assert exchange.json() == {"expires_in": 600}
     cookie = exchange.headers["set-cookie"]
-    assert "sidemantic_session=" in cookie
+    assert "sqlctx_session=" in cookie
     assert "HttpOnly" in cookie
     assert "SameSite=strict" in cookie
     assert exchange.headers["cache-control"] == "no-store"
@@ -165,7 +165,7 @@ def test_bearer_exchange_issues_short_lived_header_session(tmp_path):
 
     exchange = client.post(
         "/auth/session",
-        headers={**_auth_headers(), "X-Sidemantic-Session-Mode": "header"},
+        headers={**_auth_headers(), "X-sqlctx-Session-Mode": "header"},
     )
     assert exchange.status_code == 200
     payload = exchange.json()
@@ -173,7 +173,7 @@ def test_bearer_exchange_issues_short_lived_header_session(tmp_path):
     session = payload["session_token"]
     assert "set-cookie" not in exchange.headers
 
-    response = client.get("/health", headers={"Authorization": f"Sidemantic-Session {session}"})
+    response = client.get("/health", headers={"Authorization": f"sqlctx-Session {session}"})
     assert response.status_code == 200
 
 
@@ -210,7 +210,7 @@ def test_dashboard_endpoint_is_optional_and_authenticated(tmp_path):
     load_from_directory(layer, models_dir)
     dashboard = DashboardDocument.from_dict(
         {
-            "schema": "sidemantic.dashboard.v1",
+            "schema": "sqlctx.dashboard.v1",
             "title": "Orders overview",
             "tabs": [
                 {
@@ -298,7 +298,7 @@ def test_result_cache_disabled_by_default(tmp_path):
 
 
 def test_serve_ui_serves_spa_and_keeps_api_gated(tmp_path):
-    from sidemantic.api_server import ui_static_dir
+    from sqlctx.api_server import ui_static_dir
 
     if not ui_static_dir().joinpath("index.html").exists():
         import pytest
@@ -644,7 +644,7 @@ def test_json_responses_use_arrow_reader_for_generic_adapters():
 
 def _build_unbuilt_rollup_client(tmp_path: Path, preagg_strict: bool = False) -> TestClient:
     """Build a client whose matching pre-aggregation was never materialized."""
-    from sidemantic.core.pre_aggregation import PreAggregation
+    from sqlctx.core.pre_aggregation import PreAggregation
 
     db_path = tmp_path / "preagg-warehouse.duckdb"
     conn = duckdb.connect(str(db_path))

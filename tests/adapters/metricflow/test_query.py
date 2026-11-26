@@ -2,8 +2,8 @@
 
 import pytest
 
-from sidemantic import SemanticLayer
-from sidemantic.adapters.metricflow import MetricFlowAdapter
+from sqlctx import SemanticLayer
+from sqlctx.adapters.metricflow import MetricFlowAdapter
 
 # =============================================================================
 # QUERY TESTS

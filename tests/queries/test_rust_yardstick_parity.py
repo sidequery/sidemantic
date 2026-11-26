@@ -5,7 +5,7 @@ from itertools import product
 
 import pytest
 
-from sidemantic.sql.query_rewriter import QueryRewriter
+from sqlctx.sql.query_rewriter import QueryRewriter
 from tests.queries import test_yardstick_query_rewriter as contracts
 from tests.queries import test_yardstick_warnings as warning_contracts
 from tests.queries.test_yardstick_query_rewriter import yardstick_layer, yardstick_paper_layer  # noqa: F401
@@ -33,7 +33,7 @@ def contract_cases():
 
 @pytest.fixture(autouse=True)
 def strict_rust(monkeypatch):
-    runtime = pytest.importorskip("sidemantic_rs", reason="Requires the built Rust extension")
+    runtime = pytest.importorskip("sqlctx_rs", reason="Requires the built Rust extension")
     assert callable(runtime.rewrite_with_semantic_input_context)
     assert callable(runtime.rewrite_with_semantic_input_context_diagnostics)
     original_init = QueryRewriter.__init__

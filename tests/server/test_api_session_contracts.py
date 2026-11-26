@@ -6,9 +6,9 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from fastapi.testclient import TestClient
 
-from sidemantic import Dimension, Metric, Model, SemanticLayer
-from sidemantic.api_server import create_app
-from sidemantic.server import common
+from sqlctx import Dimension, Metric, Model, SemanticLayer
+from sqlctx.api_server import create_app
+from sqlctx.server import common
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def test_http_and_mcp_preserve_configured_session(configured_layer, monkeypatch)
     from tests.optional_dep_stubs import ensure_fake_mcp
 
     ensure_fake_mcp()
-    from sidemantic import mcp_server
+    from sqlctx import mcp_server
 
     monkeypatch.setattr(mcp_server, "_layer", configured_layer)
     monkeypatch.setattr(mcp_server, "_user_attributes", None)
@@ -109,7 +109,7 @@ def test_http_rejects_exact_private_names_in_filters(field, reference):
 @pytest.mark.parametrize("base_name", ["created", "created__internal"])
 @pytest.mark.parametrize("private_field", ["base", "exact", None])
 def test_visibility_checks_the_dimension_actually_projected(base_name, private_field):
-    from sidemantic.core.semantic_layer import SecurityError
+    from sqlctx.core.semantic_layer import SecurityError
 
     field_name = f"{base_name}__day"
     layer = SemanticLayer(auto_register=False, enforce_visibility=True)
@@ -158,7 +158,7 @@ def test_visibility_checks_the_dimension_actually_projected(base_name, private_f
 def test_http_sql_parsing_uses_backend_dialect(endpoint, monkeypatch):
     import pyarrow as pa
 
-    import sidemantic.api_server as api
+    import sqlctx.api_server as api
 
     layer = SemanticLayer(dialect="bigquery", auto_register=False)
     layer.add_model(

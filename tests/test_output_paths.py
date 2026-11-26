@@ -2,21 +2,21 @@
 
 import pytest
 
-from sidemantic import Model, SemanticLayer
-from sidemantic.adapters.atscale_sml import AtScaleSMLAdapter
-from sidemantic.adapters.bsl import BSLAdapter
-from sidemantic.adapters.gooddata import GoodDataAdapter
-from sidemantic.adapters.hex import HexAdapter
-from sidemantic.adapters.holistics import HolisticsAdapter
-from sidemantic.adapters.omni import OmniAdapter
-from sidemantic.adapters.rill import RillAdapter
-from sidemantic.adapters.superset import SupersetAdapter
-from sidemantic.adapters.thoughtspot import ThoughtSpotAdapter
-from sidemantic.adapters.tmdl import TMDLAdapter
-from sidemantic.core.metric import Metric
-from sidemantic.core.migrator import Migrator
-from sidemantic.core.semantic_graph import SemanticGraph
-from sidemantic.paths import output_child
+from sqlctx import Model, SemanticLayer
+from sqlctx.adapters.atscale_sml import AtScaleSMLAdapter
+from sqlctx.adapters.bsl import BSLAdapter
+from sqlctx.adapters.gooddata import GoodDataAdapter
+from sqlctx.adapters.hex import HexAdapter
+from sqlctx.adapters.holistics import HolisticsAdapter
+from sqlctx.adapters.omni import OmniAdapter
+from sqlctx.adapters.rill import RillAdapter
+from sqlctx.adapters.superset import SupersetAdapter
+from sqlctx.adapters.thoughtspot import ThoughtSpotAdapter
+from sqlctx.adapters.tmdl import TMDLAdapter
+from sqlctx.core.metric import Metric
+from sqlctx.core.migrator import Migrator
+from sqlctx.core.semantic_graph import SemanticGraph
+from sqlctx.paths import output_child
 
 ADAPTERS = [
     AtScaleSMLAdapter,

@@ -4,7 +4,7 @@ This demo converts LookML files into Malloy format and generates sample data for
 
 ## Try it in your browser
 
-Press `.` on this repo (or go to [github.dev](https://github.dev/sidequery/sidemantic)) to open in the web editor, then:
+Press `.` on this repo (or go to [github.dev](https://github.dev/sidequery/sqlctx)) to open in the web editor, then:
 
 1. Install the [Malloy VS Code extension](https://marketplace.visualstudio.com/items?itemName=malloydata.malloy-vscode)
 2. Open `examples/malloy_demo/malloy_output/thelook.malloy`
@@ -13,7 +13,7 @@ Press `.` on this repo (or go to [github.dev](https://github.dev/sidequery/sidem
 ## Quick start (local)
 
 ```bash
-git clone https://github.com/sidequery/sidemantic && cd sidemantic
+git clone https://github.com/sidequery/sqlctx && cd sqlctx
 uv run examples/malloy_demo/run_demo.py
 ```
 
@@ -22,13 +22,13 @@ Then open `malloy_output/thelook.malloy` in VS Code with the Malloy extension.
 ## What it demonstrates
 
 - **LookML parsing**: Reads LookML view definitions (dimensions, measures, dimension_groups)
-- **Format conversion**: Uses sidemantic to convert LookML to Malloy sources
+- **Format conversion**: Uses sqlctx to convert LookML to Malloy sources
 - **Sample data generation**: Creates Parquet files with realistic e-commerce data
 
 ## What happens
 
 1. Parses 3 LookML views (products, customers, orders)
-2. Converts to Malloy format using sidemantic
+2. Converts to Malloy format using sqlctx
 3. Generates sample Parquet data (200 customers, 40 products, 5000 orders)
 4. Adds sample queries and a dashboard example
 

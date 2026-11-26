@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from sidemantic.db.spark import SparkAdapter, SparkResult
+from sqlctx.db.spark import SparkAdapter, SparkResult
 
 
 def _block_import(monkeypatch, module_prefix: str) -> None:

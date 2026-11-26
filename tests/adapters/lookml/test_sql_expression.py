@@ -1,6 +1,6 @@
-from sidemantic import Dimension, Model
-from sidemantic.adapters.lookml import LookMLAdapter
-from sidemantic.sql.lookml_expression import (
+from sqlctx import Dimension, Model
+from sqlctx.adapters.lookml import LookMLAdapter
+from sqlctx.sql.lookml_expression import (
     fold_lookml_aggregate_filters,
     generator_column_nulling_suffices,
     lookml_expression_references_column,
@@ -287,25 +287,25 @@ def test_fold_rejects_predicate_comments_and_statement_terminators():
 
 
 def test_protection_and_filter_markers_cannot_collide_with_user_sql():
-    sentinel_sql = "__sidemantic_lookml_fragment_model_0__.status = {model}.status"
+    sentinel_sql = "__sqlctx_lookml_fragment_model_0__.status = {model}.status"
     assert rewrite_lookml_columns(sentinel_sql, _resolver, known_columns={"status"}) == (
-        "__sidemantic_lookml_fragment_model_0__.status = R(status)"
+        "__sqlctx_lookml_fragment_model_0__.status = R(status)"
     )
     assert (
         fold_lookml_aggregate_filters(
-            "COUNT(__sidemantic_lookml_fragment_filter_0_0__)",
+            "COUNT(__sqlctx_lookml_fragment_filter_0_0__)",
             ["x > 0"],
             force=True,
         )
-        == "COUNT(CASE WHEN x > 0 THEN __sidemantic_lookml_fragment_filter_0_0__ END)"
+        == "COUNT(CASE WHEN x > 0 THEN __sqlctx_lookml_fragment_filter_0_0__ END)"
     )
     assert (
         fold_lookml_aggregate_filters(
-            "COUNT('__sidemantic_lookml_fragment_filter_0_0__')",
+            "COUNT('__sqlctx_lookml_fragment_filter_0_0__')",
             ["x > 0"],
             force=True,
         )
-        == "COUNT(CASE WHEN x > 0 THEN '__sidemantic_lookml_fragment_filter_0_0__' END)"
+        == "COUNT(CASE WHEN x > 0 THEN '__sqlctx_lookml_fragment_filter_0_0__' END)"
     )
 
 

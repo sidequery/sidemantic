@@ -1651,19 +1651,65 @@ impl Lowerer<'_, '_> {
             return Ok(Some(expression));
         }
         let dependencies = |expression: &Expression| -> Result<(bool, bool)> {
+            fn visit(
+                lowerer: &Lowerer<'_, '_>,
+                value: &Value,
+                removed: &HashSet<String>,
+                dropped: &mut bool,
+                retained: &mut bool,
+            ) -> Result<()> {
+                match value {
+                    Value::Object(fields) => {
+                        if fields.contains_key("select") || fields.contains_key("subquery") {
+                            *retained = true;
+                            return Ok(());
+                        }
+                        if let Ok(expression) = decode::<Expression>(value.clone()) {
+                            // Match the complete target before descending into its
+                            // inputs: replacing YEAR(date) does not replace date.
+                            if removed.contains(&lowerer.signature(expression.clone())?) {
+                                let mut has_columns = false;
+                                let mut own = true;
+                                map_columns(&mut value.clone(), &mut |column| {
+                                    if let Some((table, _)) = reference(&column) {
+                                        has_columns = true;
+                                        own &=
+                                            table.as_deref().is_none_or(|table| table == "_inner");
+                                    }
+                                    Ok(column)
+                                })?;
+                                if has_columns && own {
+                                    *dropped = true;
+                                    return Ok(());
+                                }
+                            }
+                            if reference(&expression).is_some() {
+                                *retained = true;
+                                return Ok(());
+                            }
+                        }
+                        for child in fields.values() {
+                            visit(lowerer, child, removed, dropped, retained)?;
+                        }
+                    }
+                    Value::Array(children) => {
+                        for child in children {
+                            visit(lowerer, child, removed, dropped, retained)?;
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }
             let mut retained = false;
             let mut dropped = false;
-            map_columns(&mut encode(expression)?, &mut |node| {
-                if let Some((table, _)) = reference(&node) {
-                    let own = table.as_deref().is_none_or(|table| table == "_inner");
-                    if own && removed.contains(&self.signature(node.clone())?) {
-                        dropped = true;
-                    } else {
-                        retained = true;
-                    }
-                }
-                Ok(node)
-            })?;
+            visit(
+                self,
+                &encode(expression)?,
+                removed,
+                &mut dropped,
+                &mut retained,
+            )?;
             Ok((dropped, retained))
         };
         let (dropped, _) = dependencies(&expression)?;

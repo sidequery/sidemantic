@@ -792,6 +792,35 @@ def test_yardstick_visible_set_retains_independent_volatile_predicates(yardstick
             yardstick_layer.sql(query + f"(year=2023 AND {function}) OR (year=2024 AND {function})")
 
 
+@pytest.mark.parametrize("modifier", ["SET MONTH(order_date)=2", "ALL MONTH(order_date)"])
+@pytest.mark.parametrize("context", ["VISIBLE", "WHERE MONTH(order_date)=1 AND amount>110"])
+def test_yardstick_expression_target_replaces_only_its_filter(yardstick_layer, modifier, context):
+    rows = yardstick_layer.sql(
+        f"SELECT AGGREGATE(revenue) AT ({context} {modifier}) FROM daily_orders_v "
+        "WHERE MONTH(order_date)=1 AND amount>110"
+    ).fetchall()
+    assert rows == [(320.0 if modifier.startswith("SET") else 650.0,)]
+
+
+def test_yardstick_expression_target_keeps_filters_on_its_input(yardstick_layer):
+    rows = yardstick_layer.sql(
+        "SELECT AGGREGATE(revenue) AT (VISIBLE SET MONTH(order_date)=2) FROM daily_orders_v "
+        "WHERE MONTH(order_date)=1 AND order_date < DATE '2023-01-25'"
+    ).fetchall()
+    assert rows == [(None,)]
+    assert yardstick_layer.sql(
+        "SELECT AGGREGATE(revenue) AT (VISIBLE SET year+1=2024) FROM sales_yearly WHERE year+1=2023"
+    ).fetchall() == [(225.0,)]
+
+
+def test_yardstick_visible_set_replaces_year_expression(yardstick_layer):
+    yardstick_layer.adapter.execute("INSERT INTO daily_orders VALUES ('2024-01-01', 40)")
+    assert yardstick_layer.sql(
+        "SELECT AGGREGATE(revenue) AT (VISIBLE SET YEAR(order_date)=2023) "
+        "FROM daily_orders_v WHERE YEAR(order_date)=2024"
+    ).fetchall() == [(840.0,)]
+
+
 def test_yardstick_dollar_quoted_wrapper_reaches_modifier_binding(yardstick_layer):
     inner = "SELECT year, AGGREGATE(revenue) AT (VISIBLE SET year=year-1) FROM sales_v WHERE "
     wrapped = "SELECT * FROM yardstick($context$" + "{}" + "$context$)"

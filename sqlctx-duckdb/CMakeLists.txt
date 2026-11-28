@@ -22,14 +22,15 @@ function(sqlctx_detect_apis)
             parser/parser_options.hpp parser/expression/constant_expression.hpp
             parser/statement/insert_statement.hpp
             parser/grammar_extension.hpp parser/peg/compiled_grammar.hpp parser/peg/transformer/peg_transformer.hpp
-            planner/operator/logical_get.hpp main/client_config.hpp)
+            planner/operator/logical_get.hpp planner/planner_extension.hpp main/client_config.hpp
+            common/types/data_chunk.hpp common/types/vector.hpp)
         if(EXISTS "${CMAKE_SOURCE_DIR}/src/include/duckdb/${header}")
             file(SHA256 "${CMAKE_SOURCE_DIR}/src/include/duckdb/${header}" header_hash)
             string(APPEND host_api ";${header_hash}")
         endif()
     endforeach()
     if(NOT SQLCTX_HOST_API STREQUAL host_api)
-        foreach(api TOKEN_PARSE_FN NEW_IDENTIFIER_API NEW_EXPRESSION_API QUALIFIED_TABLE_API BUILTIN_PARSER_OPTIONS LITERAL_API GRAMMAR_EXTENSION INSERT_QUERY_NODE BOUND_TABLE_FUNCTION GRAMMAR_EXTENSION_LIST ARENA_TRANSFORM SHELL_GRAMMAR_CONTEXT)
+        foreach(api TOKEN_PARSE_FN NEW_IDENTIFIER_API NEW_EXPRESSION_API QUALIFIED_TABLE_API BUILTIN_PARSER_OPTIONS LITERAL_API GRAMMAR_EXTENSION INSERT_QUERY_NODE BOUND_TABLE_FUNCTION GRAMMAR_EXTENSION_LIST ARENA_TRANSFORM SHELL_GRAMMAR_CONTEXT PRE_BIND VECTOR_APPEND)
             unset(SQLCTX_${api} CACHE)
         endforeach()
         set(SQLCTX_HOST_API "${host_api}" CACHE INTERNAL "DuckDB headers used for compatibility probes" FORCE)
@@ -102,6 +103,17 @@ function(sqlctx_detect_apis)
                 CompiledGrammar::Create(*options.context, vector<string>{\"shell\", \"sqlctx\"});
         }
     " SQLCTX_SHELL_GRAMMAR_CONTEXT)
+    check_cxx_source_compiles("
+        #include <duckdb/planner/planner_extension.hpp>
+        void probe(duckdb::PlannerExtension &extension) { extension.pre_bind_function = nullptr; }
+    " SQLCTX_PRE_BIND)
+    check_cxx_source_compiles("
+        #include <duckdb/common/types/data_chunk.hpp>
+        void probe(duckdb::DataChunk &chunk, const duckdb::Value &value) {
+            chunk.data[0].Append(value);
+            chunk.CheckCardinality(1);
+        }
+    " SQLCTX_VECTOR_APPEND)
     configure_file(src/include/sqlctx_compat.hpp.in sqlctx_compat.hpp)
     cmake_pop_check_state()
 endfunction()
@@ -173,7 +185,7 @@ add_custom_target(sqlctx_rust_staticlib DEPENDS "${SQLCTX_LIB}")
 # Include Rust library headers
 include_directories(${SQLCTX_INCLUDE})
 
-set(EXTENSION_SOURCES src/sqlctx_extension.cpp src/sqlctx_parser.cpp src/sqlctx_grammar.cpp src/sqlctx_catalog.cpp src/sqlctx_api.cpp src/sqlctx_discovery.cpp)
+set(EXTENSION_SOURCES src/sqlctx_extension.cpp src/sqlctx_parser.cpp src/sqlctx_grammar.cpp src/sqlctx_catalog.cpp src/sqlctx_api.cpp src/sqlctx_discovery.cpp src/sqlctx_semantic_input.cpp src/sqlctx_explain.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})

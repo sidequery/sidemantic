@@ -147,16 +147,20 @@ public:
             GrammarChange::AddRule("SqlctxModel <- 'MODEL' (SqlctxBlock / ColIdOrString ('FROM' (SqlctxSource / SqlctxBlock) SqlctxBlock / SqlctxBlock)?)"),
             GrammarChange::AddRule("SqlctxItem <- ('METRIC' / 'DIMENSION' / 'SEGMENT') (SqlctxBlock / SqlctxSource ('AS' Expression / SqlctxBlock))"),
             GrammarChange::AddRule("SqlctxDefinition <- 'SEMANTIC'? ('CREATE' ('OR' 'REPLACE')?)? (SqlctxModel / SqlctxItem)", StartDefinition),
+            GrammarChange::AddRule("SqlctxView <- 'CREATE' ('OR' 'REPLACE')? 'SEMANTIC' 'VIEW' ColIdOrString 'AS' SelectStatement", StartDefinition),
+            GrammarChange::AddRule("SqlctxDropView <- 'DROP' 'SEMANTIC' 'VIEW' ('IF' 'EXISTS')? ColIdOrString", StartDefinition),
             GrammarChange::AddRule("SqlctxDrop <- 'SEMANTIC'? 'DROP' ('MODEL' / 'METRIC' / 'DIMENSION' / 'SEGMENT') ('IF' 'EXISTS')? SqlctxSource", StartDefinition),
             GrammarChange::AddRule("SqlctxShow <- 'SHOW' 'SEMANTIC'? ('MODELS' / 'METRICS' / 'DIMENSIONS' / 'SEGMENTS' / 'RELATIONSHIPS') (('FROM' ColIdOrString) / ('FOR' SqlctxSource))?", StartDefinition),
             GrammarChange::AddRule("SqlctxDescribe <- ('DESCRIBE' / 'DESC') 'MODEL' ColIdOrString", StartDefinition),
             GrammarChange::AddRule("SqlctxExport <- 'EXPORT' 'SEMANTIC' 'CATALOG'", StartDefinition),
             GrammarChange::AddRule("SqlctxImport <- 'IMPORT' 'SEMANTIC' 'CATALOG' ColIdOrString", StartDefinition),
             GrammarChange::AddRule("SqlctxQuery <- 'SEMANTIC' (SelectStatement / CreateStatement / InsertStatement)", StartSemanticQuery),
-            GrammarChange::AddRule("SqlctxPreparable <- SqlctxShow / SqlctxDescribe / SqlctxExport / SqlctxImport / SqlctxDrop / SqlctxDefinition / SqlctxQuery"),
+            GrammarChange::AddRule("SqlctxPreparable <- SqlctxShow / SqlctxDescribe / SqlctxExport / SqlctxImport / SqlctxDropView / SqlctxDrop / SqlctxView / SqlctxDefinition / SqlctxQuery"),
             GrammarChange::AddRule("SqlctxPrepare <- 'PREPARE' ColIdOrString 'AS' SqlctxPreparable", StartPrepare),
             GrammarChange::AddRule("SqlctxExplain <- 'EXPLAIN' AnalyzeKeyword? ExplainOptionList? SqlctxPreparable", StartExplain),
             GrammarChange::PrependChoice("Statement", "SqlctxDefinition"),
+            GrammarChange::PrependChoice("Statement", "SqlctxView"),
+            GrammarChange::PrependChoice("Statement", "SqlctxDropView"),
             GrammarChange::PrependChoice("Statement", "SqlctxDrop"),
             GrammarChange::PrependChoice("Statement", "SqlctxShow"),
             GrammarChange::PrependChoice("Statement", "SqlctxDescribe"),
@@ -169,7 +173,8 @@ public:
     }
 };
 
-struct SqlctxGrammarInfo : public ParserExtensionInfo {
+struct SqlctxGrammarInfo : public SqlctxParserInfo {
+    explicit SqlctxGrammarInfo(DatabaseInstance &database) : SqlctxParserInfo(database) {}
     shared_ptr<CompiledGrammar> default_grammar;
     shared_ptr<CompiledGrammar> grammar;
 };
@@ -179,7 +184,7 @@ struct SqlctxGrammarInfo : public ParserExtensionInfo {
 shared_ptr<ParserExtensionInfo> RegisterSqlctxGrammar(DatabaseInstance &db) {
     auto extension = make_shared_ptr<SqlctxGrammar>();
     GrammarExtension::Register(db, extension);
-    auto info = make_shared_ptr<SqlctxGrammarInfo>();
+    auto info = make_shared_ptr<SqlctxGrammarInfo>(db);
     info->default_grammar = db.GetParserCache().GetMatcher();
 #if SQLCTX_GRAMMAR_EXTENSION_LIST
     info->grammar = CompiledGrammar::Create(vector<reference<GrammarExtension>> {*extension});
@@ -224,7 +229,9 @@ bool ParseSqlctxGrammar(ParserExtensionInfo *info, const string &sql, const Pars
 } // namespace duckdb
 #else
 namespace duckdb {
-shared_ptr<ParserExtensionInfo> RegisterSqlctxGrammar(DatabaseInstance &) { return nullptr; }
+shared_ptr<ParserExtensionInfo> RegisterSqlctxGrammar(DatabaseInstance &db) {
+    return make_shared_ptr<SqlctxParserInfo>(db);
+}
 bool ParseSqlctxGrammar(ParserExtensionInfo *, const string &, const ParserOptions &,
                            vector<unique_ptr<SQLStatement>> &) { return false; }
 } // namespace duckdb

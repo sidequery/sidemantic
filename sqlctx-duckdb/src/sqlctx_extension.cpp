@@ -1,12 +1,13 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "sqlctx_extension.hpp"
+#include "sqlctx_explain.hpp"
 #include "sqlctx_parser.hpp"
 #include "sqlctx_catalog.hpp"
+#include "sqlctx_semantic_input.hpp"
 #include "sqlctx.h"
 #include "duckdb/function/table_function.hpp"
-#include "duckdb/common/vector_operations/binary_executor.hpp"
-#include "duckdb/common/vector_operations/ternary_executor.hpp"
+#include "duckdb/common/vector_operations/unary_executor.hpp"
 
 namespace duckdb {
 
@@ -102,56 +103,6 @@ static void RewriteFunction(DataChunk &args, ExpressionState &state, Vector &res
     });
 }
 
-// Stateless SemanticInput entrypoints retain policies in the canonical input.
-// Reject NULs before crossing the C string boundary instead of truncating input.
-static string SemanticInputArgument(string_t value) {
-    auto text = value.GetString();
-    if (text.find('\0') != string::npos) {
-        throw InvalidInputException("SemanticInput argument contains a NUL byte");
-    }
-    return text;
-}
-
-static string_t SemanticInputResult(Vector &result, SqlctxRewriteResult compiled) {
-    if (compiled.error) {
-        string message(compiled.error);
-        sqlctx_free_result(compiled);
-        throw InvalidInputException("SemanticInput failed: %s", message);
-    }
-    if (!compiled.sql) {
-        sqlctx_free_result(compiled);
-        throw InvalidInputException("SemanticInput returned no SQL");
-    }
-    string sql(compiled.sql);
-    sqlctx_free_result(compiled);
-    return StringVector::AddString(result, sql);
-}
-
-static void SqlctxCompileSemanticInputFunction(DataChunk &args, ExpressionState &state,
-                                                  Vector &result) {
-    BinaryExecutor::Execute<string_t, string_t, string_t>(
-        args.data[0], args.data[1], result, args.size(), [&](string_t input, string_t query) {
-            auto input_json = SemanticInputArgument(input);
-            auto query_json = SemanticInputArgument(query);
-            return SemanticInputResult(result,
-                sqlctx_compile_semantic_input(input_json.c_str(), query_json.c_str()));
-        });
-}
-
-static void SqlctxRewriteSemanticInputFunction(DataChunk &args, ExpressionState &state,
-                                                  Vector &result) {
-    TernaryExecutor::Execute<string_t, string_t, string_t, string_t>(
-        args.data[0], args.data[1], args.data[2], result, args.size(),
-        [&](string_t input, string_t sql, string_t context) {
-            auto input_json = SemanticInputArgument(input);
-            auto sql_text = SemanticInputArgument(sql);
-            auto context_json = SemanticInputArgument(context);
-            return SemanticInputResult(result, sqlctx_rewrite_semantic_input(
-                input_json.c_str(), sql_text.c_str(), context_json.c_str()));
-        });
-}
-
-
 static void LoadInternal(ExtensionLoader &loader) {
     auto &db = loader.GetDatabaseInstance();
     auto &config = DBConfig::GetConfig(db);
@@ -161,7 +112,9 @@ static void LoadInternal(ExtensionLoader &loader) {
     ParserExtension::Register(config, parser);
     OperatorExtension::Register(config, make_shared_ptr<SqlctxOperatorExtension>());
     RegisterSqlctxRouting(db);
+    RegisterSqlctxQueryCarrier(loader);
     RegisterSqlctxDiscovery(db);
+    RegisterSqlctxExplain(loader);
 
     loader.RegisterFunction(TableFunction("sqlctx_load", {LogicalType::VARCHAR}, LoadFunction, LoadBind<false>, LoadInit));
     loader.RegisterFunction(TableFunction("sqlctx_load_file", {LogicalType::VARCHAR}, LoadFunction, LoadBind<true>, LoadInit));
@@ -171,15 +124,7 @@ static void LoadInternal(ExtensionLoader &loader) {
     rewrite.SetStability(FunctionStability::VOLATILE);
     rewrite.SetFallible();
     loader.RegisterFunction(rewrite);
-    auto compile_input = ScalarFunction("sqlctx_compile_semantic_input",
-        {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR, SqlctxCompileSemanticInputFunction);
-    compile_input.SetFallible();
-    loader.RegisterFunction(compile_input);
-    auto rewrite_input = ScalarFunction("sqlctx_rewrite_semantic_input",
-        {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR,
-        SqlctxRewriteSemanticInputFunction);
-    rewrite_input.SetFallible();
-    loader.RegisterFunction(rewrite_input);
+    RegisterSqlctxSemanticInput(loader);
 }
 
 void SqlctxExtension::Load(ExtensionLoader &loader) { LoadInternal(loader); }

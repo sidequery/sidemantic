@@ -31,6 +31,35 @@ SEMANTIC SELECT "o"."revenue" FROM "peg_orders" o;
 40
 
 statement ok
+CREATE SEMANTIC VIEW peg_report AS SELECT id, revenue AS gross FROM peg_orders;
+
+statement ok
+BEGIN;
+
+statement ok
+PREPARE replace_report AS CREATE OR REPLACE SEMANTIC VIEW peg_report AS SELECT revenue AS total FROM peg_orders;
+
+statement ok
+EXECUTE replace_report;
+
+query I
+SEMANTIC SELECT total FROM peg_report;
+----
+40
+
+statement ok
+ROLLBACK;
+
+query II
+SEMANTIC SELECT id, gross FROM peg_report ORDER BY id;
+----
+1	10
+2	30
+
+statement ok
+DROP SEMANTIC VIEW peg_report;
+
+statement ok
 SEMANTIC CREATE VIEW peg_view AS SELECT peg_orders.revenue AS total FROM peg_orders;
 
 statement ok

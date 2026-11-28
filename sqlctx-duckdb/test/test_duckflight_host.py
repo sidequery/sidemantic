@@ -1,7 +1,11 @@
 # /// script
 # dependencies = ["psycopg[binary]>=3.2,<4", "pytest"]
 # ///
-"""Exercise sqlctx through the real DuckFlight extension's PostgreSQL listener."""
+"""Exercise sqlctx through the real DuckFlight extension's PostgreSQL listener.
+
+Uses DuckFlight 0.2.1's account API by default. Set DUCKFLIGHT_TEST_LEGACY=1
+when testing DuckDB 1.5 with its DuckFlight 0.1.x build.
+"""
 
 import hashlib
 import json
@@ -29,10 +33,18 @@ def postgres(tmp_path):
     if any(not os.environ.get(name) for name in (*required, "SQLCTX_DUCKDB_BINARY")):
         pytest.skip("Set SQLCTX_DUCKDB_BINARY, SQLCTX_DUCKDB_EXTENSION, and DUCKFLIGHT_EXTENSION")
     password = secrets.token_urlsafe(24)
-    salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 10000).hex()
-    config = tmp_path / "users.toml"
-    config.write_text(f'[users.smoke]\npassword_hash = "{digest}"\nsalt = {list(salt)}\niterations = 10000\n')
+    # DuckDB 1.5's DuckFlight 0.1.x uses file credentials. Current releases
+    # initialize an account store through the host API, never by writing hashes.
+    legacy = os.environ.get("DUCKFLIGHT_TEST_LEGACY") == "1"
+    if legacy:
+        salt = secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 10000).hex()
+        config = tmp_path / "users.toml"
+        config.write_text(f'[users.smoke]\npassword_hash = "{digest}"\nsalt = {list(salt)}\niterations = 10000\n')
+    else:
+        password_file = tmp_path / "smoke.password"
+        password_file.write_text(password)
+        password_file.chmod(0o600)
     # Bind-check within the project's permitted local port range before starting.
     for port in range(5400, 5500):
         with socket.socket() as probe:
@@ -56,7 +68,11 @@ def postgres(tmp_path):
             shutil.copyfile(path, snapshot)
             path = snapshot
         setup += f"load {literal(path)};\n"
-    setup += f"select * from duckflight_pg_serve({literal(address)}, {literal(config)});\n"
+    if legacy:
+        setup += f"select * from duckflight_pg_serve({literal(address)}, {literal(config)});\n"
+    else:
+        setup += f"select * from duckflight_init('smoke', password_file := {literal(password_file)});\n"
+        setup += f"select * from duckflight_serve('postgres', {literal(address)});\n"
     with (tmp_path / "host.log").open("w+") as log:
         host = subprocess.Popen(
             [str(binary), "-unsigned", "-no-init", "-bail", ":memory:"],
@@ -64,6 +80,9 @@ def postgres(tmp_path):
             stdout=log,
             stderr=log,
             text=True,
+            # In-memory DuckFlight hosts keep accounts in cwd/.duckflight.
+            # Isolate every test's store from other tests and the user's accounts.
+            cwd=tmp_path,
         )
         try:
             host.stdin.write(setup)
@@ -79,7 +98,8 @@ def postgres(tmp_path):
                 except OSError:
                     time.sleep(0.1)
             else:
-                pytest.fail("DuckFlight listener startup timed out")
+                log.seek(0)
+                pytest.fail(f"DuckFlight listener startup timed out:\n{log.read()}")
             with psycopg.connect(
                 host="127.0.0.1",
                 port=port,

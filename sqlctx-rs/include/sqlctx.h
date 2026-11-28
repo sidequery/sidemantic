@@ -54,6 +54,20 @@ SqlctxSnapshotResult sqlctx_snapshot_load_sources(const char *snapshot, const Sq
  */
 SqlctxRewriteResult sqlctx_snapshot_rewrite(const char *snapshot, const char *sql);
 
+/* Immutable decoded snapshot for repeated compilation. The host owns its
+ * lifetime and must replace the handle when its transactional payload changes.
+ * On failure create returns NULL and sets *error (free with sqlctx_free).
+ * On success *error is NULL. No physical database types/results are cached.
+ * Calls borrow the handle; do not free it while a call is in progress.
+ */
+typedef struct SqlctxCompiler SqlctxCompiler;
+SqlctxCompiler *sqlctx_compiler_create(const char *snapshot, char **error);
+SqlctxRewriteResult sqlctx_compiler_rewrite(const SqlctxCompiler *compiler, const char *sql);
+SqlctxRewriteResult sqlctx_compiler_explain(const SqlctxCompiler *compiler, const char *sql);
+void sqlctx_compiler_free(SqlctxCompiler *compiler);
+/* Returns a JSON compiler report in result.sql; free with sqlctx_free_result. */
+SqlctxRewriteResult sqlctx_snapshot_explain(const char *snapshot, const char *sql);
+
 typedef struct {
     char *name;
     char **fields;

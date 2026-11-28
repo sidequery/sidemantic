@@ -7,9 +7,11 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/connection_manager.hpp"
 #include "duckdb/main/database_manager.hpp"
+#include "duckdb/main/extension_manager.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
 #include "duckdb/main/valid_checker.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/conjunction_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
@@ -30,10 +32,16 @@
 #include "duckdb/parser/tableref/joinref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/parser/tableref/showref.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/function/table_function.hpp"
+#include "duckdb/function/function_set.hpp"
 #include "duckdb/planner/extension_callback.hpp"
 #include "duckdb/planner/bound_parameter_map.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 #include "duckdb/planner/operator/logical_extension_operator.hpp"
+#include "duckdb/planner/operator/logical_projection.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
 
 namespace duckdb {
 namespace {
@@ -87,7 +95,7 @@ string IdentifierText(const string &text) {
     return text;
 }
 
-string Literal(const string &text) {
+string SqlctxLiteral(const string &text) {
     return "'" + StringUtil::Replace(text, "'", "''") + "'";
 }
 
@@ -196,7 +204,7 @@ unique_ptr<SQLStatement> ParseCompatibilityStatement(const string &sql, const Pa
                 } else {
                     statement->Cast<PrepareStatement>().statement = std::move(child);
                 }
-                return WrapSqlctxQuery(std::move(statement));
+                return WrapSqlctxQuery(std::move(statement), false, "", &options);
             }
         }
     }
@@ -205,7 +213,7 @@ unique_ptr<SQLStatement> ParseCompatibilityStatement(const string &sql, const Pa
     if (parser.statements.size() != 1) {
         throw ParserException("Expected one sqlctx statement");
     }
-    return WrapSqlctxQuery(std::move(parser.statements[0]), explicit_semantic);
+    return WrapSqlctxQuery(std::move(parser.statements[0]), explicit_semantic, "", &options);
 }
 
 void ParseCompatibility(const string &sql, const ParserOptions &options,
@@ -665,12 +673,20 @@ string QuoteName(const string &name) {
 class SemanticRelations {
 public:
     SemanticRelations(ClientContext &context, const SqlctxModelList &list, const string &snapshot)
-        : context(context), snapshot(snapshot) {
-        for (idx_t i = 0; i < list.count; ++i) models[list.models[i].name] = &list.models[i];
+        : context(context) {
+        auto current = SqlctxName(DatabaseManager::GetDefaultDatabase(context));
+        auto catalog = make_uniq<RelationCatalog>();
+        catalog->snapshot = {snapshot, "", current};
+        for (idx_t i = 0; i < list.count; ++i) catalog->models[list.models[i].name] = &list.models[i];
+        catalogs[current] = std::move(catalog);
     }
 
     // Derived tables created for semantic relations, in creation order.
-    vector<reference<SubqueryRef>> relations;
+    struct CompiledRelation {
+        reference<SubqueryRef> relation;
+        const SqlctxCatalogSnapshot &snapshot;
+    };
+    vector<CompiledRelation> relations;
 
     void Query(QueryNode &node) {
         for (auto &cte : node.cte_map.map) {
@@ -701,9 +717,18 @@ public:
     }
 
 private:
+    struct RelationCatalog {
+        SqlctxCatalogSnapshot snapshot;
+        unique_ptr<ModelListOwner> list;
+        case_insensitive_map_t<const SqlctxModelInfo *> models;
+        unique_ptr<CatalogFieldsOwner> catalog;
+        case_insensitive_map_t<case_insensitive_map_t<FieldInfo>> fields;
+    };
+
     struct Relation {
         unique_ptr<TableRef> *slot;
         const SqlctxModelInfo *model;
+        RelationCatalog *catalog;
         string alias;
         bool nullable;
         bool star = false;
@@ -712,16 +737,29 @@ private:
     };
 
     ClientContext &context;
-    const string &snapshot;
-    case_insensitive_map_t<const SqlctxModelInfo *> models;
-    unique_ptr<CatalogFieldsOwner> catalog;
-    case_insensitive_map_t<case_insensitive_map_t<FieldInfo>> fields;
+    case_insensitive_map_t<unique_ptr<RelationCatalog>> catalogs;
+
+    RelationCatalog &GetCatalog(string name) {
+        if (name.empty()) name = SqlctxName(DatabaseManager::GetDefaultDatabase(context));
+        auto entry = catalogs.find(name);
+        if (entry != catalogs.end()) return *entry->second;
+        auto catalog = make_uniq<RelationCatalog>();
+        catalog->snapshot = ReadSqlctxCatalog(context, name);
+        catalog->list = make_uniq<ModelListOwner>(catalog->snapshot.payload);
+        for (idx_t i = 0; i < catalog->list->list.count; ++i) {
+            auto &model = catalog->list->list.models[i];
+            catalog->models[model.name] = &model;
+        }
+        auto &result = *catalog;
+        catalogs[name] = std::move(catalog);
+        return result;
+    }
 
     // Selectable fields (dimensions and metrics), in SELECT * order.
     vector<string> Columns(const Relation &relation) {
         Info(relation, relation.model->name);
         vector<std::pair<idx_t, string>> ordered;
-        for (auto &field : fields[relation.model->name]) {
+        for (auto &field : relation.catalog->fields[relation.model->name]) {
             if (field.second.position) ordered.emplace_back(field.second.position, field.first);
         }
         std::sort(ordered.begin(), ordered.end());
@@ -731,8 +769,10 @@ private:
     }
 
     const FieldInfo &Info(const Relation &relation, const string &field) {
+        auto &catalog = relation.catalog->catalog;
+        auto &fields = relation.catalog->fields;
         if (!catalog) {
-            catalog = make_uniq<CatalogFieldsOwner>(snapshot);
+            catalog = make_uniq<CatalogFieldsOwner>(relation.catalog->snapshot.payload);
             for (idx_t i = 0; i < catalog->result.count; ++i) {
                 auto &entry = catalog->result.entries[i];
                 string kind(entry.kind);
@@ -860,12 +900,10 @@ private:
         auto catalog_name = table.catalog_name;
 #endif
         if (!StringUtil::CIEquals(schema, "semantic")) return;
-        if (!catalog_name.empty() &&
-            !StringUtil::CIEquals(catalog_name, SqlctxName(DatabaseManager::GetDefaultDatabase(context)))) {
-            return;
-        }
         // A user-created semantic schema keeps its physical relations.
-        if (SqlctxPhysicalRelationExists(context, name)) return;
+        if (SqlctxPhysicalRelationExists(context, name, catalog_name)) return;
+        auto &catalog = GetCatalog(catalog_name);
+        auto &models = catalog.models;
         auto entry = models.find(name);
         if (entry == models.end()) {
             vector<string> names;
@@ -877,6 +915,7 @@ private:
         Relation relation;
         relation.slot = &slot;
         relation.model = entry->second;
+        relation.catalog = &catalog;
         relation.alias = ref.alias.empty() ? string(entry->second->name) : SqlctxName(ref.alias);
         relation.nullable = nullable;
         found.push_back(std::move(relation));
@@ -901,9 +940,9 @@ private:
             if (!relation) return nullptr;
             bool current_catalog = names.size() == 3 ||
                 (names.size() == 4 && StringUtil::CIEquals(SqlctxName(names[0]),
-                    SqlctxName(DatabaseManager::GetDefaultDatabase(context))));
+                    relation->catalog->snapshot.catalog));
             if (!current_catalog) {
-                throw BinderException("Semantic column qualifier must name the current database's semantic schema");
+                throw BinderException("Semantic column qualifier must name the relation's database");
             }
             names.erase(names.begin(), names.end() - 2);
         } else if (names.size() >= 3) {
@@ -1151,7 +1190,9 @@ private:
             sql += QuoteName(relation.alias) + "." + QuoteName(relation.fields[i]) + " AS " +
                    QuoteName(relation.fields[i]);
         }
-        auto source = (*relation.slot)->ToString();
+        // The compiler sees one catalog at a time. The host resolves the owner
+        // first; only its semantic schema/model name belongs in compiler SQL.
+        auto source = "semantic." + QuoteName(relation.model->name) + " AS " + QuoteName(relation.alias);
         sql += " FROM " + source;
         for (idx_t i = 0; i < relation.filters.size(); ++i) {
             sql += (i ? " AND (" : " WHERE (") + relation.filters[i]->ToString() + ")";
@@ -1160,7 +1201,7 @@ private:
         parser.ParseQuery("SELECT * FROM (" + sql + ") AS " + QuoteName(relation.alias));
         auto &wrapper = parser.statements.at(0)->Cast<SelectStatement>().node->Cast<SelectNode>();
         *relation.slot = std::move(wrapper.from_table);
-        relations.push_back((*relation.slot)->Cast<SubqueryRef>());
+        relations.push_back({(*relation.slot)->Cast<SubqueryRef>(), relation.catalog->snapshot});
     }
 };
 
@@ -1231,26 +1272,36 @@ unique_ptr<QueryNode> CompileSemanticSelect(const SqlctxCatalogSnapshot &snapsho
 
 unique_ptr<SQLStatement> CompileSemanticStatement(ClientContext &context, SQLStatement &statement,
                                                  const SqlctxCatalogSnapshot &snapshot,
-                                                 bool explicit_semantic = false) {
+                                                 bool explicit_semantic = false,
+                                                 const SqlctxModelList *cached_models = nullptr) {
     auto rewritten = statement.Copy();
     auto query = QueryInStatement(*rewritten, true);
     if (!query) return nullptr;
-    ModelListOwner models(snapshot.payload);
-    SemanticRelations relations(context, models.list, snapshot.payload);
+    unique_ptr<ModelListOwner> owned_models;
+    if (!cached_models) owned_models = make_uniq<ModelListOwner>(snapshot.payload);
+    auto &models = cached_models ? *cached_models : owned_models->list;
+    SemanticRelations relations(context, models, snapshot.payload);
     relations.Query(*query->node);
     unordered_set<const TableRef *> derived;
-    for (auto &relation : relations.relations) derived.insert(&relation.get());
-    SemanticReferences references(context, models.list, explicit_semantic, derived);
+    for (auto &relation : relations.relations) derived.insert(&relation.relation.get());
+    SemanticReferences references(context, models, explicit_semantic, derived);
     bool found = references.Query(*query->node) || explicit_semantic;
     references.ThrowUnknownField(found);
+    for (auto &relation : relations.relations) {
+        bool attached = !StringUtil::CIEquals(relation.snapshot.catalog,
+                                              SqlctxName(DatabaseManager::GetDefaultDatabase(context)));
+        // A whole-query rewrite already compiles current-catalog relations.
+        // Compile attached relations separately before giving that compiler
+        // their fully qualified physical SQL.
+        if (found && !attached) continue;
+        auto &subquery = *relation.relation.get().subquery;
+        subquery.node = CompileSemanticSelect(relation.snapshot, subquery.node->ToString());
+        if (attached) QualifySqlctxSources(context, *subquery.node, relation.snapshot.catalog);
+    }
     if (!found) {
         if (relations.relations.empty()) return nullptr;
         // Only semantic relations: compile each derived table and leave the
         // rest of the statement, including DESCRIBE/SUMMARIZE, to DuckDB.
-        for (auto &relation : relations.relations) {
-            auto &subquery = *relation.get().subquery;
-            subquery.node = CompileSemanticSelect(snapshot, subquery.node->ToString());
-        }
         return rewritten;
     }
     query->node = CompileSemanticSelect(snapshot, query->ToString());
@@ -1300,85 +1351,221 @@ unique_ptr<SQLStatement> SemanticShowStatement(SQLStatement &statement) {
 }
 
 constexpr const char *ROUTING_STATE = "sqlctx_native_routing";
-constexpr const char *ROUTING_PROBE = "sqlctx_pristine_statement";
+constexpr const char *QUERY_CARRIER = "__sqlctx_bind_query";
+constexpr const char *ROUTING_PROBE = "sqlctx_pristine_show";
 
-// DuckDB's native binder consumes expressions as it visits them. The client
-// rebind API protects a pristine statement copy, unlike OperatorExtension's
-// failure callback. A private post-bind signal also reaches that API when a
-// same-name physical table made the first native bind succeed.
+// A cheap AST scan bounds catalog work. Scope and shadowing remain the
+// responsibility of SemanticReferences, after this candidate-name filter.
+struct RoutingReferences {
+    case_insensitive_set_t names;
+    bool semantic = false;
+
+    void Query(QueryNode &node) {
+        auto expression = [&](unique_ptr<ParsedExpression> &expr) { Expression(*expr); };
+        auto table = [&](TableRef &ref) {
+#if !SQLCTX_NEW_IDENTIFIER_API
+            // The stable host's generic iterator does not visit SHOW's query.
+            if (ref.type == TableReferenceType::SHOW_REF) {
+                auto &show = ref.Cast<ShowRef>();
+                if (show.query) Query(*show.query);
+                return;
+            }
+#endif
+            if (ref.type != TableReferenceType::BASE_TABLE) return;
+            auto &base = ref.Cast<BaseTableRef>();
+#if SQLCTX_QUALIFIED_TABLE_API
+            auto schema = SqlctxName(base.GetQualifiedName().Schema());
+            auto catalog = SqlctxName(base.GetQualifiedName().Catalog());
+            auto name = SqlctxName(base.Table());
+#else
+            auto schema = base.schema_name;
+            auto catalog = base.catalog_name;
+            auto name = base.table_name;
+#endif
+            if (StringUtil::CIEquals(schema, "semantic")) semantic = true;
+            if (schema.empty() && catalog.empty()) names.insert(name);
+        };
+        if (node.type == QueryNodeType::CTE_NODE) {
+            auto &cte = node.Cast<CTENode>();
+            Query(*cte.query);
+            Query(*cte.child);
+            return;
+        }
+        ParsedExpressionIterator::EnumerateQueryNodeChildren(node, expression, table);
+    }
+
+    void Expression(ParsedExpression &expr) {
+        if (expr.GetExpressionClass() == ExpressionClass::SUBQUERY) {
+#if SQLCTX_NEW_EXPRESSION_API
+            Query(*expr.Cast<SubqueryExpression>().Subquery()->node);
+#else
+            Query(*expr.Cast<SubqueryExpression>().subquery->node);
+#endif
+        }
+        ParsedExpressionIterator::EnumerateChildren(expr, [&](ParsedExpression &child) { Expression(child); });
+    }
+
+    bool Possible() const { return semantic || !names.empty(); }
+    bool Matches(const SqlctxModelList &models) const {
+        if (semantic || names.count("metrics")) return true;
+        for (idx_t i = 0; i < models.count; ++i) if (names.count(models.models[i].name)) return true;
+        return false;
+    }
+};
+
+struct QueryCarrierData : DependencyItem {
+    explicit QueryCarrierData(unique_ptr<SQLStatement> query) : query(std::move(query)) {}
+    unique_ptr<SQLStatement> query;
+};
+
+unique_ptr<SelectStatement> PrivateCarrierQuery(const TableFunctionRef &table) {
+    if (!table.external_dependency) return nullptr;
+    auto item = table.external_dependency->GetDependency(QUERY_CARRIER);
+    if (!item) return nullptr;
+    return unique_ptr_cast<SQLStatement, SelectStatement>(item->Cast<QueryCarrierData>().query->Copy());
+}
+
+string CarrierParserSettings(const ParserOptions &options) {
+    string settings = options.integer_division ? "1:" : "0:";
+#if SQLCTX_NEW_IDENTIFIER_API
+    switch (options.identifier_case_mode) {
+    case IdentifierCaseMode::PRESERVE_CASE: settings += "preserve:"; break;
+    case IdentifierCaseMode::LOWERCASE: settings += "lower:"; break;
+    case IdentifierCaseMode::UPPERCASE: settings += "upper:"; break;
+    }
+    settings += options.regex_match_operator_semantics == RegexMatchOperatorSemantics::FULL ? "full" : "partial";
+#else
+    settings += options.preserve_identifier_case ? "preserve:full" : "lower:full";
+#endif
+    return settings;
+}
+
+unique_ptr<SelectStatement> ParseCarrier(const string &sql, const string &settings) {
+    auto options = SqlctxBuiltinParserOptions();
+    if (!settings.empty()) {
+        auto parts = StringUtil::Split(settings, ':');
+        if (parts.size() != 3 || (parts[0] != "0" && parts[0] != "1") ||
+            (parts[1] != "preserve" && parts[1] != "lower" && parts[1] != "upper") ||
+            (parts[2] != "partial" && parts[2] != "full")) {
+            throw InvalidInputException("Invalid sqlctx query carrier parser settings");
+        }
+        options.integer_division = parts[0] == "1";
+#if SQLCTX_NEW_IDENTIFIER_API
+        options.identifier_case_mode = parts[1] == "lower" ? IdentifierCaseMode::LOWERCASE :
+            (parts[1] == "upper" ? IdentifierCaseMode::UPPERCASE : IdentifierCaseMode::PRESERVE_CASE);
+        options.regex_match_operator_semantics = parts[2] == "full" ? RegexMatchOperatorSemantics::FULL :
+                                                                                    RegexMatchOperatorSemantics::PARTIAL;
+#else
+        options.preserve_identifier_case = parts[1] == "preserve";
+#endif
+    }
+    Parser parser(options);
+    parser.ParseQuery(sql);
+    if (parser.statements.size() != 1) throw BinderException("sqlctx query carrier expects one query");
+    auto statement = std::move(parser.statements[0]);
+    while (statement->type == StatementType::PREPARE_STATEMENT) {
+        auto prepared = std::move(statement->Cast<PrepareStatement>().statement);
+        statement = std::move(prepared);
+    }
+    auto query = QueryInStatement(*statement, true);
+    if (!query) throw BinderException("sqlctx query carrier expects a SELECT query source");
+    return unique_ptr_cast<SQLStatement, SelectStatement>(query->Copy());
+}
+
+// con.sql and relational callers bind QueryNodes directly, bypassing Planner.
+// Retain SELECT and defer catalog reads to their active binding transaction.
+void WrapQueryCarrier(SelectStatement &query, const string &source, const ParserOptions &options) {
+    if (source.empty()) return;
+    RoutingReferences refs;
+    refs.Query(*query.node);
+    if (!refs.Possible()) return;
+    auto relation = make_uniq<TableFunctionRef>();
+    vector<unique_ptr<ParsedExpression>> arguments;
+#if SQLCTX_LITERAL_API
+    arguments.push_back(ConstantExpression::String(source));
+    arguments.push_back(ConstantExpression::String(CarrierParserSettings(options)));
+#else
+    arguments.push_back(make_uniq<ConstantExpression>(Value(source)));
+    arguments.push_back(make_uniq<ConstantExpression>(Value(CarrierParserSettings(options))));
+#endif
+    relation->function = make_uniq<FunctionExpression>(QUERY_CARRIER, std::move(arguments));
+    // Native AST copies keep the private input. DuckDB omits external
+    // dependencies from serialization; persisted views retain exact SQL source
+    // and reconstruct it through the parser on reopen, never a binary decoder.
+    relation->external_dependency = make_shared_ptr<ExternalDependency>();
+    relation->external_dependency->AddDependency(QUERY_CARRIER, make_shared_ptr<QueryCarrierData>(query.Copy()));
+    auto wrapper = make_uniq<SelectNode>();
+    // A normal subquery deduplicates result names (x, x -> x, x_1). Give the
+    // binder unique internal names, then restore the exact native labels with
+    // COLUMNS capture aliases, including SELECT * and expanding expressions.
+    auto columns = make_uniq<StarExpression>();
+    const string pattern = "^__sqlctx_column_[0-9]+_([\\s\\S]*)$";
+#if SQLCTX_NEW_EXPRESSION_API
+    columns->IsColumnsMutable() = true;
+    columns->ExpressionMutable() = ConstantExpression::String(pattern);
+#else
+    columns->columns = true;
+    columns->expr = make_uniq<ConstantExpression>(Value(pattern));
+#endif
+    columns->SetAlias(SqlctxIdentifier("\\1"));
+    wrapper->select_list.push_back(std::move(columns));
+    wrapper->from_table = std::move(relation);
+    query.node = std::move(wrapper);
+}
+
+unique_ptr<SelectStatement> UnwrapQueryCarrier(SelectStatement &query) {
+    if (query.node->type != QueryNodeType::SELECT_NODE) return nullptr;
+    auto &select = query.node->Cast<SelectNode>();
+    if (!select.from_table || select.from_table->type != TableReferenceType::TABLE_FUNCTION) return nullptr;
+    auto &table = select.from_table->Cast<TableFunctionRef>();
+    if (FunctionName(*table.function) != QUERY_CARRIER) return nullptr;
+    // Only our private, untouched carrier is eligible. A user's direct call
+    // must keep its projections and predicates and receive normal validation.
+    if (select.select_list.size() != 1 || select.select_list[0]->GetExpressionClass() != ExpressionClass::STAR ||
+        select.where_clause || select.having || select.qualify || !select.groups.group_expressions.empty() ||
+        !select.modifiers.empty() || !select.cte_map.map.empty() || select.sample) return nullptr;
+    return PrivateCarrierQuery(table);
+}
+
 class SqlctxRoutingState : public ClientContextState {
 public:
     explicit SqlctxRoutingState(ClientContext &context) : context(context) {}
 
     bool CanRequestRebind() override {
         candidate.reset();
+        probing = !SQLCTX_PRE_BIND;
         probe_error = false;
-        probing = false;
-        has_models = false;
-        catalog_error = ErrorData();
-        snapshot = {};
-        // ROLLBACK must remain bindable after a transaction error. Do not read
-        // the semantic catalog while DuckDB's transaction is invalidated.
-        if (!context.transaction.HasActiveTransaction() || ValidChecker::IsInvalidated(context.ActiveTransaction())) {
-            return false;
-        }
-        probing = true;
-        try {
-            snapshot = ReadSqlctxCatalog(context);
-            if (!snapshot.payload.empty()) {
-                ModelListOwner models(snapshot.payload);
-                has_models = models.list.count != 0;
-            }
-        } catch (const std::exception &exception) {
-            ErrorData error(exception);
-            switch (error.Type()) {
-            case ExceptionType::INVALID_INPUT:
-            case ExceptionType::PARSER:
-            case ExceptionType::IO:
-            case ExceptionType::PERMISSION:
-                // Catalog discovery and explicit semantic statements perform
-                // their own read. Ordinary SQL and extension introspection
-                // must remain usable even if legacy definitions are invalid.
-                catalog_error = std::move(error);
-                snapshot = {};
-                break;
-            default:
-                throw;
-            }
-        }
-        // With no models, normal SQL binds once. Keeping a pristine copy still
-        // lets a native SHOW failure reach our catalog discovery statements.
-        return true;
+        // Compatibility recovery for ASTs supplied by other parsers. Normal
+        // SQL and relational calls use the carrier without exception probes.
+        return !SQLCTX_PRE_BIND && context.transaction.HasActiveTransaction() &&
+               !ValidChecker::IsInvalidated(context.ActiveTransaction());
     }
 
     RebindQueryInfo OnPlanningError(ClientContext &, SQLStatement &statement, ErrorData &error) override {
-        if (!probing) return RebindQueryInfo::DO_NOT_REBIND;
         bool own_probe = probe_error && error.ExtraInfo().count(ROUTING_PROBE);
         probing = false;
         probe_error = false;
-        if (!own_probe && error.Type() != ExceptionType::BINDER && error.Type() != ExceptionType::CATALOG) {
+        if (own_probe) {
+            candidate = SemanticShowStatement(statement);
+            return RebindQueryInfo::ATTEMPT_TO_REBIND;
+        }
+        if (error.Type() != ExceptionType::BINDER && error.Type() != ExceptionType::CATALOG) {
             return RebindQueryInfo::DO_NOT_REBIND;
         }
-        candidate = Candidate(statement, !own_probe);
-        return candidate || own_probe ? RebindQueryInfo::ATTEMPT_TO_REBIND : RebindQueryInfo::DO_NOT_REBIND;
+        candidate = Candidate(statement);
+        return candidate ? RebindQueryInfo::ATTEMPT_TO_REBIND : RebindQueryInfo::DO_NOT_REBIND;
     }
 
     RebindQueryInfo OnRebindPreparedStatement(ClientContext &, BindPreparedStatementCallbackInfo &info,
-                                              RebindQueryInfo) override {
-        // SQL EXECUTE uses a nested Planner instead of the client preparation
-        // API. Its callback supplies the original prepared AST before binding.
-        if (!info.prepared_statement.unbound_statement) return RebindQueryInfo::DO_NOT_REBIND;
-        auto prepared = Candidate(*info.prepared_statement.unbound_statement);
-        if (!prepared) return RebindQueryInfo::DO_NOT_REBIND;
-        probing = false;
-        probe_error = false;
-        candidate = std::move(prepared);
-        return RebindQueryInfo::ATTEMPT_TO_REBIND;
+                                             RebindQueryInfo) override {
+        // On 1.5 a preceding parser may supply an unwrapped SELECT. SQL
+        // EXECUTE creates a nested Planner without the client error callback.
+        if (SQLCTX_PRE_BIND || !info.prepared_statement.unbound_statement) return RebindQueryInfo::DO_NOT_REBIND;
+        candidate = Candidate(*info.prepared_statement.unbound_statement);
+        return candidate ? RebindQueryInfo::ATTEMPT_TO_REBIND : RebindQueryInfo::DO_NOT_REBIND;
     }
 
     RebindQueryInfo OnFinalizePrepare(ClientContext &, PreparedStatementData &, PreparedStatementMode) override {
-        // C/API Prepare does not necessarily end a query. Disarm successful
-        // probes here too, so a later direct ExtractPlan never sees our signal.
         probing = false;
         probe_error = false;
         return RebindQueryInfo::DO_NOT_REBIND;
@@ -1390,14 +1577,43 @@ public:
         probe_error = false;
     }
 
+    unique_ptr<SQLStatement> Candidate(SQLStatement &statement) {
+        if (statement.type == StatementType::PREPARE_STATEMENT) {
+            return Candidate(*statement.Cast<PrepareStatement>().statement);
+        }
+        if (auto show = SemanticShowStatement(statement)) return show;
+        auto query = QueryInStatement(statement);
+        if (!query) return nullptr;
+        RoutingReferences refs;
+        refs.Query(*query->node);
+        if (!refs.Possible()) return nullptr;
+        SqlctxCatalogSnapshot snapshot;
+        try {
+            snapshot = ReadSqlctxCatalog(context);
+        } catch (const std::exception &exception) {
+            ErrorData error(exception);
+            if (refs.semantic || (error.Type() != ExceptionType::INVALID_INPUT &&
+                error.Type() != ExceptionType::PARSER && error.Type() != ExceptionType::IO &&
+                error.Type() != ExceptionType::PERMISSION)) throw;
+            // A malformed legacy sidecar must not disable ordinary tables.
+            // Keep the catalog diagnostic for references that need semantics.
+            for (auto &name : refs.names) {
+                SqlctxPhysicalRelation physical;
+                if (!SqlctxFindPhysicalRelation(context, name, physical)) throw;
+            }
+            return nullptr;
+        }
+        if (!models || snapshot.payload != model_snapshot) {
+            auto replacement = make_uniq<ModelListOwner>(snapshot.payload);
+            model_snapshot = snapshot.payload;
+            models = std::move(replacement);
+        }
+        if (!refs.Matches(models->list)) return nullptr;
+        return CompileSemanticStatement(context, statement, snapshot, false, &models->list);
+    }
+
     BoundStatement BindCandidate(Binder &binder) {
-        // Consume before binding: PREPARE and EXECUTE have nested planners,
-        // while our rewritten query may itself contain subqueries and views.
         auto statement = std::move(candidate);
-        probing = false;
-        // The discarded native plan may have inferred parameter types from
-        // same-name physical columns. Infer them again from the semantic plan,
-        // retaining only the values/types explicitly supplied by the caller.
         if (auto parameters = binder.GetParameters()) {
             parameters->GetParametersPtr()->clear();
             parameters->rebind = false;
@@ -1408,29 +1624,71 @@ public:
         return child->Bind(*statement);
     }
 
+    unique_ptr<SQLStatement> candidate;
     bool probing = false;
     bool probe_error = false;
-    bool has_models = false;
-    unique_ptr<SQLStatement> candidate;
-
 private:
-    unique_ptr<SQLStatement> Candidate(SQLStatement &statement, bool native_failed = false) {
-        if (statement.type == StatementType::PREPARE_STATEMENT) {
-            return Candidate(*statement.Cast<PrepareStatement>().statement, native_failed);
-        }
-        if (auto show = SemanticShowStatement(statement)) return show;
-        // A native query that already succeeded needs no recovery. If native
-        // binding failed, expose the real catalog error instead of pretending
-        // that semantic definitions were absent or returning a partial rewrite.
-        if (native_failed && catalog_error.HasError() && QueryInStatement(statement)) catalog_error.Throw();
-        if (!has_models) return nullptr;
-        return CompileSemanticStatement(context, statement, snapshot);
-    }
-
     ClientContext &context;
-    SqlctxCatalogSnapshot snapshot;
-    ErrorData catalog_error;
+    string model_snapshot;
+    unique_ptr<ModelListOwner> models;
 };
+
+unique_ptr<LogicalOperator> BindQueryCarrier(ClientContext &context, TableFunctionBindInput &input,
+#if SQLCTX_NEW_IDENTIFIER_API
+                                           TableIndex bind_index,
+#else
+                                           idx_t bind_index,
+#endif
+                                           vector<SqlctxIdentifier> &names) {
+    if (input.inputs[0].IsNull()) throw InvalidInputException("sqlctx query carrier cannot be NULL");
+    unique_ptr<SQLStatement> statement = PrivateCarrierQuery(input.ref);
+    if (!statement) {
+        if (input.inputs.size() > 1 && input.inputs[1].IsNull()) {
+            throw InvalidInputException("sqlctx query carrier parser settings cannot be NULL");
+        }
+        statement = ParseCarrier(input.inputs[0].GetValue<string>(),
+                                 input.inputs.size() > 1 ? input.inputs[1].GetValue<string>() : "");
+    }
+    auto state = context.registered_state->GetOrCreate<SqlctxRoutingState>(ROUTING_STATE, context);
+    auto compiled = state->Candidate(*statement);
+    if (compiled) {
+        statement = std::move(compiled);
+        if (input.binder) RegisterSqlctxCatalogRead(context, input.binder->GetStatementProperties());
+    }
+    if (!input.binder) throw InternalException("sqlctx query carrier requires a binder");
+    auto child = Binder::CreateBinder(context, input.binder.get());
+    child->SetCanContainNulls(true);
+    auto bound = child->Bind(*statement);
+    input.binder->MergeCorrelatedColumns(child->correlated_columns);
+    auto bindings = bound.plan->GetColumnBindings();
+    vector<unique_ptr<Expression>> expressions;
+    for (idx_t i = 0; i < bound.names.size(); ++i) {
+        names.emplace_back("__sqlctx_column_" + to_string(i) + "_" + SqlctxName(bound.names[i]));
+        expressions.push_back(make_uniq<BoundColumnRefExpression>(bound.types[i], bindings[i]));
+    }
+    auto projection = make_uniq<LogicalProjection>(bind_index, std::move(expressions));
+    projection->children.push_back(std::move(bound.plan));
+    return std::move(projection);
+}
+
+#if SQLCTX_PRE_BIND
+void SqlctxPreBind(PlannerExtensionInput &input, SQLStatement &statement) {
+    auto query = QueryInStatement(statement);
+    if (!query) return;
+    if (auto original = UnwrapQueryCarrier(*query)) query->node = std::move(original->node);
+    auto state = input.context.registered_state->GetOrCreate<SqlctxRoutingState>(ROUTING_STATE, input.context);
+    auto compiled = state->Candidate(statement);
+    if (!compiled) return;
+    if (compiled->type != statement.type) {
+        state->candidate = std::move(compiled);
+        return;
+    }
+    auto rewritten = QueryInStatement(*compiled);
+    if (!rewritten) return;
+    query->node = std::move(rewritten->node);
+    RegisterSqlctxCatalogRead(input.context, input.binder.GetStatementProperties());
+}
+#endif
 
 void SqlctxPostBind(PlannerExtensionInput &input, BoundStatement &bound) {
     auto state = input.context.registered_state->Get<SqlctxRoutingState>(ROUTING_STATE);
@@ -1439,16 +1697,13 @@ void SqlctxPostBind(PlannerExtensionInput &input, BoundStatement &bound) {
         bound = state->BindCandidate(input.binder);
         return;
     }
-    if (!state->probing || state->probe_error) return;
-    // SHOW of an existing physical table also binds successfully. Probe its
-    // small fixed description shape even in a database with no semantic models.
-    bool description = bound.names.size() >= 2 && bound.names[0] == "column_name" && bound.names[1] == "column_type";
-    if (!state->has_models && !description) return;
+    // Only legacy SHOW needs the pristine client AST after a successful bind:
+    // another parser can interpret SHOW MODELS as DESCRIBE a physical table.
+    if (!state->probing || state->probe_error || bound.names.size() < 2 ||
+        bound.names[0] != "column_name" || bound.names[1] != "column_type") return;
     state->probe_error = true;
-    // INVALID bypasses operator-extension error recovery in both supported
-    // planners. Only the client rebind callback should consume this signal.
     throw Exception(unordered_map<string, string> {{ROUTING_PROBE, "true"}}, ExceptionType::INVALID,
-                    "sqlctx requires the pristine statement for semantic binding");
+                    "sqlctx requires the pristine SHOW statement");
 }
 
 class SqlctxConnectionCallback : public ExtensionCallback {
@@ -1468,8 +1723,21 @@ void RegisterSqlctxRouting(DatabaseInstance &db) {
     // makes connections opened concurrently with LOAD harmless duplicates.
     for (auto &context : ConnectionManager::Get(db).GetConnectionList()) callback->OnConnectionOpened(*context);
     PlannerExtension planner;
+#if SQLCTX_PRE_BIND
+    planner.pre_bind_function = SqlctxPreBind;
+#endif
     planner.post_bind_function = SqlctxPostBind;
     PlannerExtension::Register(config, planner);
+}
+
+void RegisterSqlctxQueryCarrier(ExtensionLoader &loader) {
+    TableFunctionSet carriers {SqlctxIdentifier(QUERY_CARRIER)};
+    for (idx_t count = 1; count <= 2; ++count) {
+        TableFunction carrier(QUERY_CARRIER, vector<LogicalType>(count, LogicalType::VARCHAR), nullptr, nullptr);
+        carrier.bind_operator = BindQueryCarrier;
+        carriers.AddFunction(carrier);
+    }
+    loader.RegisterFunction(carriers);
 }
 
 unique_ptr<ParserExtensionParseData> SqlctxParseData::Copy() const {
@@ -1554,15 +1822,17 @@ unique_ptr<SqlctxParseData> ParseSqlctxDefinition(const string &sql) {
     }
     if (Keyword(tokens, pos, "DROP")) {
         ++pos;
+        bool view = Keyword(tokens, pos, "SEMANTIC") && Keyword(tokens, pos + 1, "VIEW");
+        if (view) ++pos;
         if (!(Keyword(tokens, pos, "MODEL") || Keyword(tokens, pos, "METRIC") ||
-              Keyword(tokens, pos, "DIMENSION") || Keyword(tokens, pos, "SEGMENT"))) return nullptr;
+              Keyword(tokens, pos, "DIMENSION") || Keyword(tokens, pos, "SEGMENT") || view)) return nullptr;
         auto result = make_uniq<SqlctxParseData>();
         result->operation = "drop_" + StringUtil::Lower(tokens[pos++].text);
         if (Keyword(tokens, pos, "IF") && Keyword(tokens, pos + 1, "EXISTS")) {
             result->replace = true;
             pos += 2;
         }
-        result->content = QualifiedNameJson(tokens, pos, result->operation == "drop_model" ? 1 : 2);
+        result->content = QualifiedNameJson(tokens, pos, view || result->operation == "drop_model" ? 1 : 2);
         return result;
     }
     bool create = Keyword(tokens, pos, "CREATE");
@@ -1575,6 +1845,17 @@ unique_ptr<SqlctxParseData> ParseSqlctxDefinition(const string &sql) {
         }
     }
     if (pos >= tokens.size()) return nullptr;
+    if (create && Keyword(tokens, pos, "SEMANTIC") && Keyword(tokens, pos + 1, "VIEW")) {
+        pos += 2;
+        if (pos + 2 >= tokens.size() || !Keyword(tokens, pos + 1, "AS")) {
+            throw ParserException("CREATE SEMANTIC VIEW expects name AS SELECT dimensions and metrics FROM model");
+        }
+        auto result = make_uniq<SqlctxParseData>();
+        result->replace = replace;
+        result->operation = "view";
+        result->content = clean.substr(tokens[pos].start, tokens.back().end - tokens[pos].start);
+        return result;
+    }
     bool model = Keyword(tokens, pos, "MODEL");
     bool item = Keyword(tokens, pos, "METRIC") || Keyword(tokens, pos, "DIMENSION") || Keyword(tokens, pos, "SEGMENT");
     if (!model && !item) return nullptr;
@@ -1619,7 +1900,7 @@ unique_ptr<SqlctxParseData> ParseSqlctxDefinition(const string &sql) {
         } else {
             auto rest = clean.substr(tokens[pos + 2].end, tokens.back().end - tokens[pos + 2].end);
             auto separator = pos + 3 < tokens.size() && tokens[pos + 3].text == ")" ? "" : ", ";
-            result->content = "MODEL (name " + Literal(name) + separator + rest;
+            result->content = "MODEL (name " + SqlctxLiteral(name) + separator + rest;
         }
     } else if (model && create) {
         result->content = "MODEL " + clean.substr(tokens[pos].end, tokens.back().end - tokens[pos].end);
@@ -1627,7 +1908,14 @@ unique_ptr<SqlctxParseData> ParseSqlctxDefinition(const string &sql) {
     return result;
 }
 
-unique_ptr<SQLStatement> WrapSqlctxQuery(unique_ptr<SQLStatement> statement, bool explicit_semantic) {
+unique_ptr<SQLStatement> WrapSqlctxQuery(unique_ptr<SQLStatement> statement, bool explicit_semantic,
+                                       const string &source_override, const ParserOptions *parser_options) {
+    auto source = source_override.empty() ? statement->query : source_override;
+#if !SQLCTX_NEW_IDENTIFIER_API
+    if (source_override.empty() && statement->stmt_location < source.size()) {
+        source = source.substr(statement->stmt_location, statement->stmt_length ? statement->stmt_length : string::npos);
+    }
+#endif
     if (statement->type == StatementType::EXPLAIN_STATEMENT) {
         auto &explain = statement->Cast<ExplainStatement>();
         if (explain.stmt->type == StatementType::EXTENSION_STATEMENT) {
@@ -1643,12 +1931,18 @@ unique_ptr<SQLStatement> WrapSqlctxQuery(unique_ptr<SQLStatement> statement, boo
         }
     } else if (statement->type == StatementType::PREPARE_STATEMENT) {
         auto &prepare = statement->Cast<PrepareStatement>();
-        prepare.statement = WrapSqlctxQuery(std::move(prepare.statement), explicit_semantic);
+        prepare.statement = WrapSqlctxQuery(std::move(prepare.statement), explicit_semantic, source, parser_options);
         return statement;
     }
     // Ordinary queries retain their native statement type. Routing happens
     // after parsing, including when another parser extension accepted them.
-    if (!explicit_semantic) return statement;
+    if (!explicit_semantic) {
+        if (auto query = QueryInStatement(*statement, true)) {
+            auto options = parser_options ? *parser_options : SqlctxBuiltinParserOptions();
+            WrapQueryCarrier(*query, source, options);
+        }
+        return statement;
+    }
     if (QueryInStatement(*statement)) {
         auto data = make_uniq<SqlctxParseData>();
         data->statement = std::move(statement);
@@ -1660,10 +1954,45 @@ unique_ptr<SQLStatement> WrapSqlctxQuery(unique_ptr<SQLStatement> statement, boo
     return statement;
 }
 
+static bool YardstickOwnsSyntax(ParserExtensionInfo *info, const string &query) {
+    auto parser_info = dynamic_cast<SqlctxParserInfo *>(info);
+    if (!parser_info || !ExtensionManager::Get(parser_info->database).ExtensionIsLoaded("yardstick")) return false;
+    auto tokens = Tokens(query);
+    // SQLCtx declarations and explicit semantic queries remain ours, even if a
+    // definition contains an expression whose function is named aggregate.
+    if (Keyword(tokens, 0, "SEMANTIC") || Keyword(tokens, 0, "MODEL") || Keyword(tokens, 0, "METRIC") ||
+        Keyword(tokens, 0, "DIMENSION") || Keyword(tokens, 0, "SEGMENT")) return false;
+    idx_t create_kind = Keyword(tokens, 1, "OR") && Keyword(tokens, 2, "REPLACE") ? 3 : 1;
+    if (Keyword(tokens, 0, "CREATE") && Keyword(tokens, create_kind, "SEMANTIC")) return false;
+    for (idx_t i = 0; i + 1 < tokens.size(); ++i) {
+        if (Keyword(tokens, i, "AS") && Keyword(tokens, i + 1, "MEASURE")) return true;
+        if (!Keyword(tokens, i, "AGGREGATE") || tokens[i + 1].text != "(") continue;
+        // DuckDB's aggregate(list, name, ...) is ordinary SQL. A measure call
+        // has one argument; commas inside nested expressions are not arguments.
+        idx_t depth = 1;
+        bool multiple_arguments = false;
+        for (idx_t argument = i + 2; argument < tokens.size(); ++argument) {
+            auto &token = tokens[argument].text;
+            if (token == "(" || token == "[" || token == "{") ++depth;
+            else if (token == ")" || token == "]" || token == "}") {
+                if (--depth == 0) {
+                    if (!multiple_arguments) return true;
+                    break;
+                }
+            } else if (token == "," && depth == 1) multiple_arguments = true;
+        }
+    }
+    return false;
+}
+
 ParserOverrideResult sqlctx_parser_override(ParserExtensionInfo *info, const string &query, ParserOptions &options) {
+    // A composed PEG grammar shares syntax, not another extension's private
+    // transformer state. Let Yardstick establish its capture scope for measure
+    // syntax before parsing it. The lexer excludes comments and quoted text.
+    if (YardstickOwnsSyntax(info, query)) return ParserOverrideResult();
     vector<unique_ptr<SQLStatement>> statements;
     if (ParseSqlctxGrammar(info, query, options, statements)) {
-        for (auto &statement : statements) statement = WrapSqlctxQuery(std::move(statement));
+        for (auto &statement : statements) statement = WrapSqlctxQuery(std::move(statement), false, "", &options);
     } else {
         ParseCompatibility(query, options, statements);
     }
@@ -1718,7 +2047,6 @@ BoundStatement sqlctx_bind(ClientContext &context, Binder &binder, OperatorExten
     auto parsed = std::move(state->data);
     auto &data = static_cast<SqlctxParseData &>(*parsed);
     if (!data.statement) throw InternalException("sqlctx query statement is missing");
-    if (routing) routing->probing = false;
     RegisterSqlctxCatalogRead(context, binder.GetStatementProperties());
     auto snapshot = ReadSqlctxCatalog(context);
     auto original = CompileSemanticStatement(context, *data.statement, snapshot, data.explicit_semantic);

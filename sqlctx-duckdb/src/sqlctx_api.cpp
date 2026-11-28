@@ -1,5 +1,6 @@
 #include "sqlctx_api.hpp"
 #include "sqlctx_catalog.hpp"
+#include "sqlctx_compiler.hpp"
 #include "sqlctx_compat.hpp"
 #include "sqlctx.h"
 
@@ -14,40 +15,12 @@ struct CatalogBindData : TableFunctionData {
     string kind;
     string model;
     string metric;
-    // Result types of fields without a declared data type, by qualified name.
-    case_insensitive_map_t<string> result_types;
 };
 
 struct CatalogState : GlobalTableFunctionState {
     vector<vector<Value>> rows;
     idx_t offset = 0;
 };
-
-// Report the type a field produces, as information_schema does, when its
-// definition declares none. Fields whose source cannot bind stay NULL.
-static void BindResultTypes(ClientContext &context, CatalogBindData &data) {
-    auto snapshot = ReadSqlctxCatalog(context);
-    if (snapshot.payload.empty()) return;
-    struct CatalogResult {
-        SqlctxCatalogEntries result;
-        ~CatalogResult() { sqlctx_free_catalog_entries(result); }
-    } result {sqlctx_snapshot_catalog(snapshot.payload.c_str(), data.kind.c_str(), data.model.c_str(),
-                                          data.metric.empty() ? nullptr : data.metric.c_str())};
-    if (result.result.error) return;
-    for (idx_t i = 0; i < result.result.count; ++i) {
-        auto &entry = result.result.entries[i];
-        string kind(entry.kind);
-        if (entry.data_type || !entry.model_name || (kind != "dimension" && kind != "metric")) continue;
-        try {
-            data.result_types[entry.qualified_name] =
-                SqlctxFieldType(context, snapshot.payload, entry.model_name, entry.name).ToString();
-        } catch (const std::exception &exception) {
-            auto error = ErrorData(exception);
-            if (error.Type() == ExceptionType::INTERRUPT || error.Type() == ExceptionType::INTERNAL ||
-                error.Type() == ExceptionType::FATAL) throw;
-        }
-    }
-}
 
 static unique_ptr<FunctionData> CatalogBind(ClientContext &context, TableFunctionBindInput &input,
                                           vector<LogicalType> &types, vector<SqlctxIdentifier> &names) {
@@ -70,7 +43,6 @@ static unique_ptr<FunctionData> CatalogBind(ClientContext &context, TableFunctio
     types.emplace_back(LogicalType::BOOLEAN);
     names.emplace_back("definition");
     types.emplace_back(LogicalType::VARCHAR);
-    BindResultTypes(context, *data);
     return std::move(data);
 }
 
@@ -96,6 +68,7 @@ static unique_ptr<GlobalTableFunctionState> CatalogInit(ClientContext &context, 
     } result {sqlctx_snapshot_catalog(snapshot.payload.c_str(), data.kind.c_str(), data.model.c_str(),
                                           data.metric.empty() ? nullptr : data.metric.c_str())};
     if (result.result.error) throw InvalidInputException("sqlctx: %s", SqlctxErrorText(result.result.error));
+    unique_ptr<SqlctxCompilerOwner> compiler;
     for (idx_t i = 0; i < result.result.count; ++i) {
         auto &entry = result.result.entries[i];
         vector<Value> row;
@@ -104,8 +77,19 @@ static unique_ptr<GlobalTableFunctionState> CatalogInit(ClientContext &context, 
                           entry.target_model, entry.relationship_type, entry.granularity}) {
             row.push_back(value ? Value(value) : Value(LogicalType::VARCHAR));
         }
-        auto result_type = data.result_types.find(entry.qualified_name);
-        if (!entry.data_type && result_type != data.result_types.end()) row[7] = Value(result_type->second);
+        // Bind against the live caller transaction on every execution, after
+        // selecting the requested model/kind. Retain only the decoded graph.
+        string kind(entry.kind);
+        if (!entry.data_type && entry.model_name && (kind == "dimension" || kind == "metric")) {
+            if (!compiler) compiler = make_uniq<SqlctxCompilerOwner>(snapshot.payload);
+            try {
+                row[7] = Value(SqlctxFieldType(context, *compiler, entry.model_name, entry.name, snapshot.catalog).ToString());
+            } catch (const std::exception &exception) {
+                auto error = ErrorData(exception);
+                if (error.Type() == ExceptionType::INTERRUPT || error.Type() == ExceptionType::INTERNAL ||
+                    error.Type() == ExceptionType::FATAL) throw;
+            }
+        }
         row.push_back(Value::BOOLEAN(entry.is_public));
         row.push_back(Value(entry.definition));
         state->rows.push_back(std::move(row));

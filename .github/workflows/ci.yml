@@ -874,13 +874,42 @@ jobs:
           enable-cache: true
           suffix: ${{ github.workflow }}-${{ github.job }}-${{ strategy.job-index || 0 }}
 
-      - name: Execute SemanticInput in the loaded DuckDB extension
+      - name: Fetch pinned community Yardstick for parser coexistence
+        if: matrix.duckdb == 'v1.5.6'
+        run: |
+          uv run --no-project --python 3.12 --with duckdb==1.5.6 python -c \
+            "import duckdb; assert duckdb.sql('pragma platform').fetchone()[0] == 'linux_amd64'"
+          # Signed community package: Yardstick 9efa623, DuckDB v1.5.6, linux_amd64.
+          YARDSTICK_ARCHIVE="$RUNNER_TEMP/yardstick.duckdb_extension.gz"
+          YARDSTICK_EXTENSION="$RUNNER_TEMP/yardstick.duckdb_extension"
+          curl --fail --location --retry 3 \
+            https://community-extensions.duckdb.org/v1.5.6/linux_amd64/yardstick.duckdb_extension.gz \
+            --output "$YARDSTICK_ARCHIVE"
+          echo "7ed50c9f5a0e6a5f6e34800f40d917ea6d85989bc887f15faac6f615a27784c3  $YARDSTICK_ARCHIVE" | sha256sum --check
+          gzip --decompress --stdout "$YARDSTICK_ARCHIVE" > "$YARDSTICK_EXTENSION"
+          echo "YARDSTICK_EXTENSION=$YARDSTICK_EXTENSION" >> "$GITHUB_ENV"
+
+      - name: Exercise SQL and Python clients with the matching DuckDB extension
         env:
           SQLCTX_DUCKDB_BINARY: sqlctx-duckdb/build/release/duckdb
           SQLCTX_DUCKDB_EXTENSION: sqlctx-duckdb/build/release/extension/sqlctx/sqlctx.duckdb_extension
         run: |
-          uv run sqlctx-duckdb/test/test_semantic_input_host.py
-          uv run sqlctx-duckdb/test/test_catalog_host.py
+          uv run --no-project --python 3.12 --with pytest --with pyyaml --with "duckdb==${DUCKDB_VERSION#v}" \
+            pytest -q -o addopts= sqlctx-duckdb/test --ignore=sqlctx-duckdb/test/test_duckflight_host.py
+
+      - name: Exercise PostgreSQL BI discovery through released DuckFlight
+        if: matrix.duckdb == 'v2.0.1'
+        env:
+          SQLCTX_DUCKDB_BINARY: sqlctx-duckdb/build/release/duckdb
+          SQLCTX_DUCKDB_EXTENSION: sqlctx-duckdb/build/release/extension/sqlctx/sqlctx.duckdb_extension
+        run: |
+          DUCKFLIGHT_EXTENSION="$RUNNER_TEMP/duckflight.duckdb_extension"
+          export DUCKFLIGHT_EXTENSION
+          curl --fail --location --retry 3 \
+            https://github.com/sidequery/duckflight-extension/releases/download/v0.2.1/duckflight-linux_amd64.duckdb_extension \
+            --output "$DUCKFLIGHT_EXTENSION"
+          echo "7e0c3a624f795b6dc756483ebc8b7e7af85c13cf33c301f86bcecc626444dbf7  $DUCKFLIGHT_EXTENSION" | sha256sum --check
+          uv run sqlctx-duckdb/test/test_duckflight_host.py
 
       - name: Save completed build caches
         if: ${{ !cancelled() }}

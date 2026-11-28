@@ -86,10 +86,16 @@ fn entries(snapshot: &Snapshot, kind: &str, model: &str) -> CatalogResult<Vec<Ca
             continue;
         }
         entries.push(CatalogEntry::new("model", None, &model.name, model)?);
+        let view = views::definition(model)?;
+        let position = |name: &str, fallback: usize| {
+            view.as_ref()
+                .and_then(|view| view.fields.iter().position(|field| field.name == name))
+                .map_or(fallback, |index| index + 1)
+        };
         for (index, dimension) in model.dimensions.iter().enumerate() {
             let mut entry =
                 CatalogEntry::new("dimension", Some(&model.name), &dimension.name, dimension)?;
-            entry.column_index = index + 1;
+            entry.column_index = position(&dimension.name, index + 1);
             entries.push(entry);
         }
         let local_metrics = model
@@ -102,7 +108,7 @@ fn entries(snapshot: &Snapshot, kind: &str, model: &str) -> CatalogResult<Vec<Ca
         });
         for (index, (name, metric)) in local_metrics.chain(dataset_metrics).enumerate() {
             let mut entry = CatalogEntry::new("metric", Some(&model.name), name, metric)?;
-            entry.column_index = model.dimensions.len() + index + 1;
+            entry.column_index = position(name, model.dimensions.len() + index + 1);
             entries.push(entry);
         }
         for segment in &model.segments {
@@ -287,16 +293,11 @@ fn compatible_dimensions(snapshot: &str, metric: &str) -> CatalogResult<Vec<Cata
         .ok_or_else(|| format!("metric '{model_name}.{metric_name}' not found"))?;
     let candidates = entries(&snapshot, "dimension", "")?;
     let graph = snapshot.into_graph()?;
-    let rewriter = QueryRewriter::new(&graph);
     let quote = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
     let owner = quote(metric.model_name.as_deref().unwrap());
     let projection = format!("{owner}.{}", quote(&metric.name));
-    let compile = |selection: &str| {
-        rewriter.rewrite_with_dialect(
-            &format!("select {selection} from {owner}"),
-            polyglot_sql::DialectType::DuckDB,
-        )
-    };
+    let compile =
+        |selection: &str| rewrite_graph(&graph, &format!("select {selection} from {owner}"));
     // Invalid metrics must surface their error rather than look like an empty
     // dimension list. Each candidate then uses the same compiler as SELECT.
     compile(&projection).map_err(|error| error.to_string())?;
@@ -369,6 +370,38 @@ pub extern "C" fn sqlctx_free_catalog_entries(result: SqlctxCatalogEntries) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn view_discovery_preserves_projection_order_and_compiles_compatible_dimensions() {
+        let snapshot = serde_json::to_string(&snapshot()).unwrap();
+        let (snapshot, _) = apply(
+            &snapshot,
+            "orders",
+            "view",
+            "sales AS SELECT revenue AS gross, status FROM orders",
+            false,
+        )
+        .unwrap();
+        let rows = entries(&canonical_snapshot(&snapshot).unwrap(), "", "sales").unwrap();
+        assert_eq!(
+            rows.iter()
+                .find(|entry| entry.name == "gross")
+                .unwrap()
+                .column_index,
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|entry| entry.name == "status")
+                .unwrap()
+                .column_index,
+            2
+        );
+        let compatible = compatible_dimensions(&snapshot, r#"["sales","gross"]"#).unwrap();
+        assert!(compatible
+            .iter()
+            .any(|entry| entry.qualified_name == "sales.status"));
+    }
 
     fn snapshot() -> Snapshot {
         let (snapshot, _) = apply(

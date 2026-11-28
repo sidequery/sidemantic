@@ -59,6 +59,12 @@ def call(query=None, source=None, sql=None, context=None, error=False):
     return result if error else result[0]["sql"]
 
 
+def relation(query=None, source=None):
+    input_json = literal(json.dumps(SOURCE if source is None else source))
+    query_json = literal(json.dumps(QUERY if query is None else query))
+    return f"sqlctx_query_semantic_input({input_json}, {query_json})"
+
+
 @pytest.mark.parametrize("expression", [False, True])
 def test_graph_window_identity_shadows_same_named_local_aggregate(expression):
     source = {
@@ -208,7 +214,8 @@ def test_fanout_null_ordering_precedes_pagination(rewrite, suffix):
     assert execute(compiled) == [{"label": None, "total": "10"} if nulls_first else {"label": "a", "total": "20"}]
 
 
-def test_retention_table_keeps_inactive_cohort_members_in_denominator():
+@pytest.mark.parametrize("direct_relation", [False, True])
+def test_retention_table_keeps_inactive_cohort_members_in_denominator(direct_relation):
     source = {
         "version": 1,
         "input_dialect": "duckdb",
@@ -232,7 +239,10 @@ def test_retention_table_keeps_inactive_cohort_members_in_denominator():
             }
         ],
     }
-    compiled = call(source=source, query={"metrics": ["events.retention"]})
+    query = {"metrics": ["events.retention"]}
+    compiled = (
+        f"select * from {relation(source=source, query=query)}" if direct_relation else call(source=source, query=query)
+    )
     rows = execute(
         """
         create table retention_events(id integer, user_id varchar, event_type varchar, event_date date);
@@ -325,6 +335,73 @@ def test_vectorized_callers_are_isolated():
         f"from (values (1, {query_a}), (2, {query_b}), (3, {query_a})) requests(id, query) order by id;"
     )
     assert [list(execute(row["sql"])[0].values()) for row in compiled] == [["10"], ["100"], ["10"]]
+
+
+def test_relation_dynamic_schema_and_composition():
+    selected = relation(query={**QUERY, "dimensions": ["orders.tenant"]})
+    columns = execute(f"describe select * from {selected};")
+    assert [(column["column_name"], column["column_type"]) for column in columns] == [
+        ("tenant", "VARCHAR"),
+        ("revenue", "HUGEINT"),
+    ]
+    assert execute(
+        f"with totals as (select * from {selected}) "
+        "select label, revenue from totals join (values ('a', 'Tenant A')) names(tenant, label) "
+        "using (tenant) where revenue > 5;"
+    ) == [{"label": "Tenant A", "revenue": "10"}]
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+def test_relation_observes_callers_transaction(rollback):
+    transaction = "begin; insert into orders values (4, 'a', 20, false);"
+    if rollback:
+        transaction += "rollback;"
+    assert execute(transaction + f"select * from {relation()};") == [{"revenue": "10" if rollback else "30"}]
+
+
+def test_relation_observes_temporary_tables():
+    source = copy.deepcopy(SOURCE)
+    source["models"][0]["table"] = "temporary_orders"
+    assert execute(
+        "create temp table temporary_orders as select * from orders;"
+        "insert into temporary_orders values (4, 'a', 20, false);"
+        f"select * from {relation(source=source)};"
+    ) == [{"revenue": "30"}]
+
+
+def test_relation_rebinds_prepared_input_and_caller_parameters():
+    source = literal(json.dumps(SOURCE))
+    maximum = copy.deepcopy(SOURCE)
+    maximum["models"][0]["metrics"][0]["agg"] = "max"
+    maximum = literal(json.dumps(maximum))
+    query_a = literal(json.dumps(QUERY))
+    query_b = literal(json.dumps({**QUERY, "user_attributes": {"tenant": "b"}}))
+    assert execute(
+        "create temp table results(caller integer, revenue hugeint);"
+        "prepare semantic_query as insert into results "
+        "select $3, revenue from sqlctx_query_semantic_input($1, $2);"
+        f"execute semantic_query({source}, {query_a}, 1);"
+        f"execute semantic_query({source}, {query_b}, 2);"
+        "insert into orders values (4, 'a', 25, false);"
+        f"execute semantic_query({maximum}, {query_a}, 3);"
+        "select * from results order by caller;"
+    ) == [{"caller": 1, "revenue": "10"}, {"caller": 2, "revenue": "100"}, {"caller": 3, "revenue": "25"}]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [{"metrics": ["orders.revenue"]}, {"metrics": ["orders.secret"], **CONTEXT}],
+)
+def test_relation_enforces_policies(query):
+    execute(f"select * from {relation(query=query)};", error=True)
+
+
+@pytest.mark.parametrize("argument", ["NULL", "'{}'", "'{}' || chr(0)"])
+@pytest.mark.parametrize("position", [0, 1])
+def test_relation_rejects_invalid_arguments(argument, position):
+    arguments = [literal(json.dumps(SOURCE)), literal(json.dumps(QUERY))]
+    arguments[position] = argument
+    execute(f"select * from sqlctx_query_semantic_input({', '.join(arguments)});", error=True)
 
 
 if __name__ == "__main__":

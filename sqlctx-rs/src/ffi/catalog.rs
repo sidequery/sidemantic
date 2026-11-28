@@ -26,6 +26,9 @@ use super::{
 };
 
 mod api;
+mod compiler;
+mod explain;
+mod views;
 
 type CatalogResult<T> = Result<T, String>;
 
@@ -82,7 +85,8 @@ impl Snapshot {
         snapshot
     }
 
-    fn into_graph(self) -> CatalogResult<SemanticGraph> {
+    fn into_graph(mut self) -> CatalogResult<SemanticGraph> {
+        views::refresh(&mut self.models)?;
         let mut graph = SemanticGraph::new();
         // Register globals before model indexes, then validate dependencies once
         // the full graph exists. Declaration order must not affect reconstruction.
@@ -330,7 +334,7 @@ fn drop_definition(
     let names: Vec<String> = serde_json::from_str(content).map_err(|e| e.to_string())?;
     let (model_name, field) =
         match (kind, names.as_slice()) {
-            ("model", [model]) => (model.as_str(), None),
+            ("model" | "view", [model]) => (model.as_str(), None),
             ("metric" | "dimension" | "segment", [model, field]) => {
                 (model.as_str(), Some(field.as_str()))
             }
@@ -357,6 +361,18 @@ fn drop_definition(
         return missing();
     };
     let model = &snapshot.models[index];
+    let is_view = views::definition(model)?.is_some();
+    if kind == "view" && !is_view || kind == "model" && is_view {
+        return Err(format!(
+            "'{}' is a {}; use DROP {}",
+            model.name,
+            if is_view { "semantic view" } else { "model" },
+            if is_view { "SEMANTIC VIEW" } else { "MODEL" }
+        ));
+    }
+    if is_view && field.is_some() {
+        return Err("semantic view fields are changed with CREATE OR REPLACE SEMANTIC VIEW".into());
+    }
     let canonical_field = match kind {
         "metric" => model
             .metrics
@@ -407,6 +423,7 @@ fn restrict_drop(
     removed_model: &Model,
     target_field: Option<&str>,
 ) -> CatalogResult<()> {
+    views::restrict(snapshot, &removed_model.name, target_field)?;
     let target_model = removed_model.name.as_str();
     let target = target_field.map_or_else(
         || target_model.to_owned(),
@@ -529,6 +546,11 @@ fn restrict_drop(
         Ok(())
     };
     for model in &snapshot.models {
+        // The view selection above is its dependency contract. Its copied
+        // field descriptors are for discovery, not additional declarations.
+        if views::definition(model)?.is_some() {
+            continue;
+        }
         let context = Some(model.name.as_str());
         if target_field.is_none()
             && (model
@@ -919,6 +941,9 @@ fn apply_item(state: &mut FfiState, content: &str, replace: bool) -> CatalogResu
         .find(|model| model.name.eq_ignore_ascii_case(&model_name))
         .cloned()
         .ok_or_else(|| format!("model '{model_name}' not found"))?;
+    if views::definition(&model)?.is_some() {
+        return Err("semantic view fields are changed with CREATE OR REPLACE SEMANTIC VIEW".into());
+    }
     let parsed = parse_sql_model(&format!(
         "MODEL (name __definition, table dummy);\n{adjusted}"
     ))
@@ -985,6 +1010,16 @@ fn apply_on_semantic_worker(
     content: &str,
     replace: bool,
 ) -> CatalogResult<(String, String)> {
+    if operation == "view" {
+        let mut candidate = Snapshot::from_graph(&Snapshot::parse(snapshot)?.into_graph()?);
+        views::create(&mut candidate, content, replace)?;
+        let graph = candidate.into_graph()?;
+        return Ok((
+            serde_json::to_string(&Snapshot::from_graph(&graph))
+                .map_err(|error| error.to_string())?,
+            active_model.to_owned(),
+        ));
+    }
     if let Some(kind) = operation.strip_prefix("drop_") {
         return drop_definition(snapshot, active_model, kind, content, replace);
     }
@@ -1021,6 +1056,12 @@ fn apply_on_semantic_worker(
                 .models()
                 .find(|old| old.name.eq_ignore_ascii_case(&model.name))
             {
+                if views::definition(existing)?.is_some() {
+                    return Err(format!(
+                        "'{}' is a semantic view; use CREATE OR REPLACE SEMANTIC VIEW",
+                        existing.name
+                    ));
+                }
                 if !replace {
                     return Err(format!("model '{}' already exists", model.name));
                 }
@@ -1065,8 +1106,11 @@ fn apply_on_semantic_worker(
             .validate_metric_dependencies(metric)
             .map_err(|e| e.to_string())?;
     }
+    // Reconstruct before publishing so source replacements are checked against
+    // every persisted view selection, including nested views.
+    let graph = Snapshot::from_graph(&state.graph).into_graph()?;
     let snapshot =
-        serde_json::to_string(&Snapshot::from_graph(&state.graph)).map_err(|e| e.to_string())?;
+        serde_json::to_string(&Snapshot::from_graph(&graph)).map_err(|e| e.to_string())?;
     Ok((snapshot, state.active_model.unwrap_or_default()))
 }
 
@@ -1105,15 +1149,38 @@ pub extern "C" fn sqlctx_snapshot_rewrite(
         guard(|| {
             let graph = Snapshot::parse(&optional_arg(snapshot, "snapshot")?)?.into_graph()?;
             let sql = required_arg(sql, "sql")?;
-            // DuckDB callers own the database; `main.orders` names the
-            // physical table even when a model is also called `orders`.
-            QueryRewriter::new(&graph)
-                .with_qualified_tables_physical()
-                .rewrite_with_dialect(&sql, polyglot_sql::DialectType::DuckDB)
-                .map_err(|e| e.to_string())
+            rewrite_graph(&graph, &sql)
         })
         .map_err(semantic_error),
     )
+}
+
+fn rewrite_graph(graph: &SemanticGraph, sql: &str) -> CatalogResult<String> {
+    rewrite_graph_diagnostics(graph, sql).map(|(sql, _)| sql)
+}
+
+fn rewrite_graph_diagnostics(
+    graph: &SemanticGraph,
+    sql: &str,
+) -> CatalogResult<(String, Vec<String>)> {
+    let views = views::PreparedViews::new(graph)?;
+    rewrite_prepared_graph_diagnostics(graph, &views, sql)
+}
+
+fn rewrite_prepared_graph_diagnostics(
+    graph: &SemanticGraph,
+    views: &views::PreparedViews,
+    sql: &str,
+) -> CatalogResult<(String, Vec<String>)> {
+    let sql = views.expand(sql)?;
+    let graph = views.graph(graph);
+    // DuckDB callers own the database; `main.orders` names the physical
+    // table even when a model is also called `orders`.
+    let rewriter = QueryRewriter::new(graph).with_qualified_tables_physical();
+    let sql = rewriter
+        .rewrite_with_dialect(&sql, polyglot_sql::DialectType::DuckDB)
+        .map_err(|error| error.to_string())?;
+    Ok((sql, rewriter.take_warnings()))
 }
 
 #[repr(C)]

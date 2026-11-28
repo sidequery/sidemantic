@@ -27,6 +27,9 @@ SQLCTX_NATIVE_PEG=1 make test
 
 For embedded clients, set DuckDB's `allow_unsigned_extensions` database configuration before opening the connection. Community extension installation is planned, but this repository does not yet publish the signed multi-platform artifacts required for `INSTALL sqlctx FROM community`.
 
+The [community registry submission guide](community/README.md) prepares an immutable
+descriptor for both release lines and documents the registry's monorepo build contract.
+
 The release workflow builds unsigned DuckDB 2.0.1 and 1.5.6 packages for Linux and macOS
 on AMD64 and ARM64. Linux builds use a glibc 2.28 baseline. When installing a
 release artifact, verify it against `SHA256SUMS` and give it the filename
@@ -179,30 +182,61 @@ metadata. Import validates the complete candidate and merges it atomically into
 the selected database. A definition with the same name is replaced. Export and
 discovery work on read-only databases and observe the current transaction.
 
-## Versioned SemanticInput
+### Named semantic views
 
-The stateless SQL functions `sqlctx_compile_semantic_input(input_json, query_json)`
-and `sqlctx_rewrite_semantic_input(input_json, sql, context_json)` accept the
-same SemanticInput v1 contract as the Python and WASM hosts. They return executable
-SQL and do not change models loaded through the session APIs.
+Publish a selection of fields from a model or another semantic view. Each query
+of the saved selection chooses its grouping dimensions:
 
 ```sql
-select sqlctx_compile_semantic_input(
+CREATE SEMANTIC VIEW order_report AS
+SELECT status, revenue AS gross_revenue FROM orders_model;
+
+SELECT status, gross_revenue FROM order_report ORDER BY status;
+SELECT gross_revenue FROM order_report;
+```
+
+The view retains measure definitions, including filters and ratio components.
+`CREATE OR REPLACE SEMANTIC VIEW` and `DROP SEMANTIC VIEW` use the same
+transaction and dependency rules as models. See the [extension guide](../docs/duckdb-extension.md)
+for attached catalogs and ordinary DuckDB views.
+
+## Versioned SemanticInput
+
+The table function `sqlctx_query_semantic_input(input_json, query_json)` accepts
+the same SemanticInput v1 contract as the Python and WASM hosts and returns its
+query result directly. Its columns and types follow the requested metrics and
+dimensions, including retention's cohort table. It does not change models loaded
+through the session APIs.
+
+```sql
+select * from sqlctx_query_semantic_input(
     '{"version":1,"input_dialect":"duckdb","models":[{"name":"sales","table":"orders","primary_key":"order_id",
       "metrics":[{"name":"revenue","agg":"sum","sql":"amount"}]}]}',
     '{"metrics":["sales.revenue"]}'
 );
 ```
 
-Pass `user_attributes` and `enforce_visibility` in query JSON for compilation, or
-in the third argument for rewriting. Policies and invariant filters in the input
-apply when generating SQL; missing policy attributes, visibility denials and
-invalid contracts raise SQL errors. SQL NULL arguments return NULL; embedded NUL
+Use this relation in joins, CTEs, views and outer filters. DuckDB binds the
+generated query in the calling connection, so temporary tables, uncommitted writes
+and rollback have their normal SQL behavior. Arguments must be available at bind
+time: literals, constant expressions or bound prepared-statement parameters;
+per-row request columns are not supported. Dimensions in the query JSON determine
+the aggregation grain; an outer projection does not change that grain.
+
+The scalar functions `sqlctx_compile_semantic_input(input_json, query_json)` and
+`sqlctx_rewrite_semantic_input(input_json, sql, context_json)` return generated SQL
+for inspection or execution elsewhere. Pass `user_attributes` and
+`enforce_visibility` in query JSON for compilation and direct queries, or in the
+third argument for rewriting. Policies and invariant filters apply to all three
+entrypoints; missing policy attributes, visibility denials and invalid contracts
+raise SQL errors. The scalar functions return NULL for SQL NULL arguments; the
+relation rejects NULL because it cannot determine a result schema. Embedded NUL
 bytes are rejected. Each call uses its own caller context.
 
 CI runs `test/test_semantic_input_host.py` against the freshly built DuckDB shell
-and loaded extension, executes the returned SQL over real rows, and checks policy
-isolation, invalid contracts and argument handling. To run it locally after a build:
+and loaded extension. It checks direct relations and returned SQL over real rows,
+policy isolation, prepared parameters, transactions, temporary tables, retention,
+invalid contracts and argument handling. To run it locally after a build:
 
 ```bash
 SQLCTX_DUCKDB_BINARY=build/release/duckdb \
@@ -584,7 +618,7 @@ rows, including equal-valued metrics on distinct customers.
 - Native execution tests cover derived, ratio, cumulative, time-comparison,
   conversion, retention, and cohort metrics. Retention produces a table with
   cohort date, elapsed periods, active users, cohort size, and retention percentage;
-  use `sqlctx_compile_semantic_input` and execute its returned SQL. A scalar projection such as
+  use `select * from sqlctx_query_semantic_input(input_json, query_json)`. A scalar projection such as
   `SEMANTIC SELECT events.retention FROM events` is rejected. These contracts
   do not establish full parity with every Python adapter or API.
 - DuckDB 1.5.6 uses the compatibility frontend. Native PEG support targets
@@ -594,6 +628,24 @@ rows, including equal-valued metrics on distinct customers.
   Signed community installation is not yet provided by this repository.
 
 ## Utility Functions
+
+`sqlctx_explain(sql)` returns a JSON report from the same Rust compiler and current
+catalog snapshot used by `sqlctx_rewrite_sql`:
+
+```sql
+select sqlctx_explain('select customers.country, orders.revenue from orders');
+```
+
+The report includes compiled SQL, warnings, and ordered compiler observations:
+effective grouping expressions, emitted relationship edges and join kinds,
+population preservation, detected fanout risk and the guards actually emitted,
+independent aggregate populations, and selected rollups where routing is enabled.
+`rollup_candidates` lists declarations, not a claim that each candidate is eligible.
+The catalog SQL rewrite route currently leaves materialized rollup routing disabled;
+its query events expose that setting. Specialized compiler routes may expose fewer
+events, as indicated by the report's `coverage` field. An absent guard event is not
+a safety guarantee. Explanation compiles without executing the query or checking
+physical table availability; ordinary DuckDB `explain` remains the physical plan.
 
 ### sqlctx_models()
 
@@ -680,4 +732,7 @@ version string and `source_id` the commit prefix.
 
 ## License
 
-MIT
+The DuckDB extension template carries the [MIT license](LICENSE). The embedded
+`sqlctx-rs` compiler is licensed under [AGPL-3.0-only](../LICENSE), as declared in
+its [Cargo manifest](../sqlctx-rs/Cargo.toml). Distributed binaries include that
+compiler; the release workflow includes both license texts.

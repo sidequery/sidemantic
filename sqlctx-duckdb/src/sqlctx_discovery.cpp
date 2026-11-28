@@ -1,4 +1,5 @@
 #include "sqlctx_catalog.hpp"
+#include "sqlctx_compiler.hpp"
 #include "sqlctx_compat.hpp"
 #include "sqlctx.h"
 
@@ -10,7 +11,11 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/parser/parser.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
 #include "duckdb/planner/planner_extension.hpp"
@@ -61,7 +66,6 @@ struct SemanticColumn {
     string name;
     idx_t ordinal = 0;
     Value comment;
-    LogicalType type = LogicalTypeId::INVALID;
 };
 
 struct SemanticRelation {
@@ -73,6 +77,7 @@ struct SemanticRelation {
 
 struct SemanticMetadata {
     string database;
+    string snapshot;
     int64_t database_oid = 0;
     int64_t schema_oid = 0;
     bool physical_schema = false;
@@ -82,9 +87,15 @@ struct SemanticMetadata {
 } // namespace
 
 LogicalType SqlctxFieldType(ClientContext &context, const string &snapshot, const string &model,
-                                const string &field) {
+                                const string &field, const string &catalog_name) {
+    SqlctxCompilerOwner compiler(snapshot);
+    return SqlctxFieldType(context, compiler, model, field, catalog_name);
+}
+
+LogicalType SqlctxFieldType(ClientContext &context, const SqlctxCompilerOwner &compiler, const string &model,
+                           const string &field, const string &catalog_name) {
     auto sql = "SELECT " + QuoteName(model) + "." + QuoteName(field) + " FROM " + QuoteName(model);
-    auto result = sqlctx_snapshot_rewrite(snapshot.c_str(), sql.c_str());
+    auto result = compiler.Rewrite(sql);
     string compiled = result.sql ? result.sql : "";
     string error = result.error ? result.error : "";
     sqlctx_free_result(result);
@@ -92,6 +103,9 @@ LogicalType SqlctxFieldType(ClientContext &context, const string &snapshot, cons
     Parser parser(SqlctxBuiltinParserOptions());
     parser.ParseQuery(compiled);
     if (parser.statements.size() != 1) throw BinderException("Semantic field must compile to one query");
+    if (!catalog_name.empty() && !StringUtil::CIEquals(catalog_name, SqlctxName(DatabaseManager::GetDefaultDatabase(context)))) {
+        QualifySqlctxSources(context, *parser.statements[0]->Cast<SelectStatement>().node, catalog_name);
+    }
     auto binder = Binder::CreateBinder(context);
     auto bound = binder->Bind(*parser.statements[0]);
     if (bound.types.size() != 1) throw BinderException("Semantic field must produce one column");
@@ -100,15 +114,15 @@ LogicalType SqlctxFieldType(ClientContext &context, const string &snapshot, cons
 
 namespace {
 
-SemanticMetadata ReadMetadata(ClientContext &context) {
+SemanticMetadata ReadMetadata(ClientContext &context, const string &catalog_name, unordered_set<int64_t> &used) {
     SemanticMetadata metadata;
-    auto &catalog = Catalog::GetCatalog(context, DatabaseManager::GetDefaultDatabase(context));
+    auto &catalog = Catalog::GetCatalog(context, SqlctxIdentifier(catalog_name));
     metadata.database = SqlctxName(catalog.GetName());
     metadata.database_oid = NumericCast<int64_t>(catalog.GetOid());
-    auto snapshot = ReadSqlctxCatalog(context);
+    auto snapshot = ReadSqlctxCatalog(context, catalog_name);
     if (snapshot.payload.empty()) return metadata;
+    metadata.snapshot = snapshot.payload;
     CatalogEntriesOwner entries(snapshot.payload);
-    unordered_set<int64_t> used;
     case_insensitive_set_t physical_relations;
     for (auto &schema_ref : Catalog::GetAllSchemas(context)) {
         auto &schema = schema_ref.get();
@@ -143,16 +157,6 @@ SemanticMetadata ReadMetadata(ClientContext &context) {
             column.name = field.name;
             column.ordinal = field.column_index;
             column.comment = field.description ? Value(field.description) : Value();
-            try {
-                column.type = SqlctxFieldType(context, snapshot.payload, relation.name, column.name);
-            } catch (const std::exception &exception) {
-                // Like DuckDB's unbound views, keep the relation discoverable
-                // without inventing a physical type for an unavailable source.
-                // Do not hide cancellation or an engine invariant failure.
-                auto error = ErrorData(exception);
-                if (error.Type() == ExceptionType::INTERRUPT || error.Type() == ExceptionType::INTERNAL ||
-                    error.Type() == ExceptionType::FATAL) throw;
-            }
             relation.columns.push_back(std::move(column));
         }
         std::sort(relation.columns.begin(), relation.columns.end(),
@@ -164,27 +168,44 @@ SemanticMetadata ReadMetadata(ClientContext &context) {
 
 struct DiscoveryRows : public TableFunctionData {
     vector<vector<Value>> rows;
+    vector<SqlctxIdentifier> names;
+    vector<SemanticMetadata> metadata;
+    string function;
+    // Equality hints are kept in the ordinary plan too. Only names, never
+    // deferred type values, can eliminate a row before physical binding.
+    vector<pair<idx_t, Value>> equalities;
 };
 
 struct DiscoveryState : public GlobalTableFunctionState {
+    vector<vector<Value>> rows;
+    vector<column_t> column_ids;
     idx_t offset = 0;
 };
 
-unique_ptr<GlobalTableFunctionState> InitDiscovery(ClientContext &, TableFunctionInitInput &) {
-    return make_uniq<DiscoveryState>();
-}
+unique_ptr<GlobalTableFunctionState> InitDiscovery(ClientContext &, TableFunctionInitInput &);
 
 void ScanDiscovery(ClientContext &, TableFunctionInput &input, DataChunk &output) {
-    auto &data = input.bind_data->Cast<DiscoveryRows>();
     auto &state = input.global_state->Cast<DiscoveryState>();
-    auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, data.rows.size() - state.offset);
+    auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, state.rows.size() - state.offset);
     for (idx_t row = 0; row < count; ++row) {
         for (idx_t column = 0; column < output.ColumnCount(); ++column) {
-            output.SetValue(column, row, data.rows[state.offset + row][column]);
+            auto id = state.column_ids[column];
+            auto value = id == COLUMN_IDENTIFIER_ROW_ID ? Value::BIGINT(0) : state.rows[state.offset + row][id];
+#if SQLCTX_VECTOR_APPEND
+            // DuckDB 2 derives expression cardinality from each vector, not
+            // just the chunk. SetValue does not advance those vector sizes.
+            output.data[column].Append(value);
+#else
+            output.SetValue(column, row, value);
+#endif
         }
     }
     state.offset += count;
+#if SQLCTX_VECTOR_APPEND
+    output.CheckCardinality(count);
+#else
     output.SetCardinality(count);
+#endif
 }
 
 void NumericMetadata(const LogicalType &type, Value &precision, Value &radix, Value &scale) {
@@ -241,8 +262,8 @@ unique_ptr<DiscoveryRows> BuildRows(const SemanticMetadata &metadata, const stri
             values["comment"] = relation.comment;
             values["temporary"] = Value::BOOLEAN(false);
             values["column_count"] = Value::BIGINT(relation.columns.size());
-            values["is_bound"] = Value::BOOLEAN(std::all_of(relation.columns.begin(), relation.columns.end(),
-                [](const SemanticColumn &column) { return column.type.id() != LogicalTypeId::INVALID; }));
+            // Populated in InitDiscovery only when requested by the plan.
+            values["is_bound"] = Value::BOOLEAN(false);
             append(values);
         } else {
             values["table_name"] = Value(relation.name);
@@ -255,11 +276,6 @@ unique_ptr<DiscoveryRows> BuildRows(const SemanticMetadata &metadata, const stri
                 row["column_name"] = Value(column.name);
                 row["column_index"] = Value::INTEGER(i + 1);
                 row["comment"] = column.comment;
-                if (column.type.id() != LogicalTypeId::INVALID) {
-                    row["data_type"] = Value(column.type.ToString());
-                    row["data_type_id"] = Value::BIGINT(static_cast<int>(column.type.id()));
-                    NumericMetadata(column.type, row["numeric_precision"], row["numeric_precision_radix"], row["numeric_scale"]);
-                }
                 append(row);
             }
         }
@@ -267,8 +283,120 @@ unique_ptr<DiscoveryRows> BuildRows(const SemanticMetadata &metadata, const stri
     return result;
 }
 
+void RestrictDiscovery(ClientContext &, LogicalGet &get, FunctionData *bind_data,
+                       vector<unique_ptr<Expression>> &filters) {
+    auto &data = bind_data->Cast<DiscoveryRows>();
+    for (auto &filter : filters) {
+        if (filter->GetExpressionType() != ExpressionType::COMPARE_EQUAL) continue;
+        const BoundColumnRefExpression *column = nullptr;
+        const BoundConstantExpression *constant = nullptr;
+        idx_t children = 0;
+        ExpressionIterator::EnumerateChildren(*filter, [&](const Expression &child) {
+            ++children;
+            if (child.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+                column = &child.Cast<BoundColumnRefExpression>();
+            } else if (child.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+                constant = &child.Cast<BoundConstantExpression>();
+            }
+        });
+        if (children != 2 || !column || !constant) continue;
+#if SQLCTX_NEW_EXPRESSION_API
+        auto &binding = column->Binding();
+        auto column_index = binding.column_index.GetIndex();
+        auto &value = constant->GetValue();
+#else
+        auto &binding = column->binding;
+        auto column_index = binding.column_index;
+        auto &value = constant->value;
+#endif
+        if (binding.table_index != get.table_index || value.IsNull() || value.type() != LogicalType::VARCHAR) continue;
+        auto id = get.GetColumnIds()[column_index].GetPrimaryIndex();
+        if (id >= data.names.size()) continue;
+        auto &name = SqlctxName(data.names[id]);
+        if (name == "database_name" || name == "schema_name" || name == "table_name" ||
+            name == "view_name" || name == "column_name") {
+            data.equalities.emplace_back(id, value);
+        }
+    }
+}
+
+LogicalType BindFieldType(ClientContext &context, const SemanticMetadata &metadata,
+                          const SqlctxCompilerOwner &compiler, const string &model, const string &field) {
+    try {
+        return SqlctxFieldType(context, compiler, model, field, metadata.database);
+    } catch (const std::exception &exception) {
+        // Match unbound views: missing sources remain visible with NULL types.
+        // Cancellation and engine invariant failures must still reach the caller.
+        auto error = ErrorData(exception);
+        if (error.Type() == ExceptionType::INTERRUPT || error.Type() == ExceptionType::INTERNAL ||
+            error.Type() == ExceptionType::FATAL) throw;
+        return LogicalTypeId::INVALID;
+    }
+}
+
+unique_ptr<GlobalTableFunctionState> InitDiscovery(ClientContext &context, TableFunctionInitInput &input) {
+    auto &data = input.bind_data->Cast<DiscoveryRows>();
+    auto state = make_uniq<DiscoveryState>();
+    state->column_ids = input.column_ids;
+    unordered_map<string, idx_t> indexes;
+    for (idx_t i = 0; i < data.names.size(); ++i) indexes[SqlctxName(data.names[i])] = i;
+    unordered_set<string> requested;
+    for (auto id : input.column_ids) {
+        if (id < data.names.size()) requested.insert(SqlctxName(data.names[id]));
+    }
+    bool bind_types = requested.count("is_bound") || requested.count("data_type") || requested.count("data_type_id") ||
+        requested.count("numeric_precision") || requested.count("numeric_precision_radix") || requested.count("numeric_scale");
+    unordered_map<string, unique_ptr<SqlctxCompilerOwner>> compilers;
+    for (auto &original : data.rows) {
+        bool matches = true;
+        for (auto &equality : data.equalities) {
+            if (original[equality.first].IsNull() ||
+                original[equality.first].GetValue<string>() != equality.second.GetValue<string>()) {
+                matches = false;
+                break;
+            }
+        }
+        if (!matches) continue;
+        auto row = original;
+        if (bind_types && data.function != "duckdb_schemas") {
+            auto database = row[indexes.at("database_name")].GetValue<string>();
+            auto model = row[indexes.at(data.function == "duckdb_views" ? "view_name" : "table_name")].GetValue<string>();
+            for (auto &metadata : data.metadata) {
+                if (metadata.database != database) continue;
+                auto &compiler = compilers[database];
+                if (!compiler) compiler = make_uniq<SqlctxCompilerOwner>(metadata.snapshot);
+                if (data.function == "duckdb_views") {
+                    for (auto &relation : metadata.relations) {
+                        if (relation.name != model) continue;
+                        bool bound = true;
+                        for (auto &column : relation.columns) {
+                            if (BindFieldType(context, metadata, *compiler, model, column.name).id() == LogicalTypeId::INVALID) {
+                                bound = false;
+                                break;
+                            }
+                        }
+                        row[indexes.at("is_bound")] = Value::BOOLEAN(bound);
+                    }
+                } else {
+                    auto field = row[indexes.at("column_name")].GetValue<string>();
+                    auto type = BindFieldType(context, metadata, *compiler, model, field);
+                    if (type.id() != LogicalTypeId::INVALID) {
+                        row[indexes.at("data_type")] = Value(type.ToString());
+                        row[indexes.at("data_type_id")] = Value::BIGINT(static_cast<int>(type.id()));
+                        NumericMetadata(type, row[indexes.at("numeric_precision")],
+                            row[indexes.at("numeric_precision_radix")], row[indexes.at("numeric_scale")]);
+                    }
+                }
+                break;
+            }
+        }
+        state->rows.push_back(std::move(row));
+    }
+    return std::move(state);
+}
+
 void OverlayScans(PlannerExtensionInput &input, unique_ptr<LogicalOperator> &plan,
-                  unique_ptr<SemanticMetadata> &metadata) {
+                  unique_ptr<vector<SemanticMetadata>> &metadata) {
     // PREPARE has a nested planner. Its child can already contain this overlay.
     if (plan->type == LogicalOperatorType::LOGICAL_UNION) {
         for (auto &child : plan->children) {
@@ -281,12 +409,27 @@ void OverlayScans(PlannerExtensionInput &input, unique_ptr<LogicalOperator> &pla
     auto &get = plan->Cast<LogicalGet>();
     auto name = ScanName(get);
     if (name != "duckdb_columns" && name != "duckdb_views" && name != "duckdb_schemas") return;
-    RegisterSqlctxCatalogRead(input.context, input.binder.GetStatementProperties());
-    if (!metadata) metadata = make_uniq<SemanticMetadata>(ReadMetadata(input.context));
-    if (metadata->relations.empty()) return;
-    auto rows = BuildRows(*metadata, name, get.names, get.returned_types);
+    if (!metadata) {
+        metadata = make_uniq<vector<SemanticMetadata>>();
+        unordered_set<int64_t> used;
+        for (auto &catalog : SqlctxCatalogNames(input.context)) {
+            RegisterSqlctxCatalogRead(input.context, input.binder.GetStatementProperties(), catalog);
+            auto entry = ReadMetadata(input.context, catalog, used);
+            if (!entry.relations.empty()) metadata->push_back(std::move(entry));
+        }
+    }
+    auto rows = make_uniq<DiscoveryRows>();
+    rows->names = get.names;
+    rows->metadata = *metadata;
+    rows->function = name;
+    for (auto &entry : *metadata) {
+        auto catalog_rows = BuildRows(entry, name, get.names, get.returned_types);
+        for (auto &row : catalog_rows->rows) rows->rows.push_back(std::move(row));
+    }
     if (rows->rows.empty()) return;
     TableFunction function("sqlctx_catalog_scan", {}, ScanDiscovery, nullptr, InitDiscovery);
+    function.projection_pushdown = true;
+    function.pushdown_complex_filter = RestrictDiscovery;
 #if SQLCTX_BOUND_TABLE_FUNCTION
     auto extra = make_uniq<LogicalGet>(input.binder.GenerateTableIndex(), BoundTableFunction(function), std::move(rows),
                                       get.returned_types, get.names);
@@ -305,14 +448,15 @@ void OverlayScans(PlannerExtensionInput &input, unique_ptr<LogicalOperator> &pla
 
 void DiscoveryPostBind(PlannerExtensionInput &input, BoundStatement &statement) {
     if (!statement.plan) return;
-    unique_ptr<SemanticMetadata> metadata;
+    unique_ptr<vector<SemanticMetadata>> metadata;
     OverlayScans(input, statement.plan, metadata);
 }
 
 } // namespace
 
-bool SqlctxPhysicalRelationExists(ClientContext &context, const string &model) {
-    auto &catalog = Catalog::GetCatalog(context, DatabaseManager::GetDefaultDatabase(context));
+bool SqlctxPhysicalRelationExists(ClientContext &context, const string &model, const string &catalog_name) {
+    auto &catalog = Catalog::GetCatalog(context, catalog_name.empty()
+        ? DatabaseManager::GetDefaultDatabase(context) : SqlctxIdentifier(catalog_name));
 #if SQLCTX_NEW_IDENTIFIER_API
     EntryLookupInfo lookup(CatalogType::TABLE_ENTRY,
                           QualifiedName(catalog.GetName(), Identifier(SEMANTIC_SCHEMA), Identifier(model)));

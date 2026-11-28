@@ -180,7 +180,7 @@ pub(super) fn create(snapshot: &mut Snapshot, content: &str, replace: bool) -> C
 /// Rebind selections on every reconstruction. Compatible source replacements
 /// flow through existing views; removed fields, changed field kinds and cycles
 /// fail before the host can publish a candidate catalog.
-pub(super) fn refresh(models: &mut Vec<Model>) -> CatalogResult<()> {
+pub(super) fn refresh(models: &mut [Model]) -> CatalogResult<()> {
     fn resolve(
         index: usize,
         models: &mut [Model],
@@ -360,7 +360,27 @@ fn expand_bindings(views: &HashMap<String, Binding>, sql: &str) -> CatalogResult
     if views.is_empty() {
         return Ok(sql.to_owned());
     }
-    type Scope = HashMap<String, Option<Binding>>;
+    #[derive(Default)]
+    struct Scope<'a> {
+        local: HashMap<String, Option<Binding>>,
+        parent: Option<&'a Scope<'a>>,
+    }
+
+    impl Scope<'_> {
+        fn relation(&self, alias: &str) -> Option<(&String, &Option<Binding>)> {
+            self.local
+                .get_key_value(alias)
+                .or_else(|| self.parent?.relation(alias))
+        }
+
+        fn single_source(&self) -> Option<(&String, &Option<Binding>)> {
+            match self.local.len() {
+                0 => self.parent?.single_source(),
+                1 => self.local.iter().next(),
+                _ => None,
+            }
+        }
+    }
     fn source(
         node: &mut Value,
         views: &HashMap<String, Binding>,
@@ -386,13 +406,13 @@ fn expand_bindings(views: &HashMap<String, Binding>, sql: &str) -> CatalogResult
                 table["alias"] = serde_json::to_value(Identifier::quoted(&alias)).unwrap();
                 table["schema"] = Value::Null;
             }
-            scope.insert(alias.to_ascii_lowercase(), binding);
+            scope.local.insert(alias.to_ascii_lowercase(), binding);
             return Ok(());
         }
         if let Some(subquery) = node.get_mut("subquery") {
             visit(&mut subquery["this"], views, scope, ctes, &HashSet::new())?;
             if let Some(alias) = subquery["alias"]["name"].as_str() {
-                scope.insert(alias.to_ascii_lowercase(), None);
+                scope.local.insert(alias.to_ascii_lowercase(), None);
             }
             return Ok(());
         }
@@ -434,7 +454,10 @@ fn expand_bindings(views: &HashMap<String, Binding>, sql: &str) -> CatalogResult
                     ctes.insert(name);
                 }
             }
-            let mut scope = outer.clone();
+            let mut scope = Scope {
+                local: HashMap::new(),
+                parent: Some(outer),
+            };
             source(&mut select["from"], views, &mut scope, &ctes)?;
             for join in select["joins"].as_array_mut().into_iter().flatten() {
                 source(&mut join["this"], views, &mut scope, &ctes)?;
@@ -443,16 +466,10 @@ fn expand_bindings(views: &HashMap<String, Binding>, sql: &str) -> CatalogResult
             for projection in select["expressions"].as_array().into_iter().flatten() {
                 if let Some(star) = projection.get("star") {
                     let target = star["table"]["name"].as_str().map(str::to_ascii_lowercase);
-                    let binding = target
-                        .as_ref()
-                        .and_then(|target| scope.get_key_value(target))
-                        .or_else(|| {
-                            if target.is_none() && scope.len() == 1 {
-                                scope.iter().next()
-                            } else {
-                                None
-                            }
-                        });
+                    let binding = match target {
+                        Some(alias) => scope.relation(&alias),
+                        None => scope.single_source(),
+                    };
                     if let Some((alias, Some(binding))) = binding {
                         if !star["except"].is_null()
                             || !star["replace"].is_null()
@@ -516,6 +533,20 @@ fn expand_bindings(views: &HashMap<String, Binding>, sql: &str) -> CatalogResult
                                 }
                             }
                         }
+                    } else if key == "order_by" && !child.is_null() {
+                        for item in child["expressions"].as_array_mut().into_iter().flatten() {
+                            // DuckDB resolves a bare ORDER BY name against the output
+                            // first. Inside a sort expression, input columns win.
+                            let column = &item["this"]["column"];
+                            if column["table"].is_null()
+                                && column["name"]["name"].as_str().is_some_and(|name| {
+                                    output_aliases.contains(&name.to_ascii_lowercase())
+                                })
+                            {
+                                continue;
+                            }
+                            visit(item, views, &scope, &ctes, &output_aliases)?;
+                        }
                     } else {
                         visit(child, views, &scope, &ctes, &output_aliases)?;
                     }
@@ -526,14 +557,11 @@ fn expand_bindings(views: &HashMap<String, Binding>, sql: &str) -> CatalogResult
         if let Some(column) = node.get_mut("column") {
             let field = column["name"]["name"].as_str().unwrap_or("").to_owned();
             let binding = if let Some(table) = column["table"]["name"].as_str() {
-                outer
-                    .get(&table.to_ascii_lowercase())
-                    .and_then(Option::as_ref)
-            } else if outer.len() == 1 {
-                outer.values().next().and_then(Option::as_ref)
+                outer.relation(&table.to_ascii_lowercase())
             } else {
-                None
-            };
+                outer.single_source()
+            }
+            .and_then(|(_, binding)| binding.as_ref());
             if let Some(binding) = binding {
                 let selected = binding
                     .fields
@@ -585,7 +613,7 @@ fn expand_bindings(views: &HashMap<String, Binding>, sql: &str) -> CatalogResult
         visit(
             &mut ast,
             views,
-            &Scope::new(),
+            &Scope::default(),
             &HashSet::new(),
             &HashSet::new(),
         )
@@ -752,6 +780,63 @@ models:
         assert_eq!(Snapshot::parse(&dropped).unwrap().models.len(), 1);
         assert!(apply(&snapshot, "orders", "drop_model", r#"["sales"]"#, false).is_err());
         assert!(apply(&snapshot, "orders", "drop_view", r#"["orders"]"#, false).is_err());
+    }
+
+    #[test]
+    fn order_by_output_alias_takes_precedence_over_view_dimension() {
+        let snapshot = view(
+            &catalog(),
+            "sales AS SELECT country AS region, revenue AS gross FROM orders",
+            false,
+        )
+        .unwrap();
+        let sql = compile(
+            &snapshot,
+            "SELECT gross AS region FROM sales ORDER BY region DESC",
+        );
+        assert!(!sql.contains("GROUP BY"), "{sql}");
+        let graph = Snapshot::parse(&snapshot).unwrap().into_graph().unwrap();
+        for (order, expected) in [
+            ("region DESC", "ORDER BY region DESC"),
+            ("sales.region", "sales.\"country\""),
+            ("region + 1", "\"country\" + 1"),
+        ] {
+            let sql = expand(
+                &graph,
+                &format!("SELECT gross AS region FROM sales ORDER BY {order}"),
+            )
+            .unwrap();
+            assert!(sql.contains(expected), "{sql}");
+        }
+    }
+
+    #[test]
+    fn scalar_subqueries_resolve_local_view_fields_before_outer_sources() {
+        let snapshot = view(
+            &catalog(),
+            "sales AS SELECT revenue AS gross FROM orders",
+            false,
+        )
+        .unwrap();
+        let graph = Snapshot::parse(&snapshot).unwrap().into_graph().unwrap();
+        let sql = expand(
+            &graph,
+            "SELECT (SELECT gross FROM sales) AS total FROM main.raw_orders",
+        )
+        .unwrap();
+        assert!(sql.contains("\"revenue\" AS \"gross\""), "{sql}");
+        let sql = expand(
+            &graph,
+            "SELECT (SELECT s.gross FROM main.raw_orders) FROM sales s",
+        )
+        .unwrap();
+        assert!(sql.contains("s.\"revenue\" AS \"gross\""), "{sql}");
+        let sql = expand(
+            &graph,
+            "SELECT (SELECT gross FROM main.raw_orders s) FROM sales s",
+        )
+        .unwrap();
+        assert!(sql.contains("SELECT gross FROM main.raw_orders"), "{sql}");
     }
 
     #[test]

@@ -82,6 +82,19 @@ def test_named_view_nested_selection_and_star():
     assert rows[-1] == [{"gross": 7}]
 
 
+def test_view_aliases_keep_the_grain_and_bind_in_scalar_subqueries():
+    rows = execute(
+        """
+        create semantic view report as select country as region, gross from sales;
+        select gross as region from report order by region;
+        select (select gross from report) as total from main.raw_orders;
+        """,
+        setup=SETUP,
+    )
+    assert [int(row["region"]) for row in rows[-2]] == [120]
+    assert rows[-1] == [{"total": 120}] * 3
+
+
 def test_view_wildcards_preserve_selection_order_and_filtered_ratio():
     rows = execute(
         """

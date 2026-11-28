@@ -12,6 +12,8 @@
 #cmakedefine01 SQLCTX_GRAMMAR_EXTENSION_LIST
 #cmakedefine01 SQLCTX_ARENA_TRANSFORM
 #cmakedefine01 SQLCTX_SHELL_GRAMMAR_CONTEXT
+#cmakedefine01 SQLCTX_PRE_BIND
+#cmakedefine01 SQLCTX_VECTOR_APPEND
 
 #include "duckdb/parser/parser_options.hpp"
 #if SQLCTX_NEW_IDENTIFIER_API

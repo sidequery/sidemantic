@@ -941,6 +941,16 @@ pub(super) fn try_generate(
             row_filters.push(format!("({sql})"));
         }
     }
+    super::super::explain::record(|| {
+        serde_json::json!({
+            "kind": "aggregate_plan", "grain": query.dimensions,
+            "populations": plan.populations.iter().map(|population| serde_json::json!({
+                "name": population.name, "sources": population.sources,
+            })).collect::<Vec<_>>(),
+            "rollup_routing_enabled": false,
+            "rollup_reason": "aggregate child populations compile from source rows",
+        })
+    });
     let mut ctes = Vec::new();
     for population in &plan.populations {
         let model = &population.sources[0];

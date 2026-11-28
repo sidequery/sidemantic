@@ -7,6 +7,12 @@
 #include "duckdb/planner/operator_extension.hpp"
 
 namespace duckdb {
+class ExtensionLoader;
+
+struct SqlctxParserInfo : ParserExtensionInfo {
+    explicit SqlctxParserInfo(DatabaseInstance &database_p) : database(database_p) {}
+    DatabaseInstance &database;
+};
 
 struct SqlctxParseData : ParserExtensionParseData {
     // Definitions carry source only. Mutation is deferred until execution.
@@ -22,7 +28,8 @@ struct SqlctxParseData : ParserExtensionParseData {
 
 unique_ptr<SQLStatement> SqlctxStatement(unique_ptr<SqlctxParseData> data);
 unique_ptr<SqlctxParseData> ParseSqlctxDefinition(const string &sql);
-unique_ptr<SQLStatement> WrapSqlctxQuery(unique_ptr<SQLStatement> statement, bool explicit_semantic = false);
+unique_ptr<SQLStatement> WrapSqlctxQuery(unique_ptr<SQLStatement> statement, bool explicit_semantic = false,
+                                       const string &source_override = "", const ParserOptions *parser_options = nullptr);
 
 ParserOverrideResult sqlctx_parser_override(ParserExtensionInfo *, const string &, ParserOptions &);
 #if SQLCTX_TOKEN_PARSE_FN
@@ -34,6 +41,7 @@ ParserExtensionPlanResult sqlctx_plan(ParserExtensionInfo *, ClientContext &,
                                          unique_ptr<ParserExtensionParseData>);
 BoundStatement sqlctx_bind(ClientContext &, Binder &, OperatorExtensionInfo *, SQLStatement &);
 void RegisterSqlctxRouting(DatabaseInstance &db);
+void RegisterSqlctxQueryCarrier(ExtensionLoader &loader);
 
 struct SqlctxParserExtension : ParserExtension {
     SqlctxParserExtension() {

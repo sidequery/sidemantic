@@ -86,7 +86,10 @@ def test_release_packages_matching_platform_with_verifiable_checksum(tmp_path, p
     )
 
 
-@pytest.mark.parametrize("failure", ["mismatched_tag", "missing_platform", "corrupt_payload", "existing_release", None])
+@pytest.mark.parametrize(
+    "failure",
+    ["mismatched_tag", "missing_platform", "corrupt_payload", "missing_extension_license", "existing_release", None],
+)
 @pytest.mark.parametrize("versions", [["v1.5.6"], ["v2.0.1"], VERSIONS])
 def test_publication_checks_provenance_and_all_payloads_before_creating_release(tmp_path, failure, versions):
     dist = tmp_path / "dist"
@@ -104,6 +107,10 @@ def test_publication_checks_provenance_and_all_payloads_before_creating_release(
     elif failure == "corrupt_payload":
         asset.write_bytes(b"changed")
     (tmp_path / "LICENSE").write_text("Test license\n")
+    extension_license = tmp_path / "sqlctx-duckdb/LICENSE"
+    extension_license.parent.mkdir()
+    if failure != "missing_extension_license":
+        extension_license.write_text("Extension template license\n")
     commands = tmp_path / "bin"
     commands.mkdir()
     git = commands / "git"
@@ -136,13 +143,16 @@ def test_publication_checks_provenance_and_all_payloads_before_creating_release(
         assert result.returncode == 0, result.stderr
         assert len((dist / "SHA256SUMS").read_text().splitlines()) == len(PLATFORMS) * len(versions)
         assert (dist / "LICENSE").read_text() == "Test license\n"
-    if failure in {"mismatched_tag", "missing_platform", "corrupt_payload"}:
+        assert (dist / "LICENSE.duckdb-extension").read_text() == "Extension template license\n"
+    if failure in {"mismatched_tag", "missing_platform", "corrupt_payload", "missing_extension_license"}:
         assert not args.exists()
     else:
         arguments = args.read_text().splitlines()
         assert arguments[:3] == ["release", "create", "sqlctx-duckdb-v0.1.0"]
         assert "--verify-tag" in arguments
         assert "--clobber" not in arguments
+        assert "LICENSE" in arguments
+        assert "LICENSE.duckdb-extension" in arguments
         assert sum(arg.endswith(".duckdb_extension") for arg in arguments) == len(PLATFORMS) * len(versions)
 
 
@@ -172,7 +182,9 @@ def test_publication_verifies_remote_annotated_tag_without_replacing_checkout_re
     source.mkdir()
     git(source, "init", "-q")
     (source / "LICENSE").write_text("Initial license\n")
-    git(source, "add", "LICENSE")
+    (source / "sqlctx-duckdb").mkdir()
+    (source / "sqlctx-duckdb/LICENSE").write_text("Extension template license\n")
+    git(source, "add", "LICENSE", "sqlctx-duckdb/LICENSE")
     git(source, "commit", "-qm", "Initial source")
     earlier_commit = git(source, "rev-parse", "HEAD")
     (source / "LICENSE").write_text("Release license\n")
@@ -217,4 +229,7 @@ def test_publication_verifies_remote_annotated_tag_without_replacing_checkout_re
     )
     assert (result.returncode == 0) == matching_commit, result.stderr
     assert args.exists() == matching_commit
+    if matching_commit:
+        assert (dist / "LICENSE").read_text() == "Release license\n"
+        assert (dist / "LICENSE.duckdb-extension").read_text() == "Extension template license\n"
     assert git(checkout, "rev-parse", f"refs/tags/{tag}") == built_commit

@@ -250,7 +250,11 @@ impl<'a> SqlGenerator<'a> {
         // parsing, AST transformation, serialization and destruction on the same
         // protected stack instead of returning a deep AST to the caller stack.
         crate::semantic_input::with_semantic_stack(|| {
+            super::explain::query(query);
             if self.uses_latest_ossie() {
+                super::explain::record(
+                    || serde_json::json!({"kind": "route", "name": "latest_ossie"}),
+                );
                 return self.generate_latest_ossie(query);
             }
             if let Some(graph) = self.prepare_imported_window_dimensions()? {
@@ -467,6 +471,12 @@ impl<'a> SqlGenerator<'a> {
 
         // Detect fan-out risk for symmetric aggregate handling
         let fan_out_at_risk = self.detect_fan_out_risk(&base_model, &join_paths);
+        super::explain::record(|| {
+            let mut at_risk: Vec<_> = fan_out_at_risk.iter().collect();
+            at_risk.sort();
+            serde_json::json!({"kind": "source_plan", "anchor": base_model, "fanout_at_risk": at_risk,
+                "filters": all_filters})
+        });
         let cte_models = self.collect_models_in_join_plan(&base_model, &join_paths);
         let mut alias_collisions: HashMap<String, usize> = HashMap::new();
         for dim_ref in &dimension_refs {
@@ -702,6 +712,14 @@ impl<'a> SqlGenerator<'a> {
             ));
         }
 
+        super::explain::record(|| {
+            serde_json::json!({
+                "kind": "grain", "dimensions": effective_dimensions,
+                "expressions": group_expressions, "ungrouped": query.ungrouped,
+                "meaning": if query.ungrouped { "source rows" } else { "one row per dimension tuple; empty dimensions means scalar aggregate" },
+            })
+        });
+
         // Add metrics to SELECT
         for metric_ref in &metric_refs {
             let model = self.graph.get_model(&metric_ref.model).ok_or_else(|| {
@@ -724,6 +742,21 @@ impl<'a> SqlGenerator<'a> {
             let sql_expr = match metric.r#type {
                 MetricType::Simple if query.ungrouped => raw_col.clone(),
                 MetricType::Simple if use_symmetric => {
+                    let guard = match metric.agg {
+                        Some(Aggregation::Sum | Aggregation::Avg) => Some("row_number_per_entity"),
+                        Some(Aggregation::Count) => Some("count_distinct_entity"),
+                        Some(Aggregation::CountDistinct) => Some("count_distinct_value"),
+                        _ => None,
+                    };
+                    if let Some(strategy) = guard {
+                        super::explain::record(|| {
+                            serde_json::json!({
+                                "kind": "fanout_guard", "model": model.name, "metric": metric.name,
+                                "strategy": strategy, "aggregation": metric.agg,
+                                "entity_keys": model.primary_keys(),
+                            })
+                        });
+                    }
                     // Use symmetric aggregate to prevent fan-out inflation
                     if self.graph.has_strict_metric_scope() && model.primary_keys().len() != 1 {
                         if model.primary_keys().is_empty() {
@@ -880,6 +913,7 @@ impl<'a> SqlGenerator<'a> {
                 let to_alias = self.model_alias(&step.to_model);
 
                 if step.relationship_type == RelationshipType::Cross {
+                    super::explain::join(step, "CROSS JOIN");
                     sql.push_str(&format!(
                         "CROSS JOIN {0} AS {0}\n",
                         self.quote_identifier(&to_alias)
@@ -925,6 +959,7 @@ impl<'a> SqlGenerator<'a> {
                     } else {
                         "LEFT JOIN"
                     };
+                super::explain::join(step, join_type);
                 sql.push_str(&format!(
                     "{join_type} {0} AS {0} ON {join_condition}\n",
                     self.quote_identifier(&to_alias)
@@ -4917,6 +4952,12 @@ impl<'a> SqlGenerator<'a> {
         if let Some(offset) = query.offset {
             sql.push_str(&format!("\nOFFSET {offset}"));
         }
+        super::explain::record(|| {
+            serde_json::json!({
+                "kind": "rollup_selected", "model": model_name, "name": preagg.name, "route": "join_key"
+            })
+        });
+        super::explain::join(hop, "LEFT JOIN");
         Ok(Some(format!("{sql}\n-- used_preagg=true")))
     }
 
@@ -5021,13 +5062,20 @@ impl<'a> SqlGenerator<'a> {
                     continue;
                 }
             }
-            if !self.preaggregation_can_satisfy_query(
+            let compatible = self.preaggregation_can_satisfy_query(
                 model,
                 preagg,
                 &query_metric_names,
                 dimension_refs,
                 &filter_plan.dimensions,
-            ) {
+            );
+            super::explain::record(|| {
+                serde_json::json!({
+                    "kind": "rollup_candidate", "model": model_name, "name": preagg.name,
+                    "query_shape_compatible": compatible,
+                })
+            });
+            if !compatible {
                 continue;
             }
 
@@ -5063,6 +5111,11 @@ impl<'a> SqlGenerator<'a> {
             ungrouped,
         )?;
 
+        super::explain::record(|| {
+            serde_json::json!({
+                "kind": "rollup_selected", "model": model_name, "name": best_preagg.name, "route": "single_source"
+            })
+        });
         Ok(Some(format!("{preagg_sql}\n-- used_preagg=true")))
     }
 

@@ -10,7 +10,17 @@
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
+#include "duckdb/parser/query_node/select_node.hpp"
+#include "duckdb/parser/query_node/set_operation_node.hpp"
+#include "duckdb/parser/query_node/recursive_cte_node.hpp"
+#include "duckdb/parser/query_node/cte_node.hpp"
+#include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/tableref/joinref.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include <algorithm>
@@ -59,8 +69,13 @@ public:
     }
 };
 
-static Catalog &SemanticCatalog(ClientContext &context) {
-    return Catalog::GetCatalog(context, DatabaseManager::GetDefaultDatabase(context));
+static Catalog &SemanticCatalog(ClientContext &context, const string &name = "") {
+    if (name.empty()) return Catalog::GetCatalog(context, DatabaseManager::GetDefaultDatabase(context));
+#if SQLCTX_NEW_IDENTIFIER_API
+    return Catalog::GetCatalog(context, Identifier(name));
+#else
+    return Catalog::GetCatalog(context, name);
+#endif
 }
 
 static shared_ptr<SqlctxCatalogSession> Session(ClientContext &context) {
@@ -150,7 +165,7 @@ static SqlctxSnapshotResult ImportDefinitionFiles(ClientContext &context, const 
 
 static SqlctxCatalogSnapshot ReadLegacySnapshot(ClientContext &context, Catalog &catalog) {
     auto &database = catalog.GetAttached();
-    if (catalog.InMemory() || !database.HasStorageManager()) {
+    if (!database.HasStorageManager() || catalog.InMemory()) {
         return {};
     }
     auto path = database.GetStorageManager().GetDBPath();
@@ -190,8 +205,8 @@ static optional_ptr<CatalogEntry> FindCatalogMacro(ClientContext &context, Catal
 #endif
 }
 
-SqlctxCatalogSnapshot ReadSqlctxCatalog(ClientContext &context) {
-    auto &catalog = SemanticCatalog(context);
+SqlctxCatalogSnapshot ReadSqlctxCatalog(ClientContext &context, const string &catalog_name) {
+    auto &catalog = SemanticCatalog(context, catalog_name);
     auto state = Session(context);
     auto entry = FindCatalogMacro(context, catalog, CATALOG_MACRO);
     if (!entry) {
@@ -234,11 +249,123 @@ SqlctxCatalogSnapshot ReadSqlctxCatalog(ClientContext &context) {
     if (active != state->active_models.end()) {
         snapshot.active_model = active->second;
     }
+    snapshot.catalog = SqlctxName(catalog.GetName());
     return snapshot;
 }
 
-void RegisterSqlctxCatalogRead(ClientContext &context, StatementProperties &properties) {
-    properties.RegisterDBRead(SemanticCatalog(context), context);
+vector<string> SqlctxCatalogNames(ClientContext &context) {
+    vector<string> names;
+    for (auto &database : DatabaseManager::Get(context).GetDatabases(context)) {
+        if (database->IsSystem()) continue;
+        names.push_back(SqlctxName(database->GetName()));
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+// Walk lexical CTE scopes rather than treating every base reference as a
+// physical table. Compiled semantic SQL uses CTEs for aggregation and joins.
+class SqlctxSourceQualifier {
+public:
+    SqlctxSourceQualifier(const string &catalog, const string &schema) : catalog(catalog), default_schema(schema) {}
+
+    void Query(QueryNode &node, case_insensitive_set_t ctes = {}) {
+        for (auto &cte : node.cte_map.map) {
+#if SQLCTX_NEW_IDENTIFIER_API
+            Query(*cte.second->query_node, ctes);
+#else
+            Query(*cte.second->query->node, ctes);
+#endif
+            ctes.insert(SqlctxName(cte.first));
+        }
+        if (node.type == QueryNodeType::SET_OPERATION_NODE) {
+            for (auto &child : node.Cast<SetOperationNode>().children) Query(*child, ctes);
+        } else if (node.type == QueryNodeType::RECURSIVE_CTE_NODE) {
+            auto &recursive = node.Cast<RecursiveCTENode>();
+            ctes.insert(SqlctxName(recursive.ctename));
+            Query(*recursive.left, ctes);
+            Query(*recursive.right, ctes);
+        } else if (node.type == QueryNodeType::CTE_NODE) {
+            auto &cte = node.Cast<CTENode>();
+            Query(*cte.query, ctes);
+            ctes.insert(SqlctxName(cte.ctename));
+            Query(*cte.child, ctes);
+        } else if (node.type == QueryNodeType::SELECT_NODE) {
+            auto &select = node.Cast<SelectNode>();
+            for (auto &expression : select.select_list) Expression(*expression, ctes);
+            for (auto &expression : select.groups.group_expressions) Expression(*expression, ctes);
+            if (select.where_clause) Expression(*select.where_clause, ctes);
+            if (select.having) Expression(*select.having, ctes);
+            if (select.qualify) Expression(*select.qualify, ctes);
+            if (select.from_table) Table(*select.from_table, ctes);
+        }
+        ParsedExpressionIterator::EnumerateQueryNodeModifiers(node, [&](unique_ptr<ParsedExpression> &expression) {
+            Expression(*expression, ctes);
+        });
+    }
+
+private:
+    const string &catalog;
+    const string &default_schema;
+
+    void Expression(ParsedExpression &expression, const case_insensitive_set_t &ctes) {
+        if (expression.GetExpressionClass() == ExpressionClass::SUBQUERY) {
+#if SQLCTX_NEW_EXPRESSION_API
+            Query(*expression.Cast<SubqueryExpression>().Subquery()->node, ctes);
+#else
+            Query(*expression.Cast<SubqueryExpression>().subquery->node, ctes);
+#endif
+        }
+        ParsedExpressionIterator::EnumerateChildren(expression, [&](ParsedExpression &child) { Expression(child, ctes); });
+    }
+
+    void Table(TableRef &ref, const case_insensitive_set_t &ctes) {
+        if (ref.type == TableReferenceType::BASE_TABLE) {
+            auto &table = ref.Cast<BaseTableRef>();
+#if SQLCTX_QUALIFIED_TABLE_API
+            auto name = SqlctxName(table.Table());
+            auto schema = SqlctxName(table.GetQualifiedName().Schema());
+            if (!table.GetQualifiedName().Catalog().empty()) return;
+            if (schema.empty() && ctes.count(name)) return;
+            table.SetQualifiedName(Identifier(catalog), Identifier(schema.empty() ? default_schema : schema), Identifier(name));
+#else
+            if (!table.catalog_name.empty()) return;
+            if (table.schema_name.empty() && ctes.count(table.table_name)) return;
+            table.catalog_name = catalog;
+            if (table.schema_name.empty()) table.schema_name = default_schema;
+#endif
+        } else if (ref.type == TableReferenceType::SUBQUERY) {
+            Query(*ref.Cast<SubqueryRef>().subquery->node, ctes);
+        } else if (ref.type == TableReferenceType::JOIN) {
+            auto &join = ref.Cast<JoinRef>();
+            Table(*join.left, ctes);
+            Table(*join.right, ctes);
+            if (join.condition) Expression(*join.condition, ctes);
+        } else if (ref.type == TableReferenceType::TABLE_FUNCTION) {
+            auto &function = ref.Cast<TableFunctionRef>();
+            if (function.subquery) Query(*function.subquery->node, ctes);
+            if (function.function) Expression(*function.function, ctes);
+        } else {
+            ParsedExpressionIterator::EnumerateTableRefChildren(ref, [&](unique_ptr<ParsedExpression> &expression) {
+                Expression(*expression, ctes);
+            });
+        }
+    }
+};
+
+void QualifySqlctxSources(ClientContext &context, QueryNode &node, const string &catalog) {
+    if (catalog.empty()) return;
+    auto schema = SemanticCatalog(context, catalog).GetDefaultSchema();
+#if SQLCTX_NEW_IDENTIFIER_API
+    auto default_schema = schema ? SqlctxName(*schema) : string(DEFAULT_SCHEMA);
+#else
+    auto default_schema = schema.empty() ? string(DEFAULT_SCHEMA) : schema;
+#endif
+    SqlctxSourceQualifier(catalog, default_schema).Query(node);
+}
+
+void RegisterSqlctxCatalogRead(ClientContext &context, StatementProperties &properties, const string &catalog_name) {
+    properties.RegisterDBRead(SemanticCatalog(context, catalog_name), context);
     // A prepared semantic query must also observe connection-local MODEL changes.
     properties.always_require_rebind = true;
 }

@@ -125,6 +125,12 @@ pub(super) fn generate_entity_aggregates(
                     "Model '{source}' has no primary key; cannot safely aggregate across a fanout join"
                 )));
             }
+            super::super::explain::record(|| {
+                serde_json::json!({
+                    "kind": "fanout_guard", "model": source, "strategy": "distinct_entity_rows",
+                    "entity_keys": keys, "grain": query.dimensions,
+                })
+            });
             for key in keys {
                 inputs.add(source, generator.key_sql(source_model, &key, None)?, &[]);
             }

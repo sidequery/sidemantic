@@ -213,6 +213,7 @@ jobs:
           done
           cat *.sha256 > SHA256SUMS
           cp ../LICENSE .
+          cp ../sqlctx-duckdb/LICENSE LICENSE.duckdb-extension
           # Creation fails if the tag already has a release; never overwrite published bytes.
-          gh release create "$TAG" *.duckdb_extension SHA256SUMS LICENSE \
+          gh release create "$TAG" *.duckdb_extension SHA256SUMS LICENSE LICENSE.duckdb-extension \
             --verify-tag --target "$RELEASE_COMMIT" --title "$TAG" --generate-notes

@@ -209,6 +209,36 @@ SELECT orders.revenue FROM orders;
 
 The legacy `SEMANTIC SELECT ...` form remains supported.
 
+### Save a reusable selection of dimensions and measures
+
+With the `orders` model above, publish a selection and query it at two grains:
+
+```sql
+create semantic view order_report as
+select status, revenue as gross_revenue from orders;
+
+select status, gross_revenue from order_report order by status;
+select gross_revenue from order_report;
+```
+
+A semantic view projects fields from one model or another semantic view. The consumer
+chooses the grouping dimensions. Aliasing a ratio or filtered measure retains its
+source definition. Replacing a source measure changes subsequent queries of the
+semantic view. `CREATE OR REPLACE SEMANTIC VIEW`, `DROP SEMANTIC VIEW` and changes
+to source definitions participate in the caller's transaction. An ordinary DuckDB
+`CREATE VIEW ... AS SELECT ...` over a semantic query stores its compiled SQL.
+
+Use `sqlctx_explain('select orders.revenue from orders')` to inspect the semantic
+compiler's decisions. DuckDB's own `EXPLAIN` shows the resulting database plan.
+For applications with a SemanticInput v1 document, the
+`sqlctx_query_semantic_input(input_json, query_json)` table function returns the
+requested columns and rows directly in the caller's transaction.
+
+After attaching a database as `finance`, a query can explicitly select its model
+with `from finance.semantic.orders`. Unqualified physical sources of a model in
+another catalog resolve in that catalog's default schema. Explicitly qualified
+sources retain their catalog.
+
 ## Release Path
 
 Use `.github/workflows/duckdb-extension-release.yml`.
@@ -219,7 +249,7 @@ The workflow:
 - builds the Rust-backed extension for `linux_amd64`, `linux_arm64`, `osx_amd64`, and `osx_arm64`,
 - runs the DuckDB sqllogictests, including native YAML load, native SQL definition file load, relationship rewrite, semantic select, persistence, and invalid-version coverage,
 - uploads a separate extension artifact for each DuckDB version and platform with its checksum,
-- on a `sqlctx-duckdb-v*` tag push (or a manual run with `create_github_release`), creates the GitHub release with the artifacts, `SHA256SUMS`, and `LICENSE`. It never overwrites an existing release.
+- on a `sqlctx-duckdb-v*` tag push (or a manual run with `create_github_release`), creates the GitHub release with the artifacts, `SHA256SUMS`, and both license notices. It never overwrites an existing release.
 
 It does not publish to the DuckDB community extension registry.
 

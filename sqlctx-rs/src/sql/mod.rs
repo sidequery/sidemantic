@@ -1,5 +1,6 @@
 //! SQL generation and query rewriting
 
+pub(crate) mod explain;
 mod generator;
 mod order_by;
 mod rewriter;
